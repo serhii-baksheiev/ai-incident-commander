@@ -51,7 +51,7 @@ function writeCommand(binPath, name, body) {
 }
 
 function runRunnerPreflight({
-  findmnt = { output: '', status: 0 },
+  findmnt = { output: 'ext4 / /dev/vda1', status: 0 },
   identity = 'aic-runner',
   passwordlessSudo = false,
 } = {}) {
@@ -77,7 +77,7 @@ function runRunnerPreflight({
       writeCommand(
         binPath,
         'findmnt',
-        `case " $* " in\n  *" -t virtiofs,9p,fuse.sshfs "*) ;;\n  *) exit 64 ;;\nesac\n${findmnt.output ? `printf '%s\\n' '${findmnt.output}'\n` : ''}exit ${findmnt.status}`,
+        `case " $* " in\n  *" -t "*) exit 65 ;;\nesac\ncase " $* " in\n  *" -o FSTYPE,TARGET,SOURCE "*) ;;\n  *) exit 64 ;;\nesac\n${findmnt.output ? `printf '%s\\n' '${findmnt.output}'\n` : ''}exit ${findmnt.status}`,
       );
     }
 
@@ -149,13 +149,23 @@ test('runs pull requests and main pushes only on the repository Linux ARM64 runn
 test('fails the runner preflight when a Lima host filesystem mount is present', () => {
   for (const mountType of ['virtiofs', '9p', 'fuse.sshfs']) {
     const result = runRunnerPreflight({
-      findmnt: { output: `/mnt/lima-home host-home ${mountType}`, status: 0 },
+      findmnt: { output: `${mountType} /mnt/lima-home host-home`, status: 0 },
     });
 
     assert.notEqual(
       result.status,
       0,
       `runner preflight must reject a ${mountType} host filesystem mount\n${preflightDiagnostics(result)}`,
+    );
+    assert.match(
+      result.stdout,
+      /::error::Lima host filesystem mount detected:/,
+      `runner preflight must reject ${mountType} because it detected a host mount\n${preflightDiagnostics(result)}`,
+    );
+    assert.doesNotMatch(
+      result.stdout,
+      /::error::failed to inspect Lima host filesystem mounts/,
+      `a valid full mount table must not be reported as an inspection failure\n${preflightDiagnostics(result)}`,
     );
   }
 });
@@ -178,6 +188,7 @@ test('fails the runner preflight when findmnt cannot inspect mounts', () => {
     0,
     `runner preflight must fail closed when findmnt exits nonzero\n${preflightDiagnostics(result)}`,
   );
+  assert.match(result.stdout, /::error::failed to inspect Lima host filesystem mounts/);
 });
 
 test('accepts the runner preflight when findmnt reports no host mounts', () => {
