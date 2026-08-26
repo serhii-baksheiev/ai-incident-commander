@@ -76,15 +76,15 @@ if ! id -u aic-runner >/dev/null 2>&1; then
 fi
 runner_dir=/home/aic-runner/actions-runner-ai-incident-commander
 sudo -H -u aic-runner mkdir -p "$runner_dir"
-cd "$runner_dir"
 
-sudo -H -u aic-runner curl -fsSLO \
+sudo -H -u aic-runner --chdir="$runner_dir" curl -fsSLO \
   "https://github.com/actions/runner/releases/download/v${runner_version}/${runner_asset}"
-printf '%s  %s\n' "$runner_sha" "$runner_asset" | shasum -a 256 -c -
-sudo -H -u aic-runner tar xzf "$runner_asset"
-sudo -H -u aic-runner rm "$runner_asset"
+printf '%s  %s\n' "$runner_sha" "$runner_asset" | \
+  sudo -H -u aic-runner --chdir="$runner_dir" shasum -a 256 -c -
+sudo -H -u aic-runner --chdir="$runner_dir" tar xzf "$runner_asset"
+sudo -H -u aic-runner --chdir="$runner_dir" rm "$runner_asset"
 
-sudo -H -u aic-runner ./config.sh \
+sudo -H -u aic-runner --chdir="$runner_dir" ./config.sh \
   --url https://github.com/serhii-baksheiev/ai-incident-commander \
   --token "$registration_token" \
   --name linux-arm64-01 \
@@ -92,9 +92,9 @@ sudo -H -u aic-runner ./config.sh \
   --work _work --unattended --replace
 unset registration_token runner_asset runner_sha runner_version
 
-sudo ./svc.sh install aic-runner
-sudo ./svc.sh start
-sudo ./svc.sh status
+sudo --chdir="$runner_dir" ./svc.sh install aic-runner
+sudo --chdir="$runner_dir" ./svc.sh start
+sudo --chdir="$runner_dir" ./svc.sh status
 GUEST
 unset REG_TOKEN RUNNER_ASSET RUNNER_SHA RUNNER_VERSION
 ```
@@ -105,9 +105,10 @@ Verify the VM boundary and the GitHub registration before merging the workflow:
 limactl list ai-incident-commander-runner
 limactl shell ai-incident-commander-runner -- uname -sm
 limactl shell ai-incident-commander-runner -- \
-  bash -lc '! findmnt -rn -t virtiofs,9p,fuse.sshfs | grep -q .'
+  bash -lc 'mount_table=$(findmnt -rn -o FSTYPE,TARGET,SOURCE) &&
+    ! grep -Eq "^(virtiofs|9p|fuse\\.sshfs)[[:space:]]" <<<"$mount_table"'
 limactl shell ai-incident-commander-runner -- \
-  bash -lc 'cd /home/aic-runner/actions-runner-ai-incident-commander && sudo ./svc.sh status'
+  sudo --chdir=/home/aic-runner/actions-runner-ai-incident-commander ./svc.sh status
 gh api /repos/serhii-baksheiev/ai-incident-commander/actions/runners \
   --jq '.runners[] | "\(.name) \(.status) busy=\(.busy) labels=\([.labels[].name] | join(","))"'
 ```
@@ -125,8 +126,8 @@ boundary: start the VM again, then systemd brings the installed service online.
 | --- | --- |
 | VM status | `limactl list ai-incident-commander-runner` |
 | Start VM | `limactl start ai-incident-commander-runner` |
-| Runner status | `limactl shell ai-incident-commander-runner -- bash -lc 'cd /home/aic-runner/actions-runner-ai-incident-commander && sudo ./svc.sh status'` |
-| Restart runner | `limactl shell ai-incident-commander-runner -- bash -lc 'cd /home/aic-runner/actions-runner-ai-incident-commander && sudo ./svc.sh stop && sudo ./svc.sh start'` |
+| Runner status | `limactl shell ai-incident-commander-runner -- sudo --chdir=/home/aic-runner/actions-runner-ai-incident-commander ./svc.sh status` |
+| Restart runner | `limactl shell ai-incident-commander-runner -- bash -lc 'sudo --chdir=/home/aic-runner/actions-runner-ai-incident-commander ./svc.sh stop && sudo --chdir=/home/aic-runner/actions-runner-ai-incident-commander ./svc.sh start'` |
 | Live logs | `limactl shell ai-incident-commander-runner -- bash -lc 'sudo tail -f /home/aic-runner/actions-runner-ai-incident-commander/_diag/Runner_*.log'` |
 | Stop VM | `limactl stop ai-incident-commander-runner` |
 
@@ -140,10 +141,10 @@ REMOVE_TOKEN=$(gh api --method POST \
   --jq .token)
 limactl shell ai-incident-commander-runner -- bash -s -- "$REMOVE_TOKEN" <<'GUEST'
 set -euo pipefail
-cd /home/aic-runner/actions-runner-ai-incident-commander
-sudo ./svc.sh stop
-sudo ./svc.sh uninstall
-sudo -H -u aic-runner ./config.sh remove --token "$1"
+runner_dir=/home/aic-runner/actions-runner-ai-incident-commander
+sudo --chdir="$runner_dir" ./svc.sh stop
+sudo --chdir="$runner_dir" ./svc.sh uninstall
+sudo -H -u aic-runner --chdir="$runner_dir" ./config.sh remove --token "$1"
 GUEST
 unset REMOVE_TOKEN
 limactl stop ai-incident-commander-runner
