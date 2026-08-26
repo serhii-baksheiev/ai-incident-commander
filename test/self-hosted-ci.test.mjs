@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workflowPath = resolve(projectRoot, '.github/workflows/ci.yml');
+const limaConfigPath = resolve(projectRoot, '.github/runner/lima.yaml');
 const runnerGuidePath = resolve(projectRoot, 'RUNNER.md');
 const readmePath = resolve(projectRoot, 'README.md');
 
@@ -64,6 +65,36 @@ test('runs pull requests and main pushes only on the repository Linux ARM64 runn
     assert.match(workflow, new RegExp(`\\b${tool}\\b`), `runner preflight must check ${tool}`);
   }
   assert.match(workflow, /^\s+run:\s*node --test\s*$/m);
+});
+
+test('fails the runner preflight when a Lima host filesystem mount is present', () => {
+  const workflow = readRequired(
+    workflowPath,
+    '.github/workflows/ci.yml must define the repository CI contract',
+  );
+
+  assert.match(
+    workflow,
+    /^(?=[\s\S]*\bfindmnt\b)(?=[\s\S]*\bvirtiofs\b)(?=[\s\S]*\b9p\b)(?=[\s\S]*\bfuse\.sshfs\b)(?=[\s\S]*\bfindmnt\b[^\n]*[\s\S]*?\bthen\b[\s\S]*?::error::[\s\S]*?(?:\bexit\s+1\b|\b(?:failed|missing|status)\s*=\s*1\b))[\s\S]*$/i,
+    'runner preflight must detect supported Lima host mount types and fail the job',
+  );
+});
+
+test('tracks a Lima VM definition with every host credential-sharing path disabled', () => {
+  const limaConfig = readRequired(
+    limaConfigPath,
+    '.github/runner/lima.yaml must be the tracked runner VM definition',
+  );
+
+  assert.match(limaConfig, /^vmType:\s*["']?vz["']?\s*$/m);
+  assert.match(limaConfig, /^arch:\s*["']?aarch64["']?\s*$/m);
+  assert.match(limaConfig, /^plain:\s*true\s*$/m);
+  assert.match(limaConfig, /^mounts:\s*\[\s*\]\s*$/m);
+
+  const sshBlock = limaConfig.match(/^ssh:\s*\n((?:[ \t]+.*(?:\n|$))*)/m)?.[1];
+  assert.notEqual(sshBlock, undefined, 'Lima config must define guest SSH isolation');
+  assert.match(sshBlock, /^\s+loadDotSSHPubKeys:\s*false\s*$/m);
+  assert.match(sshBlock, /^\s+forwardAgent:\s*false\s*$/m);
 });
 
 test('provisions the repository runner inside a dedicated Lima VM without host mounts', () => {
