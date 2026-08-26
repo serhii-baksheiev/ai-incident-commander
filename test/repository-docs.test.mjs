@@ -31,5 +31,6 @@ test('records the latest Jira adapter stop without claiming the issue', () => {
   const journal = readFileSync(journalPath, 'utf8');
   assert.match(journal, /### Jira connector reachable; adapter still missing shell credentials/);
   assert.match(journal, /AIC-2 remained `To Do` and unclaimed/);
+  assert.match(journal, /native Jira link currently makes AIC-2 blocked by AIC-3/);
   assert.match(journal, /\*\*stopped at\*\* — `queue-unreadable`/);
 });
