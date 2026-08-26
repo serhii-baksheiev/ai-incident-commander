@@ -291,6 +291,23 @@ test('provisions and installs the runner service as the dedicated runner identit
   assert.doesNotMatch(installationBlock, /\beru\b/);
 });
 
+test('enters the private runner home only under the dedicated runner identity', () => {
+  const guide = readRequired(runnerGuidePath, 'RUNNER.md must document runner operations');
+  const privateRunnerCd = /\bcd\s+(?:["']?\$runner_dir["']?|["']?\/home\/aic-runner\/actions-runner-ai-incident-commander["']?)/;
+  const identityShell =
+    /(?:sudo\s+-H\s+-u\s+aic-runner|runuser\s+-u\s+aic-runner\s+--)\s+bash\s+-(?:c|lc)\b/;
+  const operatorScopedEntries = guide
+    .split('\n')
+    .filter((line) => privateRunnerCd.test(line))
+    .filter((line) => !identityShell.test(line.slice(0, line.search(privateRunnerCd))));
+
+  assert.deepEqual(
+    operatorScopedEntries,
+    [],
+    `installation, service, and removal commands must enter the private runner directory under aic-runner:\n${operatorScopedEntries.join('\n')}`,
+  );
+});
+
 test('documents VM-scoped runner verification and lifecycle operations', () => {
   const guide = readRequired(runnerGuidePath, 'RUNNER.md must document runner operations');
 
