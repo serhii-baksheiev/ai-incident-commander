@@ -73,6 +73,7 @@ The architecture freeze means structural changes must be justified by benchmark 
 | [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain contracts, graph topology, persistence, tools, evals, roadmap, and Definition of Done |
 | [PLAN.md](PLAN.md) | Local agent/operator queues and standing execution state |
 | [Journal](journal/README.md) | Human-readable run history and journal conventions |
+| [Self-hosted runner](RUNNER.md) | macOS ARM64 CI installation, security boundary, and operations |
 
 ## Planned repository shape
 

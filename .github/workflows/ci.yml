@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  checks:
+    name: checks
+    runs-on: [self-hosted, macOS, ARM64, ai-incident-commander]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+
+      - name: Runner requirement preflight
+        shell: bash
+        run: |
+          missing=0
+          for tool in bash git node; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf '%s: %s\n' "$tool" "$(command -v "$tool")"
+            else
+              printf '::error::%s is not installed on this runner\n' "$tool"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Full test suite
+        run: node --test
