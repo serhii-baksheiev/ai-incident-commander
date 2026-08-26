@@ -15,7 +15,7 @@ concurrency:
 jobs:
   checks:
     name: checks
-    runs-on: [self-hosted, macOS, ARM64, ai-incident-commander]
+    runs-on: [self-hosted, Linux, ARM64, ai-incident-commander]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -30,6 +30,23 @@ jobs:
         shell: bash
         run: |
           missing=0
+          runner_os=$(uname -s)
+          runner_arch=$(uname -m)
+          if [[ "$runner_os" != Linux ]]; then
+            printf '::error::runner OS is %s, expected Linux\n' "$runner_os"
+            missing=1
+          fi
+          if [[ "$runner_arch" != aarch64 && "$runner_arch" != arm64 ]]; then
+            printf '::error::runner architecture is %s, expected ARM64\n' "$runner_arch"
+            missing=1
+          fi
+
+          host_mounts=$(findmnt -rn -t virtiofs,9p,fuse.sshfs -o TARGET,SOURCE || true)
+          if [[ -n "$host_mounts" ]]; then
+            printf '::error::Lima host filesystem mount detected: %s\n' "$host_mounts"
+            missing=1
+          fi
+
           for tool in bash git node; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '%s: %s\n' "$tool" "$(command -v "$tool")"
