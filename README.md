@@ -1,0 +1,98 @@
+<div align="center">
+  <h1>AI Incident Commander</h1>
+  <p><strong>Evidence-driven, replayable incident investigation built around deterministic control.</strong></p>
+  <p>
+    Architecture frozen for v0.1 · TypeScript · LangGraph · LangChain · LangSmith
+  </p>
+  <p>
+    <a href="docs/incident-commander-architecture-v1.md">Architecture v1</a>
+    ·
+    <a href="https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards">Jira project</a>
+  </p>
+</div>
+
+---
+
+AI Incident Commander is designed as a stateful investigation system for operational incidents. It forms competing hypotheses, derives falsifiable predictions, runs typed investigation tests, preserves raw evidence separately from interpretation, challenges its leading explanation, and stops through deterministic rules.
+
+The goal is not an autonomous remediation swarm. The goal is a disciplined investigation kernel whose conclusions can be traced to evidence, resumed after interruption, replayed against fixed scenarios, and measured before changes are accepted.
+
+## Investigation loop
+
+```mermaid
+flowchart LR
+    I[Incident] --> H[Competing hypotheses]
+    H --> P[Testable predictions]
+    P --> T[Typed investigation tests]
+    T --> E[Immutable evidence]
+    E --> A[Evidence assessment]
+    A --> C{Challenge leader}
+    C -->|More evidence| P
+    C -->|Resolved or bounded| R[Evidence-linked conclusion]
+```
+
+## Architectural thesis
+
+> **The graph controls the investigation. The model supplies judgement. Evidence controls what can be claimed. Evals decide whether a change was an improvement.**
+
+Four boundaries make that thesis concrete:
+
+- **LangGraph owns orchestration** — state, routing, persistence, interruption, and recovery.
+- **LLM nodes return structured judgement** — they do not own executable tools.
+- **Deterministic nodes own side effects** — tool execution, evidence creation, budgets, challenge routing, and termination.
+- **Replayable evaluation gates change** — prompt, graph, and tool-semantic changes require evidence tied to the tested revision.
+
+## v0.1 — Investigation Kernel
+
+| Capability | v0.1 commitment |
+| --- | --- |
+| Domain | Incident → Hypothesis → Prediction → Test → Trial → Evidence → Conclusion |
+| Tools | Read-only live adapters plus deterministic replay adapters |
+| Control | Mandatory challenge, bounded budgets, deterministic termination |
+| Recovery | Persistent checkpoints with duplicate-safe resume semantics |
+| Evaluation | Five replay scenarios, repeated runs, LangSmith experiments, mutation-verified gates |
+| Human input | Optional conclusion review through interrupt and resume |
+
+Deliberate non-goals for v0.1 include write actions, autonomous remediation, multi-agent swarms, RAG, long-term memory, production API/worker topology, and a production UI.
+
+## Project status
+
+| Area | Status |
+| --- | --- |
+| Architecture | **Frozen for v0.1 implementation** |
+| Repository and engineering guardrails | Initialized |
+| Product implementation | Not started |
+| Current implementation milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
+
+The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
+
+## Documentation
+
+| Document | Purpose |
+| --- | --- |
+| [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain contracts, graph topology, persistence, tools, evals, roadmap, and Definition of Done |
+| [PLAN.md](PLAN.md) | Local agent/operator queues and standing execution state |
+| [Journal](journal/README.md) | Human-readable run history and journal conventions |
+
+## Planned repository shape
+
+```text
+apps/cli                  command-line entrypoint
+packages/domain           framework-free domain contracts
+packages/graph            LangGraph state, nodes, edges, and routing
+packages/roles            semantic roles and prompts
+packages/tools            live and replay tool adapters
+packages/persistence      checkpointing and recovery
+packages/evals            deterministic and LangSmith evaluation gates
+packages/observability    trace and run metadata
+datasets/scenarios        versioned replay fixtures
+incident-lab              isolated live incident environment
+```
+
+The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph, tools, and evals depend on the domain rather than the reverse.
+
+## Engineering workflow
+
+Work is tracked in the [AIC Jira project](https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards) and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
+
+Until the scaffold milestone lands, this repository intentionally publishes no install, build, or run command. The commands documented here should always describe an executable repository rather than a planned one.
