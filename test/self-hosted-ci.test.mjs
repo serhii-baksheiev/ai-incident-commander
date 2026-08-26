@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +23,75 @@ const readmePath = resolve(projectRoot, 'README.md');
 function readRequired(path, message) {
   assert.equal(existsSync(path), true, message);
   return readFileSync(path, 'utf8');
+}
+
+function extractRunnerPreflight(workflow) {
+  const lines = workflow.split('\n');
+  const stepIndex = lines.findIndex((line) => /- name:\s*Runner requirement preflight\s*$/.test(line));
+  assert.notEqual(stepIndex, -1, 'workflow must define the runner requirement preflight step');
+
+  const runIndex = lines.findIndex(
+    (line, index) => index > stepIndex && /^\s+run:\s*\|\s*$/.test(line),
+  );
+  assert.notEqual(runIndex, -1, 'runner requirement preflight must use a literal run block');
+
+  const runIndent = lines[runIndex].match(/^\s*/)[0].length;
+  const scriptLines = [];
+  for (const line of lines.slice(runIndex + 1)) {
+    if (line.trim() !== '' && line.match(/^\s*/)[0].length <= runIndent) break;
+    scriptLines.push(line.trim() === '' ? '' : line.slice(runIndent + 2));
+  }
+  return scriptLines.join('\n');
+}
+
+function writeCommand(binPath, name, body) {
+  const commandPath = join(binPath, name);
+  writeFileSync(commandPath, `#!/bin/sh\n${body}\n`);
+  chmodSync(commandPath, 0o755);
+}
+
+function runRunnerPreflight({
+  findmnt = { output: '', status: 0 },
+  identity = 'aic-runner',
+  passwordlessSudo = false,
+} = {}) {
+  const workflow = readRequired(
+    workflowPath,
+    '.github/workflows/ci.yml must define the repository CI contract',
+  );
+  const script = extractRunnerPreflight(workflow);
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'aic-runner-preflight-'));
+  const binPath = join(fixtureRoot, 'bin');
+  mkdirSync(binPath);
+
+  try {
+    for (const tool of ['bash', 'git', 'node']) writeCommand(binPath, tool, 'exit 0');
+    writeCommand(
+      binPath,
+      'uname',
+      'case "$1" in\n  -s) printf \'Linux\\n\' ;;\n  -m) printf \'aarch64\\n\' ;;\n  *) exit 2 ;;\nesac',
+    );
+    writeCommand(binPath, 'id', `printf '%s\\n' '${identity}'`);
+    writeCommand(binPath, 'sudo', `exit ${passwordlessSudo ? 0 : 1}`);
+    if (findmnt !== null) {
+      writeCommand(
+        binPath,
+        'findmnt',
+        `case " $* " in\n  *" -t virtiofs,9p,fuse.sshfs "*) ;;\n  *) exit 64 ;;\nesac\n${findmnt.output ? `printf '%s\\n' '${findmnt.output}'\n` : ''}exit ${findmnt.status}`,
+      );
+    }
+
+    return spawnSync('/bin/bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: binPath },
+    });
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+function preflightDiagnostics(result) {
+  return `status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`;
 }
 
 test('runs pull requests and main pushes only on the repository Linux ARM64 runner', () => {
@@ -68,15 +147,66 @@ test('runs pull requests and main pushes only on the repository Linux ARM64 runn
 });
 
 test('fails the runner preflight when a Lima host filesystem mount is present', () => {
-  const workflow = readRequired(
-    workflowPath,
-    '.github/workflows/ci.yml must define the repository CI contract',
-  );
+  for (const mountType of ['virtiofs', '9p', 'fuse.sshfs']) {
+    const result = runRunnerPreflight({
+      findmnt: { output: `/mnt/lima-home host-home ${mountType}`, status: 0 },
+    });
 
-  assert.match(
-    workflow,
-    /^(?=[\s\S]*\bfindmnt\b)(?=[\s\S]*\bvirtiofs\b)(?=[\s\S]*\b9p\b)(?=[\s\S]*\bfuse\.sshfs\b)(?=[\s\S]*\bfindmnt\b[^\n]*[\s\S]*?\bthen\b[\s\S]*?::error::[\s\S]*?(?:\bexit\s+1\b|\b(?:failed|missing|status)\s*=\s*1\b))[\s\S]*$/i,
-    'runner preflight must detect supported Lima host mount types and fail the job',
+    assert.notEqual(
+      result.status,
+      0,
+      `runner preflight must reject a ${mountType} host filesystem mount\n${preflightDiagnostics(result)}`,
+    );
+  }
+});
+
+test('fails the runner preflight when findmnt is missing', () => {
+  const result = runRunnerPreflight({ findmnt: null });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `runner preflight must treat findmnt as a required tool\n${preflightDiagnostics(result)}`,
+  );
+});
+
+test('fails the runner preflight when findmnt cannot inspect mounts', () => {
+  const result = runRunnerPreflight({ findmnt: { output: '', status: 42 } });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `runner preflight must fail closed when findmnt exits nonzero\n${preflightDiagnostics(result)}`,
+  );
+});
+
+test('accepts the runner preflight when findmnt reports no host mounts', () => {
+  const result = runRunnerPreflight();
+
+  assert.equal(
+    result.status,
+    0,
+    `runner preflight must accept a clean mount inspection\n${preflightDiagnostics(result)}`,
+  );
+});
+
+test('fails the runner preflight outside the dedicated runner identity', () => {
+  const result = runRunnerPreflight({ identity: 'eru' });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `runner preflight must require the aic-runner identity\n${preflightDiagnostics(result)}`,
+  );
+});
+
+test('fails the runner preflight when the runner has passwordless sudo', () => {
+  const result = runRunnerPreflight({ passwordlessSudo: true });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `runner preflight must reject passwordless sudo\n${preflightDiagnostics(result)}`,
   );
 });
 
@@ -90,6 +220,7 @@ test('tracks a Lima VM definition with every host credential-sharing path disabl
   assert.match(limaConfig, /^arch:\s*["']?aarch64["']?\s*$/m);
   assert.match(limaConfig, /^plain:\s*true\s*$/m);
   assert.match(limaConfig, /^mounts:\s*\[\s*\]\s*$/m);
+  assert.match(limaConfig, /^propagateProxyEnv:\s*false\s*$/m);
 
   const sshBlock = limaConfig.match(/^ssh:\s*\n((?:[ \t]+.*(?:\n|$))*)/m)?.[1];
   assert.notEqual(sshBlock, undefined, 'Lima config must define guest SSH isolation');
@@ -124,6 +255,29 @@ test('provisions the repository runner inside a dedicated Lima VM without host m
   assert.doesNotMatch(guide, /actions-runner-osx-arm64-/);
   assert.doesNotMatch(guide, /LaunchAgent/i);
   assert.match(readme, /\[Self-hosted runner\]\(RUNNER\.md\)/);
+});
+
+test('provisions and installs the runner service as the dedicated runner identity', () => {
+  const guide = readRequired(runnerGuidePath, 'RUNNER.md must document runner operations');
+  const installationBlock = guide.match(/## Installation[\s\S]*?```bash\n([\s\S]*?)\n```/)?.[1];
+  assert.notEqual(installationBlock, undefined, 'RUNNER.md must include a bash installation block');
+
+  assert.match(
+    installationBlock,
+    /\b(?:adduser|useradd)\b[^\n]*\baic-runner\b/,
+    'installation must provision the dedicated aic-runner guest identity',
+  );
+  assert.match(
+    installationBlock,
+    /\.\/svc\.sh\s+install\s+["']?aic-runner["']?\b/,
+    'runner service must be installed as aic-runner',
+  );
+  assert.doesNotMatch(
+    installationBlock,
+    /\.\/svc\.sh\s+install\s+["']?\$\(id\s+-un\)/,
+    'runner service identity must not depend on the guest operator account',
+  );
+  assert.doesNotMatch(installationBlock, /\beru\b/);
 });
 
 test('documents VM-scoped runner verification and lifecycle operations', () => {
