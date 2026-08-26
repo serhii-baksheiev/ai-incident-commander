@@ -62,12 +62,23 @@ jobs:
           fi
 
           if command -v findmnt >/dev/null 2>&1; then
-            if ! host_mounts=$(findmnt -rn -t virtiofs,9p,fuse.sshfs -o TARGET,SOURCE); then
+            if ! mount_table=$(findmnt -rn -o FSTYPE,TARGET,SOURCE); then
               printf '::error::failed to inspect Lima host filesystem mounts\n'
               missing=1
-            elif [[ -n "$host_mounts" ]]; then
-              printf '::error::Lima host filesystem mount detected: %s\n' "$host_mounts"
-              missing=1
+            else
+              host_mounts=
+              while IFS= read -r mount_line; do
+                fstype=${mount_line%% *}
+                case "$fstype" in
+                  virtiofs|9p|fuse.sshfs)
+                    host_mounts+="${mount_line}"$'\n'
+                    ;;
+                esac
+              done <<< "$mount_table"
+              if [[ -n "$host_mounts" ]]; then
+                printf '::error::Lima host filesystem mount detected: %s\n' "$host_mounts"
+                missing=1
+              fi
             fi
           fi
           exit "$missing"
