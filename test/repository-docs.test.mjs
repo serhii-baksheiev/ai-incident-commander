@@ -34,3 +34,14 @@ test('records the latest Jira adapter stop without claiming the issue', () => {
   assert.match(journal, /native Jira link currently makes AIC-2 blocked by AIC-3/);
   assert.match(journal, /\*\*stopped at\*\* — `queue-unreadable`/);
 });
+
+test('records the shipped runner and current Jira stop in the newest journal entry', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, newestEntry] = journal.split(/^### /m);
+
+  assert.match(newestEntry, /\bPR #6\b/);
+  assert.match(newestEntry, /\bd0ad960[0-9a-f]*\b/);
+  assert.match(newestEntry, /AIC-52[^\n]*\bDone\b/);
+  assert.match(newestEntry, /\*\*stopped at\*\* — `queue-data-anomaly`/);
+  assert.match(newestEntry, /AIC-51[^\n]*\b14669\b/);
+});
