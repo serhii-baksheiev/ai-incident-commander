@@ -291,20 +291,100 @@ test('provisions and installs the runner service as the dedicated runner identit
   assert.doesNotMatch(installationBlock, /\beru\b/);
 });
 
-test('enters the private runner home only under the dedicated runner identity', () => {
+test('scopes private runner operations without relying on sudo chdir', () => {
   const guide = readRequired(runnerGuidePath, 'RUNNER.md must document runner operations');
-  const privateRunnerCd = /\bcd\s+(?:["']?\$runner_dir["']?|["']?\/home\/aic-runner\/actions-runner-ai-incident-commander["']?)/;
-  const identityShell =
+  const lines = guide.split('\n');
+  const privateRunnerCd =
+    /\bcd\s+(?:["']?\$runner_dir["']?|["']?\/home\/aic-runner\/actions-runner-ai-incident-commander["']?)/;
+  const scopedRunnerCd =
+    /\bcd\s+(?:["']?\$runner_dir["']?|["']?\$[1-9]["']?|["']?\/home\/aic-runner\/actions-runner-ai-incident-commander["']?)/;
+  const privateRunnerPath = /\/home\/aic-runner\/actions-runner-ai-incident-commander/;
+  const identityInlineShell =
     /(?:sudo\s+-H\s+-u\s+aic-runner|runuser\s+-u\s+aic-runner\s+--)\s+bash\s+-(?:c|lc)\b/;
-  const operatorScopedEntries = guide
-    .split('\n')
-    .filter((line) => privateRunnerCd.test(line))
-    .filter((line) => !identityShell.test(line.slice(0, line.search(privateRunnerCd))));
+  const identityHeredocShell =
+    /(?:sudo\s+-H\s+-u\s+aic-runner|runuser\s+-u\s+aic-runner\s+--)\s+bash\s+-s\b/;
+  const rootInlineShell = /\bsudo\s+bash\s+-(?:c|lc)\b/;
+  const rootHeredocShell = /\bsudo\s+bash\s+-s\b/;
+  const userOwnedOperation =
+    /(?:\bcurl\s+-fsSLO\b|\bshasum\s+-a\s+256\b|\btar\s+xzf\b|\brm\s+["']?\$runner_asset|\.\/config\.sh\b)/;
+
+  function hasInlineScopedDirectory(line, shell, operation) {
+    const cdIndex = line.search(scopedRunnerCd);
+    const operationIndex = line.search(operation);
+    return (
+      cdIndex >= 0 &&
+      operationIndex > cdIndex &&
+      shell.test(line.slice(0, cdIndex)) &&
+      /(?:&&|;)/.test(line.slice(cdIndex, operationIndex)) &&
+      (privateRunnerCd.test(line) || privateRunnerPath.test(line))
+    );
+  }
+
+  const violations = [];
+  let heredocScope = null;
+  let heredocDelimiter = null;
+  let heredocHasRunnerCd = false;
+  for (const line of lines) {
+    if (heredocDelimiter !== null && line.trim() === heredocDelimiter) {
+      heredocScope = null;
+      heredocDelimiter = null;
+      heredocHasRunnerCd = false;
+      continue;
+    }
+
+    const heredoc = line.match(/<<-?\s*["']?([A-Za-z_][A-Za-z0-9_]*)["']?/);
+    if (heredoc && identityHeredocShell.test(line.slice(0, heredoc.index))) {
+      heredocScope = 'identity';
+      heredocDelimiter = heredoc[1];
+      heredocHasRunnerCd = false;
+    } else if (heredoc && rootHeredocShell.test(line.slice(0, heredoc.index))) {
+      heredocScope = 'root';
+      heredocDelimiter = heredoc[1];
+      heredocHasRunnerCd = false;
+    }
+    if (heredocScope !== null && scopedRunnerCd.test(line)) heredocHasRunnerCd = true;
+
+    if (/\bsudo\b[^\n]*(?:--chdir(?:=|\s)|\s-D(?:=|\s))/.test(line)) {
+      violations.push(`sudo chdir is not portable: ${line}`);
+    }
+    if (
+      userOwnedOperation.test(line) &&
+      !(heredocScope === 'identity' && heredocHasRunnerCd) &&
+      !hasInlineScopedDirectory(line, identityInlineShell, userOwnedOperation)
+    ) {
+      violations.push(`user-owned operation is not identity-scoped: ${line}`);
+    }
+    if (/\.\/svc\.sh\b/.test(line)) {
+      const svcIndex = line.search(/\.\/svc\.sh\b/);
+      if (
+        heredocScope === 'identity' ||
+        /(?:\bsudo\b[^\n]*\s-u\s+aic-runner\b|\brunuser\s+-u\s+aic-runner\b)/.test(
+          line.slice(0, svcIndex),
+        )
+      ) {
+        violations.push(`root-required svc operation claims aic-runner: ${line}`);
+      }
+      if (
+        !(heredocScope === 'root' && heredocHasRunnerCd) &&
+        !hasInlineScopedDirectory(line, rootInlineShell, /\.\/svc\.sh\b/)
+      ) {
+        violations.push(`svc operation is not scoped by a root shell: ${line}`);
+      }
+    }
+    if (
+      privateRunnerCd.test(line) &&
+      heredocScope === null &&
+      !identityInlineShell.test(line.slice(0, line.search(privateRunnerCd))) &&
+      !rootInlineShell.test(line.slice(0, line.search(privateRunnerCd)))
+    ) {
+      violations.push(`private runner directory uses an ordinary operator cd: ${line}`);
+    }
+  }
 
   assert.deepEqual(
-    operatorScopedEntries,
+    violations,
     [],
-    `installation, service, and removal commands must enter the private runner directory under aic-runner:\n${operatorScopedEntries.join('\n')}`,
+    `runner directory operations must use portable identity or root shells:\n${violations.join('\n')}`,
   );
 });
 
