@@ -10,7 +10,7 @@ cpus: 2
 memory: 4GiB
 disk: 30GiB
 
-# Plain mode disables the guest agent, mounts, port forwarding, and containerd.
+# Plain mode disables the guest agent, mounts, dynamic port forwarding, and containerd.
 plain: true
 mounts: []
 

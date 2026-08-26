@@ -36,8 +36,8 @@ later job.
 Run this block from the repository root on an Apple Silicon Mac. It installs
 Lima with Homebrew, starts the tracked ARM64 VM, downloads the current Linux
 ARM64 runner, verifies GitHub's published SHA-256 digest, and registers only
-this repository's label set. The registration token is one-time and is unset
-after configuration.
+this repository's label set. The registration token stays in a shell variable
+and is unset after configuration.
 
 ```bash
 set -euo pipefail
