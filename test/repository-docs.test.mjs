@@ -19,3 +19,9 @@ test('links the root README to the canonical architecture brief', () => {
   const readme = readFileSync(readmePath, 'utf8');
   assert.match(readme, /\[Architecture v1\]\(docs\/incident-commander-architecture-v1\.md\)/);
 });
+
+test('describes planned product behavior as design while implementation has not started', () => {
+  const readme = readFileSync(readmePath, 'utf8');
+  assert.match(readme, /AI Incident Commander is designed as a stateful investigation system/);
+  assert.match(readme, /\| Product implementation \| Not started \|/);
+});
