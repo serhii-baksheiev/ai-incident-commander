@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+
+# the tier the last close recorded
+.claude/queue.state.json
+# gate rounds, one count per branch
+.claude/gate-rounds.json
+# task worktrees
+.claude/worktrees/
+# the run journal's per-run trace
+.claude/runs/
