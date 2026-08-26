@@ -26,6 +26,8 @@ digest published with the GitHub release, register the repository-specific
 label, and install the runner as a user LaunchAgent.
 
 ```bash
+set -euo pipefail
+
 mkdir -p ~/actions-runner-ai-incident-commander
 cd ~/actions-runner-ai-incident-commander
 

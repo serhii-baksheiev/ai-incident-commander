@@ -65,6 +65,17 @@ test('documents the isolated runner installation and links it from the README', 
   const guide = readRequired(runnerGuidePath, 'RUNNER.md must document runner operations');
   const readme = readRequired(readmePath, 'README.md must remain available');
 
+  const installationBlock = guide.match(/## Installation[\s\S]*?```bash\n([\s\S]*?)\n```/)?.[1];
+  assert.notEqual(installationBlock, undefined, 'RUNNER.md must include a bash installation block');
+  const failFast = installationBlock.search(/^\s*set\s+(?:-[a-z]*e[a-z]*|-o\s+errexit)\b/im);
+  const checksum = installationBlock.indexOf('shasum -a 256 -c -');
+  const extraction = installationBlock.indexOf('tar xzf');
+  assert.equal(
+    failFast >= 0 && failFast < checksum && failFast < extraction,
+    true,
+    'runner installation must enable fail-fast before checksum verification and extraction',
+  );
+
   assert.match(guide, /~\/actions-runner-ai-incident-commander/);
   assert.match(guide, /https:\/\/github\.com\/serhii-baksheiev\/ai-incident-commander/);
   assert.match(guide, /--name\s+mac-arm64-01/);
