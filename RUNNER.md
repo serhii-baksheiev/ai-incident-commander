@@ -14,30 +14,35 @@ virtualization with these isolation settings:
 arch: aarch64
 plain: true
 mounts: []
+propagateProxyEnv: false
 ssh:
   loadDotSSHPubKeys: false
   forwardAgent: false
 ```
 
-Plain mode disables Lima's guest agent and host mounts. The guest therefore has
-its own home directory and credential store: pull-request code cannot read the
-host home or host credentials through a shared filesystem or forwarded SSH
-agent. The workflow preflight also refuses a job if a supported Lima host-share
-mount type is present at runtime.
+Plain mode disables Lima's guest agent and host mounts, and proxy environment
+propagation is disabled explicitly. Pull-request code therefore cannot read the
+host home, forwarded SSH agent, or host proxy credentials through these sharing
+paths. The workflow preflight fails closed if it cannot inspect mounts and
+refuses a job if a supported Lima host-share mount type is present at runtime.
+
+The VM does not isolate host network services: the guest can resolve
+`host.lima.internal`. Sensitive services on the macOS host must require
+authentication or be unreachable from the guest network.
 
 The VM and its runner workspace are persistent. Keep the repository private and
 do not allow untrusted users to open runnable pull requests. `contents: read`
-and `persist-credentials: false` restrict the job token; the VM boundary protects
-the macOS host, but it does not make secrets placed inside the guest safe from a
-later job.
+and `persist-credentials: false` restrict the job token. Jobs run as the dedicated
+non-sudo guest identity `aic-runner`; this reduces guest persistence and privilege
+but does not make secrets placed inside the guest safe from a later job.
 
 ## Installation
 
 Run this block from the repository root on an Apple Silicon Mac. It installs
 Lima with Homebrew, starts the tracked ARM64 VM, downloads the current Linux
 ARM64 runner, verifies GitHub's published SHA-256 digest, and registers only
-this repository's label set. The registration token stays in a shell variable
-and is unset after configuration.
+this repository's label set. The registration token is passed to `config.sh`
+and unset after configuration; the procedure does not write it to the repository.
 
 ```bash
 set -euo pipefail
@@ -66,16 +71,20 @@ registration_token=$4
 
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl git perl
-mkdir -p ~/actions-runner-ai-incident-commander
-cd ~/actions-runner-ai-incident-commander
+if ! id -u aic-runner >/dev/null 2>&1; then
+  sudo useradd --create-home --shell /bin/bash aic-runner
+fi
+runner_dir=/home/aic-runner/actions-runner-ai-incident-commander
+sudo -H -u aic-runner mkdir -p "$runner_dir"
+cd "$runner_dir"
 
-curl -fsSLO \
+sudo -H -u aic-runner curl -fsSLO \
   "https://github.com/actions/runner/releases/download/v${runner_version}/${runner_asset}"
 printf '%s  %s\n' "$runner_sha" "$runner_asset" | shasum -a 256 -c -
-tar xzf "$runner_asset"
-rm "$runner_asset"
+sudo -H -u aic-runner tar xzf "$runner_asset"
+sudo -H -u aic-runner rm "$runner_asset"
 
-./config.sh \
+sudo -H -u aic-runner ./config.sh \
   --url https://github.com/serhii-baksheiev/ai-incident-commander \
   --token "$registration_token" \
   --name linux-arm64-01 \
@@ -83,7 +92,7 @@ rm "$runner_asset"
   --work _work --unattended --replace
 unset registration_token runner_asset runner_sha runner_version
 
-sudo ./svc.sh install "$(id -un)"
+sudo ./svc.sh install aic-runner
 sudo ./svc.sh start
 sudo ./svc.sh status
 GUEST
@@ -98,7 +107,7 @@ limactl shell ai-incident-commander-runner -- uname -sm
 limactl shell ai-incident-commander-runner -- \
   bash -lc '! findmnt -rn -t virtiofs,9p,fuse.sshfs | grep -q .'
 limactl shell ai-incident-commander-runner -- \
-  bash -lc 'cd ~/actions-runner-ai-incident-commander && sudo ./svc.sh status'
+  bash -lc 'cd /home/aic-runner/actions-runner-ai-incident-commander && sudo ./svc.sh status'
 gh api /repos/serhii-baksheiev/ai-incident-commander/actions/runners \
   --jq '.runners[] | "\(.name) \(.status) busy=\(.busy) labels=\([.labels[].name] | join(","))"'
 ```
@@ -116,9 +125,9 @@ boundary: start the VM again, then systemd brings the installed service online.
 | --- | --- |
 | VM status | `limactl list ai-incident-commander-runner` |
 | Start VM | `limactl start ai-incident-commander-runner` |
-| Runner status | `limactl shell ai-incident-commander-runner -- bash -lc 'cd ~/actions-runner-ai-incident-commander && sudo ./svc.sh status'` |
-| Restart runner | `limactl shell ai-incident-commander-runner -- bash -lc 'cd ~/actions-runner-ai-incident-commander && sudo ./svc.sh stop && sudo ./svc.sh start'` |
-| Live logs | `limactl shell ai-incident-commander-runner -- bash -lc 'tail -f ~/actions-runner-ai-incident-commander/_diag/Runner_*.log'` |
+| Runner status | `limactl shell ai-incident-commander-runner -- bash -lc 'cd /home/aic-runner/actions-runner-ai-incident-commander && sudo ./svc.sh status'` |
+| Restart runner | `limactl shell ai-incident-commander-runner -- bash -lc 'cd /home/aic-runner/actions-runner-ai-incident-commander && sudo ./svc.sh stop && sudo ./svc.sh start'` |
+| Live logs | `limactl shell ai-incident-commander-runner -- bash -lc 'sudo tail -f /home/aic-runner/actions-runner-ai-incident-commander/_diag/Runner_*.log'` |
 | Stop VM | `limactl stop ai-incident-commander-runner` |
 
 To remove the runner, obtain a fresh removal token on the host, stop and
@@ -131,10 +140,10 @@ REMOVE_TOKEN=$(gh api --method POST \
   --jq .token)
 limactl shell ai-incident-commander-runner -- bash -s -- "$REMOVE_TOKEN" <<'GUEST'
 set -euo pipefail
-cd ~/actions-runner-ai-incident-commander
+cd /home/aic-runner/actions-runner-ai-incident-commander
 sudo ./svc.sh stop
 sudo ./svc.sh uninstall
-./config.sh remove --token "$1"
+sudo -H -u aic-runner ./config.sh remove --token "$1"
 GUEST
 unset REMOVE_TOKEN
 limactl stop ai-incident-commander-runner

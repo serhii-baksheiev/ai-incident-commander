@@ -30,6 +30,16 @@ jobs:
         shell: bash
         run: |
           missing=0
+
+          for tool in bash findmnt git id node uname; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf '%s: %s\n' "$tool" "$(command -v "$tool")"
+            else
+              printf '::error::%s is not installed on this runner\n' "$tool"
+              missing=1
+            fi
+          done
+
           runner_os=$(uname -s)
           runner_arch=$(uname -m)
           if [[ "$runner_os" != Linux ]]; then
@@ -41,20 +51,25 @@ jobs:
             missing=1
           fi
 
-          host_mounts=$(findmnt -rn -t virtiofs,9p,fuse.sshfs -o TARGET,SOURCE || true)
-          if [[ -n "$host_mounts" ]]; then
-            printf '::error::Lima host filesystem mount detected: %s\n' "$host_mounts"
+          runner_user=$(id -un)
+          if [[ "$runner_user" != aic-runner ]]; then
+            printf '::error::runner identity is %s, expected aic-runner\n' "$runner_user"
+            missing=1
+          fi
+          if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            printf '::error::runner identity has passwordless sudo\n'
             missing=1
           fi
 
-          for tool in bash git node; do
-            if command -v "$tool" >/dev/null 2>&1; then
-              printf '%s: %s\n' "$tool" "$(command -v "$tool")"
-            else
-              printf '::error::%s is not installed on this runner\n' "$tool"
+          if command -v findmnt >/dev/null 2>&1; then
+            if ! host_mounts=$(findmnt -rn -t virtiofs,9p,fuse.sshfs -o TARGET,SOURCE); then
+              printf '::error::failed to inspect Lima host filesystem mounts\n'
+              missing=1
+            elif [[ -n "$host_mounts" ]]; then
+              printf '::error::Lima host filesystem mount detected: %s\n' "$host_mounts"
               missing=1
             fi
-          done
+          fi
           exit "$missing"
 
       - name: Full test suite

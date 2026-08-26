@@ -13,6 +13,7 @@ disk: 30GiB
 # Plain mode disables the guest agent, mounts, dynamic port forwarding, and containerd.
 plain: true
 mounts: []
+propagateProxyEnv: false
 
 ssh:
   loadDotSSHPubKeys: false
