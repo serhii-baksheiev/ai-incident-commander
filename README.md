@@ -60,7 +60,7 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 | Area | Status |
 | --- | --- |
 | Architecture | **Frozen for v0.1 implementation** |
-| Repository and engineering guardrails | **Ready** |
+| Repository and engineering guardrails | Scaffolded; Definition-of-Done command gate not configured |
 | Product implementation | Not started |
 | Scaffold milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
 | Next implementation milestone | [AIC-3 — canonical domain types and IncidentState](https://sbaksheiev.atlassian.net/browse/AIC-3) |
@@ -91,7 +91,7 @@ datasets/scenarios        versioned replay fixtures
 incident-lab              isolated live incident environment
 ```
 
-The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph, tools, and evals depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.
+The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph and tools depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.
 
 ## Engineering workflow
 
