@@ -158,6 +158,11 @@ test('records the Agent Rig refresh final gate hold in the newest journal entry'
       label: 'pins the prior run evidence',
       pattern: /`\.claude\/runs\/20260827-rig-update-resume`/,
     },
+    {
+      label: 'records only the durable gate-report cost and does not estimate turn count',
+      pattern:
+        /durable gate reports: 4 \(1 premise, 3 reviewers\); exact test-writer\/subagent turn count was not retained and is not estimated; CI runs: 0; deploys: 0/,
+    },
   ];
   const problems = requiredEvidence
     .filter(({ pattern }) => !pattern.test(newestEntry))
@@ -165,6 +170,9 @@ test('records the Agent Rig refresh final gate hold in the newest journal entry'
 
   if (/(?:published[- ]tarball|npm publish|npm registry)/i.test(newestEntry)) {
     problems.push('must attribute 0.6.0 to the GitHub generator head, not a published tarball');
+  }
+  if (/(?:test-writer subagents:\s*1|premise\/reviewer subagents:\s*4)/i.test(newestEntry)) {
+    problems.push('must not present an inferred subagent count as durable evidence');
   }
 
   const historicalJournal = historicalEntries.join('### ');
