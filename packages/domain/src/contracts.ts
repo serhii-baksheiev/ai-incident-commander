@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import { INCIDENT_STATE_SCHEMA_VERSION, STATUS_RULES_VERSION } from './status-rules.js';
 
-const IdentifierSchema = z.string().min(1);
+const IdentifierSchema = z.string();
+const ContractStringSchema = z.string();
 const NonEmptyStringSchema = z.string().min(1);
 const StrengthSchema = z.enum(['high', 'medium', 'low']);
 
@@ -23,14 +24,14 @@ export const HypothesisStatusSchema = z.enum([
 
 export const HypothesisSchema = z.strictObject({
   id: IdentifierSchema,
-  statement: NonEmptyStringSchema,
+  statement: ContractStringSchema,
   createdBy: z.enum(['initial', 'challenge']),
 });
 
 export const PredictionSchema = z.strictObject({
   id: IdentifierSchema,
   hypothesisId: IdentifierSchema,
-  statement: NonEmptyStringSchema,
+  statement: ContractStringSchema,
   expectedIfTrue: z.array(ExpectedObservationSchema),
   expectedIfFalse: z.array(ExpectedObservationSchema),
   status: z.enum(['untested', 'confirmed', 'refuted', 'untestable']),
@@ -71,10 +72,10 @@ export const EvidenceSchema = z.strictObject({
     'runbook',
     'historical-incident',
   ]),
-  source: NonEmptyStringSchema,
-  observedAt: NonEmptyStringSchema,
-  statement: NonEmptyStringSchema,
-  rawRef: NonEmptyStringSchema,
+  source: ContractStringSchema,
+  observedAt: ContractStringSchema,
+  statement: ContractStringSchema,
+  rawRef: ContractStringSchema,
   reliability: StrengthSchema.optional(),
 });
 
@@ -85,18 +86,18 @@ export const EvidenceAssessmentSchema = z.strictObject({
   predictionId: IdentifierSchema.optional(),
   effect: z.enum(['supports', 'contradicts', 'neutral']),
   strength: StrengthSchema,
-  rationale: NonEmptyStringSchema,
+  rationale: ContractStringSchema,
   producedBy: z.enum(['rule', 'llm']),
-  promptVersion: NonEmptyStringSchema.optional(),
-  at: NonEmptyStringSchema,
+  promptVersion: ContractStringSchema.optional(),
+  at: ContractStringSchema,
 });
 
 export const CauseClaimSchema = z.strictObject({
   hypothesisId: IdentifierSchema,
   cause: z.strictObject({
-    component: NonEmptyStringSchema,
-    mechanism: NonEmptyStringSchema,
-    trigger: NonEmptyStringSchema.optional(),
+    component: ContractStringSchema,
+    mechanism: ContractStringSchema,
+    trigger: ContractStringSchema.optional(),
   }),
   evidenceIds: z.array(IdentifierSchema),
 });
