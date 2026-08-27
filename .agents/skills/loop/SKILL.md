@@ -39,6 +39,28 @@ node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies, o
   (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and never from a file in the
   repo; the project or the JQL goes in `.claude/queue.json`.
 
+A config may declare several boards (`boards: { <name>: options }` plus a
+default `board`); the active one is chosen per checkout, not by editing the
+composed file:
+
+```bash
+node .claude/scripts/queue/index.mjs board        # the active board and the declared ones
+node .claude/scripts/queue/index.mjs board RP     # switch this checkout: writes .claude/queue.board
+```
+
+The selector is per-checkout runtime state, the same class as
+`.claude/queue.state.json`: it needs its own `.gitignore` line, which a generated
+project ships and an `init`-installed rig adds by hand. An undeclared name is
+refused, never read as "no board" (see `test/template/queue-board.test.ts` ›
+"refuses a board nobody declared instead of falling back" — in the generator,
+absent in a generated rig). It is a rulebook path for `guard-rulebook`:
+`.claude/queue.board` is refused even when an item allow-list names it,
+and the `board` command itself refuses a switch while the checkout is unattended. This
+does not prevent an arbitrary direct shell write to the selector — edit-tool
+hooks cannot see one. `.claude/queue.state.json` stays per config, not per board:
+the tier the last close recorded rations the next selection whichever board it
+lands on.
+
 Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
 decision and each adapter only maps its tracker's records onto the neutral shape.
 
@@ -86,6 +108,32 @@ everything that already happened — so this goes in preflight or not at all:
 export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
+
+⚠ **That export reaches the commands THIS shell runs and nothing else.** A
+`PreToolUse` hook is spawned by the harness with the harness's own environment,
+never with a variable the session exported — pinned in the generator's
+`test/template/guard-rulebook.test.ts` (absent in a generated rig) › "only a
+flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
+and in some harnesses the export does not even survive to the next Bash call,
+which is why every command in this skill can also take the run directory per
+invocation. What a hook CAN see is a file, so the unattended signal is one:
+
+```bash
+# at claim time, from the paths the item names (repo-relative prefixes, with
+# their trailing slash); the guard refuses every other rulebook edit while it is on
+node .claude/scripts/unattended-flag.mjs on --root "$PWD" --item <item-id> --run-dir "$RIG_RUN_DIR" --allow <prefix> [<prefix>…]
+```
+
+`guard-rulebook` reads it (`.claude/rules/autonomy.md`, "Never"): with the flag
+on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under the generated
+rulebook — both harnesses' rules, skills, agents and hook wiring, plus their
+scripts, queue config and integrity manifest — is refused unless its
+path starts with an allowed prefix; the board selector is the one always-refused
+exception and cannot be admitted by an allow-list. With no flag the guard does nothing. An
+item that needs a rulebook path names it here — a decision made at claim
+time, never a default — and the stop step below turns the flag off. Pinned in
+the generator's `test/template/guard-rulebook.test.ts` — absent in a generated
+rig — › "blocks a hook-config edit with an empty allow-list, naming path, item and the rule".
 
 ⚠ **The export outlives the run's own calls.** Everything the session spawns
 inherits it — and a test suite that spawns the queue CLI would write fixture
@@ -688,6 +736,23 @@ If no run directory was declared, there is nothing to close and this step is
 skipped — say so in the journal entry rather than leaving the reader to guess
 which of the two happened.
 
+**And turn the unattended flag off** — it outlives the run otherwise, and the
+next attended session would find its rulebook edits refused in the name of an
+item nobody is working:
+
+```bash
+node .claude/scripts/unattended-flag.mjs off --root "$PWD"
+```
+
+If that command reports a legacy machine-wide flag, it deliberately leaves a
+foreign pre-upgrade authorization in place and the checkout stays fail-closed.
+Inspect the exact reported record and confirm that no pre-upgrade run still uses
+it, then remove only that record with
+`node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>`.
+Run scoped `off --root "$PWD"` again to surface the next record, and repeat the
+inspection one at a time; do not record the flag as off until the scoped command
+succeeds.
+
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an
 unbounded improvement list is another diary, and three forces a choice. Each names
@@ -713,12 +778,41 @@ node --input-type=module -e '
     part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
     change:  "<concretely enough to diff>",
     proof:   "<the observation that would differ next run>",
-  }, { project: "<KEY>" }));   // jira only — the project key from .claude/queue.json;
+    // a pair: what the probe touched, and what is concluded from it. The
+    // mechanism accepts a proposal without them; this procedure does not.
+    measured: "<the paths the probe actually exercised>",
+    inferred: "<the conclusion, citing only surfaces named in measured>",
+  }, { project: "<KEY>" }));   // jira only — the ACTIVE board's key: `queue/index.mjs board --json` → options.project;
                                // plan-md and github-issues take no second argument
 '
 ```
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
+
+**A finding can say what it measured and what it inferred, as two paired fields**
+(AR-142). A proposal whose premise was never true had no check at filing, only at
+take-up — AR-124 was filed, promoted and claimed before its platform conclusion
+was traced to a probe that had touched one hook. So `measured` and `inferred`
+are separate, and `validateProposal` refuses an `inferred` that cites a path
+`measured` does not, naming both fields and the path; one field without the
+other is refused too, and neither files as before. The surface is a cited path
+(`citedPathsOf`), so a conclusion that names no path passes this check — it
+catches the path-shaped overreach and nothing subtler.
+
+⚠ **The pair is how a proposal opts into the check, and a proposal filed without
+it is not checked at all** — `validateProposal` keeps the four-part contract, so
+the AR-124 shape with neither field still files as it always did. That is the
+stated limit, not an oversight: making the fields mandatory would refuse every
+proposal the three adapters already file, and the loop is the author this rule
+is for. So **every proposal this loop files carries both fields** — the snippet
+above supplies them, and a stop that cannot say what it measured has nothing
+to propose. A reviewer reading a filed proposal without the pair reads a
+proposal that skipped this procedure. Pinned in the generator's
+`test/template/queue.test.ts` — absent in a generated rig — › "refuses a
+proposal whose inference names a surface its measurement did not touch", ›
+"files a proposal whose inference stays inside what it measured", › "refuses one
+of the two fields without the other" and › "a proposal with neither field files
+as today".
 
 **The filed item also records the commit it was measured against** — an `asOf:`
 line, HEAD of this checkout unless the call passes its own `asOf` (`null` files
@@ -791,7 +885,7 @@ three poisons the only channel by which this project learns.
   validation and its take-up — an adapter re-records the take-up after each
   write of its own (§2, AR-140), so a comment posted after BEFORE_PR does not
   hold the close; pinned in the generator's
-  `test/template/self-inflicted-marker.test.ts` › "continues when the run’s own
+  `test/template/self-inflicted-marker.test.ts` (absent in a generated rig) › "continues when the run’s own
   write moved the marker after the last validation" — and its
   state against the `in-progress` a close expects, journals one `revalidation`
   event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
@@ -802,7 +896,7 @@ three poisons the only channel by which this project learns.
   and reads a hold as a stop" and › "re-reads each dependant's state, and names
   one the tracker no longer offers". On a `github-issues` queue that list is
   empty: a single `gh issue view` carries no cross-index, so `find` answers no
-  `blocks` there (`test/template/close-transitioned.test.ts` › "github asks `gh
+  `blocks` there (`test/template/close-transitioned.test.ts` (absent in a generated rig) › "github asks `gh
   issue view` with the full field list and maps CLOSED to closed"). A
   hold (exit 2) stops the close: re-read the item, record the outcome with
   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_CLOSE --ticket
@@ -814,7 +908,7 @@ three poisons the only channel by which this project learns.
   `true` says the close landed, because every adapter reads the item back after
   the transition — `jira` the status category after the POST, `github-issues`
   `gh issue view --json state`, `plan-md` the line being there and then gone
-  (the generator's `test/template/close-transitioned.test.ts` › "GETs the issue
+  (the generator's `test/template/close-transitioned.test.ts` (absent in a generated rig) › "GETs the issue
   status after the transition POST and reports transitioned: true when the
   category is done", › "runs `issue view <id> --json state` after `issue close`
   and reports transitioned: true on CLOSED", › "reports transitioned: true once

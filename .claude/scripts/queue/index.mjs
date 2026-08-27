@@ -6,12 +6,13 @@
 //   node .claude/scripts/queue/index.mjs list            # every item, with skip reasons
 //   node .claude/scripts/queue/index.mjs hygiene         # stale labels, link anomalies, overtaken proposals
 //   node .claude/scripts/queue/index.mjs gate-round --branch <b>   # count a gate round
+//   node .claude/scripts/queue/index.mjs board [<name>]       # the active board; or switch this checkout to <name>
 //
 // The adapter comes from `.claude/queue.json` (`{"adapter": "plan-md"}`) and
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -48,7 +49,7 @@ export const resolveAdapter = async (adapterName) => {
   return import(new URL(modulePath, import.meta.url).href);
 };
 
-export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round'];
+export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round', 'board'];
 
 /**
  * A missing config is the normal state of a fresh project. A config that exists
@@ -63,8 +64,9 @@ export const loadConfig = (configPath) => {
   } catch {
     return {};
   }
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
       `${configPath} exists but is not valid JSON, so the configured queue cannot be ` +
@@ -73,6 +75,83 @@ export const loadConfig = (configPath) => {
       { cause: error },
     );
   }
+  return resolveBoard(parsed, configPath);
+};
+
+/**
+ * The selector that travels with a config: `<name>.json` → `<name>.board`.
+ *
+ * A plain-text file holding one board name. Same class as the state file — a
+ * per-checkout runtime value that must never be committed, because the config it
+ * sits beside is composed and tracked. Derived from the config path for the same
+ * reason `statePathFor` is: a run pointed at a temp config must not switch on
+ * this checkout's real selector.
+ */
+export const boardPathFor = (configPath) => configPath.replace(/(\.json)?$/, '.board');
+
+const isTerminalControl = (char) => {
+  const code = char.codePointAt(0);
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+};
+
+const assertSafeBoardName = (name, source) => {
+  if (typeof name === 'string' && [...name].some(isTerminalControl)) {
+    throw new Error(`${source}: board names must not contain terminal control characters.`);
+  }
+};
+
+const boardNamesOf = (boards, configPath) => {
+  const names = Object.keys(boards);
+  for (const name of names) assertSafeBoardName(name, configPath);
+  return names;
+};
+
+/**
+ * A config may declare several boards and one default:
+ *
+ *   { "adapter": "jira", "board": "AR",
+ *     "boards": { "AR": { "project": "AR", "owner": "x" }, "RP": { … } },
+ *     "options": { "maxGateRounds": 3 } }
+ *
+ * The active board is the selector file if present, else `board`; its entry is
+ * laid over `options`, so a key every board shares stays in `options` and only
+ * what differs is per board. A config with no `boards` is returned exactly as it
+ * was. A name nobody declared — in the selector or as the default — is refused,
+ * never read as "no board": the loop would otherwise run on the shared options
+ * alone, and for `jira` that is a different (or no) project.
+ */
+export const resolveBoard = (config, configPath) => {
+  if (config?.boards === undefined) return config;
+  const boards = config.boards;
+  if (boards === null || typeof boards !== 'object' || Array.isArray(boards)) {
+    throw new Error(`${configPath}: "boards" must be an object of <name> → options.`);
+  }
+  const known = boardNamesOf(boards, configPath);
+  let selected = null;
+  let source = 'the "board" key';
+  try {
+    selected = readFileSync(boardPathFor(configPath), 'utf8').trim();
+    source = boardPathFor(configPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+  }
+  // A selector that exists but is empty is refused, not read as "no selector":
+  // a truncated write would otherwise switch the run to the default board while
+  // the file still looks like a choice somebody made.
+  const active = selected === null ? config.board : selected;
+  assertSafeBoardName(active, source);
+  if (!active || !known.includes(active)) {
+    throw new Error(
+      `${source} names board ${JSON.stringify(active ?? null)}, which ${configPath} does not ` +
+        `declare. Declared boards: ${known.join(', ')}. Refusing rather than running on the ` +
+        'shared options alone — that would be a different queue than the one configured.',
+    );
+  }
+  const entry = boards[active];
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new Error(`${configPath}: boards.${active} must be an object of adapter options.`);
+  }
+  return { ...config, board: active, options: { ...(config.options ?? {}), ...entry } };
 };
 
 /**
@@ -222,11 +301,12 @@ export const loadState = (statePath) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null };
+  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--config') args.config = argv[++i];
     else if (argv[i] === '--branch') args.branch = argv[++i];
+    else if (!argv[i].startsWith('--') && args.name === null) args.name = argv[i];
   }
   return args;
 };
@@ -286,6 +366,66 @@ if (invokedDirectly()) {
         "the adapter's own API — import the adapter module rather than this CLI.\n",
     );
     process.exit(1);
+  }
+
+  // `board` is local too: it reads the config and writes the selector beside it,
+  // and never touches the tracker. Switching is refused on a config that declares
+  // no boards — the selector would then be a file nothing reads.
+  if (args.command === 'board') {
+    try {
+      // Resolve before deriving either the checkout root or the selector path.
+      // Otherwise a symlinked `.claude` lets the caller authorize one checkout
+      // while the write follows the link into another unattended checkout.
+      const configPath = realpathSync(args.config ?? join(projectRoot, '.claude', 'queue.json'));
+      const raw = JSON.parse(readFileSync(configPath, 'utf8'));
+      if (raw?.boards === undefined) {
+        throw new Error(`${configPath} declares no boards, so there is nothing to switch between.`);
+      }
+      if (raw.boards === null || typeof raw.boards !== 'object' || Array.isArray(raw.boards)) {
+        throw new Error(`${configPath}: "boards" must be an object of <name> → options. Nothing was written.`);
+      }
+      const boardNames = boardNamesOf(raw.boards, configPath);
+      if (args.name !== null) {
+        assertSafeBoardName(args.name, 'the requested board');
+        if (!boardNames.includes(args.name)) {
+          throw new Error(
+            `${JSON.stringify(args.name)} is not a declared board. Declared: ` +
+            `${boardNames.join(', ')}. Nothing was written.`,
+          );
+        }
+        // Loaded only on the mutation path. `next`, `list` and `hygiene` also
+        // run in partial-install diagnostics where this sibling is deliberately
+        // absent; a static import would replace their own actionable refusal
+        // with ERR_MODULE_NOT_FOUND before the command could start.
+        const { readUnattended } = await import('../unattended-flag.mjs');
+        const callerRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const targetRoot = projectRootOfConfig(configPath) ?? callerRoot;
+        const guardedRoots = [...new Set([callerRoot, targetRoot])];
+        const unattended = guardedRoots
+          .map((root) => ({ root, mode: readUnattended({ ...process.env, CLAUDE_PROJECT_DIR: root }) }))
+          .find(({ mode }) => mode.on);
+        if (unattended) {
+          throw new Error(
+            `board switching is refused while checkout ${unattended.root} is unattended. ` +
+              'The read-only `board` report remains available; disarm the loop before re-aiming its queue.',
+          );
+        }
+        writeFileSync(boardPathFor(configPath), `${args.name}\n`);
+      }
+      const config = loadConfig(configPath);
+      const report = { board: config.board, boards: boardNames, options: config.options };
+      process.stdout.write(
+        args.json
+          ? `${JSON.stringify(report)}\n`
+          : `board: ${report.board}${args.name !== null ? ' (switched)' : ''}\n` +
+              `  declared: ${report.boards.join(', ')}\n` +
+              `  selector: ${boardPathFor(configPath)}\n`,
+      );
+      process.exit(0);
+    } catch (error) {
+      process.stderr.write(`board could not run: ${error.message}\n`);
+      process.exit(1);
+    }
   }
 
   // 🔴 **`gate-round` returns before the tracker is ever touched, and that is
