@@ -113,6 +113,20 @@ test('round-trips every canonical contract through public schemas', () => {
   }
 });
 
+test('preserves frozen string fields without relaxing assumed non-empty names', () => {
+  assert.equal(domain.ToolIdSchema.safeParse('').success, false);
+  assert.equal(domain.InvestigationPhaseSchema.safeParse('').success, false);
+  assert.equal(
+    domain.HypothesisSchema.safeParse({
+      id: '',
+      statement: '',
+      createdBy: 'initial',
+    }).success,
+    true,
+    'Hypothesis id and statement are frozen as string, not non-empty string',
+  );
+});
+
 test('keeps frozen contract shapes exact', () => {
   const probes = [
     ['hypothesis', (candidate) => (candidate.hypotheses[0].extra = true)],
