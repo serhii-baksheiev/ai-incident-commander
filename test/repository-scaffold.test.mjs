@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -153,6 +153,16 @@ function probeDomainJson(pathFromDomain, mutate) {
     const value = JSON.parse(readFileSync(path, 'utf8'));
     mutate(value);
     writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+    return runNpm(['run', '--silent', 'lint'], fixtureRoot);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+function probeBoundaryMutation(mutate) {
+  const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();
+  try {
+    mutate(fixtureRoot);
     return runNpm(['run', '--silent', 'lint'], fixtureRoot);
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
@@ -523,6 +533,213 @@ test('boundary lint rejects optional require.resolve', () => {
     result.status,
     0,
     `npm run lint accepted optional require.resolve\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects an aliased eval loader', () => {
+  const result = probeDomainSource(
+    'const execute = eval; export const loadGraph = () => execute(\'import("@aic/graph")\');\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted an eval alias\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects globalThis eval', () => {
+  const result = probeDomainSource(
+    'export const loadGraph = () => globalThis.eval(\'import("@aic/graph")\');\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted globalThis.eval\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects an aliased Function loader', () => {
+  const result = probeDomainSource(
+    'const BuildLoader = Function; export const loadGraph = BuildLoader(\'return import("@aic/graph")\');\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a Function alias\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects createRequire loaders', () => {
+  const result = probeDomainSource(
+    [
+      'import { createRequire } from "node:module";',
+      'const load = createRequire(import.meta.url);',
+      'export const graph = load("@aic/graph");',
+      '',
+    ].join('\n'),
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted createRequire\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects aliased createRequire loaders', () => {
+  const result = probeDomainSource(
+    [
+      'import { createRequire as makeRequire } from "node:module";',
+      'const load = makeRequire(import.meta.url);',
+      'export const graph = load("@aic/graph");',
+      '',
+    ].join('\n'),
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted an aliased createRequire\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects an indirect require loader', () => {
+  const result = probeDomainSource(
+    'const load = require; export const graph = load("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted an indirect require alias\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint scans nested source directories named dist', () => {
+  const result = probeBoundaryMutation((fixtureRoot) => {
+    const escapePath = resolve(fixtureRoot, 'packages/domain/src/dist/escape.mjs');
+    mkdirSync(dirname(escapePath), { recursive: true });
+    writeFileSync(escapePath, 'import "@aic/graph";\n');
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint skipped packages/domain/src/dist/escape.mjs\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects TypeScript import types from graph', () => {
+  const result = probeDomainSource(
+    'export type GraphModule = typeof import("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a TSImportType dependency on graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects TypeScript paths into graph', () => {
+  const result = probeDomainJson('tsconfig.json', (configuration) => {
+    configuration.compilerOptions.paths = {
+      ...configuration.compilerOptions.paths,
+      '#graph-types': ['../graph/src/index.ts'],
+    };
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted compilerOptions.paths -> ../graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint resolves TypeScript paths from baseUrl', () => {
+  const result = probeDomainJson('tsconfig.json', (configuration) => {
+    configuration.compilerOptions.baseUrl = 'src';
+    configuration.compilerOptions.paths = {
+      ...configuration.compilerOptions.paths,
+      '#graph-types': ['../../graph/src/index.ts'],
+    };
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a baseUrl-relative path into graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects an absolute file dependency alias to graph', () => {
+  const result = probeBoundaryMutation((fixtureRoot) => {
+    const manifestPath = resolve(fixtureRoot, 'packages/domain/package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.dependencies = {
+      ...manifest.dependencies,
+      'graph-alias': `file:${resolve(fixtureRoot, 'packages/graph')}`,
+    };
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted an absolute file: alias to graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects an absolute project reference to graph', () => {
+  const result = probeBoundaryMutation((fixtureRoot) => {
+    const configurationPath = resolve(fixtureRoot, 'packages/domain/tsconfig.json');
+    const configuration = JSON.parse(readFileSync(configurationPath, 'utf8'));
+    configuration.references = [
+      ...(configuration.references ?? []),
+      { path: resolve(fixtureRoot, 'packages/graph') },
+    ];
+    writeFileSync(configurationPath, `${JSON.stringify(configuration, null, 2)}\n`);
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted an absolute tsconfig reference to graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects a file URL source import from graph', () => {
+  const result = probeBoundaryMutation((fixtureRoot) => {
+    const specifier = pathToFileURL(resolve(fixtureRoot, 'packages/graph/src/index.js')).href;
+    writeFileSync(
+      resolve(fixtureRoot, 'packages/domain/__boundary_probe__.ts'),
+      `import ${JSON.stringify(specifier)};\n`,
+    );
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a file URL import from graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('round-two boundary lint rejects an absolute source import from graph', () => {
+  const result = probeBoundaryMutation((fixtureRoot) => {
+    const specifier = resolve(fixtureRoot, 'packages/graph/src/index.js');
+    writeFileSync(
+      resolve(fixtureRoot, 'packages/domain/__boundary_probe__.ts'),
+      `import ${JSON.stringify(specifier)};\n`,
+    );
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted an absolute import from graph\n${commandDiagnostics('npm run lint', result)}`,
   );
 });
 
