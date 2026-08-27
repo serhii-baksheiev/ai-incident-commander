@@ -159,9 +159,9 @@ test('records the Agent Rig refresh final gate hold in the newest journal entry'
       pattern: /`\.claude\/runs\/20260827-rig-update-resume`/,
     },
     {
-      label: 'records only the durable gate-report cost and does not estimate turn count',
+      label: 'distinguishes durable gate inputs from the final pr-ship aggregate',
       pattern:
-        /durable gate reports: 4 \(1 premise, 3 reviewers\); exact test-writer\/subagent turn count was not retained and is not estimated; CI runs: 0; deploys: 0/,
+        /durable gate input reports: 4 \(1 premise, 3 reviewers\); final pr-ship aggregate report: 1; exact test-writer\/subagent turn count was not retained and is not estimated; CI runs: 0; deploys: 0/,
     },
   ];
   const problems = requiredEvidence
@@ -173,6 +173,9 @@ test('records the Agent Rig refresh final gate hold in the newest journal entry'
   }
   if (/(?:test-writer subagents:\s*1|premise\/reviewer subagents:\s*4)/i.test(newestEntry)) {
     problems.push('must not present an inferred subagent count as durable evidence');
+  }
+  if (/durable gate reports:\s*4\b/i.test(newestEntry)) {
+    problems.push('must not conflate gate inputs with the final pr-ship aggregate');
   }
 
   const historicalJournal = historicalEntries.join('### ');
