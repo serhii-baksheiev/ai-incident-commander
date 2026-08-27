@@ -85,7 +85,13 @@ test('preserves the final AIC-2 retry gate stop in its historical journal entry'
 
 test('records the completed AIC-2 delivery before the preserved layered-boundary hold', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, deliveryEntry, layeredHoldEntry] = journal.split(/^### /m);
+  const entries = journal.split(/^### /m).slice(1);
+  const deliveryIndex = entries.findIndex((entry) =>
+    entry.startsWith('AIC-2 delivered; first implementation milestone unblocked'),
+  );
+  assert.notEqual(deliveryIndex, -1, 'the completed AIC-2 delivery must remain present');
+  const deliveryEntry = entries[deliveryIndex];
+  const layeredHoldEntry = entries[deliveryIndex + 1];
 
   assert.match(deliveryEntry, /^AIC-2 .*?(?:completed|delivered|shipped).*$/mi);
   assert.match(deliveryEntry, /\bPR #12\b/);
@@ -108,6 +114,45 @@ test('records the completed AIC-2 delivery before the preserved layered-boundary
     createHash('sha256').update(historicalJournal).digest('hex'),
     '099241784f51508256c57f6c213135afcaddb884026893331fe48cda5d2a94e7',
     'the prior layered-boundary hold and all older journal history must remain byte-for-byte',
+  );
+});
+
+test('records the AIC-3 documented stall before preserving all prior journal history', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, newestEntry] = journal.split(/^### /m);
+
+  assert.match(newestEntry, /^AIC-3 .*documented stall.*$/mi);
+  assert.match(newestEntry, /draft PR #14/);
+  assert.match(newestEntry, /\b41a1d086adfcd1206ae9d9eb2356db2bbd0bd832\b/);
+  assert.match(newestEntry, /exact-head CI run `33093318617`[^\n]*succeeded/i);
+  assert.match(newestEntry, /AIC-3[^\n]*`In Progress`[^\n]*`escalated`/);
+  assert.match(newestEntry, /AIC-4[^\n]*remains blocked/i);
+  assert.match(
+    newestEntry,
+    /gate-round cap[^\n]*exhausted after two permitted rounds/i,
+  );
+  assert.match(
+    newestEntry,
+    /round-2 finding[^\n]*fixed[^\n]*no final exact-head reviewer rerun/i,
+  );
+  assert.match(newestEntry, /Jira escalation comment `14832`/);
+  assert.match(newestEntry, /no merge[^\n]*not `Done`[^\n]*nothing (?:was )?unblocked/i);
+  assert.doesNotMatch(newestEntry, /(?:merged|merge commit)[^\n]*PR #14/i);
+  assert.doesNotMatch(newestEntry, /AIC-3[^\n]*(?:is|moved to|transitioned to) `Done`/i);
+  assert.doesNotMatch(newestEntry, /AIC-4[^\n]*unblocked/i);
+  assert.match(
+    newestEntry,
+    /test-writer: 1 agent \/ 4 Red passes; reviewer subagent runs: 5; CI runs: 1; deploys: 0/,
+  );
+  assert.match(newestEntry, /`\.claude\/runs\/20260827-aic3-domain-types`/);
+
+  const historicalMarker = '### AIC-2 delivered; first implementation milestone unblocked';
+  const historicalOffset = journal.indexOf(historicalMarker);
+  const historicalJournal = journal.slice(historicalOffset);
+  assert.equal(
+    createHash('sha256').update(historicalJournal).digest('hex'),
+    '60cf9666abce33493ae89c77558b3d5dff8bb289c0b27b7e5ac24b14facccb7a',
+    'the entire journal body that preceded the AIC-3 entry must remain byte-for-byte',
   );
 });
 
