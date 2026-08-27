@@ -160,10 +160,25 @@ const boundaryProbes = [
   },
   {
     name: 'rejects a domain dependency value that points into graph',
-    mutate: (fixtureRoot) =>
-      mutateJson(resolve(fixtureRoot, 'packages/domain/package.json'), (manifest) => {
-        manifest.dependencies = { ...manifest.dependencies, 'graph-alias': 'file:../graph' };
-      }),
+    cases: [
+      {
+        value: 'file:../graph',
+        mutate: (fixtureRoot) =>
+          mutateJson(resolve(fixtureRoot, 'packages/domain/package.json'), (manifest) => {
+            manifest.dependencies = { ...manifest.dependencies, 'graph-alias': 'file:../graph' };
+          }),
+      },
+      {
+        value: 'npm:@aic/graph@0.0.0',
+        mutate: (fixtureRoot) =>
+          mutateJson(resolve(fixtureRoot, 'packages/domain/package.json'), (manifest) => {
+            manifest.dependencies = {
+              ...manifest.dependencies,
+              'graph-alias': 'npm:@aic/graph@0.0.0',
+            };
+          }),
+      },
+    ],
   },
   {
     name: 'rejects a domain imports-map entry that points to tools',
@@ -299,12 +314,16 @@ test('boots the minimal CLI through its public root command', () => {
 
 for (const probe of boundaryProbes) {
   test(`lint ${probe.name}`, () => {
-    const result = runBoundaryProbe(probe.mutate);
+    const cases = probe.cases ?? [{ value: probe.name, mutate: probe.mutate }];
 
-    assert.notEqual(
-      result.status,
-      0,
-      `npm run lint accepted the closed-list probe: ${probe.name}\n${commandDiagnostics('npm run lint', result)}`,
-    );
+    for (const boundaryCase of cases) {
+      const result = runBoundaryProbe(boundaryCase.mutate);
+
+      assert.notEqual(
+        result.status,
+        0,
+        `npm run lint accepted the closed-list probe: ${probe.name} (${boundaryCase.value})\n${commandDiagnostics('npm run lint', result)}`,
+      );
+    }
   });
 }

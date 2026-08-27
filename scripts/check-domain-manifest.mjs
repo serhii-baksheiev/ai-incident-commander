@@ -11,7 +11,7 @@ const dependencySections = [
   'optionalDependencies',
   'peerDependencies',
 ];
-const forbiddenPackage = /^(?:@aic\/(?:graph|tools)(?:\/|$)|langchain(?:\/|$)|@langchain\/)/;
+const forbiddenPackage = /^(?:@aic\/(?:graph|tools)(?:\/|@|$)|langchain(?:\/|$)|@langchain\/)/;
 const localProtocol = /^(?:file|link|workspace):(.+)$/;
 const forbiddenRoots = [resolve(projectRoot, 'packages/graph'), resolve(projectRoot, 'packages/tools')];
 
