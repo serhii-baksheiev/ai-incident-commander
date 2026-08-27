@@ -83,9 +83,41 @@ test('preserves the final AIC-2 retry gate stop in its historical journal entry'
   assert.match(retryEntry, /deployment API objects created: 1[^\n]*deploy executions: 0/);
 });
 
-test('records the AIC-2 layered-boundary retry hold in the newest journal entry', () => {
+test('records the completed AIC-2 delivery before the preserved layered-boundary hold', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, newestEntry] = journal.split(/^### /m);
+  const [, deliveryEntry, layeredHoldEntry] = journal.split(/^### /m);
+
+  assert.match(deliveryEntry, /^AIC-2 .*?(?:completed|delivered|shipped).*$/mi);
+  assert.match(deliveryEntry, /\bPR #12\b/);
+  assert.match(deliveryEntry, /\b2bed4f019cce9b448cc38daf6d1d3b896c9d9c7d\b/);
+  assert.match(
+    deliveryEntry,
+    /exact-head post-merge CI run `33088043337`[^\n]*(?:success|succeeded)/i,
+  );
+  assert.match(deliveryEntry, /AIC-2[^\n]*`Done`/);
+  assert.match(deliveryEntry, /AIC-3[^\n]*unblocked[^\n]*`To Do`/i);
+  assert.match(
+    layeredHoldEntry,
+    /^AIC-2 layered-boundary retry held and escalated at architecture review$/m,
+  );
+
+  const historicalMarker = '### AIC-2 layered-boundary retry held and escalated at architecture review';
+  const historicalOffset = journal.indexOf(historicalMarker);
+  const historicalJournal = journal.slice(historicalOffset);
+  assert.equal(
+    createHash('sha256').update(historicalJournal).digest('hex'),
+    '099241784f51508256c57f6c213135afcaddb884026893331fe48cda5d2a94e7',
+    'the prior layered-boundary hold and all older journal history must remain byte-for-byte',
+  );
+});
+
+test('preserves the AIC-2 layered-boundary retry hold in its historical journal entry', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, ...entries] = journal.split(/^### /m);
+  const newestEntry = entries.find((entry) =>
+    entry.startsWith('AIC-2 layered-boundary retry held and escalated at architecture review'),
+  );
+  assert.notEqual(newestEntry, undefined, 'the layered-boundary HOLD must remain present');
   const requiredEvidence = [
     {
       label: 'uses an AIC-2 layered-boundary retry heading',
