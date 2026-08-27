@@ -60,9 +60,10 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 | Area | Status |
 | --- | --- |
 | Architecture | **Frozen for v0.1 implementation** |
-| Repository and engineering guardrails | Initialized |
+| Repository and engineering guardrails | **Ready** |
 | Product implementation | Not started |
-| Current implementation milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
+| Scaffold milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
+| Next implementation milestone | [AIC-3 — canonical domain types and IncidentState](https://sbaksheiev.atlassian.net/browse/AIC-3) |
 
 The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
 
@@ -75,7 +76,7 @@ The architecture freeze means structural changes must be justified by benchmark 
 | [Journal](journal/README.md) | Human-readable run history and journal conventions |
 | [Self-hosted runner](RUNNER.md) | Linux ARM64 CI VM on an Apple Silicon macOS host, security boundary, and operations |
 
-## Planned repository shape
+## Repository shape
 
 ```text
 apps/cli                  command-line entrypoint
@@ -90,10 +91,18 @@ datasets/scenarios        versioned replay fixtures
 incident-lab              isolated live incident environment
 ```
 
-The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph, tools, and evals depend on the domain rather than the reverse.
+The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph, tools, and evals depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.
 
 ## Engineering workflow
 
 Work is tracked in the [AIC Jira project](https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards) and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
 
-Until the scaffold milestone lands, this repository intentionally publishes no install, build, or run command. The commands documented here should always describe an executable repository rather than a planned one.
+From a clean checkout:
+
+```bash
+npm ci
+npm run lint
+npm run build
+npm test
+npm run cli -- --help
+```
