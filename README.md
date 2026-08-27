@@ -61,7 +61,7 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 | --- | --- |
 | Architecture | **Frozen for v0.1 implementation** |
 | Repository and engineering guardrails | Scaffolded; Definition-of-Done command gate not configured |
-| Product implementation | Canonical domain contracts implemented; graph behavior not started |
+| Product implementation | Canonical domain contracts implemented — see [`round-trips every canonical contract through public schemas`](test/domain-contract.test.mjs); graph behavior not started |
 | Scaffold milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
 | Completed implementation milestone | [AIC-3 — canonical domain types and IncidentState](https://sbaksheiev.atlassian.net/browse/AIC-3) |
 | Next implementation milestone | [AIC-4 — persistent checkpointer and kill/resume](https://sbaksheiev.atlassian.net/browse/AIC-4) |
