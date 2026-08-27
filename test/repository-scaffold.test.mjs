@@ -136,6 +136,27 @@ function probeForbiddenDomainImport(specifier) {
   }
 }
 
+function probeDomainSource(source) {
+  const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();
+  try {
+    writeFileSync(resolve(fixtureRoot, 'packages/domain/__boundary_probe__.ts'), source);
+    return runNpm(['run', '--silent', 'lint'], fixtureRoot);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+function assertForbiddenDomainImport(specifier) {
+  readManifest();
+  const result = probeForbiddenDomainImport(specifier);
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a forbidden domain import from ${specifier}\n${commandDiagnostics('npm run lint', result)}`,
+  );
+}
+
 test('scaffolds every v0.1 repository area without an agents product package', () => {
   for (const path of requiredDirectories) {
     assert.equal(existsSync(resolve(projectRoot, path)), true, `${path} must exist`);
@@ -213,28 +234,132 @@ test('boots the minimal CLI through its public root command', () => {
   assert.equal(result.status, 0, commandDiagnostics('npm run cli -- --help', result));
 });
 
-for (const [dependency, specifier] of [
-  ['LangChain', '@langchain/core'],
-  ['LangGraph', '@langchain/langgraph'],
-  ['graph', '../graph/index.js'],
-  ['roles', '../roles/index.js'],
-  ['tools', '../tools/live/index.js'],
-  ['replay tools', '../tools/replay/index.js'],
-  ['persistence', '../persistence/index.js'],
-  ['evals', '../evals/index.js'],
-  ['observability', '../observability/index.js'],
-]) {
-  test(`lint rejects a domain import from ${dependency}`, () => {
-    readManifest();
-    const result = probeForbiddenDomainImport(specifier);
+test('lint rejects a domain import from LangChain', () => {
+  assertForbiddenDomainImport('@langchain/core');
+});
+
+test('lint rejects a domain import from LangGraph', () => {
+  assertForbiddenDomainImport('@langchain/langgraph');
+});
+
+test('lint rejects a domain import from graph', () => {
+  assertForbiddenDomainImport('../graph/src/index.js');
+});
+
+test('lint rejects a domain import from live tools', () => {
+  assertForbiddenDomainImport('../tools/live/index.js');
+});
+
+test('lint rejects a domain import from replay tools', () => {
+  assertForbiddenDomainImport('../tools/replay/index.js');
+});
+
+test('lint rejects a domain import from evals', () => {
+  assertForbiddenDomainImport('../evals/src/index.js');
+});
+
+test('lint rejects a reverse domain manifest dependency on graph', () => {
+  const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();
+  try {
+    const manifestPath = resolve(fixtureRoot, 'packages/domain/package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.dependencies = { ...manifest.dependencies, '@aic/graph': '0.0.0' };
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const result = runNpm(['run', '--silent', 'lint'], fixtureRoot);
+    assert.notEqual(
+      result.status,
+      0,
+      `npm run lint accepted @aic/graph in packages/domain/package.json\n${commandDiagnostics('npm run lint', result)}`,
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('lint allows import.meta.url before an ordinary exported string', () => {
+  const result = probeDomainSource(
+    'export const moduleUrl = import.meta.url\nexport const example = "@langchain/core";\n',
+  );
+
+  assert.equal(result.status, 0, commandDiagnostics('npm run lint', result));
+});
+
+test('lint allows internal packages outside the v0.1 dependency directions', () => {
+  const result = probeDomainSource(
+    [
+      'import "@aic/domain";',
+      'import "@aic/roles";',
+      'import "@aic/persistence";',
+      'import "@aic/observability";',
+      'import "../roles/src/index.js";',
+      'import "../persistence/src/index.js";',
+      'import "../observability/src/index.js";',
+      '',
+    ].join('\n'),
+  );
+
+  assert.equal(result.status, 0, commandDiagnostics('npm run lint', result));
+});
+
+test('lint rejects a nonliteral dynamic import in domain', () => {
+  const result = probeDomainSource(
+    'export const loadModule = (specifier: string) => import(specifier);\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a nonliteral dynamic import\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('lint rejects require.resolve module loading in domain', () => {
+  const result = probeDomainSource(
+    'export const graphPath = require.resolve("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted require.resolve("@aic/graph")\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('lint rejects a domain source symlink resolving outside domain', () => {
+  const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();
+  try {
+    symlinkSync(
+      '../../roles/src/index.ts',
+      resolve(fixtureRoot, 'packages/domain/src/__boundary_probe__.ts'),
+    );
+    const result = runNpm(['run', '--silent', 'lint'], fixtureRoot);
 
     assert.notEqual(
       result.status,
       0,
-      `npm run lint accepted a forbidden domain import from ${specifier}\n${commandDiagnostics('npm run lint', result)}`,
+      `npm run lint accepted a domain source symlink resolving outside domain\n${commandDiagnostics('npm run lint', result)}`,
     );
-  });
-}
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('lint rejects a symlinked directory beneath domain', () => {
+  const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();
+  try {
+    symlinkSync('src', resolve(fixtureRoot, 'packages/domain/__boundary_probe__'), 'dir');
+    const result = runNpm(['run', '--silent', 'lint'], fixtureRoot);
+
+    assert.notEqual(
+      result.status,
+      0,
+      `npm run lint accepted a symlinked directory beneath domain\n${commandDiagnostics('npm run lint', result)}`,
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
 
 test('lint ignores an ordinary exported string literal in domain code', () => {
   const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();

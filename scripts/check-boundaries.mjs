@@ -6,38 +6,83 @@ const projectRoot = process.cwd();
 const packagesRoot = resolve(projectRoot, 'packages');
 const domainRoot = resolve(packagesRoot, 'domain');
 const sourceExtension = /\.[cm]?[jt]sx?$/;
+const forbiddenProductRoots = [
+  resolve(packagesRoot, 'graph'),
+  resolve(packagesRoot, 'tools'),
+  resolve(packagesRoot, 'evals'),
+];
+const forbiddenProductPackages = ['@aic/graph', '@aic/tools', '@aic/evals'];
 
 function isWithin(parent, path) {
   const pathFromParent = relative(parent, path);
   return pathFromParent === '' || (!pathFromParent.startsWith('..') && !isAbsolute(pathFromParent));
 }
 
-function sourceFilesIn(directory) {
+function sourceTreeIn(directory) {
   const files = [];
+  const symlinks = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     if (entry.name === 'dist' || entry.name === 'node_modules') continue;
     const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...sourceFilesIn(path));
+    if (entry.isSymbolicLink()) {
+      symlinks.push(path);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      const nested = sourceTreeIn(path);
+      files.push(...nested.files);
+      symlinks.push(...nested.symlinks);
+    }
     if (entry.isFile() && sourceExtension.test(entry.name)) files.push(path);
   }
-  return files;
+  return { files, symlinks };
 }
 
-function moduleSpecifiersIn(path) {
+function moduleLoadsIn(path) {
   const scanner = createScanner(true, LanguageVariant.Standard, readFileSync(path, 'utf8'));
   const tokens = [];
   let kind;
   do {
     kind = scanner.scan();
-    tokens.push({ kind, text: scanner.getTokenText(), value: scanner.getTokenValue() });
+    tokens.push({
+      kind,
+      text: scanner.getTokenText(),
+      value: scanner.getTokenValue(),
+    });
   } while (kind !== SyntaxKind.EndOfFile);
 
-  const specifiers = [];
-  for (const [index, token] of tokens.entries()) {
+  const loads = [];
+  const literalKinds = new Set([
+    SyntaxKind.StringLiteral,
+    SyntaxKind.NoSubstitutionTemplateLiteral,
+  ]);
+  const addCallArgument = (argument, syntax) => {
+    if (literalKinds.has(argument?.kind)) {
+      loads.push({ specifier: argument.value });
+    } else {
+      loads.push({ problem: `domain uses ${syntax} with a nonliteral module specifier` });
+    }
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
     if (token.kind === SyntaxKind.ImportKeyword) {
-      for (const candidate of tokens.slice(index + 1)) {
-        if (candidate.kind === SyntaxKind.StringLiteral) {
-          specifiers.push(candidate.value);
+      const next = tokens[index + 1];
+      if (next?.kind === SyntaxKind.DotToken) continue;
+      if (next?.kind === SyntaxKind.OpenParenToken) {
+        addCallArgument(tokens[index + 2], 'dynamic import');
+        continue;
+      }
+      if (literalKinds.has(next?.kind)) {
+        loads.push({ specifier: next.value });
+        continue;
+      }
+      let hasFrom = false;
+      for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+        const candidate = tokens[cursor];
+        if (candidate.kind === SyntaxKind.FromKeyword) hasFrom = true;
+        if (hasFrom && literalKinds.has(candidate.kind)) {
+          loads.push({ specifier: candidate.value });
           break;
         }
         if (
@@ -50,10 +95,11 @@ function moduleSpecifiersIn(path) {
     }
     if (token.kind === SyntaxKind.ExportKeyword) {
       let hasFrom = false;
-      for (const candidate of tokens.slice(index + 1)) {
+      for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+        const candidate = tokens[cursor];
         if (candidate.kind === SyntaxKind.FromKeyword) hasFrom = true;
-        if (hasFrom && candidate.kind === SyntaxKind.StringLiteral) {
-          specifiers.push(candidate.value);
+        if (hasFrom && literalKinds.has(candidate.kind)) {
+          loads.push({ specifier: candidate.value });
           break;
         }
         if (
@@ -64,40 +110,77 @@ function moduleSpecifiersIn(path) {
         }
       }
     }
-    if (token.kind === SyntaxKind.Identifier && token.text === 'require') {
-      const [openParen, moduleName] = tokens.slice(index + 1, index + 3);
-      if (
-        openParen?.kind === SyntaxKind.OpenParenToken &&
-        moduleName?.kind === SyntaxKind.StringLiteral
+    if (
+      (token.kind === SyntaxKind.Identifier || token.kind === SyntaxKind.RequireKeyword) &&
+      token.text === 'require'
+    ) {
+      const next = tokens[index + 1];
+      if (next?.kind === SyntaxKind.OpenParenToken) {
+        addCallArgument(tokens[index + 2], 'require()');
+      } else if (
+        next?.kind === SyntaxKind.DotToken &&
+        tokens[index + 2]?.kind === SyntaxKind.Identifier &&
+        tokens[index + 2]?.text === 'resolve' &&
+        tokens[index + 3]?.kind === SyntaxKind.OpenParenToken
       ) {
-        specifiers.push(moduleName.value);
+        addCallArgument(tokens[index + 4], 'require.resolve()');
       }
     }
   }
-  return specifiers;
+  return loads;
 }
 
 function forbiddenReason(importer, specifier) {
   if (/^(?:langchain(?:\/|$)|@langchain\/)/.test(specifier)) {
     return 'domain must not import LangChain or LangGraph';
   }
-  if (specifier.startsWith('@aic/')) {
-    return 'domain must not depend on another product package';
+  if (
+    forbiddenProductPackages.some(
+      (packageName) => specifier === packageName || specifier.startsWith(`${packageName}/`),
+    )
+  ) {
+    return 'domain must not depend on graph, tools, or evals';
   }
   if (specifier.startsWith('.')) {
     const target = resolve(dirname(importer), specifier);
-    if (isWithin(packagesRoot, target) && !isWithin(domainRoot, target)) {
-      return 'domain must not depend on another product package';
+    if (forbiddenProductRoots.some((packageRoot) => isWithin(packageRoot, target))) {
+      return 'domain must not depend on graph, tools, or evals';
     }
   }
   return null;
 }
 
 const violations = [];
-for (const importer of sourceFilesIn(domainRoot)) {
-  for (const specifier of moduleSpecifiersIn(importer)) {
-    const reason = forbiddenReason(importer, specifier);
-    if (reason) violations.push(`${relative(projectRoot, importer)} imports ${specifier}: ${reason}`);
+const sourceTree = sourceTreeIn(domainRoot);
+for (const symlink of sourceTree.symlinks) {
+  violations.push(`${relative(projectRoot, symlink)} is a symlink: domain sources must be physical files`);
+}
+for (const importer of sourceTree.files) {
+  for (const load of moduleLoadsIn(importer)) {
+    if (load.problem) {
+      violations.push(`${relative(projectRoot, importer)}: ${load.problem}`);
+      continue;
+    }
+    const reason = forbiddenReason(importer, load.specifier);
+    if (reason) {
+      violations.push(
+        `${relative(projectRoot, importer)} imports ${load.specifier}: ${reason}`,
+      );
+    }
+  }
+}
+
+const domainManifestPath = resolve(domainRoot, 'package.json');
+let domainManifest;
+try {
+  domainManifest = JSON.parse(readFileSync(domainManifestPath, 'utf8'));
+} catch (error) {
+  violations.push(`packages/domain/package.json is unreadable: ${error.message}`);
+}
+for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+  for (const dependency of Object.keys(domainManifest?.[section] ?? {})) {
+    const reason = forbiddenReason(domainManifestPath, dependency);
+    if (reason) violations.push(`packages/domain/package.json ${section} includes ${dependency}: ${reason}`);
   }
 }
 
