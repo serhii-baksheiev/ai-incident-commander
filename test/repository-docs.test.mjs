@@ -24,6 +24,7 @@ test('links the root README to the canonical architecture brief', () => {
 
 test('records the completed domain milestone and the persistent checkpointer as next', () => {
   const readme = readFileSync(readmePath, 'utf8');
+  assert.match(readme, /AI Incident Commander is designed as a stateful investigation system/);
   assert.match(
     readme,
     /\| Product implementation \| [^|\n]*canonical domain contracts[^|\n]*implemented[^|\n]*\|/i,
