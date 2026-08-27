@@ -72,6 +72,9 @@ test('records the final AIC-2 retry gate stop in the newest journal entry', () =
   assert.match(newestEntry, /43 blocked implementation tasks/);
   assert.match(newestEntry, /AIC-2[^\n]*(?:parked[^\n]*escalated|escalated[^\n]*parked)/);
   assert.match(newestEntry, /AIC-3 remains blocked by AIC-2/);
+  assert.match(newestEntry, /deployment object `6116833287`/);
+  assert.match(newestEntry, /no status[^\n]*no workflow run/);
+  assert.match(newestEntry, /deployment API objects created: 1[^\n]*deploy executions: 0/);
 });
 
 test('preserves the shipped runner PR and exact CI evidence in its historical entry', () => {
