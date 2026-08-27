@@ -159,8 +159,20 @@ test('records the completed AIC-3 delivery before preserving the existing journa
     },
     { label: 'records that no deploy occurred', pattern: /(?:no deploy|deploys: 0)/i },
     {
-      label: 'records AIC-4 through AIC-7 as unblocked and To Do',
-      pattern: /AIC-4[^\n]*AIC-7[^\n]*unblocked[^\n]*`To Do`/i,
+      label: 'records that AIC-3 no longer blocks AIC-4 through AIC-7',
+      pattern: /AIC-3[^\n]*no longer blocks[^\n]*AIC-4[^\n]*AIC-7/i,
+    },
+    {
+      label: 'records only AIC-4 and AIC-5 as globally unblocked and To Do',
+      pattern: /only AIC-4 and AIC-5[^\n]*globally unblocked[^\n]*`To Do`/i,
+    },
+    {
+      label: 'records AIC-6 as blocked by To Do AIC-5',
+      pattern: /AIC-6[^\n]*blocked by[^\n]*`To Do` AIC-5/i,
+    },
+    {
+      label: 'records AIC-7 as blocked by To Do AIC-6',
+      pattern: /AIC-7[^\n]*blocked by[^\n]*`To Do` AIC-6/i,
     },
     {
       label: 'records the local adapter hold and unchanged live Rovo action',
@@ -174,7 +186,7 @@ test('records the completed AIC-3 delivery before preserving the existing journa
     {
       label: 'pins the fresh run and Jira completion comment',
       pattern:
-        /`\.claude\/runs\/20260827-aic3-fresh-gate-audit`[^\n]*Jira comment `14835`/i,
+        /`\.claude\/runs\/20260827-aic3-fresh-gate-audit`[^\n]*Jira comment `14835`[^\n]*correction comment `14836`[^\n]*supersedes only the broad unblocking sentence/i,
     },
   ];
   const problems = requiredEvidence
@@ -183,6 +195,9 @@ test('records the completed AIC-3 delivery before preserving the existing journa
 
   if (/test-writer(?: subagents?)?(?: runs)?:\s*\d/i.test(deliveryEntry)) {
     problems.push('must not invent a test-writer count');
+  }
+  if (/AIC-4 through AIC-7 are (?:globally )?unblocked/i.test(deliveryEntry)) {
+    problems.push('must not claim that all AIC-4 through AIC-7 are globally unblocked');
   }
 
   const historicalMarker = '### AIC-2 delivered; first implementation milestone unblocked';
