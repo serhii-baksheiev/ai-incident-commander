@@ -8,6 +8,8 @@ coverage/
 
 # the tier the last close recorded
 .claude/queue.state.json
+# the board this checkout runs on, when the config declares several
+.claude/queue.board
 # gate rounds, one count per branch
 .claude/gate-rounds.json
 # task worktrees
