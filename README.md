@@ -77,17 +77,21 @@ The architecture freeze means structural changes must be justified by benchmark 
 
 ## Repository shape
 
+The directories below are reserved scaffold boundaries. AIC-2 establishes their paths and dependency direction; it does not claim their planned product content is already implemented.
+
+Following tickets add the domain contracts, graph nodes and routing, roles and prompts, live and replay tool adapters, checkpointing and recovery, evaluation gates, tracing, replay scenarios, and the Incident Lab surface.
+
 ```text
-apps/cli                  command-line entrypoint
-packages/domain           framework-free domain contracts
-packages/graph            LangGraph state, nodes, edges, and routing
-packages/roles            semantic roles and prompts
-packages/tools            live and replay tool adapters
-packages/persistence      checkpointing and recovery
-packages/evals            deterministic and LangSmith evaluation gates
-packages/observability    trace and run metadata
-datasets/scenarios        versioned replay fixtures
-incident-lab              isolated live incident environment
+apps/cli                  minimal command-line entrypoint
+packages/domain           reserved domain layer
+packages/graph            reserved orchestration layer
+packages/roles            reserved semantic-role layer
+packages/tools            reserved tool boundary
+packages/persistence      reserved persistence layer
+packages/evals            reserved evaluation layer
+packages/observability    reserved observability layer
+datasets/scenarios        reserved replay-scenario boundary
+incident-lab              reserved live-investigation boundary
 ```
 
 The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph, tools, and evals depend on the domain rather than the reverse.

@@ -8,7 +8,15 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const architecturePath = resolve(projectRoot, 'docs/incident-commander-architecture-v1.md');
 const formerArchitecturePath = resolve(projectRoot, 'incident-commander-architecture-v1.md');
 const readmePath = resolve(projectRoot, 'README.md');
+const scenariosReadmePath = resolve(projectRoot, 'datasets/scenarios/README.md');
+const incidentLabReadmePath = resolve(projectRoot, 'incident-lab/README.md');
 const journalPath = resolve(projectRoot, 'journal/2026-08.md');
+
+function markdownSection(document, heading) {
+  const section = document.split(`## ${heading}\n`)[1]?.split(/^## /m)[0];
+  assert.notEqual(section, undefined, `README must contain the ${heading} section`);
+  return section;
+}
 
 test('keeps the architecture brief at its canonical docs path', () => {
   assert.equal(existsSync(architecturePath), true);
@@ -27,6 +35,62 @@ test('describes planned product behavior as design and points to the next domain
   assert.match(
     readme,
     /\| Next implementation milestone \| \[AIC-3 — canonical domain types and IncidentState\]/,
+  );
+});
+
+test('documents scaffold boundaries as reserved rather than implemented product content', () => {
+  const readme = readFileSync(readmePath, 'utf8');
+  const repositoryShape = markdownSection(readme, 'Repository shape');
+  const futureContent = repositoryShape
+    .split(/\n\s*\n/)
+    .find((paragraph) => /\b(?:next|later|following|future) tickets?\b/i.test(paragraph));
+
+  assert.match(
+    repositoryShape,
+    /\breserved\b[^.\n]*\bscaffold boundaries\b|\bscaffold boundaries\b[^.\n]*\breserved\b/i,
+  );
+  assert.notEqual(
+    futureContent,
+    undefined,
+    'the repository shape must say that product contents arrive in later tickets',
+  );
+  for (const expectedContent of [
+    /domain contracts/i,
+    /graph nodes?[^.\n]*routing/i,
+    /roles?[^.\n]*prompts?/i,
+    /tool adapters?/i,
+    /checkpointing/i,
+    /eval(?:uation)? gates?/i,
+    /tracing/i,
+    /scenarios?[^.\n]*(?:Incident Lab|lab)|(?:Incident Lab|lab)[^.\n]*scenarios?/i,
+  ]) {
+    assert.match(futureContent, expectedContent);
+  }
+
+  const scenariosReadme = readFileSync(scenariosReadmePath, 'utf8');
+  assert.notEqual(
+    scenariosReadme
+      .split(/\n\s*\n/)
+      .find(
+        (paragraph) =>
+          /\b(?:no|none|not yet|empty)\b/i.test(paragraph) &&
+          /\b(?:scenario|fixture|content)\w*\b/i.test(paragraph),
+      ),
+    undefined,
+    'the scenarios README must explicitly say that scenario content is not present yet',
+  );
+
+  const incidentLabReadme = readFileSync(incidentLabReadmePath, 'utf8');
+  assert.notEqual(
+    incidentLabReadme
+      .split(/\n\s*\n/)
+      .find(
+        (paragraph) =>
+          /\b(?:no|none|not yet|empty)\b/i.test(paragraph) &&
+          /\b(?:live|lab|surface)\w*\b/i.test(paragraph),
+      ),
+    undefined,
+    'the Incident Lab README must explicitly say that no live surface exists yet',
   );
 });
 
