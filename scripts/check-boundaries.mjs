@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
-import { createScanner, LanguageVariant, SyntaxKind } from 'typescript/unstable/ast';
+import { parse } from '@babel/parser';
 
 const projectRoot = process.cwd();
 const packagesRoot = resolve(projectRoot, 'packages');
@@ -39,94 +39,128 @@ function sourceTreeIn(directory) {
 }
 
 function moduleLoadsIn(path) {
-  const scanner = createScanner(true, LanguageVariant.Standard, readFileSync(path, 'utf8'));
-  const tokens = [];
-  let kind;
-  do {
-    kind = scanner.scan();
-    tokens.push({
-      kind,
-      text: scanner.getTokenText(),
-      value: scanner.getTokenValue(),
-    });
-  } while (kind !== SyntaxKind.EndOfFile);
-
   const loads = [];
-  const literalKinds = new Set([
-    SyntaxKind.StringLiteral,
-    SyntaxKind.NoSubstitutionTemplateLiteral,
-  ]);
-  const addCallArgument = (argument, syntax) => {
-    if (literalKinds.has(argument?.kind)) {
-      loads.push({ specifier: argument.value });
+  let tree;
+  try {
+    tree = parse(readFileSync(path, 'utf8'), {
+      sourceType: 'unambiguous',
+      plugins: path.endsWith('x') ? ['typescript', 'jsx'] : ['typescript'],
+      createParenthesizedExpressions: true,
+    });
+  } catch (error) {
+    return [{ problem: `domain source cannot be parsed: ${error.message}` }];
+  }
+
+  const unwrap = (node) => {
+    let current = node;
+    while (
+      current &&
+      [
+        'ParenthesizedExpression',
+        'TSAsExpression',
+        'TSTypeAssertion',
+        'TSNonNullExpression',
+        'TypeCastExpression',
+      ].includes(current.type)
+    ) {
+      current = current.expression;
+    }
+    return current;
+  };
+  const literalValue = (node) => {
+    const current = unwrap(node);
+    if (current?.type === 'StringLiteral') return current.value;
+    if (current?.type === 'TemplateLiteral' && current.expressions.length === 0) {
+      return current.quasis[0]?.value.cooked ?? current.quasis[0]?.value.raw;
+    }
+    return null;
+  };
+  const addModuleSpecifier = (argument, syntax) => {
+    const specifier = literalValue(argument);
+    if (specifier !== null) {
+      loads.push({ specifier });
     } else {
       loads.push({ problem: `domain uses ${syntax} with a nonliteral module specifier` });
     }
   };
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token.kind === SyntaxKind.ImportKeyword) {
-      const next = tokens[index + 1];
-      if (next?.kind === SyntaxKind.DotToken) continue;
-      if (next?.kind === SyntaxKind.OpenParenToken) {
-        addCallArgument(tokens[index + 2], 'dynamic import');
-        continue;
-      }
-      if (literalKinds.has(next?.kind)) {
-        loads.push({ specifier: next.value });
-        continue;
-      }
-      let hasFrom = false;
-      for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-        const candidate = tokens[cursor];
-        if (candidate.kind === SyntaxKind.FromKeyword) hasFrom = true;
-        if (hasFrom && literalKinds.has(candidate.kind)) {
-          loads.push({ specifier: candidate.value });
-          break;
-        }
-        if (
-          candidate.kind === SyntaxKind.SemicolonToken ||
-          candidate.kind === SyntaxKind.EndOfFile
-        ) {
-          break;
-        }
-      }
+  const memberName = (node) => {
+    if (!node || !['MemberExpression', 'OptionalMemberExpression'].includes(node.type)) {
+      return null;
     }
-    if (token.kind === SyntaxKind.ExportKeyword) {
-      let hasFrom = false;
-      for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-        const candidate = tokens[cursor];
-        if (candidate.kind === SyntaxKind.FromKeyword) hasFrom = true;
-        if (hasFrom && literalKinds.has(candidate.kind)) {
-          loads.push({ specifier: candidate.value });
-          break;
-        }
-        if (
-          candidate.kind === SyntaxKind.SemicolonToken ||
-          candidate.kind === SyntaxKind.EndOfFile
-        ) {
-          break;
+    if (node.computed) return literalValue(node.property);
+    return node.property?.type === 'Identifier' ? node.property.name : null;
+  };
+  const containsReference = (node, names) => {
+    const current = unwrap(node);
+    if (!current) return false;
+    if (current.type === 'Identifier') return names.has(current.name);
+    if (current.type === 'SequenceExpression') {
+      return current.expressions.some((expression) => containsReference(expression, names));
+    }
+    if (['MemberExpression', 'OptionalMemberExpression'].includes(current.type)) {
+      return containsReference(current.object, names);
+    }
+    return false;
+  };
+  const moduleLoaderSyntax = (callee) => {
+    const current = unwrap(callee);
+    if (current?.type === 'Identifier' && current.name === 'require') return 'require()';
+    if (
+      ['MemberExpression', 'OptionalMemberExpression'].includes(current?.type) &&
+      containsReference(current.object, new Set(['require'])) &&
+      memberName(current) === 'resolve'
+    ) {
+      return 'require.resolve()';
+    }
+    return null;
+  };
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+
+    if (
+      ['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(node.type) &&
+      node.source
+    ) {
+      addModuleSpecifier(node.source, node.type.startsWith('Export') ? 'export' : 'import');
+    }
+    if (node.type === 'ImportExpression') {
+      addModuleSpecifier(node.source, 'dynamic import');
+    }
+    if (node.type === 'TSExternalModuleReference') {
+      addModuleSpecifier(node.expression, 'import equals');
+    }
+    if (['CallExpression', 'OptionalCallExpression'].includes(node.type)) {
+      const callee = unwrap(node.callee);
+      if (callee?.type === 'Import') {
+        addModuleSpecifier(node.arguments[0], 'dynamic import');
+      } else if (containsReference(callee, new Set(['eval', 'Function']))) {
+        loads.push({ problem: 'domain uses eval or Function as an interpreted module loader' });
+      } else {
+        const syntax = moduleLoaderSyntax(callee);
+        if (syntax) {
+          addModuleSpecifier(node.arguments[0], syntax);
+        } else if (containsReference(callee, new Set(['require']))) {
+          loads.push({ problem: 'domain uses an indirect require module loader' });
         }
       }
     }
     if (
-      (token.kind === SyntaxKind.Identifier || token.kind === SyntaxKind.RequireKeyword) &&
-      token.text === 'require'
+      node.type === 'NewExpression' &&
+      containsReference(node.callee, new Set(['eval', 'Function']))
     ) {
-      const next = tokens[index + 1];
-      if (next?.kind === SyntaxKind.OpenParenToken) {
-        addCallArgument(tokens[index + 2], 'require()');
-      } else if (
-        next?.kind === SyntaxKind.DotToken &&
-        tokens[index + 2]?.kind === SyntaxKind.Identifier &&
-        tokens[index + 2]?.text === 'resolve' &&
-        tokens[index + 3]?.kind === SyntaxKind.OpenParenToken
-      ) {
-        addCallArgument(tokens[index + 4], 'require.resolve()');
-      }
+      loads.push({ problem: 'domain uses eval or Function as an interpreted module loader' });
     }
-  }
+
+    for (const [key, child] of Object.entries(node)) {
+      if (['loc', 'start', 'end', 'extra', 'comments', 'errors', 'tokens'].includes(key)) continue;
+      visit(child);
+    }
+  };
+  visit(tree.program);
   return loads;
 }
 
@@ -148,6 +182,32 @@ function forbiddenReason(importer, specifier) {
     }
   }
   return null;
+}
+
+function dependencyTarget(specifier) {
+  if (typeof specifier !== 'string') return null;
+  for (const protocol of ['file:', 'link:']) {
+    if (specifier.startsWith(protocol)) return specifier.slice(protocol.length);
+  }
+  for (const protocol of ['npm:', 'workspace:']) {
+    if (!specifier.startsWith(protocol)) continue;
+    const target = specifier.slice(protocol.length);
+    const match = target.match(/^(@[^/]+\/[^@]+|[^@/]+)(?:@.*)?$/);
+    return match?.[1] ?? null;
+  }
+  return specifier;
+}
+
+function forbiddenTargetReason(importer, specifier) {
+  const target = dependencyTarget(specifier);
+  return target === null ? null : forbiddenReason(importer, target);
+}
+
+function stringLeaves(value) {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(stringLeaves);
+  if (value && typeof value === 'object') return Object.values(value).flatMap(stringLeaves);
+  return [];
 }
 
 const violations = [];
@@ -178,9 +238,37 @@ try {
   violations.push(`packages/domain/package.json is unreadable: ${error.message}`);
 }
 for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-  for (const dependency of Object.keys(domainManifest?.[section] ?? {})) {
+  for (const [dependency, specification] of Object.entries(domainManifest?.[section] ?? {})) {
     const reason = forbiddenReason(domainManifestPath, dependency);
     if (reason) violations.push(`packages/domain/package.json ${section} includes ${dependency}: ${reason}`);
+    const targetReason = forbiddenTargetReason(domainManifestPath, specification);
+    if (targetReason) {
+      violations.push(
+        `packages/domain/package.json ${section} maps ${dependency} to ${specification}: ${targetReason}`,
+      );
+    }
+  }
+}
+for (const [alias, mapping] of Object.entries(domainManifest?.imports ?? {})) {
+  for (const target of stringLeaves(mapping)) {
+    const reason = forbiddenTargetReason(domainManifestPath, target);
+    if (reason) {
+      violations.push(`packages/domain/package.json imports maps ${alias} to ${target}: ${reason}`);
+    }
+  }
+}
+
+const domainTsconfigPath = resolve(domainRoot, 'tsconfig.json');
+let domainTsconfig;
+try {
+  domainTsconfig = JSON.parse(readFileSync(domainTsconfigPath, 'utf8'));
+} catch (error) {
+  violations.push(`packages/domain/tsconfig.json is unreadable: ${error.message}`);
+}
+for (const reference of domainTsconfig?.references ?? []) {
+  const reason = forbiddenTargetReason(domainTsconfigPath, reference?.path);
+  if (reason) {
+    violations.push(`packages/domain/tsconfig.json references ${reference.path}: ${reason}`);
   }
 }
 

@@ -146,6 +146,19 @@ function probeDomainSource(source) {
   }
 }
 
+function probeDomainJson(pathFromDomain, mutate) {
+  const { fixtureRoot, temporaryRoot } = copyForBoundaryProbe();
+  try {
+    const path = resolve(fixtureRoot, 'packages/domain', pathFromDomain);
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    mutate(value);
+    writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+    return runNpm(['run', '--silent', 'lint'], fixtureRoot);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 function assertForbiddenDomainImport(specifier) {
   readManifest();
   const result = probeForbiddenDomainImport(specifier);
@@ -374,6 +387,143 @@ test('lint ignores an ordinary exported string literal in domain code', () => {
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+});
+
+test('boundary lint allows an exported function with a local from binding', () => {
+  const result = probeDomainSource(
+    'export function example() { const from = "langchain"; return from; }\n',
+  );
+
+  assert.equal(result.status, 0, commandDiagnostics('npm run lint', result));
+});
+
+test('boundary lint rejects a file dependency alias to graph', () => {
+  const result = probeDomainJson('package.json', (manifest) => {
+    manifest.dependencies = { ...manifest.dependencies, 'graph-alias': 'file:../graph' };
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted graph-alias=file:../graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects an npm dependency alias to graph', () => {
+  const result = probeDomainJson('package.json', (manifest) => {
+    manifest.dependencies = {
+      ...manifest.dependencies,
+      'graph-alias': 'npm:@aic/graph@0.0.0',
+    };
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted graph-alias=npm:@aic/graph@0.0.0\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects a package imports mapping to graph', () => {
+  const result = probeDomainJson('package.json', (manifest) => {
+    manifest.imports = { ...manifest.imports, '#graph': '@aic/graph' };
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted #graph=@aic/graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects graph hidden in conditional package imports arrays', () => {
+  const result = probeDomainJson('package.json', (manifest) => {
+    manifest.imports = {
+      ...manifest.imports,
+      '#graph': {
+        node: ['@aic/domain', '@aic/graph'],
+        default: '@aic/domain',
+      },
+    };
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a nested #graph mapping\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects a domain TypeScript project reference to graph', () => {
+  const result = probeDomainJson('tsconfig.json', (configuration) => {
+    configuration.references = [...(configuration.references ?? []), { path: '../graph' }];
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted packages/domain/tsconfig.json -> ../graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects eval as an interpreted module loader', () => {
+  const result = probeDomainSource(
+    'export const loadGraph = () => eval(\'import("@aic/graph")\');\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted eval loading @aic/graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects Function as an interpreted module loader', () => {
+  const result = probeDomainSource(
+    'export const loadGraph = Function(\'return import("@aic/graph")\');\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted Function loading @aic/graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects parenthesized require.resolve', () => {
+  const result = probeDomainSource(
+    'export const graphPath = (require.resolve)("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted parenthesized require.resolve\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects bracketed require.resolve', () => {
+  const result = probeDomainSource(
+    'export const graphPath = require["resolve"]("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted bracketed require.resolve\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('boundary lint rejects optional require.resolve', () => {
+  const result = probeDomainSource(
+    'export const graphPath = require?.resolve("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted optional require.resolve\n${commandDiagnostics('npm run lint', result)}`,
+  );
 });
 
 test('does not introduce a prebuilt autonomous tool loop', () => {

@@ -26,6 +26,7 @@
     "cli": "node apps/cli/dist/index.js"
   },
   "devDependencies": {
+    "@babel/parser": "7.28.4",
     "typescript": "7.0.2"
   }
 }
