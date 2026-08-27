@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noEmitOnError": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@aic/domain": ["./packages/domain/src/index.ts"],
+      "@aic/graph": ["./packages/graph/src/index.ts"],
+      "@aic/roles": ["./packages/roles/src/index.ts"],
+      "@aic/tools": ["./packages/tools/src/index.ts"],
+      "@aic/persistence": ["./packages/persistence/src/index.ts"],
+      "@aic/evals": ["./packages/evals/src/index.ts"],
+      "@aic/observability": ["./packages/observability/src/index.ts"]
+    }
+  }
+}
