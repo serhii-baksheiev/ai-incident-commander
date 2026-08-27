@@ -1,0 +1,159 @@
+import { z } from 'zod';
+
+import { INCIDENT_STATE_SCHEMA_VERSION, STATUS_RULES_VERSION } from './status-rules.js';
+
+const IdentifierSchema = z.string();
+const ContractStringSchema = z.string();
+const NonEmptyStringSchema = z.string().min(1);
+const StrengthSchema = z.enum(['high', 'medium', 'low']);
+
+export const ToolIdSchema = NonEmptyStringSchema;
+export const ExpectedObservationSchema = z.unknown();
+export const InvestigationPhaseSchema = NonEmptyStringSchema;
+
+export const IncidentSchema = z.looseObject({
+  id: IdentifierSchema,
+});
+
+export const HypothesisStatusSchema = z.enum([
+  'candidate',
+  'supported',
+  'weakened',
+  'rejected',
+]);
+
+export const HypothesisSchema = z.strictObject({
+  id: IdentifierSchema,
+  statement: ContractStringSchema,
+  createdBy: z.enum(['initial', 'challenge']),
+});
+
+export const PredictionSchema = z.strictObject({
+  id: IdentifierSchema,
+  hypothesisId: IdentifierSchema,
+  statement: ContractStringSchema,
+  expectedIfTrue: z.array(ExpectedObservationSchema),
+  expectedIfFalse: z.array(ExpectedObservationSchema),
+  status: z.enum(['untested', 'confirmed', 'refuted', 'untestable']),
+});
+
+export const InvestigationTestSchema = z.strictObject({
+  id: IdentifierSchema,
+  predictionId: IdentifierSchema,
+  tool: ToolIdSchema,
+  input: z.unknown(),
+  cost: z.enum(['cheap', 'medium', 'expensive']),
+  status: z.enum(['planned', 'executed', 'unavailable', 'failed']),
+});
+
+export const TrialSchema = z.strictObject({
+  id: IdentifierSchema,
+  runId: IdentifierSchema,
+  testId: IdentifierSchema,
+  attempt: z.number(),
+  tool: ToolIdSchema,
+  input: z.unknown(),
+  status: z.enum(['ok', 'unavailable', 'error']),
+  durationMs: z.number(),
+  evidenceIds: z.array(IdentifierSchema),
+});
+
+export const EvidenceSchema = z.strictObject({
+  id: IdentifierSchema,
+  trialId: IdentifierSchema,
+  kind: z.enum([
+    'log',
+    'metric',
+    'trace',
+    'deploy',
+    'git',
+    'config',
+    'dependency',
+    'runbook',
+    'historical-incident',
+  ]),
+  source: ContractStringSchema,
+  observedAt: ContractStringSchema,
+  statement: ContractStringSchema,
+  rawRef: ContractStringSchema,
+  reliability: StrengthSchema.optional(),
+});
+
+export const EvidenceAssessmentSchema = z.strictObject({
+  id: IdentifierSchema,
+  evidenceId: IdentifierSchema,
+  hypothesisId: IdentifierSchema,
+  predictionId: IdentifierSchema.optional(),
+  effect: z.enum(['supports', 'contradicts', 'neutral']),
+  strength: StrengthSchema,
+  rationale: ContractStringSchema,
+  producedBy: z.enum(['rule', 'llm']),
+  promptVersion: ContractStringSchema.optional(),
+  at: ContractStringSchema,
+});
+
+export const CauseClaimSchema = z.strictObject({
+  hypothesisId: IdentifierSchema,
+  cause: z.strictObject({
+    component: ContractStringSchema,
+    mechanism: ContractStringSchema,
+    trigger: ContractStringSchema.optional(),
+  }),
+  evidenceIds: z.array(IdentifierSchema),
+});
+
+export const IncidentConclusionSchema = z.strictObject({
+  kind: z.enum(['root-cause', 'multiple-causes', 'inconclusive', 'no-incident']),
+  causes: z.array(CauseClaimSchema),
+});
+
+export const InvestigationStopSchema = z.enum([
+  'sufficient',
+  'ambiguous',
+  'stalled',
+  'budget-exhausted',
+  'tools-unavailable',
+  'human-stop',
+]);
+
+export const IncidentStateControlSchema = z.strictObject({
+  runId: IdentifierSchema,
+  schemaVersion: z.literal(INCIDENT_STATE_SCHEMA_VERSION),
+  statusRulesVersion: z.literal(STATUS_RULES_VERSION),
+  phase: InvestigationPhaseSchema,
+  maxIterations: z.number(),
+  llmCallBudget: z.number(),
+  reservedChallengeBudget: z.number(),
+  challengeRounds: z.number(),
+  stopKind: InvestigationStopSchema.optional(),
+  humanReview: z.boolean(),
+});
+
+export const IncidentStateSchema = z.strictObject({
+  incident: IncidentSchema,
+  hypotheses: z.array(HypothesisSchema),
+  predictions: z.array(PredictionSchema),
+  tests: z.array(InvestigationTestSchema),
+  trials: z.array(TrialSchema),
+  evidence: z.array(EvidenceSchema),
+  assessments: z.array(EvidenceAssessmentSchema),
+  conclusion: IncidentConclusionSchema.optional(),
+  control: IncidentStateControlSchema,
+});
+
+export type ToolId = z.infer<typeof ToolIdSchema>;
+export type ExpectedObservation = z.infer<typeof ExpectedObservationSchema>;
+export type InvestigationPhase = z.infer<typeof InvestigationPhaseSchema>;
+export type Incident = z.infer<typeof IncidentSchema>;
+export type HypothesisStatus = z.infer<typeof HypothesisStatusSchema>;
+export type Hypothesis = z.infer<typeof HypothesisSchema>;
+export type Prediction = z.infer<typeof PredictionSchema>;
+export type InvestigationTest = z.infer<typeof InvestigationTestSchema>;
+export type Trial = z.infer<typeof TrialSchema>;
+export type Evidence = z.infer<typeof EvidenceSchema>;
+export type EvidenceAssessment = z.infer<typeof EvidenceAssessmentSchema>;
+export type CauseClaim = z.infer<typeof CauseClaimSchema>;
+export type IncidentConclusion = z.infer<typeof IncidentConclusionSchema>;
+export type InvestigationStop = z.infer<typeof InvestigationStopSchema>;
+export type IncidentStateControl = z.infer<typeof IncidentStateControlSchema>;
+export type IncidentState = z.infer<typeof IncidentStateSchema>;
