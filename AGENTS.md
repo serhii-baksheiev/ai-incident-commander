@@ -105,9 +105,9 @@ it a hook via the `new-invariant` skill.
   this repository once it has a remote. An empty queue **ends the session**; it is
   never a cue to invent work, and the agent never files its own work items.
 
-## Four things this install left for you to finish
+## Remaining setup and installed safeguards
 
-All four are one-liners, and all four are inert until you do them.
+Exactly two project-specific setup items remain.
 
 1. **The Definition-of-Done gate has nothing to run.** `gate-stop-dod` executes
    the commands listed in `.claude/hooks/dod-checks.json`, and `init` ships no
@@ -116,9 +116,9 @@ All four are one-liners, and all four are inert until you do them.
    no-op, and the Definition of Done is back to being a wish.
 2. **The elevated-path list below is a seed, not a survey.** It names only what
    every repo has. Everything else is yours to add.
-3. **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
-   them — it installs into your repository and does not edit files it did not
-   bring. Add all five:
+3. **The checkout-local runtime paths are already ignored.**
+   All five runtime paths below are already present in `.gitignore` and therefore ignored.
+   Keep all five entries:
 
    ```
    # the tier the last close recorded
@@ -146,12 +146,12 @@ All four are one-liners, and all four are inert until you do them.
    edited on purpose. `.claude/queue.json` is the opposite: that one is
    configuration and belongs in the repository.
 
-4. **`doctor` reads two files this install does not ship.**
-   `node .claude/scripts/doctor.mjs` decides who owns each hook from
-   `.claude/.rig-manifest.json` — which `init` wrote next to the files it
-   installed, so commit it — and reads exemptions from
-   `.claude/doctor-exemptions.json`, a file you author (`{ "<path>": "<reason>" }`)
-   only when a hook you own is deliberately left without a test neighbour.
+4. **`doctor` uses the tracked install manifest and optional local exemptions.**
+   `.claude/.rig-manifest.json` is tracked. `node .claude/scripts/doctor.mjs`
+   uses it to decide which hooks came from the rig.
+   `.claude/doctor-exemptions.json` is optional and is needed only for a deliberate exemption to a locally owned hook.
+   When needed, author it as `{ "<path>": "<reason>" }` for a hook deliberately
+   left without a test neighbour.
    Without the manifest every hook that has no test neighbour reports `unknown`,
    which is not a pass.
 
