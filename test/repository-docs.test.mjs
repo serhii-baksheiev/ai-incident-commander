@@ -35,13 +35,35 @@ test('records the latest Jira adapter stop without claiming the issue', () => {
   assert.match(journal, /\*\*stopped at\*\* — `queue-unreadable`/);
 });
 
-test('records the shipped runner and current Jira stop in the newest journal entry', () => {
+test('records the final AIC-2 gate stop in the newest journal entry', () => {
   const journal = readFileSync(journalPath, 'utf8');
   const [, newestEntry] = journal.split(/^### /m);
 
-  assert.match(newestEntry, /\bPR #6\b/);
-  assert.match(newestEntry, /\bd0ad960[0-9a-f]*\b/);
-  assert.match(newestEntry, /AIC-52[^\n]*\bDone\b/);
-  assert.match(newestEntry, /\*\*stopped at\*\* — `queue-data-anomaly`/);
-  assert.match(newestEntry, /AIC-51[^\n]*\b14669\b/);
+  assert.match(newestEntry, /^AIC-2 escalated after final boundary gate; dependent Jira queue held$/m);
+  assert.match(newestEntry, /AIC-2[^\n]*`documented-stall`/);
+  assert.match(newestEntry, /gate round 2\/2/);
+  assert.match(newestEntry, /\b8c2072d5ff13378c845bbeafbfcc6b3db16d2b62\b/);
+  assert.match(newestEntry, /\*\*stopped at\*\* — `nothing-selectable`/);
+  assert.match(newestEntry, /AIC-3 remains blocked by AIC-2/);
+  assert.match(newestEntry, /AIC-51 remains `operator-queue`\/`triage`/);
+  assert.match(newestEntry, /AIC-52 is `Done`/);
+  assert.match(newestEntry, /\*\*run evidence\*\*[^\n]*`\.claude\/runs\/20260827-aic2-delivery`/);
+});
+
+test('preserves the shipped runner PR and exact CI evidence in its historical entry', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const runnerEntry = journal
+    .split(/^### /m)
+    .find((entry) =>
+      entry.startsWith('Isolated self-hosted runner shipped; Jira loop stopped on unchanged reversed links'),
+    );
+
+  assert.notEqual(runnerEntry, undefined, 'the shipped runner journal entry must remain present');
+  assert.match(runnerEntry, /\bPR #6\b/);
+  assert.match(runnerEntry, /\bd0ad96074a416261c9d8238a7651d8b582b13a75\b/);
+  assert.match(runnerEntry, /exact-head run `33008181354`/);
+  assert.match(runnerEntry, /post-merge run `33008628082`/);
+  assert.match(runnerEntry, /AIC-52[^\n]*`Done`/);
+  assert.match(runnerEntry, /\*\*stopped at\*\* — `queue-data-anomaly`/);
+  assert.match(runnerEntry, /AIC-51[^\n]*`14669`/);
 });
