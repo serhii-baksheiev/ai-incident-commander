@@ -39,6 +39,18 @@ test('records the completed domain milestone and the persistent checkpointer as 
   );
 });
 
+test('records the independently implemented AIC-5 read-only live and replay milestone', () => {
+  const readme = readFileSync(readmePath, 'utf8');
+  assert.match(
+    readme,
+    /\| Product implementation \| (?=[^|\n]*read-only tool registry)(?=[^|\n]*live)(?=[^|\n]*replay)[^|\n]*implemented[^|\n]*\|/i,
+  );
+  assert.match(
+    readme,
+    /\| [^|\n]*(?:completed|implemented)[^|\n]*milestone[^|\n]* \| \[AIC-5[^\]]*read-only[^\]]*(?:record\s*\/\s*replay|live[^\]]*replay)[^\]]*\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-5\) \|/i,
+  );
+});
+
 test('records the latest Jira adapter stop without claiming the issue', () => {
   const journal = readFileSync(journalPath, 'utf8');
   assert.match(journal, /### Jira connector reachable; adapter still missing shell credentials/);
