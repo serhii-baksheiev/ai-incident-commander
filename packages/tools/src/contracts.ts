@@ -12,7 +12,7 @@ export type ToolResult<Output> =
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; message: string };
 
-export interface IncidentTool<Input = unknown, Output = unknown> {
+export interface IncidentTool<Input = unknown, Output = Evidence[]> {
   readonly id: ToolId;
   readonly risk: ToolRisk;
   execute(input: Input): Promise<ToolResult<Output>>;

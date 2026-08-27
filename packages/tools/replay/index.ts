@@ -1,4 +1,4 @@
-import { DOMAIN_LAYER } from '@aic/domain';
+import { DOMAIN_LAYER, type Evidence } from '@aic/domain';
 
 import {
   isReadOnlyToolId,
@@ -12,22 +12,22 @@ import {
 export const REPLAY_TOOL_DEPENDENCIES = [DOMAIN_LAYER] as const;
 export { REPLAY_FIXTURE_VERSION };
 
-export interface ReplayFixture {
+export interface ReplayFixture<Output = Evidence[]> {
   readonly version: typeof REPLAY_FIXTURE_VERSION;
-  readonly responses: Readonly<Record<string, ToolResult<unknown>>>;
+  readonly responses: Readonly<Record<string, ToolResult<Output>>>;
 }
 
-export class ReplayToolAdapter {
-  readonly #fixture: ReplayFixture;
+export class ReplayToolAdapter<Output = Evidence[]> {
+  readonly #fixture: ReplayFixture<Output>;
 
-  constructor(fixture: ReplayFixture) {
+  constructor(fixture: ReplayFixture<Output>) {
     if (fixture.version !== REPLAY_FIXTURE_VERSION) {
       throw new Error(`unsupported replay fixture version: ${fixture.version}`);
     }
     this.#fixture = fixture;
   }
 
-  async execute(toolId: string, input: unknown): Promise<ToolResult<unknown>> {
+  async execute(toolId: string, input: unknown): Promise<ToolResult<Output>> {
     if (!isReadOnlyToolId(toolId)) {
       return { status: 'unavailable', reason: `tool is not registered: ${toolId}` };
     }
@@ -37,7 +37,7 @@ export class ReplayToolAdapter {
       return (
         this.#fixture.responses[key] ?? {
           status: 'unavailable',
-          reason: `replay response is not recorded: ${key}`,
+          reason: 'replay response is not recorded',
         }
       );
     } catch (error) {

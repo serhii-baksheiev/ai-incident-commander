@@ -1,4 +1,4 @@
-import { DOMAIN_LAYER } from '@aic/domain';
+import { DOMAIN_LAYER, type Evidence } from '@aic/domain';
 
 import {
   isReadOnlyToolId,
@@ -8,11 +8,11 @@ import {
 
 export const LIVE_TOOL_DEPENDENCIES = [DOMAIN_LAYER] as const;
 
-export class LiveToolAdapter {
-  readonly #tools: ReadonlyMap<string, IncidentTool>;
+export class LiveToolAdapter<Input = unknown, Output = Evidence[]> {
+  readonly #tools: ReadonlyMap<string, IncidentTool<Input, Output>>;
 
-  constructor(tools: readonly IncidentTool[]) {
-    const registered = new Map<string, IncidentTool>();
+  constructor(tools: readonly IncidentTool<Input, Output>[]) {
+    const registered = new Map<string, IncidentTool<Input, Output>>();
     for (const tool of tools) {
       if (!isReadOnlyToolId(tool.id)) {
         throw new Error(`v0.1 tool is not registered: ${tool.id}`);
@@ -28,7 +28,7 @@ export class LiveToolAdapter {
     this.#tools = registered;
   }
 
-  async execute(toolId: string, input: unknown): Promise<ToolResult<unknown>> {
+  async execute(toolId: string, input: Input): Promise<ToolResult<Output>> {
     const tool = this.#tools.get(toolId);
     if (!tool) {
       return { status: 'unavailable', reason: `tool is not registered: ${toolId}` };

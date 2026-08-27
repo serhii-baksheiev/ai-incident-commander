@@ -35,7 +35,14 @@ function canonicalize(value: unknown, ancestors: Set<object>): CanonicalJson {
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((entry) => canonicalize(entry, ancestors));
+      const canonical: CanonicalJson[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) {
+          throw new TypeError('tool input arrays must not contain sparse holes');
+        }
+        canonical.push(canonicalize(value[index], ancestors));
+      }
+      return canonical;
     }
 
     const prototype = Object.getPrototypeOf(value);
@@ -44,7 +51,7 @@ function canonicalize(value: unknown, ancestors: Set<object>): CanonicalJson {
     }
 
     const source = value as Record<string, unknown>;
-    const canonical: Record<string, CanonicalJson> = {};
+    const canonical = Object.create(null) as Record<string, CanonicalJson>;
     for (const key of Object.keys(source).sort()) {
       canonical[key] = canonicalize(source[key], ancestors);
     }

@@ -150,6 +150,48 @@ test('canonical serialization and replay keys ignore object key order', () => {
   );
 });
 
+test('keeps __proto__ input distinct from an empty object in canonical replay identity', () => {
+  const emptyInput = {};
+  const protoInput = JSON.parse('{"__proto__":{"service":"other"}}');
+
+  assert.notEqual(
+    tools.canonicalSerializeToolInput(emptyInput),
+    tools.canonicalSerializeToolInput(protoInput),
+  );
+  assert.notEqual(
+    tools.createReplayFixtureKey('logs', emptyInput),
+    tools.createReplayFixtureKey('logs', protoInput),
+  );
+});
+
+test('does not replay empty-object evidence for an input with an own __proto__ key', async () => {
+  const emptyInputKey = tools.createReplayFixtureKey('logs', {});
+  const adapter = new replayTools.ReplayToolAdapter({
+    version: 1,
+    responses: {
+      [emptyInputKey]: { status: 'ok', output: [rawEvidence] },
+    },
+  });
+
+  const result = await adapter.execute(
+    'logs',
+    JSON.parse('{"__proto__":{"service":"other"}}'),
+  );
+
+  assert.equal(result.status, 'unavailable');
+  assert.equal('output' in result, false);
+});
+
+test('rejects sparse arrays while keeping an explicit null serializable', () => {
+  const sparseInput = Array(1);
+
+  assert.throws(
+    () => tools.canonicalSerializeToolInput(sparseInput),
+    /array|sparse|hole/i,
+  );
+  assert.equal(tools.canonicalSerializeToolInput([null]), '[null]');
+});
+
 test('replays a recorded live response without invoking the live tool again', async () => {
   const input = { service: 'checkout', query: { level: 'error', limit: 1 } };
   let liveCalls = 0;
@@ -177,6 +219,23 @@ test('replays a recorded live response without invoking the live tool again', as
 
   assert.deepEqual(replayed, recordedResult);
   assert.equal(liveCalls, 1, 'replay must not fall through to a live tool');
+});
+
+test('returns ToolResult.error for sparse replay input without colliding with explicit null', async () => {
+  const explicitNullKey = tools.createReplayFixtureKey('logs', [null]);
+  const adapter = new replayTools.ReplayToolAdapter({
+    version: 1,
+    responses: {
+      [explicitNullKey]: { status: 'ok', output: [rawEvidence] },
+    },
+  });
+
+  const sparseResult = await adapter.execute('logs', Array(1));
+  const explicitNullResult = await adapter.execute('logs', [null]);
+
+  assert.equal(sparseResult.status, 'error');
+  assert.equal(typeof sparseResult.message, 'string');
+  assert.deepEqual(explicitNullResult, { status: 'ok', output: [rawEvidence] });
 });
 
 test('does not replay a recorded response for an unknown seventh tool id', async () => {
@@ -229,6 +288,26 @@ test('returns ToolResult.error for non-JSON replay input instead of rejecting', 
 
   assert.equal(result.status, 'error');
   assert.equal(typeof result.message, 'string');
+});
+
+test('keeps replay-miss reasons generic and excludes serialized input identity', async () => {
+  const input = {
+    service: 'checkout',
+    query: 'request-id=private-marker-42',
+  };
+  const serializedInput = tools.canonicalSerializeToolInput(input);
+  const fixtureKey = tools.createReplayFixtureKey('logs', input);
+  const adapter = new replayTools.ReplayToolAdapter({ version: 1, responses: {} });
+
+  const result = await adapter.execute('logs', input);
+
+  assert.deepEqual(result, {
+    status: 'unavailable',
+    reason: 'replay response is not recorded',
+  });
+  assert.equal(result.reason.includes(serializedInput), false);
+  assert.equal(result.reason.includes(fixtureKey), false);
+  assert.equal(result.reason.includes('private-marker-42'), false);
 });
 
 test('maps unavailable to untestable without negative or raw evidence', () => {
