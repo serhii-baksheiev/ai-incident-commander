@@ -96,7 +96,13 @@ test('preserves the final AIC-2 retry gate stop in its historical journal entry'
 
 test('records the completed AIC-2 delivery before the preserved layered-boundary hold', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, deliveryEntry, layeredHoldEntry] = journal.split(/^### /m);
+  const entries = journal.split(/^### /m).slice(1);
+  const deliveryIndex = entries.findIndex((entry) =>
+    entry.startsWith('AIC-2 delivered; first implementation milestone unblocked'),
+  );
+  assert.notEqual(deliveryIndex, -1, 'the completed AIC-2 delivery must remain present');
+  const deliveryEntry = entries[deliveryIndex];
+  const layeredHoldEntry = entries[deliveryIndex + 1];
 
   assert.match(deliveryEntry, /^AIC-2 .*?(?:completed|delivered|shipped).*$/mi);
   assert.match(deliveryEntry, /\bPR #12\b/);
@@ -120,6 +126,76 @@ test('records the completed AIC-2 delivery before the preserved layered-boundary
     '099241784f51508256c57f6c213135afcaddb884026893331fe48cda5d2a94e7',
     'the prior layered-boundary hold and all older journal history must remain byte-for-byte',
   );
+});
+
+test('records the completed AIC-3 delivery before preserving the existing journal body', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, deliveryEntry] = journal.split(/^### /m);
+  const requiredEvidence = [
+    {
+      label: 'uses a delivered AIC-3 heading',
+      pattern: /^AIC-3 .*?(?:completed|delivered|shipped).*$/mi,
+    },
+    {
+      label: 'pins PR #16 and its merge SHA',
+      pattern: /\bPR #16\b[\s\S]*\b81c2d945d7fabf23ccecee5576a1bf5fcaef1bfe\b/,
+    },
+    {
+      label: 'pins the successful exact-head post-merge CI run',
+      pattern: /exact-head post-merge CI run `33101999211`[^\n]*(?:success|succeeded)/i,
+    },
+    {
+      label: 'records AIC-3 as Done with resolution Done',
+      pattern: /AIC-3[^\n]*`Done`[^\n]*resolution `Done`/i,
+    },
+    {
+      label: 'records all fresh exact-head reviewer verdicts',
+      pattern: /fresh exact-head[^\n]*code `SHIP`[^\n]*prose `SHIP`[^\n]*security `SHIP`/i,
+    },
+    {
+      label: 'records the unchanged closed probe scope',
+      pattern:
+        /exactly (?:eight|8) (?:top-level )?probes[^\n]*dependency-value[^\n]*(?:did not expand|unchanged)/i,
+    },
+    { label: 'records that no deploy occurred', pattern: /(?:no deploy|deploys: 0)/i },
+    {
+      label: 'records AIC-4 through AIC-7 as unblocked and To Do',
+      pattern: /AIC-4[^\n]*AIC-7[^\n]*unblocked[^\n]*`To Do`/i,
+    },
+    {
+      label: 'records the local adapter hold and unchanged live Rovo action',
+      pattern:
+        /local plan-md `BEFORE_CLOSE`[^\n]*held[^\n]*live Rovo re-read[^\n]*action unchanged/i,
+    },
+    {
+      label: 'records only observed reviewer, CI, and deploy costs',
+      pattern: /reviewer subagent runs: 3; CI runs: 2[^\n]*deploys: 0/i,
+    },
+    {
+      label: 'pins the fresh run and Jira completion comment',
+      pattern:
+        /`\.claude\/runs\/20260827-aic3-fresh-gate-audit`[^\n]*Jira comment `14835`/i,
+    },
+  ];
+  const problems = requiredEvidence
+    .filter(({ pattern }) => !pattern.test(deliveryEntry))
+    .map(({ label }) => label);
+
+  if (/test-writer(?: subagents?)?(?: runs)?:\s*\d/i.test(deliveryEntry)) {
+    problems.push('must not invent a test-writer count');
+  }
+
+  const historicalMarker = '### AIC-2 delivered; first implementation milestone unblocked';
+  const historicalOffset = journal.indexOf(historicalMarker);
+  const historicalJournal = journal.slice(historicalOffset);
+  if (
+    createHash('sha256').update(historicalJournal).digest('hex') !==
+    '60cf9666abce33493ae89c77558b3d5dff8bb289c0b27b7e5ac24b14facccb7a'
+  ) {
+    problems.push('must preserve the entire existing journal body byte-for-byte');
+  }
+
+  assert.deepEqual(problems, []);
 });
 
 test('preserves the AIC-2 layered-boundary retry hold in its historical journal entry', () => {
