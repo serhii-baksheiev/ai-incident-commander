@@ -83,9 +83,66 @@ test('preserves the final AIC-2 retry gate stop in its historical journal entry'
   assert.match(retryEntry, /deployment API objects created: 1[^\n]*deploy executions: 0/);
 });
 
-test('records the Agent Rig refresh final gate hold in the newest journal entry', () => {
+test('records the AIC-2 layered-boundary retry hold in the newest journal entry', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, newestEntry, ...historicalEntries] = journal.split(/^### /m);
+  const [, newestEntry] = journal.split(/^### /m);
+  const requiredEvidence = [
+    {
+      label: 'uses an AIC-2 layered-boundary retry heading',
+      pattern: /^AIC-2 layered-boundary retry.*(?:held|escalated).*$/mi,
+    },
+    {
+      label: 'records HOLD and escalation at the exact head',
+      pattern:
+        /(?:HOLD[\s\S]*escalat|escalat[\s\S]*HOLD)[\s\S]*0b1caa43de290c53253b587975b74e4f5f6f118e/i,
+    },
+    { label: 'records owner ruling comment 14724', pattern: /Jira comment `14724`/ },
+    {
+      label: 'points to comment 14759 as the durable TDD and validation source',
+      pattern: /Jira comment `14759`.*durable source.*(?:TDD|validation)/i,
+    },
+    {
+      label: 'records the blocking npm alias regex finding',
+      pattern:
+        /(?:block(?:er|ing)?.*npm[ -]alias.*(?:regex|regular expression)|npm[ -]alias.*(?:regex|regular expression).*block)/i,
+    },
+    { label: 'records that no PR was opened', pattern: /no PR was opened/i },
+    { label: 'records that nothing was merged', pattern: /nothing was merged/i },
+    { label: 'records that no pr-ship round ran', pattern: /no.*pr-ship.*round/i },
+    {
+      label: 'records the preserved remote branch and worktree',
+      pattern:
+        /remote branch `fix\/aic-2-layered-boundaries`[\s\S]*worktree.*(?:preserv|remain)/i,
+    },
+    { label: 'stops on the budget rule', pattern: /\*\*stopped at\*\* — `budget`/ },
+    {
+      label: 'does not estimate agent, CI, or deploy counts absent from durable state',
+      pattern:
+        /\*\*cost\*\* — .*exact earlier (?:agent\/CI\/deploy|agent, CI, and deploy) counts.*not retained in durable run state.*not estimated/i,
+    },
+  ];
+  const problems = requiredEvidence
+    .filter(({ pattern }) => !pattern.test(newestEntry))
+    .map(({ label }) => label);
+
+  if (/(?:14 failed|14\/14|34\/34|npm audit|install.*scripts)/i.test(newestEntry)) {
+    problems.push('must leave TDD, audit, and install-script measurements in Jira comment 14759');
+  }
+
+  const costLine = newestEntry.match(/^- \*\*cost\*\* — .*$/m)?.[0] ?? '';
+  if (/\d/.test(costLine)) {
+    problems.push('must not invent numeric agent, CI, or deploy costs');
+  }
+
+  assert.deepEqual(problems, []);
+});
+
+test('preserves the Agent Rig refresh final gate hold in its historical journal entry', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, ...entries] = journal.split(/^### /m);
+  const entryIndex = entries.findIndex((entry) => entry.startsWith('Agent Rig refresh held at final gate'));
+  const newestEntry = entries[entryIndex];
+  assert.notEqual(entryIndex, -1, 'the Agent Rig refresh entry must remain present');
   const requiredEvidence = [
     {
       label: 'uses the exact final-gate heading',
@@ -178,9 +235,11 @@ test('records the Agent Rig refresh final gate hold in the newest journal entry'
     problems.push('must not conflate gate inputs with the final pr-ship aggregate');
   }
 
-  const historicalJournal = historicalEntries.join('### ');
+  const historicalMarker = '### Agent Rig refresh held at final gate';
+  const historicalOffset = journal.indexOf(historicalMarker);
+  const historicalJournal = journal.slice(historicalOffset);
   const historicalHash = createHash('sha256').update(historicalJournal).digest('hex');
-  if (historicalHash !== '38a57ec622f257bf129381ce4b7f21da0230cbaabfa9d8a066fab070e2eac4b1') {
+  if (historicalHash !== '7b6be138bf75d48c4ee629f7ab7d30689c2992c5ebb9f2340419f8bddb529f9a') {
     problems.push('must preserve the prior journal history byte-for-byte after the new entry');
   }
 
