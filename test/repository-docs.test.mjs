@@ -21,10 +21,13 @@ test('links the root README to the canonical architecture brief', () => {
   assert.match(readme, /\[Architecture v1\]\(docs\/incident-commander-architecture-v1\.md\)/);
 });
 
-test('describes planned product behavior as design while implementation has not started', () => {
+test('describes planned product behavior as design and points to the next domain milestone', () => {
   const readme = readFileSync(readmePath, 'utf8');
   assert.match(readme, /AI Incident Commander is designed as a stateful investigation system/);
-  assert.match(readme, /\| Product implementation \| Not started \|/);
+  assert.match(
+    readme,
+    /\| Next implementation milestone \| \[AIC-3 — canonical domain types and IncidentState\]/,
+  );
 });
 
 test('records the latest Jira adapter stop without claiming the issue', () => {

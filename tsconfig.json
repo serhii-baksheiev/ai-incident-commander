@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/domain" },
+    { "path": "packages/graph" },
+    { "path": "packages/roles" },
+    { "path": "packages/tools" },
+    { "path": "packages/persistence" },
+    { "path": "packages/evals" },
+    { "path": "packages/observability" },
+    { "path": "apps/cli" }
+  ]
+}

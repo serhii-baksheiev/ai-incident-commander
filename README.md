@@ -60,9 +60,9 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 | Area | Status |
 | --- | --- |
 | Architecture | **Frozen for v0.1 implementation** |
-| Repository and engineering guardrails | Initialized |
-| Product implementation | Not started |
-| Current implementation milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
+| Repository scaffold | Present — see `test/repository-scaffold.test.mjs` › "scaffolds every v0.1 repository area without an agents product package" |
+| Architecture boundaries | Enforced — see `test/repository-scaffold.test.mjs` › "lint rejects a domain import from LangChain" and › "lint rejects a domain import from graph" |
+| Next implementation milestone | [AIC-3 — canonical domain types and IncidentState](https://sbaksheiev.atlassian.net/browse/AIC-3) |
 
 The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
 
@@ -75,7 +75,7 @@ The architecture freeze means structural changes must be justified by benchmark 
 | [Journal](journal/README.md) | Human-readable run history and journal conventions |
 | [Self-hosted runner](RUNNER.md) | Linux ARM64 CI VM on an Apple Silicon macOS host, security boundary, and operations |
 
-## Planned repository shape
+## Repository shape
 
 ```text
 apps/cli                  command-line entrypoint
@@ -92,8 +92,18 @@ incident-lab              isolated live incident environment
 
 The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph, tools, and evals depend on the domain rather than the reverse.
 
+## Local checks
+
+The command and lockfile contract is pinned by `test/repository-scaffold.test.mjs` › "publishes one clean-install build, lint, test, and CLI command contract". CI ordering is pinned by the same file › "runs CI lint, build, and tests from a clean npm install"; build and boot are exercised by › "builds the TypeScript workspace through its public root command" and › "boots the minimal CLI through its public root command".
+
+```bash
+npm ci
+npm run lint
+npm run build
+npm test
+npm run cli -- --help
+```
+
 ## Engineering workflow
 
 Work is tracked in the [AIC Jira project](https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards) and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
-
-Until the scaffold milestone lands, this repository intentionally publishes no install, build, or run command. The commands documented here should always describe an executable repository rather than a planned one.
