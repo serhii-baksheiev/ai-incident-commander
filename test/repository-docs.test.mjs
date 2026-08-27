@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
@@ -57,24 +58,133 @@ test('preserves the first final AIC-2 gate stop in its historical journal entry'
   );
 });
 
-test('records the final AIC-2 retry gate stop in the newest journal entry', () => {
+test('preserves the final AIC-2 retry gate stop in its historical journal entry', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, newestEntry] = journal.split(/^### /m);
+  const retryEntry = journal
+    .split(/^### /m)
+    .find((entry) =>
+      entry.startsWith('AIC-2 retry escalated after final AST gate; native Jira queue held'),
+    );
 
-  assert.match(newestEntry, /^AIC-2 retry[^\n]*$/m);
-  assert.match(newestEntry, /AIC-2[^\n]*`documented-stall`/);
-  assert.match(newestEntry, /gate round 2\/2/);
-  assert.match(newestEntry, /pushed head `516044f32a8e402edff7fd404dd835e72111878c`/);
-  assert.match(newestEntry, /Jira comment `14722`/);
-  assert.match(newestEntry, /prose `SHIP`[^\n]*code `HOLD`[^\n]*security `HOLD`/);
-  assert.match(newestEntry, /no PR was opened and nothing was merged/);
-  assert.match(newestEntry, /\*\*stopped at\*\* — `nothing-selectable`/);
-  assert.match(newestEntry, /43 blocked implementation tasks/);
-  assert.match(newestEntry, /AIC-2[^\n]*(?:parked[^\n]*escalated|escalated[^\n]*parked)/);
-  assert.match(newestEntry, /AIC-3 remains blocked by AIC-2/);
-  assert.match(newestEntry, /deployment object `6116833287`/);
-  assert.match(newestEntry, /no status[^\n]*no workflow run/);
-  assert.match(newestEntry, /deployment API objects created: 1[^\n]*deploy executions: 0/);
+  assert.notEqual(retryEntry, undefined, 'the final AIC-2 retry entry must remain present');
+  assert.match(retryEntry, /^AIC-2 retry[^\n]*$/m);
+  assert.match(retryEntry, /AIC-2[^\n]*`documented-stall`/);
+  assert.match(retryEntry, /gate round 2\/2/);
+  assert.match(retryEntry, /pushed head `516044f32a8e402edff7fd404dd835e72111878c`/);
+  assert.match(retryEntry, /Jira comment `14722`/);
+  assert.match(retryEntry, /prose `SHIP`[^\n]*code `HOLD`[^\n]*security `HOLD`/);
+  assert.match(retryEntry, /no PR was opened and nothing was merged/);
+  assert.match(retryEntry, /\*\*stopped at\*\* — `nothing-selectable`/);
+  assert.match(retryEntry, /43 blocked implementation tasks/);
+  assert.match(retryEntry, /AIC-2[^\n]*(?:parked[^\n]*escalated|escalated[^\n]*parked)/);
+  assert.match(retryEntry, /AIC-3 remains blocked by AIC-2/);
+  assert.match(retryEntry, /deployment object `6116833287`/);
+  assert.match(retryEntry, /no status[^\n]*no workflow run/);
+  assert.match(retryEntry, /deployment API objects created: 1[^\n]*deploy executions: 0/);
+});
+
+test('records the Agent Rig refresh final gate hold in the newest journal entry', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, newestEntry, ...historicalEntries] = journal.split(/^### /m);
+  const requiredEvidence = [
+    {
+      label: 'uses the exact final-gate heading',
+      pattern: /^Agent Rig refresh held at final gate$/m,
+    },
+    {
+      label: 'pins the product branch and exact head',
+      pattern:
+        /product branch `chore\/update-agent-rig-components`[^\n]*`61ad0535214623c02eb1efebdfc0c71cd3505f5f`/,
+    },
+    {
+      label: 'pins the GitHub upstream generator head and package version',
+      pattern:
+        /GitHub upstream generator[^\n]*`0bdb6b18232703f1d600e7fcfd0afbefaa5228ff`[^\n]*package version `0\.6\.0`/,
+    },
+    {
+      label: 'records the final pr-ship verdict',
+      pattern: /pr-ship round 2\/2[^\n]*`HOLD`/,
+    },
+    {
+      label: 'records code exact-head coverage',
+      pattern: /(?:code[^\n]*exact-head coverage|exact-head coverage[^\n]*code)/i,
+    },
+    {
+      label: 'records prose exact-head coverage',
+      pattern: /(?:prose[^\n]*exact-head coverage|exact-head coverage[^\n]*prose)/i,
+    },
+    {
+      label: 'records security exact-head coverage',
+      pattern: /(?:security[^\n]*exact-head coverage|exact-head coverage[^\n]*security)/i,
+    },
+    {
+      label: 'records Codex rulebook authorization omissions',
+      pattern: /Codex rulebook authorization omissions/i,
+    },
+    {
+      label: 'records the global unattended-flag collision',
+      pattern: /global unattended-flag collision/i,
+    },
+    {
+      label: 'records board-name terminal injection',
+      pattern: /board-name terminal injection/i,
+    },
+    {
+      label: 'records locally dead test pointers',
+      pattern: /locally dead test pointers/i,
+    },
+    {
+      label: 'records all local tests passing',
+      pattern: /local[^\n]*27\/27|27\/27[^\n]*local/i,
+    },
+    {
+      label: 'records doctor GO',
+      pattern: /doctor[^\n]*`GO`/i,
+    },
+    {
+      label: 'does not claim Windows runtime coverage',
+      pattern: /(?:no Windows runtime|Windows runtime[^\n]*(?:unavailable|not run|not executed))/i,
+    },
+    {
+      label: 'records that no PR or merge occurred',
+      pattern: /no PR was opened and nothing was merged/,
+    },
+    {
+      label: 'records the preserved remote branch and worktree',
+      pattern:
+        /remote branch `chore\/update-agent-rig-components`[^\n]*worktree[^\n]*preserved/i,
+    },
+    {
+      label: 'pins the prior run evidence',
+      pattern: /`\.claude\/runs\/20260827-rig-update-resume`/,
+    },
+    {
+      label: 'distinguishes durable gate inputs from the final pr-ship aggregate',
+      pattern:
+        /durable gate input reports: 4 \(1 premise, 3 reviewers\); final pr-ship aggregate report: 1; exact test-writer\/subagent turn count was not retained and is not estimated; CI runs: 0; deploys: 0/,
+    },
+  ];
+  const problems = requiredEvidence
+    .filter(({ pattern }) => !pattern.test(newestEntry))
+    .map(({ label }) => label);
+
+  if (/(?:published[- ]tarball|npm publish|npm registry)/i.test(newestEntry)) {
+    problems.push('must attribute 0.6.0 to the GitHub generator head, not a published tarball');
+  }
+  if (/(?:test-writer subagents:\s*1|premise\/reviewer subagents:\s*4)/i.test(newestEntry)) {
+    problems.push('must not present an inferred subagent count as durable evidence');
+  }
+  if (/durable gate reports:\s*4\b/i.test(newestEntry)) {
+    problems.push('must not conflate gate inputs with the final pr-ship aggregate');
+  }
+
+  const historicalJournal = historicalEntries.join('### ');
+  const historicalHash = createHash('sha256').update(historicalJournal).digest('hex');
+  if (historicalHash !== '38a57ec622f257bf129381ce4b7f21da0230cbaabfa9d8a066fab070e2eac4b1') {
+    problems.push('must preserve the prior journal history byte-for-byte after the new entry');
+  }
+
+  assert.deepEqual(problems, []);
 });
 
 test('preserves the shipped runner PR and exact CI evidence in its historical entry', () => {
