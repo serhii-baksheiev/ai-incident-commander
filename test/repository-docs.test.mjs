@@ -142,8 +142,9 @@ test('records the AIC-3 documented stall before preserving all prior journal his
   assert.doesNotMatch(newestEntry, /AIC-4[^\n]*unblocked/i);
   assert.match(
     newestEntry,
-    /test-writer: 1 agent \/ 4 Red passes; reviewer subagent runs: 5; CI runs: 1; deploys: 0/,
+    /exact test-writer turn count was not persisted and is not estimated; reviewer subagent runs: 5; CI runs: 1; deploys: 0/,
   );
+  assert.doesNotMatch(newestEntry, /test-writer: 1 agent \/ 4 Red passes/);
   assert.match(newestEntry, /`\.claude\/runs\/20260827-aic3-domain-types`/);
 
   const historicalMarker = '### AIC-2 delivered; first implementation milestone unblocked';
