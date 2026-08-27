@@ -97,13 +97,10 @@ test('records the AIC-2 layered-boundary retry hold in the newest journal entry'
         /(?:HOLD[\s\S]*escalat|escalat[\s\S]*HOLD)[\s\S]*0b1caa43de290c53253b587975b74e4f5f6f118e/i,
     },
     { label: 'records owner ruling comment 14724', pattern: /Jira comment `14724`/ },
-    { label: 'records escalation comment 14759', pattern: /Jira comment `14759`/ },
     {
-      label: 'records Red with 14 failed tests',
-      pattern: /Red.*(?:14 failed|14\/14.*fail)/i,
+      label: 'points to comment 14759 as the durable TDD and validation source',
+      pattern: /Jira comment `14759`.*durable source.*(?:TDD|validation)/i,
     },
-    { label: 'records Green 14/14', pattern: /Green.*14\/14/i },
-    { label: 'records the full 34/34 suite', pattern: /full.*34\/34/i },
     {
       label: 'records the blocking npm alias regex finding',
       pattern:
@@ -118,10 +115,24 @@ test('records the AIC-2 layered-boundary retry hold in the newest journal entry'
         /remote branch `fix\/aic-2-layered-boundaries`[\s\S]*worktree.*(?:preserv|remain)/i,
     },
     { label: 'stops on the budget rule', pattern: /\*\*stopped at\*\* — `budget`/ },
+    {
+      label: 'does not estimate agent, CI, or deploy counts absent from durable state',
+      pattern:
+        /\*\*cost\*\* — .*exact earlier (?:agent\/CI\/deploy|agent, CI, and deploy) counts.*not retained in durable run state.*not estimated/i,
+    },
   ];
   const problems = requiredEvidence
     .filter(({ pattern }) => !pattern.test(newestEntry))
     .map(({ label }) => label);
+
+  if (/(?:14 failed|14\/14|34\/34|npm audit|install.*scripts)/i.test(newestEntry)) {
+    problems.push('must leave TDD, audit, and install-script measurements in Jira comment 14759');
+  }
+
+  const costLine = newestEntry.match(/^- \*\*cost\*\* — .*$/m)?.[0] ?? '';
+  if (/\d/.test(costLine)) {
+    problems.push('must not invent numeric agent, CI, or deploy costs');
+  }
 
   assert.deepEqual(problems, []);
 });
@@ -131,7 +142,6 @@ test('preserves the Agent Rig refresh final gate hold in its historical journal 
   const [, ...entries] = journal.split(/^### /m);
   const entryIndex = entries.findIndex((entry) => entry.startsWith('Agent Rig refresh held at final gate'));
   const newestEntry = entries[entryIndex];
-  const historicalEntries = entries.slice(entryIndex + 1);
   assert.notEqual(entryIndex, -1, 'the Agent Rig refresh entry must remain present');
   const requiredEvidence = [
     {
@@ -225,9 +235,11 @@ test('preserves the Agent Rig refresh final gate hold in its historical journal 
     problems.push('must not conflate gate inputs with the final pr-ship aggregate');
   }
 
-  const historicalJournal = historicalEntries.join('### ');
+  const historicalMarker = '### Agent Rig refresh held at final gate';
+  const historicalOffset = journal.indexOf(historicalMarker);
+  const historicalJournal = journal.slice(historicalOffset);
   const historicalHash = createHash('sha256').update(historicalJournal).digest('hex');
-  if (historicalHash !== '38a57ec622f257bf129381ce4b7f21da0230cbaabfa9d8a066fab070e2eac4b1') {
+  if (historicalHash !== '7b6be138bf75d48c4ee629f7ab7d30689c2992c5ebb9f2340419f8bddb529f9a') {
     problems.push('must preserve the prior journal history byte-for-byte after the new entry');
   }
 
