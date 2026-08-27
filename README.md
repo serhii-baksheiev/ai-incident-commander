@@ -61,10 +61,10 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 | --- | --- |
 | Architecture | **Frozen for v0.1 implementation** |
 | Repository and engineering guardrails | Scaffolded; Definition-of-Done command gate not configured |
-| Product implementation | Canonical domain contracts implemented — see [`round-trips every canonical contract through public schemas`](test/domain-contract.test.mjs); graph behavior not started |
+| Product implementation | Canonical domain contracts plus a persistent SQLite checkpointer and kill/resume spike implemented — see [`resumes the persisted run after process death without duplicate records or budget drift`](test/persistent-resume.test.mjs) |
 | Scaffold milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
-| Completed implementation milestone | [AIC-3 — canonical domain types and IncidentState](https://sbaksheiev.atlassian.net/browse/AIC-3) |
-| Next implementation milestone | [AIC-4 — persistent checkpointer and kill/resume](https://sbaksheiev.atlassian.net/browse/AIC-4) |
+| Completed implementation milestone | [AIC-4 — persistent checkpointer and kill/resume](https://sbaksheiev.atlassian.net/browse/AIC-4) |
+| Next implementation milestone | [AIC-5 — \[K4\] Implement read-only tool registry and record/replay adapters](https://sbaksheiev.atlassian.net/browse/AIC-5) |
 
 The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
 
@@ -106,4 +106,6 @@ npm run lint
 npm run build
 npm test
 npm run cli -- --help
+npm run cli -- start --run-id demo --checkpoint ./checkpoints.sqlite
+npm run cli -- resume --run-id demo --checkpoint ./checkpoints.sqlite
 ```

@@ -8,5 +8,8 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@langchain/langgraph-checkpoint-sqlite": "1.0.4"
   }
 }

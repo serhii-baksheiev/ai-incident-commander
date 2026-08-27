@@ -10,6 +10,8 @@
     }
   },
   "dependencies": {
-    "@aic/domain": "0.0.0"
+    "@aic/domain": "0.0.0",
+    "@langchain/langgraph": "1.4.13",
+    "@langchain/langgraph-checkpoint": "1.1.5"
   }
 }
