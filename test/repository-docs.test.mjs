@@ -83,9 +83,56 @@ test('preserves the final AIC-2 retry gate stop in its historical journal entry'
   assert.match(retryEntry, /deployment API objects created: 1[^\n]*deploy executions: 0/);
 });
 
-test('records the Agent Rig refresh final gate hold in the newest journal entry', () => {
+test('records the AIC-2 layered-boundary retry hold in the newest journal entry', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, newestEntry, ...historicalEntries] = journal.split(/^### /m);
+  const [, newestEntry] = journal.split(/^### /m);
+  const requiredEvidence = [
+    {
+      label: 'uses an AIC-2 layered-boundary retry heading',
+      pattern: /^AIC-2 layered-boundary retry.*(?:held|escalated).*$/mi,
+    },
+    {
+      label: 'records HOLD and escalation at the exact head',
+      pattern:
+        /(?:HOLD[\s\S]*escalat|escalat[\s\S]*HOLD)[\s\S]*0b1caa43de290c53253b587975b74e4f5f6f118e/i,
+    },
+    { label: 'records owner ruling comment 14724', pattern: /Jira comment `14724`/ },
+    { label: 'records escalation comment 14759', pattern: /Jira comment `14759`/ },
+    {
+      label: 'records Red with 14 failed tests',
+      pattern: /Red.*(?:14 failed|14\/14.*fail)/i,
+    },
+    { label: 'records Green 14/14', pattern: /Green.*14\/14/i },
+    { label: 'records the full 34/34 suite', pattern: /full.*34\/34/i },
+    {
+      label: 'records the blocking npm alias regex finding',
+      pattern:
+        /(?:block(?:er|ing)?.*npm[ -]alias.*(?:regex|regular expression)|npm[ -]alias.*(?:regex|regular expression).*block)/i,
+    },
+    { label: 'records that no PR was opened', pattern: /no PR was opened/i },
+    { label: 'records that nothing was merged', pattern: /nothing was merged/i },
+    { label: 'records that no pr-ship round ran', pattern: /no.*pr-ship.*round/i },
+    {
+      label: 'records the preserved remote branch and worktree',
+      pattern:
+        /remote branch `fix\/aic-2-layered-boundaries`[\s\S]*worktree.*(?:preserv|remain)/i,
+    },
+    { label: 'stops on the budget rule', pattern: /\*\*stopped at\*\* — `budget`/ },
+  ];
+  const problems = requiredEvidence
+    .filter(({ pattern }) => !pattern.test(newestEntry))
+    .map(({ label }) => label);
+
+  assert.deepEqual(problems, []);
+});
+
+test('preserves the Agent Rig refresh final gate hold in its historical journal entry', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, ...entries] = journal.split(/^### /m);
+  const entryIndex = entries.findIndex((entry) => entry.startsWith('Agent Rig refresh held at final gate'));
+  const newestEntry = entries[entryIndex];
+  const historicalEntries = entries.slice(entryIndex + 1);
+  assert.notEqual(entryIndex, -1, 'the Agent Rig refresh entry must remain present');
   const requiredEvidence = [
     {
       label: 'uses the exact final-gate heading',
