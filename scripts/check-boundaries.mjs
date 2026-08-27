@@ -126,6 +126,7 @@ function moduleLoadsIn(path) {
   const requireFactoryNames = new Set(['createRequire']);
   const requireNames = new Set(['require']);
   const resolverNames = new Set();
+  const nodeModuleNamespaceNames = new Set();
   const referenceKind = (node) => {
     const current = unwrap(node);
     if (!current) return null;
@@ -159,25 +160,76 @@ function moduleLoadsIn(path) {
     names.add(name);
     return true;
   };
-  const addProducedAlias = (name, expression) => {
-    const current = unwrap(expression);
-    if (!name || !current) return false;
-    const kind = referenceKind(current);
+  const addKindAlias = (kind, name) => {
     if (kind === 'evaluator') return addAlias(evaluatorNames, name);
     if (kind === 'require-factory') return addAlias(requireFactoryNames, name);
     if (kind === 'require') return addAlias(requireNames, name);
     if (kind === 'require-resolve') return addAlias(resolverNames, name);
+    return false;
+  };
+  const returnedReferenceKind = (node) => {
+    const current = unwrap(node);
+    if (!['ArrowFunctionExpression', 'FunctionExpression'].includes(current?.type)) return null;
+    if (current.body.type !== 'BlockStatement') return referenceKind(current.body);
+    const returns = current.body.body
+      .filter((statement) => statement.type === 'ReturnStatement')
+      .map((statement) => referenceKind(statement.argument))
+      .filter(Boolean);
+    return returns.length === 1 ? returns[0] : null;
+  };
+  const addProducedAlias = (name, expression) => {
+    const current = unwrap(expression);
+    if (!name || !current) return false;
+    const kind = referenceKind(current);
+    if (kind) return addKindAlias(kind, name);
     if (
       ['CallExpression', 'OptionalCallExpression', 'NewExpression'].includes(current.type) &&
       referenceKind(current.callee) === 'require-factory'
     ) {
       return addAlias(requireNames, name);
     }
+    if (['CallExpression', 'OptionalCallExpression'].includes(current.type)) {
+      return addKindAlias(returnedReferenceKind(current.callee), name);
+    }
     return false;
+  };
+  const bindingName = (node) => {
+    const current = unwrap(node);
+    if (current?.type === 'Identifier') return current.name;
+    if (current?.type === 'AssignmentPattern' && current.left.type === 'Identifier') {
+      return current.left.name;
+    }
+    return null;
+  };
+  const addDestructuredAliases = (pattern, expression) => {
+    const current = unwrap(expression);
+    if (pattern?.type !== 'ObjectPattern' || current?.type !== 'Identifier') return false;
+    const fromGlobal = current.name === 'globalThis';
+    const fromNodeModule = nodeModuleNamespaceNames.has(current.name);
+    if (!fromGlobal && !fromNodeModule) return false;
+
+    let changed = false;
+    for (const property of pattern.properties) {
+      if (property.type !== 'ObjectProperty') continue;
+      const propertyName = property.computed
+        ? literalValue(property.key)
+        : property.key?.name ?? literalValue(property.key);
+      const name = bindingName(property.value);
+      if (fromGlobal && ['eval', 'Function'].includes(propertyName)) {
+        changed = addAlias(evaluatorNames, name) || changed;
+      }
+      if (fromNodeModule && propertyName === 'createRequire') {
+        changed = addAlias(requireFactoryNames, name) || changed;
+      }
+    }
+    return changed;
   };
   walk(tree.program, (node) => {
     if (node.type !== 'ImportDeclaration' || literalValue(node.source) !== 'node:module') return;
     for (const specifier of node.specifiers) {
+      if (specifier.type === 'ImportNamespaceSpecifier') {
+        addAlias(nodeModuleNamespaceNames, specifier.local?.name);
+      }
       if (
         specifier.type === 'ImportSpecifier' &&
         (specifier.imported?.name ?? literalValue(specifier.imported)) === 'createRequire'
@@ -193,8 +245,14 @@ function moduleLoadsIn(path) {
       if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier') {
         aliasesChanged = addProducedAlias(node.id.name, node.init) || aliasesChanged;
       }
+      if (node.type === 'VariableDeclarator' && node.id?.type === 'ObjectPattern') {
+        aliasesChanged = addDestructuredAliases(node.id, node.init) || aliasesChanged;
+      }
       if (node.type === 'AssignmentExpression' && node.left?.type === 'Identifier') {
         aliasesChanged = addProducedAlias(node.left.name, node.right) || aliasesChanged;
+      }
+      if (node.type === 'AssignmentExpression' && node.left?.type === 'ObjectPattern') {
+        aliasesChanged = addDestructuredAliases(node.left, node.right) || aliasesChanged;
       }
     });
   } while (aliasesChanged);
@@ -367,6 +425,12 @@ function inspectTsconfig(configurationPath) {
   }
 
   const pathBase = resolve(dirname(configurationPath), configuration.compilerOptions?.baseUrl ?? '.');
+  const pathBaseReason = forbiddenReason(configurationPath, pathBase);
+  if (pathBaseReason) {
+    violations.push(
+      `${displayPath} baseUrl targets ${configuration.compilerOptions.baseUrl}: ${pathBaseReason}`,
+    );
+  }
   for (const [alias, mappings] of Object.entries(configuration.compilerOptions?.paths ?? {})) {
     const visibleAlias = alias.replaceAll('*', '');
     if (forbiddenReason(configurationPath, visibleAlias)) continue;
@@ -385,6 +449,11 @@ function inspectTsconfig(configurationPath) {
   for (const extended of stringLeaves(configuration.extends)) {
     if (!extended.startsWith('.') && !isAbsolute(extended)) continue;
     const target = resolve(dirname(configurationPath), extended);
+    const reason = forbiddenReason(configurationPath, target);
+    if (reason) {
+      violations.push(`${displayPath} extends ${extended}: ${reason}`);
+      continue;
+    }
     inspectTsconfig(target.endsWith('.json') ? target : `${target}.json`);
   }
 }

@@ -743,6 +743,76 @@ test('round-two boundary lint rejects an absolute source import from graph', () 
   );
 });
 
+test('pre-round-two boundary lint rejects a destructured global eval alias', () => {
+  const result = probeDomainSource(
+    [
+      'const { eval: execute } = globalThis;',
+      'export const loadGraph = () => execute(\'import("@aic/graph")\');',
+      '',
+    ].join('\n'),
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted a destructured global eval alias\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('pre-round-two boundary lint rejects destructured createRequire from a module namespace', () => {
+  const result = probeDomainSource(
+    [
+      'import * as moduleApi from "node:module";',
+      'const { createRequire: makeRequire } = moduleApi;',
+      'const load = makeRequire(import.meta.url);',
+      'export const graph = load("@aic/graph");',
+      '',
+    ].join('\n'),
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted destructured createRequire\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('pre-round-two boundary lint rejects a closure-produced require loader', () => {
+  const result = probeDomainSource(
+    'const load = (() => require)(); export const graph = load("@aic/graph");\n',
+  );
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted require returned by an IIFE\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('pre-round-two boundary lint rejects a domain tsconfig extending graph', () => {
+  const result = probeDomainJson('tsconfig.json', (configuration) => {
+    configuration.extends = '../graph/tsconfig.json';
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted tsconfig extends ../graph/tsconfig.json\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
+test('pre-round-two boundary lint rejects a domain baseUrl pointing at graph', () => {
+  const result = probeDomainJson('tsconfig.json', (configuration) => {
+    configuration.compilerOptions.baseUrl = '../graph';
+  });
+
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint accepted compilerOptions.baseUrl=../graph\n${commandDiagnostics('npm run lint', result)}`,
+  );
+});
+
 test('does not introduce a prebuilt autonomous tool loop', () => {
   const sourceFiles = [
     ...walkSourceFiles(resolve(projectRoot, 'apps')),
