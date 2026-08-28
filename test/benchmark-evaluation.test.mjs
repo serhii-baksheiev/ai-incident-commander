@@ -240,6 +240,71 @@ async function capturePersistence(metadata) {
   };
 }
 
+async function capturePluralPersistence() {
+  const persistBenchmarkExperiments = requireFunction(
+    observability,
+    'persistBenchmarkExperiments',
+    '@aic/observability',
+  );
+  const evaluateBenchmarkRecord = requireFunction(
+    evals,
+    'evaluateBenchmarkRecord',
+    '@aic/evals',
+  );
+  const buildExperiment = (experimentId) => {
+    const records = createPlan(experimentId);
+    return {
+      records,
+      results: records.map((record) =>
+        evaluateBenchmarkRecord({
+          record,
+          outcome: perfectOutcomeFor(record.scenario),
+        }),
+      ),
+    };
+  };
+  const experiments = [
+    buildExperiment('baseline-v0.1'),
+    buildExperiment('candidate-v0.1'),
+  ];
+  const datasetId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const events = [];
+  const examples = [];
+  const projects = [];
+  const runs = [];
+  const client = {
+    async createDataset() {
+      events.push('createDataset');
+      return { id: datasetId };
+    },
+    async createExamples(payloads) {
+      events.push('createExamples');
+      examples.push(...payloads);
+      return payloads.map((payload) => ({ ...payload }));
+    },
+    async createProject(payload) {
+      events.push('createProject');
+      projects.push(payload);
+      return { id: `project-${payload.projectName}` };
+    },
+    async createRun(payload) {
+      events.push('createRun');
+      runs.push(payload);
+    },
+    async createFeedback() {
+      events.push('createFeedback');
+    },
+  };
+
+  await persistBenchmarkExperiments({
+    client,
+    datasetName: 'aic-v0.1-benchmark',
+    experiments,
+  });
+
+  return { datasetId, experiments, events, examples, projects, runs };
+}
+
 test('plans three fresh runs for each of five stable benchmark examples', () => {
   assert.equal(evals.REPLAY_SCENARIOS.length, 5);
   const baseline = createPlan('baseline-v0.1');
@@ -443,6 +508,50 @@ test('runs all fifteen fresh records through createInvestigationGraph and replay
   }
 });
 
+test('persists baseline and candidate against one shared native dataset', async () => {
+  const captured = await capturePluralPersistence();
+
+  assert.equal(
+    captured.events.filter((event) => event === 'createDataset').length,
+    1,
+  );
+  assert.equal(
+    captured.events.filter((event) => event === 'createExamples').length,
+    1,
+  );
+  assert.equal(captured.examples.length, 15);
+  assert.equal(captured.projects.length, 2);
+  assert.deepEqual(
+    captured.projects.map(({ projectName }) => projectName),
+    ['baseline-v0.1', 'candidate-v0.1'],
+  );
+  assert.equal(
+    captured.projects.every(
+      ({ referenceDatasetId }) => referenceDatasetId === captured.datasetId,
+    ),
+    true,
+  );
+  assert.equal(captured.runs.length, 30);
+
+  const nativeExampleIds = captured.examples.map(({ id }) => id).sort();
+  const baselineExampleIds = captured.runs
+    .filter(({ project_name }) => project_name === 'baseline-v0.1')
+    .map(({ reference_example_id }) => reference_example_id)
+    .sort();
+  const candidateExampleIds = captured.runs
+    .filter(({ project_name }) => project_name === 'candidate-v0.1')
+    .map(({ reference_example_id }) => reference_example_id)
+    .sort();
+
+  assert.deepEqual(baselineExampleIds, nativeExampleIds);
+  assert.deepEqual(candidateExampleIds, nativeExampleIds);
+  assert.deepEqual(
+    captured.experiments[0].records.map(({ exampleId }) => exampleId),
+    captured.experiments[1].records.map(({ exampleId }) => exampleId),
+    'baseline and candidate must reuse the same stable example identities',
+  );
+});
+
 test('creates native examples before a dataset-backed experiment and links every run', async () => {
   const captured = await capturePersistence(benchmarkVersions);
 
@@ -480,7 +589,12 @@ test('creates native examples before a dataset-backed experiment and links every
   const nativeExampleIds = new Set(captured.examples.map(({ id }) => id));
   captured.runs.forEach((run, index) => {
     assert.equal(run.id, captured.records[index].runId);
-    assert.equal(run.session_name, 'baseline-v0.1');
+    assert.equal(run.project_name, 'baseline-v0.1');
+    assert.equal(
+      Object.hasOwn(run, 'session_name'),
+      false,
+      'LangSmith 0.9.0 CreateRunParams declares project_name, not session_name',
+    );
     assert.equal(run.reference_example_id, captured.records[index].exampleId);
     assert.equal(nativeExampleIds.has(run.reference_example_id), true);
   });

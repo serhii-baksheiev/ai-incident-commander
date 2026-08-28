@@ -41,7 +41,7 @@ export interface LangSmithPersistenceClient {
     inputs: Readonly<Record<string, unknown>>;
     outputs: Readonly<Record<string, unknown>>;
     extra: Readonly<{ metadata: Readonly<Record<string, unknown>> }>;
-    session_name: string;
+    project_name: string;
     reference_example_id: string;
   }>): Promise<void>;
   createFeedback(feedback: Readonly<{
@@ -172,18 +172,9 @@ function createNativeExamples(
   });
 }
 
-export async function persistBenchmarkExperiment({
-  client = createLangSmithClient(),
-  datasetName,
-  experiment,
-}: Readonly<{
-  client?: LangSmithPersistenceClient;
-  datasetName: string;
-  experiment: PersistedBenchmarkExperiment;
-}>): Promise<void> {
-  if (datasetName.length === 0) {
-    throw new Error('datasetName must not be empty');
-  }
+function requireExperiment(
+  experiment: PersistedBenchmarkExperiment,
+): PersistedBenchmarkRecord {
   if (experiment.records.length !== experiment.results.length) {
     throw new Error('benchmark records and results must have the same length');
   }
@@ -198,14 +189,22 @@ export async function persistBenchmarkExperiment({
   ) {
     throw new Error('benchmark records must belong to one experiment');
   }
+  return firstRecord;
+}
 
-  const dataset = await client.createDataset(datasetName);
-  await client.createExamples(
-    createNativeExamples(dataset.id, experiment.records),
-  );
+async function persistPreparedExperiment({
+  client,
+  datasetId,
+  experiment,
+}: Readonly<{
+  client: LangSmithPersistenceClient;
+  datasetId: string;
+  experiment: PersistedBenchmarkExperiment;
+}>): Promise<void> {
+  const firstRecord = requireExperiment(experiment);
   const project = await client.createProject({
     projectName: firstRecord.experimentId,
-    referenceDatasetId: dataset.id,
+    referenceDatasetId: datasetId,
   });
 
   for (const [index, record] of experiment.records.entries()) {
@@ -220,7 +219,7 @@ export async function persistBenchmarkExperiment({
       id: record.runId,
       name: `benchmark:${record.metadata.scenarioId}`,
       run_type: 'chain',
-      session_name: record.experimentId,
+      project_name: record.experimentId,
       inputs: {
         exampleId: record.exampleId,
         scenarioId: record.metadata.scenarioId,
@@ -243,4 +242,66 @@ export async function persistBenchmarkExperiment({
       });
     }
   }
+}
+
+export async function persistBenchmarkExperiments({
+  client = createLangSmithClient(),
+  datasetName,
+  experiments,
+}: Readonly<{
+  client?: LangSmithPersistenceClient;
+  datasetName: string;
+  experiments: readonly PersistedBenchmarkExperiment[];
+}>): Promise<void> {
+  if (datasetName.length === 0) {
+    throw new Error('datasetName must not be empty');
+  }
+  const firstExperiment = experiments[0];
+  if (firstExperiment === undefined) {
+    throw new Error('at least one benchmark experiment is required');
+  }
+  requireExperiment(firstExperiment);
+
+  const nativeExampleIds = new Set(
+    firstExperiment.records.map(({ exampleId }) => exampleId),
+  );
+  for (const experiment of experiments.slice(1)) {
+    requireExperiment(experiment);
+    if (
+      experiment.records.length !== nativeExampleIds.size ||
+      experiment.records.some(({ exampleId }) => !nativeExampleIds.has(exampleId))
+    ) {
+      throw new Error(
+        'benchmark experiments must share the same native example identities',
+      );
+    }
+  }
+
+  const dataset = await client.createDataset(datasetName);
+  await client.createExamples(
+    createNativeExamples(dataset.id, firstExperiment.records),
+  );
+  for (const experiment of experiments) {
+    await persistPreparedExperiment({
+      client,
+      datasetId: dataset.id,
+      experiment,
+    });
+  }
+}
+
+export async function persistBenchmarkExperiment({
+  client = createLangSmithClient(),
+  datasetName,
+  experiment,
+}: Readonly<{
+  client?: LangSmithPersistenceClient;
+  datasetName: string;
+  experiment: PersistedBenchmarkExperiment;
+}>): Promise<void> {
+  await persistBenchmarkExperiments({
+    client,
+    datasetName,
+    experiments: [experiment],
+  });
 }
