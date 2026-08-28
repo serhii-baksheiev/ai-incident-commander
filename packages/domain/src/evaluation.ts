@@ -18,6 +18,15 @@ export interface EvaluatePredictionsOptions {
   readonly evaluateRule: (
     input: PredictionEvidencePair,
   ) => EvidenceAssessment | null;
+}
+
+export interface EvaluatePredictionsResult {
+  readonly assessments: EvidenceAssessment[];
+  readonly residual: PredictionEvidencePair[];
+}
+
+export interface InterpretResidualEvidenceOptions {
+  readonly residual: readonly PredictionEvidencePair[];
   readonly evaluateSemantic: (
     input: PredictionEvidencePair,
   ) => EvidenceAssessment | Promise<EvidenceAssessment>;
@@ -32,6 +41,7 @@ export interface DeriveHypothesisStatusOptions {
 
 function requireRuleAssessment(
   assessment: EvidenceAssessment,
+  pair: PredictionEvidencePair,
 ): EvidenceAssessment {
   const parsed = EvidenceAssessmentSchema.parse(assessment);
 
@@ -39,11 +49,12 @@ function requireRuleAssessment(
     throw new Error('evaluateRule assessment producedBy must be rule');
   }
 
-  return parsed;
+  return requireMatchingPair(parsed, pair);
 }
 
 function requireSemanticAssessment(
   assessment: EvidenceAssessment,
+  pair: PredictionEvidencePair,
 ): EvidenceAssessment {
   const parsed = EvidenceAssessmentSchema.parse(assessment);
 
@@ -55,16 +66,35 @@ function requireSemanticAssessment(
     throw new Error('evaluateSemantic assessment requires promptVersion');
   }
 
-  return parsed;
+  return requireMatchingPair(parsed, pair);
 }
 
-export async function evaluatePredictions({
+function requireMatchingPair(
+  assessment: EvidenceAssessment,
+  pair: PredictionEvidencePair,
+): EvidenceAssessment {
+  if (assessment.evidenceId !== pair.evidence.id) {
+    throw new Error('assessment evidenceId must match the evaluated evidence');
+  }
+
+  if (assessment.predictionId !== pair.prediction.id) {
+    throw new Error('assessment predictionId must match the evaluated prediction');
+  }
+
+  if (assessment.hypothesisId !== pair.prediction.hypothesisId) {
+    throw new Error('assessment hypothesisId must match the evaluated hypothesis');
+  }
+
+  return assessment;
+}
+
+export function evaluatePredictions({
   predictions,
   evidence,
   evaluateRule,
-  evaluateSemantic,
-}: EvaluatePredictionsOptions): Promise<EvidenceAssessment[]> {
+}: EvaluatePredictionsOptions): EvaluatePredictionsResult {
   const assessments: EvidenceAssessment[] = [];
+  const residual: PredictionEvidencePair[] = [];
 
   for (const prediction of predictions) {
     for (const evidenceItem of evidence) {
@@ -72,13 +102,25 @@ export async function evaluatePredictions({
       const ruleAssessment = evaluateRule(input);
 
       if (ruleAssessment !== null) {
-        assessments.push(requireRuleAssessment(ruleAssessment));
-        continue;
+        assessments.push(requireRuleAssessment(ruleAssessment, input));
+      } else {
+        residual.push(input);
       }
-
-      const semanticAssessment = await evaluateSemantic(input);
-      assessments.push(requireSemanticAssessment(semanticAssessment));
     }
+  }
+
+  return { assessments, residual };
+}
+
+export async function interpretResidualEvidence({
+  residual,
+  evaluateSemantic,
+}: InterpretResidualEvidenceOptions): Promise<EvidenceAssessment[]> {
+  const assessments: EvidenceAssessment[] = [];
+
+  for (const pair of residual) {
+    const assessment = await evaluateSemantic(pair);
+    assessments.push(requireSemanticAssessment(assessment, pair));
   }
 
   return assessments;
@@ -108,6 +150,23 @@ export function deriveHypothesisStatus({
     hypothesisPredictions.map((prediction) => [prediction.id, prediction]),
   );
   const evidenceById = new Map(evidence.map((item) => [item.id, item]));
+
+  for (const assessment of hypothesisAssessments) {
+    if (!evidenceById.has(assessment.evidenceId)) {
+      throw new Error(
+        `assessment evidenceId does not reference supplied evidence: ${assessment.evidenceId}`,
+      );
+    }
+
+    if (
+      assessment.predictionId !== undefined &&
+      !predictionsById.has(assessment.predictionId)
+    ) {
+      throw new Error(
+        `assessment predictionId does not reference this hypothesis: ${assessment.predictionId}`,
+      );
+    }
+  }
 
   const isRejected = hypothesisAssessments.some((assessment) => {
     if (

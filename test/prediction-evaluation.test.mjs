@@ -47,6 +47,15 @@ function requirePredictionEvaluator() {
   return domain.evaluatePredictions;
 }
 
+function requireResidualInterpreter() {
+  assert.equal(
+    typeof domain.interpretResidualEvidence,
+    'function',
+    '@aic/domain must publish interpretResidualEvidence(options)',
+  );
+  return domain.interpretResidualEvidence;
+}
+
 function requireStatusDeriver() {
   assert.equal(
     typeof domain.deriveHypothesisStatus,
@@ -56,31 +65,31 @@ function requireStatusDeriver() {
   return domain.deriveHypothesisStatus;
 }
 
-test('uses a mechanical assessment without invoking residual semantic interpretation', async () => {
+test('returns mechanical assessments and residual pairs without invoking semantic interpretation', () => {
   const evaluatePredictions = requirePredictionEvaluator();
-  let semanticCalls = 0;
   const ruleAssessment = assessment();
+  const residualEvidence = { ...evidence, id: 'evidence-residual' };
 
-  const result = await evaluatePredictions({
+  const result = evaluatePredictions({
     predictions: [prediction],
-    evidence: [evidence],
-    evaluateRule: () => ruleAssessment,
-    evaluateSemantic: async () => {
-      semanticCalls += 1;
-      throw new Error('semantic interpretation must not run for mechanical criteria');
-    },
+    evidence: [evidence, residualEvidence],
+    evaluateRule: ({ evidence: evidenceItem }) =>
+      evidenceItem.id === evidence.id ? ruleAssessment : null,
   });
 
-  assert.deepEqual(result, [ruleAssessment]);
-  assert.equal(result[0].producedBy, 'rule');
-  assert.equal(semanticCalls, 0);
+  if (result instanceof Promise) void result.catch(() => {});
+  assert.equal(result instanceof Promise, false, 'mechanical evaluation must stay synchronous');
+  assert.deepEqual(result, {
+    assessments: [ruleAssessment],
+    residual: [{ prediction, evidence: residualEvidence }],
+  });
 });
 
 test('rejects a mechanical assessment that was not produced by a rule', async () => {
   const evaluatePredictions = requirePredictionEvaluator();
 
   await assert.rejects(
-    () =>
+    async () =>
       evaluatePredictions({
         predictions: [prediction],
         evidence: [evidence],
@@ -89,24 +98,21 @@ test('rejects a mechanical assessment that was not produced by a rule', async ()
             producedBy: 'llm',
             promptVersion: 'residual-evidence-v1',
           }),
-        evaluateSemantic: async () => assessment(),
       }),
     /producedBy.*rule/i,
   );
 });
 
-test('routes only residual evidence through a structured LLM assessment', async () => {
-  const evaluatePredictions = requirePredictionEvaluator();
+test('interprets residual pairs as structured LLM assessments', async () => {
+  const interpretResidualEvidence = requireResidualInterpreter();
   let semanticCalls = 0;
   const semanticAssessment = assessment({
     producedBy: 'llm',
     promptVersion: 'residual-evidence-v1',
   });
 
-  const result = await evaluatePredictions({
-    predictions: [prediction],
-    evidence: [evidence],
-    evaluateRule: () => null,
+  const result = await interpretResidualEvidence({
+    residual: [{ prediction, evidence }],
     evaluateSemantic: async () => {
       semanticCalls += 1;
       return semanticAssessment;
@@ -120,18 +126,120 @@ test('routes only residual evidence through a structured LLM assessment', async 
 });
 
 test('rejects an LLM assessment without prompt metadata', async () => {
-  const evaluatePredictions = requirePredictionEvaluator();
+  const interpretResidualEvidence = requireResidualInterpreter();
 
   await assert.rejects(
     () =>
-      evaluatePredictions({
-        predictions: [prediction],
-        evidence: [evidence],
-        evaluateRule: () => null,
+      interpretResidualEvidence({
+        residual: [{ prediction, evidence }],
         evaluateSemantic: async () => assessment({ producedBy: 'llm' }),
       }),
     /promptVersion/i,
   );
+});
+
+test('rejects rule assessments whose relation ids do not match the evaluated pair', async () => {
+  const evaluatePredictions = requirePredictionEvaluator();
+
+  for (const [field, value] of [
+    ['evidenceId', 'other-evidence'],
+    ['predictionId', 'other-prediction'],
+    ['hypothesisId', 'other-hypothesis'],
+  ]) {
+    await assert.rejects(
+      async () =>
+        evaluatePredictions({
+          predictions: [prediction],
+          evidence: [evidence],
+          evaluateRule: () => assessment({ [field]: value }),
+        }),
+      new RegExp(field, 'i'),
+      `${field} must match the mechanically evaluated pair`,
+    );
+  }
+});
+
+test('rejects semantic assessments whose relation ids do not match the residual pair', async () => {
+  const interpretResidualEvidence = requireResidualInterpreter();
+
+  for (const [field, value] of [
+    ['evidenceId', 'other-evidence'],
+    ['predictionId', 'other-prediction'],
+    ['hypothesisId', 'other-hypothesis'],
+  ]) {
+    await assert.rejects(
+      () =>
+        interpretResidualEvidence({
+          residual: [{ prediction, evidence }],
+          evaluateSemantic: async () =>
+            assessment({
+              producedBy: 'llm',
+              promptVersion: 'residual-evidence-v1',
+              [field]: value,
+            }),
+        }),
+      new RegExp(field, 'i'),
+      `${field} must match the residual pair`,
+    );
+  }
+});
+
+test('fails closed when a relevant assessment references orphaned evidence or prediction data', () => {
+  const deriveHypothesisStatus = requireStatusDeriver();
+  const confirmedPrediction = { ...prediction, status: 'confirmed' };
+  const otherPrediction = {
+    ...prediction,
+    id: 'other-prediction',
+    hypothesisId: 'other-hypothesis',
+    status: 'confirmed',
+  };
+  const secondEvidence = { ...evidence, id: 'evidence-2' };
+  const validSupport = assessment({ id: 'valid-support', strength: 'medium' });
+  const invalidCases = [
+    {
+      name: 'missing evidence',
+      value: assessment({
+        id: 'missing-evidence-support',
+        evidenceId: 'missing-evidence',
+        strength: 'medium',
+      }),
+      expected: /evidenceId/i,
+    },
+    {
+      name: 'missing prediction',
+      value: assessment({
+        id: 'missing-prediction-support',
+        evidenceId: secondEvidence.id,
+        predictionId: 'missing-prediction',
+        strength: 'medium',
+      }),
+      expected: /predictionId/i,
+    },
+    {
+      name: 'prediction from another hypothesis',
+      value: assessment({
+        id: 'mismatched-prediction-support',
+        evidenceId: secondEvidence.id,
+        predictionId: otherPrediction.id,
+        strength: 'medium',
+      }),
+      expected: /predictionId|hypothesisId/i,
+    },
+  ];
+
+  for (const invalid of invalidCases) {
+    assert.throws(
+      () =>
+        deriveHypothesisStatus({
+          hypothesisId: prediction.hypothesisId,
+          predictions: [confirmedPrediction, otherPrediction],
+          assessments: [validSupport, invalid.value],
+          evidence: [evidence, secondEvidence],
+        }),
+      invalid.expected,
+      `${invalid.name} must fail closed instead of promoting the hypothesis`,
+    );
+  }
 });
 
 test('derives candidate, supported, weakened, and rejected by the v0.1 precedence rules', () => {
