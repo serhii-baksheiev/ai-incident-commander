@@ -4,15 +4,10 @@ import type {
   Evidence,
   IncidentConclusion,
   InvestigationStop,
+  ToolId,
 } from '@aic/domain';
-import {
-  createReplayFixtureKey,
-  type ToolResult,
-} from '@aic/tools';
-import {
-  REPLAY_FIXTURE_VERSION,
-  type ReplayFixture,
-} from '@aic/tools/replay';
+
+const SCENARIO_FIXTURE_VERSION = 1 as const;
 
 export interface EvidenceFingerprint {
   readonly kind: Evidence['kind'];
@@ -33,7 +28,7 @@ export interface IncidentScenario {
     expectedEvidence: readonly EvidenceFingerprint[];
     misleadingEvidence?: readonly EvidenceFingerprint[];
   }>;
-  readonly fixture: ReplayFixture;
+  readonly fixture: ScenarioReplayFixture;
 }
 
 export interface BenchmarkInvocation {
@@ -42,20 +37,27 @@ export interface BenchmarkInvocation {
   readonly threadId: string;
 }
 
-type ReplayEntry = Readonly<{
-  toolId: string;
+export type RecordedToolResult =
+  | Readonly<{ status: 'ok'; output: Evidence[] }>
+  | Readonly<{ status: 'unavailable'; reason: string }>
+  | Readonly<{ status: 'error'; message: string }>;
+
+export type ScenarioReplayEntry = Readonly<{
+  toolId: ToolId;
   input: unknown;
-  result: ToolResult<Evidence[]>;
+  result: RecordedToolResult;
 }>;
 
-const replayFixture = (...entries: readonly ReplayEntry[]): ReplayFixture => ({
-  version: REPLAY_FIXTURE_VERSION,
-  responses: Object.fromEntries(
-    entries.map(({ toolId, input, result }) => [
-      createReplayFixtureKey(toolId, input),
-      result,
-    ]),
-  ),
+export interface ScenarioReplayFixture {
+  readonly version: typeof SCENARIO_FIXTURE_VERSION;
+  readonly entries: readonly ScenarioReplayEntry[];
+}
+
+const replayFixture = (
+  ...entries: readonly ScenarioReplayEntry[]
+): ScenarioReplayFixture => ({
+  version: SCENARIO_FIXTURE_VERSION,
+  entries,
 });
 
 const evidence = (
@@ -73,7 +75,7 @@ const evidence = (
   rawRef: `replay://${source}/${id}`,
 });
 
-const ok = (...output: readonly Evidence[]): ToolResult<Evidence[]> => ({
+const ok = (...output: readonly Evidence[]): RecordedToolResult => ({
   status: 'ok',
   output: [...output],
 });
@@ -84,7 +86,7 @@ const confirmationDeploymentFingerprint: EvidenceFingerprint = {
   predicate: 'version == payments-v17 during the incident window',
 };
 
-const confirmationDeploymentEntry: ReplayEntry = {
+const confirmationDeploymentEntry: ScenarioReplayEntry = {
   toolId: 'deployments',
   input: { service: 'payments', window: 'incident' },
   result: ok(

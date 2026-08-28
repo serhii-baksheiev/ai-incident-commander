@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@aic/domain": "0.0.0",
-    "@aic/graph": "0.0.0",
-    "@aic/tools": "0.0.0"
+    "@aic/graph": "0.0.0"
   }
 }

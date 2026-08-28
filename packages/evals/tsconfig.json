@@ -7,9 +7,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "references": [
-    { "path": "../domain" },
-    { "path": "../graph" },
-    { "path": "../tools" }
-  ]
+  "references": [{ "path": "../domain" }, { "path": "../graph" }]
 }

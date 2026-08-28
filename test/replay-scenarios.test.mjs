@@ -1,14 +1,22 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 
 import { InvestigationStopSchema } from '@aic/domain';
 import * as evals from '@aic/evals';
-import { READ_ONLY_TOOL_REGISTRY } from '@aic/tools';
+import {
+  createReplayFixtureKey,
+  READ_ONLY_TOOL_REGISTRY,
+} from '@aic/tools';
 import {
   REPLAY_FIXTURE_VERSION,
   ReplayToolAdapter,
 } from '@aic/tools/replay';
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const expectedScenarioIds = [
   'bad-deployment',
@@ -58,16 +66,32 @@ function requireBenchmarkInvocationFactory() {
   return evals.createBenchmarkInvocation;
 }
 
-function decodeReplayFixtureKey(key) {
-  const separator = key.indexOf(':');
-  assert.notEqual(separator, -1, `invalid replay fixture key: ${key}`);
-  const version = Number(key.slice(0, separator));
-  const [toolId, serializedInput] = JSON.parse(key.slice(separator + 1));
-  return {
-    version,
-    toolId,
-    input: JSON.parse(serializedInput),
-  };
+function requireFixtureEntries(scenario) {
+  assert.ok(
+    Array.isArray(scenario.fixture.entries),
+    `${scenario.id}.fixture must expose versioned replay entries`,
+  );
+  assert.ok(
+    scenario.fixture.entries.length > 0,
+    `${scenario.id}.fixture entries must not be empty`,
+  );
+  return scenario.fixture.entries;
+}
+
+function replayFixtureFromEntries(scenario) {
+  const entries = requireFixtureEntries(scenario);
+  const responses = Object.fromEntries(
+    entries.map(({ toolId, input, result }) => [
+      createReplayFixtureKey(toolId, input),
+      result,
+    ]),
+  );
+  assert.equal(
+    Object.keys(responses).length,
+    entries.length,
+    `${scenario.id} replay entries must have unique keys`,
+  );
+  return { version: scenario.fixture.version, responses };
 }
 
 function assertNonEmptyString(value, label) {
@@ -92,6 +116,24 @@ test('publishes exactly the five named v0.1 replay scenarios', () => {
   assert.deepEqual(
     scenarios.map(({ id }) => id).sort(),
     [...expectedScenarioIds].sort(),
+  );
+});
+
+test('keeps @aic/evals independent of @aic/tools', () => {
+  const manifest = JSON.parse(
+    readFileSync(resolve(projectRoot, 'packages/evals/package.json'), 'utf8'),
+  );
+  const declaringSections = [
+    'dependencies',
+    'devDependencies',
+    'peerDependencies',
+    'optionalDependencies',
+  ].filter((section) => manifest[section]?.['@aic/tools'] !== undefined);
+
+  assert.deepEqual(
+    declaringSections,
+    [],
+    'the frozen evals dependency direction is domain/graph only',
   );
 });
 
@@ -170,27 +212,58 @@ test('replays every versioned deterministic fixture through ReplayToolAdapter', 
 
   for (const scenario of scenarios) {
     assert.equal(scenario.fixture.version, REPLAY_FIXTURE_VERSION);
-    const responses = Object.entries(scenario.fixture.responses);
-    assert.ok(responses.length > 0, `${scenario.id} fixture must not be empty`);
-    const adapter = new ReplayToolAdapter(scenario.fixture);
+    const entries = requireFixtureEntries(scenario);
+    const fixture = replayFixtureFromEntries(scenario);
+    const adapter = new ReplayToolAdapter(fixture);
 
-    for (const [key, expected] of responses) {
-      const request = decodeReplayFixtureKey(key);
-      assert.equal(request.version, REPLAY_FIXTURE_VERSION);
+    for (const entry of entries) {
+      assert.deepEqual(
+        Object.keys(entry).sort(),
+        ['input', 'result', 'toolId'],
+        `${scenario.id} entry must preserve the replay boundary shape`,
+      );
       assert.equal(
-        registeredToolIds.has(request.toolId),
+        registeredToolIds.has(entry.toolId),
         true,
         `${scenario.id} must stay inside the closed read-only registry`,
       );
       assert.deepEqual(
-        await adapter.execute(request.toolId, request.input),
-        expected,
+        await adapter.execute(entry.toolId, entry.input),
+        entry.result,
         `${scenario.id} must replay its recorded response`,
       );
       assert.deepEqual(
-        await adapter.execute(request.toolId, request.input),
-        expected,
+        await adapter.execute(entry.toolId, entry.input),
+        entry.result,
         `${scenario.id} replay must be deterministic`,
+      );
+    }
+  }
+});
+
+test('links every ground-truth fingerprint to replay evidence by kind and source', () => {
+  const scenarios = requireReplayScenarios();
+
+  for (const scenario of scenarios) {
+    const evidence = requireFixtureEntries(scenario).flatMap(({ result }) =>
+      result.status === 'ok' && Array.isArray(result.output)
+        ? result.output
+        : [],
+    );
+    const fingerprints = [
+      ...scenario.groundTruth.expectedEvidence,
+      ...(scenario.groundTruth.misleadingEvidence ?? []),
+    ];
+
+    for (const fingerprint of fingerprints) {
+      assert.equal(
+        evidence.some(
+          (item) =>
+            item.kind === fingerprint.kind &&
+            item.source === fingerprint.source,
+        ),
+        true,
+        `${scenario.id} fixture must contain ${fingerprint.kind} evidence from ${fingerprint.source}`,
       );
     }
   }
@@ -204,18 +277,30 @@ test('keeps A and B deployment context identical and changes only causal detail'
   assert.ok(scenarioA);
   assert.ok(scenarioB);
 
-  const keysA = Object.keys(scenarioA.fixture.responses).sort();
-  const keysB = Object.keys(scenarioB.fixture.responses).sort();
+  const entriesA = new Map(
+    requireFixtureEntries(scenarioA).map((entry) => [
+      createReplayFixtureKey(entry.toolId, entry.input),
+      entry,
+    ]),
+  );
+  const entriesB = new Map(
+    requireFixtureEntries(scenarioB).map((entry) => [
+      createReplayFixtureKey(entry.toolId, entry.input),
+      entry,
+    ]),
+  );
+  const keysA = [...entriesA.keys()].sort();
+  const keysB = [...entriesB.keys()].sort();
   assert.deepEqual(keysA, keysB, 'A/B must replay the same investigation inputs');
 
   const deploymentKeys = keysA.filter(
-    (key) => decodeReplayFixtureKey(key).toolId === 'deployments',
+    (key) => entriesA.get(key).toolId === 'deployments',
   );
   assert.ok(deploymentKeys.length > 0, 'A/B must include deployment context');
   for (const key of deploymentKeys) {
     assert.deepEqual(
-      scenarioA.fixture.responses[key],
-      scenarioB.fixture.responses[key],
+      entriesA.get(key).result,
+      entriesB.get(key).result,
       'A/B deployment context must be identical',
     );
   }
@@ -223,8 +308,8 @@ test('keeps A and B deployment context identical and changes only causal detail'
   const differingResponseKeys = keysA.filter(
     (key) =>
       !isDeepStrictEqual(
-        scenarioA.fixture.responses[key],
-        scenarioB.fixture.responses[key],
+        entriesA.get(key).result,
+        entriesB.get(key).result,
       ),
   );
   assert.equal(
