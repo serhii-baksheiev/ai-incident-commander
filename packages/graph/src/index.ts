@@ -13,6 +13,8 @@ import {
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
+export * from './investigation.js';
+
 export const GRAPH_DEPENDENCIES = [DOMAIN_LAYER] as const;
 
 export type PersistentInvestigationTest = Readonly<{
