@@ -17,12 +17,15 @@ export interface LangSmithPersistenceClient {
     outputs: Readonly<Record<string, unknown>>;
     extra: Readonly<{ metadata: Readonly<Record<string, unknown>> }>;
     session_name: string;
+    reference_example_id: string;
   }>): Promise<void>;
-  createFeedback(
-    runId: string,
-    key: string,
-    feedback: Readonly<{ score: number }>,
-  ): Promise<unknown>;
+  readProject(query: Readonly<{ projectName: string }>): Promise<Readonly<{ id: string }>>;
+  createFeedback(feedback: Readonly<{
+    runId: string;
+    sessionId: string;
+    key: string;
+    score: number;
+  }>): Promise<unknown>;
 }
 
 export interface PersistedBenchmarkRecord {
@@ -89,10 +92,17 @@ export async function persistBenchmarkEvaluation({
       metrics,
     },
     extra: { metadata: record.metadata },
+    reference_example_id: record.exampleId,
   });
 
+  const project = await client.readProject({
+    projectName: record.experimentId,
+  });
   for (const metric of Object.values(metrics)) {
-    await client.createFeedback(record.runId, metric.key, {
+    await client.createFeedback({
+      runId: record.runId,
+      sessionId: project.id,
+      key: metric.key,
       score: metric.score,
     });
   }

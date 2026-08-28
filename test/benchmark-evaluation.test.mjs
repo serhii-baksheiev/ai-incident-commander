@@ -8,6 +8,8 @@ import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
 import * as graph from '@aic/graph';
 import * as observability from '@aic/observability';
+import { createReplayFixtureKey } from '@aic/tools';
+import { ReplayToolAdapter } from '@aic/tools/replay';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -31,6 +33,9 @@ const expectedLifecycleNodes = [
   'challenge_hypothesis',
   'propose_conclusion',
 ];
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const benchmarkVersions = {
   graphVersion: 'graph-v0.1',
@@ -80,6 +85,108 @@ function perfectOutcomeFor(scenario) {
   };
 }
 
+function persistedFixture() {
+  const metadata = {
+    ...benchmarkVersions,
+    runId: 'run-observability-1',
+    scenarioId: 'bad-deployment',
+    humanReview: false,
+  };
+  const record = {
+    experimentId: 'baseline-v0.1',
+    exampleId: '11111111-1111-5111-8111-111111111111',
+    runId: metadata.runId,
+    threadId: metadata.runId,
+    metadata,
+  };
+  const result = {
+    experimentId: record.experimentId,
+    exampleId: record.exampleId,
+    runId: record.runId,
+    actualStopKind: 'sufficient',
+    metrics: {
+      unsupported_claim_rate: { key: 'unsupported_claim_rate', score: 0 },
+      evidence_coverage: { key: 'evidence_coverage', score: 1 },
+      termination_correctness: { key: 'termination_correctness', score: 1 },
+      composite_score: { key: 'composite_score', score: 1 },
+    },
+  };
+  return { metadata, record, result };
+}
+
+function replayFixtureFor(scenario) {
+  return {
+    version: scenario.fixture.version,
+    responses: Object.fromEntries(
+      scenario.fixture.entries.map(({ toolId, input, result }) => [
+        createReplayFixtureKey(toolId, input),
+        result,
+      ]),
+    ),
+  };
+}
+
+function replayBackedNodes(record, traces, replayCounts) {
+  const replay = new ReplayToolAdapter(replayFixtureFor(record.scenario));
+  const leaderId = `leader-${record.runId}`;
+  const visit = (nodeName, update = {}) => async () => {
+    traces.get(record.runId).push(nodeName);
+    return update;
+  };
+
+  return {
+    normalize_incident: visit('normalize_incident'),
+    collect_baseline: visit('collect_baseline'),
+    generate_hypotheses: visit('generate_hypotheses', {
+      hypotheses: [{ id: leaderId, statement: 'replay candidate', createdBy: 'initial' }],
+    }),
+    derive_predictions: visit('derive_predictions'),
+    plan_investigation: visit('plan_investigation'),
+    async execute_investigation(state) {
+      traces.get(record.runId).push('execute_investigation');
+      if (state.evidence.length > 0) return {};
+
+      const evidence = [];
+      for (const entry of record.scenario.fixture.entries) {
+        const replayed = await replay.execute(entry.toolId, entry.input);
+        assert.deepEqual(replayed, entry.result);
+        replayCounts.set(record.runId, replayCounts.get(record.runId) + 1);
+        if (replayed.status === 'ok') evidence.push(...replayed.output);
+      }
+      return { evidence };
+    },
+    evaluate_predictions: visit('evaluate_predictions'),
+    interpret_residual_evidence: visit('interpret_residual_evidence'),
+    derive_hypothesis_state: visit('derive_hypothesis_state'),
+    async termination_check() {
+      traces.get(record.runId).push('termination_check');
+      return { route: 'terminal', stopKind: 'sufficient', leaderId };
+    },
+    async challenge_hypothesis(_state, challengedLeaderId) {
+      traces.get(record.runId).push('challenge_hypothesis');
+      assert.equal(challengedLeaderId, leaderId);
+      return {
+        alternative: {
+          id: `alternative-${record.runId}`,
+          statement: 'replay evidence survives a mandatory challenge',
+          createdBy: 'challenge',
+        },
+        discriminatingTests: [{
+          id: `challenge-test-${record.runId}`,
+          predictionId: `challenge-prediction-${record.runId}`,
+          tool: record.scenario.fixture.entries[0].toolId,
+          input: { replay: true },
+          cost: 'cheap',
+          status: 'planned',
+        }],
+      };
+    },
+    propose_conclusion: visit('propose_conclusion', {
+      conclusion: { kind: 'inconclusive', causes: [] },
+    }),
+  };
+}
+
 test('plans at least three fresh benchmark runs for each of exactly five scenarios', () => {
   assert.equal(evals.REPLAY_SCENARIOS.length, 5);
   const records = createPlan('baseline-v0.1');
@@ -112,6 +219,7 @@ test('plans at least three fresh benchmark runs for each of exactly five scenari
     assert.equal(record.experimentId, 'baseline-v0.1');
     assert.equal(typeof record.exampleId, 'string');
     assert.notEqual(record.exampleId.length, 0);
+    assert.match(record.exampleId, uuidPattern);
     assert.equal(record.threadId, record.runId);
     assert.equal(record.metadata.runId, record.runId);
     assert.equal(record.metadata.scenarioId, record.scenario.id);
@@ -267,40 +375,52 @@ test('keeps results comparable by stable example and distinct experiment identit
   });
 });
 
-test('runs and records the baseline experiment across every planned example', async () => {
-  const runBenchmarkExperiment = requireFunction(
+test('runs and records every baseline example through the investigation graph and replay seam', async () => {
+  const runGraphBenchmarkExperiment = requireFunction(
     evals,
-    'runBenchmarkExperiment',
+    'runGraphBenchmarkExperiment',
     '@aic/evals',
   );
-  const investigated = [];
+  const traces = new Map();
+  const replayCounts = new Map();
   const recorded = [];
 
-  const experiment = await runBenchmarkExperiment({
+  const experiment = await runGraphBenchmarkExperiment({
     experimentId: 'baseline-v0.1',
     scenarios: evals.REPLAY_SCENARIOS,
     runsPerScenario: 3,
     metadata: benchmarkVersions,
-    async investigate(record) {
-      investigated.push({
-        exampleId: record.exampleId,
-        runId: record.runId,
-        scenarioId: record.scenario.id,
-      });
-      return perfectOutcomeFor(record.scenario);
+    createNodes(record) {
+      traces.set(record.runId, []);
+      replayCounts.set(record.runId, 0);
+      return replayBackedNodes(record, traces, replayCounts);
     },
     async recordEvaluation(payload) {
       recorded.push(payload);
     },
   });
 
-  assert.equal(investigated.length, 15);
   assert.equal(recorded.length, 15);
   assert.equal(experiment.records.length, 15);
   assert.equal(experiment.results.length, 15);
-  assert.equal(new Set(investigated.map(({ scenarioId }) => scenarioId)).size, 5);
-  assert.equal(new Set(investigated.map(({ runId }) => runId)).size, 15);
+  assert.equal(traces.size, 15);
+  assert.equal(new Set(experiment.records.map(({ scenario }) => scenario.id)).size, 5);
   assert.deepEqual(experiment.stopKindDistribution, { sufficient: 15 });
+
+  const expectedGraphTrace = [
+    ...expectedLifecycleNodes.slice(0, 10),
+    'challenge_hypothesis',
+    ...expectedLifecycleNodes.slice(5, 10),
+    'propose_conclusion',
+  ];
+  for (const record of experiment.records) {
+    assert.deepEqual(traces.get(record.runId), expectedGraphTrace);
+    assert.equal(
+      replayCounts.get(record.runId),
+      record.scenario.fixture.entries.length,
+      `${record.exampleId} must execute all recorded tool calls via ReplayToolAdapter`,
+    );
+  }
   assert.deepEqual(
     recorded.map(({ record, result }) => ({
       exampleId: result.exampleId,
@@ -323,48 +443,24 @@ test('persists complete metadata and three metric feedback keys through an injec
     'persistBenchmarkEvaluation',
     '@aic/observability',
   );
-  const metadata = {
-    ...benchmarkVersions,
-    runId: 'run-observability-1',
-    scenarioId: 'bad-deployment',
-    humanReview: false,
-  };
-  const record = {
-    experimentId: 'baseline-v0.1',
-    exampleId: 'bad-deployment:1',
-    runId: metadata.runId,
-    threadId: metadata.runId,
-    metadata,
-  };
-  const result = {
-    experimentId: record.experimentId,
-    exampleId: record.exampleId,
-    runId: record.runId,
-    actualStopKind: 'sufficient',
-    metrics: {
-      unsupported_claim_rate: {
-        key: 'unsupported_claim_rate',
-        score: 0,
-      },
-      evidence_coverage: { key: 'evidence_coverage', score: 1 },
-      termination_correctness: {
-        key: 'termination_correctness',
-        score: 1,
-      },
-      composite_score: {
-        key: 'composite_score',
-        score: 1,
-      },
-    },
-  };
+  const { metadata, record, result } = persistedFixture();
   const capturedRuns = [];
   const capturedFeedback = [];
+  const clientEvents = [];
+  const langSmithSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const fakeClient = {
     async createRun(payload) {
       capturedRuns.push(payload);
+      clientEvents.push('createRun');
     },
-    async createFeedback(runId, key, feedback) {
-      capturedFeedback.push({ runId, key, feedback });
+    async readProject(query) {
+      clientEvents.push('readProject');
+      assert.deepEqual(query, { projectName: record.experimentId });
+      return { id: langSmithSessionId };
+    },
+    async createFeedback(...args) {
+      capturedFeedback.push(args);
+      clientEvents.push('createFeedback');
     },
   };
   let networkCalls = 0;
@@ -383,18 +479,65 @@ test('persists complete metadata and three metric feedback keys through an injec
   assert.equal(networkCalls, 0);
   assert.equal(capturedRuns.length, 1);
   assert.deepEqual(capturedRuns[0].extra.metadata, metadata);
+  assert.deepEqual(clientEvents, [
+    'createRun',
+    'readProject',
+    'createFeedback',
+    'createFeedback',
+    'createFeedback',
+  ]);
   assert.deepEqual(
     Object.keys(capturedRuns[0].outputs.metrics).sort(),
     expectedMetricKeys,
   );
+  assert.equal(
+    capturedFeedback.every((args) => args.length === 1),
+    true,
+    'langsmith@0.9.0 feedback must use the object form carrying sessionId',
+  );
   assert.deepEqual(
-    capturedFeedback.map(({ key }) => key).sort(),
+    capturedFeedback.map(([payload]) => payload.key).sort(),
     expectedMetricKeys,
   );
-  assert.equal(new Set(capturedFeedback.map(({ key }) => key)).size, 3);
   assert.equal(
-    capturedFeedback.every(({ runId }) => runId === record.runId),
+    capturedFeedback.every(([payload]) => payload.runId === record.runId),
     true,
+  );
+  assert.equal(
+    capturedFeedback.every(([payload]) => payload.sessionId === langSmithSessionId),
+    true,
+  );
+  assert.deepEqual(
+    capturedFeedback.map(([payload]) => Object.keys(payload).sort()),
+    Array.from({ length: 3 }, () => ['key', 'runId', 'score', 'sessionId']),
+  );
+});
+
+test('links each persisted LangSmith run to its stable benchmark example', async () => {
+  const persistBenchmarkEvaluation = requireFunction(
+    observability,
+    'persistBenchmarkEvaluation',
+    '@aic/observability',
+  );
+  const { record, result } = persistedFixture();
+  const capturedRuns = [];
+  const fakeClient = {
+    async createRun(payload) {
+      capturedRuns.push(payload);
+    },
+    async readProject() {
+      return { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' };
+    },
+    async createFeedback() {},
+  };
+
+  await persistBenchmarkEvaluation({ client: fakeClient, record, result });
+
+  assert.equal(capturedRuns.length, 1);
+  assert.equal(
+    capturedRuns[0].reference_example_id,
+    record.exampleId,
+    'LangSmith comparisons require native reference_example_id linkage',
   );
 });
 

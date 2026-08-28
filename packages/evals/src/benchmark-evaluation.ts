@@ -1,4 +1,16 @@
-import type { IncidentConclusion, InvestigationStop } from '@aic/domain';
+import { createHash } from 'node:crypto';
+
+import {
+  INCIDENT_STATE_SCHEMA_VERSION,
+  STATUS_RULES_VERSION,
+  type IncidentConclusion,
+  type IncidentState,
+  type InvestigationStop,
+} from '@aic/domain';
+import {
+  createInvestigationGraph,
+  type InvestigationNodes,
+} from '@aic/graph';
 
 import {
   createBenchmarkInvocation,
@@ -79,6 +91,23 @@ function requireNonEmpty(value: string, label: string): void {
   if (value.length === 0) throw new Error(`${label} must not be empty`);
 }
 
+function stableExampleId(scenarioId: string, runNumber: number): string {
+  const bytes = createHash('sha256')
+    .update(`aic-v0.1:${scenarioId}:${runNumber}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
 export function createBenchmarkPlan({
   experimentId,
   scenarios,
@@ -103,7 +132,7 @@ export function createBenchmarkPlan({
       const invocation = createBenchmarkInvocation(scenario);
       return {
         experimentId,
-        exampleId: `${scenario.id}:${index + 1}`,
+        exampleId: stableExampleId(scenario.id, index + 1),
         scenario,
         runId: invocation.runId,
         threadId: invocation.threadId,
@@ -261,6 +290,86 @@ export async function runBenchmarkExperiment({
     results,
     stopKindDistribution: summarizeStopKindDistribution(results),
   };
+}
+
+function initialBenchmarkState(record: BenchmarkRecord): IncidentState {
+  if (record.metadata.statusRulesVersion !== STATUS_RULES_VERSION) {
+    throw new Error('benchmark status-rules version does not match the graph');
+  }
+
+  return {
+    incident: { id: record.scenario.id },
+    hypotheses: [],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [],
+    control: {
+      runId: record.runId,
+      schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
+      statusRulesVersion: STATUS_RULES_VERSION,
+      phase: 'normalizing',
+      maxIterations: 4,
+      llmCallBudget: 8,
+      reservedChallengeBudget: 2,
+      challengeRounds: 0,
+      humanReview: false,
+    },
+  };
+}
+
+function outcomeFromGraphState(state: IncidentState): BenchmarkOutcome {
+  if (state.control.stopKind === undefined || state.conclusion === undefined) {
+    throw new Error('benchmark graph must produce a stop kind and conclusion');
+  }
+
+  const observedEvidenceIds = new Set(state.evidence.map(({ id }) => id));
+  return {
+    claims: state.conclusion.causes.map(({ evidenceIds }) => ({ evidenceIds })),
+    supportingEvidenceIds: state.conclusion.causes.flatMap(({ evidenceIds }) =>
+      evidenceIds.filter((evidenceId) => observedEvidenceIds.has(evidenceId)),
+    ),
+    evidenceFingerprints: state.evidence.map(({ kind, source, statement }) => ({
+      kind,
+      source,
+      predicate: statement,
+    })),
+    stopKind: state.control.stopKind,
+    conclusionKind: state.conclusion.kind,
+  };
+}
+
+export async function runGraphBenchmarkExperiment({
+  experimentId,
+  scenarios,
+  runsPerScenario,
+  metadata,
+  createNodes,
+  recordEvaluation,
+}: Readonly<{
+  experimentId: string;
+  scenarios: readonly IncidentScenario[];
+  runsPerScenario: number;
+  metadata: BenchmarkVersions;
+  createNodes(record: BenchmarkRecord): InvestigationNodes;
+  recordEvaluation(payload: Readonly<{
+    record: BenchmarkRecord;
+    result: BenchmarkEvaluation;
+  }>): Promise<void>;
+}>): Promise<BenchmarkExperiment> {
+  return runBenchmarkExperiment({
+    experimentId,
+    scenarios,
+    runsPerScenario,
+    metadata,
+    async investigate(record) {
+      const graph = createInvestigationGraph({ nodes: createNodes(record) });
+      const finalState = await graph.invoke(initialBenchmarkState(record));
+      return outcomeFromGraphState(finalState);
+    },
+    recordEvaluation,
+  });
 }
 
 export function summarizeStopKindDistribution(
