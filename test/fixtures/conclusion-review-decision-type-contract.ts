@@ -1,5 +1,10 @@
+import type { IncidentState } from '@aic/domain';
 import type { ConclusionReviewDecision } from '@aic/graph';
 import { createInvestigationGraph } from '@aic/graph';
+import { Command } from '@langchain/langgraph';
+
+declare const state: IncidentState;
+const interruptId = '0123456789abcdef0123456789abcdef';
 
 const confirm = { action: 'confirm' } as const satisfies ConclusionReviewDecision;
 const reject = { action: 'reject' } as const satisfies ConclusionReviewDecision;
@@ -33,6 +38,31 @@ function assertExecutionSurface(
 ): void {
   void execution.execute;
   void execution.getState;
+  void execution.execute({ kind: 'start', state });
+  void execution.execute({
+    kind: 'resume',
+    interruptId,
+    decision: confirm,
+  });
+  // @ts-expect-error raw LangGraph commands are not accepted by the public API
+  void execution.execute(new Command({ resume: { [interruptId]: confirm } }));
+  // @ts-expect-error a resume must target one explicit interrupt id
+  void execution.execute({ kind: 'resume', decision: confirm });
+  // @ts-expect-error challenge provenance cannot enter through human review
+  void execution.execute({
+    kind: 'resume',
+    interruptId,
+    decision: challengeProvenance,
+  });
+  // @ts-expect-error resume DTOs reject LangGraph command control fields
+  void execution.execute({
+    kind: 'resume',
+    interruptId,
+    decision: confirm,
+    update: {},
+    goto: '__end__',
+    graph: 'parent',
+  });
   // @ts-expect-error raw invoke must not be a public execution entrypoint
   void execution.invoke;
   // @ts-expect-error raw stream must not be a public execution entrypoint

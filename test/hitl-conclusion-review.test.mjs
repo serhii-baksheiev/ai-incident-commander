@@ -40,6 +40,53 @@ test('exposes only the validated investigation execution surface', () => {
   );
 });
 
+function findInspectionHazards(value, path = '$', seen = new WeakSet()) {
+  if (typeof value === 'function') {
+    return { callablePaths: [path], forbiddenKeyPaths: [] };
+  }
+  if (typeof value !== 'object' || value === null || seen.has(value)) {
+    return { callablePaths: [], forbiddenKeyPaths: [] };
+  }
+
+  seen.add(value);
+  const hazards = { callablePaths: [], forbiddenKeyPaths: [] };
+  for (const key of Reflect.ownKeys(value)) {
+    const keyName = typeof key === 'symbol' ? key.toString() : key;
+    const childPath = `${path}.${keyName}`;
+    if (['data', 'invoke', 'runnable'].includes(keyName)) {
+      hazards.forbiddenKeyPaths.push(childPath);
+    }
+    const childHazards = findInspectionHazards(value[key], childPath, seen);
+    hazards.callablePaths.push(...childHazards.callablePaths);
+    hazards.forbiddenKeyPaths.push(...childHazards.forbiddenKeyPaths);
+  }
+  return hazards;
+}
+
+test('getGraph returns an inert topology projection without runnable node data', async () => {
+  const execution = graphPackage.createInvestigationGraph({ nodes: fakeNodes });
+  const topology = await execution.getGraph();
+  const hazards = findInspectionHazards({
+    nodes: Object.values(topology.nodes),
+    edges: topology.edges,
+  });
+
+  assert.deepEqual(
+    {
+      callablePaths: hazards.callablePaths,
+      forbiddenKeyPaths: hazards.forbiddenKeyPaths,
+      nodesWithData: Object.entries(topology.nodes)
+        .filter(([, node]) => Object.hasOwn(node, 'data'))
+        .map(([id]) => id),
+    },
+    {
+      callablePaths: [],
+      forbiddenKeyPaths: [],
+      nodesWithData: [],
+    },
+  );
+});
+
 test('accepts every supported conclusion review decision', () => {
   const schema = graphPackage.ConclusionReviewDecisionSchema;
   assert.equal(typeof schema?.safeParse, 'function');
@@ -169,7 +216,7 @@ function createHarness({ humanReview = true, runId }) {
 
 async function interruptAndReopen(harness) {
   const interrupted = await harness.execution.execute(
-    harness.state,
+    { kind: 'start', state: harness.state },
     harness.config,
   );
   assert.equal(
@@ -192,7 +239,11 @@ function currentInterrupt(interrupted) {
 
 function resumeCurrent(interrupted, decision) {
   const current = currentInterrupt(interrupted);
-  return new Command({ resume: { [current.id]: decision } });
+  return {
+    kind: 'resume',
+    interruptId: current.id,
+    decision,
+  };
 }
 
 test('persists the proposed conclusion and pending review across reopen', async () => {
@@ -224,7 +275,10 @@ test('rejects a start whose thread_id differs from runId before lifecycle work',
 
   try {
     await assert.rejects(
-      harness.execution.execute(harness.state, mismatchedConfig),
+      harness.execution.execute(
+        { kind: 'start', state: harness.state },
+        mismatchedConfig,
+      ),
     );
     assert.deepEqual(harness.trace, []);
   } finally {
@@ -255,6 +309,64 @@ test('confirm resumes the same run and thread and completes at END', async () =>
   }
 });
 
+test('rejects a raw LangGraph Command without consuming the pending review', async () => {
+  const harness = createHarness({ runId: 'run-raw-command-rejected' });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+
+    await assert.rejects(
+      harness.execution.execute(
+        new Command({
+          resume: {
+            [pendingInterrupt.id]: { action: 'confirm' },
+          },
+        }),
+        harness.config,
+      ),
+    );
+
+    const persisted = await harness.execution.getState(harness.config);
+    assert.deepEqual(persisted.next, ['review_conclusion']);
+    assert.equal(persisted.tasks[0].interrupts[0].id, pendingInterrupt.id);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('rejects scoped command fields before mutating the pending review', async () => {
+  const harness = createHarness({ runId: 'run-command-fields-rejected' });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+
+    await assert.rejects(
+      harness.execution.execute(
+        new Command({
+          resume: {
+            [pendingInterrupt.id]: { action: 'confirm' },
+          },
+          update: { control: { humanReview: false } },
+          goto: '__end__',
+          graph: 'parent',
+        }),
+        harness.config,
+      ),
+    );
+
+    const persisted = await harness.execution.getState(harness.config);
+    assert.deepEqual(persisted.next, ['review_conclusion']);
+    assert.equal(persisted.tasks.length, 1);
+    assert.equal(persisted.tasks[0].interrupts.length, 1);
+    assert.equal(persisted.tasks[0].interrupts[0].id, pendingInterrupt.id);
+    assert.equal(persisted.values.control.humanReview, true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('rejects an unscoped resume without consuming the pending review', async () => {
   const harness = createHarness({ runId: 'run-unscoped-confirm' });
 
@@ -264,7 +376,7 @@ test('rejects an unscoped resume without consuming the pending review', async ()
 
     await assert.rejects(
       harness.execution.execute(
-        new Command({ resume: { action: 'confirm' } }),
+        { kind: 'resume', decision: { action: 'confirm' } },
         harness.config,
       ),
     );
@@ -321,11 +433,11 @@ test('a stale interrupt id cannot complete a newer review', async () => {
     assert.notEqual(secondInterrupt.id, firstInterrupt.id);
 
     const staleReplay = await harness.execution.execute(
-      new Command({
-        resume: {
-          [firstInterrupt.id]: { action: 'confirm' },
-        },
-      }),
+      {
+        kind: 'resume',
+        interruptId: firstInterrupt.id,
+        decision: { action: 'confirm' },
+      },
       harness.config,
     );
 
@@ -423,7 +535,7 @@ test('humanReview=false bypasses review and completes at END', async () => {
 
   try {
     const completed = await harness.execution.execute(
-      harness.state,
+      { kind: 'start', state: harness.state },
       harness.config,
     );
 

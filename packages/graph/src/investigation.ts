@@ -26,7 +26,6 @@ import {
   StateGraph,
   getConfig,
   interrupt,
-  isCommand,
   type LangGraphRunnableConfig,
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
@@ -80,7 +79,13 @@ export interface ChallengeResult {
   readonly discriminatingTests: readonly InvestigationTest[];
 }
 
-export type InvestigationExecutionInput = IncidentState | Command;
+export type InvestigationExecutionInput =
+  | Readonly<{ kind: 'start'; state: IncidentState }>
+  | Readonly<{
+      kind: 'resume';
+      interruptId: string;
+      decision: ConclusionReviewDecision;
+    }>;
 
 export type InvestigationNode = (
   state: IncidentState,
@@ -168,32 +173,41 @@ function assertInteractiveRunIdentity(state: InvestigationGraphState): void {
   }
 }
 
-function assertInvestigationExecutionInput(
+function parseInvestigationExecutionInput(
   input: unknown,
-): asserts input is InvestigationExecutionInput {
-  if (!isCommand(input)) {
-    if (!IncidentStateSchema.safeParse(input).success) {
-      throw new Error('invalid investigation execution input');
-    }
-    return;
+): InvestigationExecutionInput {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new Error('invalid investigation execution input');
   }
 
-  const resumeMap = input.resume;
+  const record = input as Record<string, unknown>;
   if (
-    typeof resumeMap !== 'object' ||
-    resumeMap === null ||
-    Array.isArray(resumeMap) ||
-    Object.keys(resumeMap).length === 0 ||
-    Object.keys(resumeMap).some((id) => !/^[0-9a-f]{32}$/.test(id))
+    record.kind === 'start' &&
+    Object.keys(record).length === 2 &&
+    Object.hasOwn(record, 'state')
   ) {
-    throw new Error('conclusion review resume must target its interrupt id');
+    const state = IncidentStateSchema.safeParse(record.state);
+    if (state.success) return { kind: 'start', state: state.data };
   }
 
-  for (const decision of Object.values(resumeMap)) {
-    if (!ConclusionReviewDecisionSchema.safeParse(decision).success) {
-      throw new Error('invalid conclusion review decision');
+  if (
+    record.kind === 'resume' &&
+    Object.keys(record).length === 3 &&
+    typeof record.interruptId === 'string' &&
+    /^[0-9a-f]{32}$/.test(record.interruptId) &&
+    Object.hasOwn(record, 'decision')
+  ) {
+    const decision = ConclusionReviewDecisionSchema.safeParse(record.decision);
+    if (decision.success) {
+      return {
+        kind: 'resume',
+        interruptId: record.interruptId,
+        decision: decision.data,
+      };
     }
   }
+
+  throw new Error('invalid investigation execution input');
 }
 
 function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
@@ -517,13 +531,38 @@ export function createInvestigationGraph({
       input: InvestigationExecutionInput,
       config?: LangGraphRunnableConfig,
     ) {
-      assertInvestigationExecutionInput(input);
+      const request = parseInvestigationExecutionInput(input);
+      const graphInput =
+        request.kind === 'start'
+          ? request.state
+          : new Command({
+              resume: {
+                [request.interruptId]: request.decision,
+              },
+            });
       return graph.invoke(
-        input as Parameters<typeof graph.invoke>[0],
+        graphInput as Parameters<typeof graph.invoke>[0],
         config,
       );
     },
-    getGraph: graph.getGraph.bind(graph),
+    async getGraph() {
+      const topology = await graph.getGraph();
+      const nodes = Object.fromEntries(
+        Object.keys(topology.nodes).map((id) => [id, Object.freeze({ id })]),
+      );
+      const edges = topology.edges.map(({ source, target, conditional }) =>
+        Object.freeze({
+          source,
+          target,
+          conditional: Boolean(conditional),
+        }),
+      );
+
+      return Object.freeze({
+        nodes: Object.freeze(nodes),
+        edges: Object.freeze(edges),
+      });
+    },
     getState: graph.getState.bind(graph),
   });
 }
