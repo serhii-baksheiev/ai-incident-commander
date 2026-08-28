@@ -210,6 +210,18 @@ function parseInvestigationExecutionInput(
   throw new Error('invalid investigation execution input');
 }
 
+function assertHumanHypothesisIdIsAvailable(
+  state: Pick<InvestigationGraphState, 'hypotheses'>,
+  decision: ConclusionReviewDecision,
+): void {
+  if (
+    decision.action === 'add_hypothesis' &&
+    state.hypotheses.some(({ id }) => id === decision.hypothesis.id)
+  ) {
+    throw new Error('human-added hypothesis reuses an existing hypothesis id');
+  }
+}
+
 function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
   return async (state) => {
     const protectedControl = {
@@ -433,9 +445,7 @@ export function createInvestigationGraph({
       });
     }
 
-    if (state.hypotheses.some(({ id }) => id === decision.hypothesis.id)) {
-      throw new Error('human-added hypothesis reuses an existing hypothesis id');
-    }
+    assertHumanHypothesisIdIsAvailable(state, decision);
 
     return new Command({
       goto: 'derive_predictions',
@@ -532,6 +542,22 @@ export function createInvestigationGraph({
       config?: LangGraphRunnableConfig,
     ) {
       const request = parseInvestigationExecutionInput(input);
+      if (
+        request.kind === 'resume' &&
+        request.decision.action === 'add_hypothesis' &&
+        config !== undefined
+      ) {
+        const snapshot = await graph.getState(config);
+        const targetsPendingInterrupt = snapshot.tasks.some(({ interrupts }) =>
+          interrupts.some(({ id }) => id === request.interruptId),
+        );
+        if (targetsPendingInterrupt) {
+          assertHumanHypothesisIdIsAvailable(
+            snapshot.values,
+            request.decision,
+          );
+        }
+      }
       const graphInput =
         request.kind === 'start'
           ? request.state

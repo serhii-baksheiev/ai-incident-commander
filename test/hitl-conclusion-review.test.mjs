@@ -508,6 +508,50 @@ test('add_hypothesis refuses an existing id without overwriting state', async ()
   }
 });
 
+test('duplicate add_hypothesis rejection leaves the same review resumable by confirm', async () => {
+  const runId = 'run-duplicate-then-confirm-review';
+  const harness = createHarness({ runId });
+  const existingHypothesis = {
+    ...addedHypothesis,
+    statement: 'The existing hypothesis must remain unchanged',
+  };
+  harness.state.hypotheses = [existingHypothesis];
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+
+    await assert.rejects(
+      harness.execution.execute(
+        resumeCurrent(interrupted, {
+          action: 'add_hypothesis',
+          hypothesis: addedHypothesis,
+        }),
+        harness.config,
+      ),
+      /human-added hypothesis reuses an existing hypothesis id/,
+    );
+
+    const completed = await harness.execution.execute(
+      {
+        kind: 'resume',
+        interruptId: pendingInterrupt.id,
+        decision: { action: 'confirm' },
+      },
+      harness.config,
+    );
+    const persisted = await harness.execution.getState(harness.config);
+
+    assert.equal(isInterrupted(completed), false);
+    assert.deepEqual(completed.hypotheses, [existingHypothesis]);
+    assert.deepEqual(completed.conclusion, proposedConclusion);
+    assert.equal(completed.control.runId, runId);
+    assert.deepEqual(persisted.next, []);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('add_hypothesis refuses graph-owned challenge provenance', async () => {
   const harness = createHarness({ runId: 'run-invalid-human-provenance' });
 

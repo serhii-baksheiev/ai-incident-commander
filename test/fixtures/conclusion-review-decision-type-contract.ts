@@ -48,17 +48,17 @@ function assertExecutionSurface(
   void execution.execute(new Command({ resume: { [interruptId]: confirm } }));
   // @ts-expect-error a resume must target one explicit interrupt id
   void execution.execute({ kind: 'resume', decision: confirm });
-  // @ts-expect-error challenge provenance cannot enter through human review
   void execution.execute({
     kind: 'resume',
     interruptId,
+    // @ts-expect-error challenge provenance cannot enter through human review
     decision: challengeProvenance,
   });
-  // @ts-expect-error resume DTOs reject LangGraph command control fields
   void execution.execute({
     kind: 'resume',
     interruptId,
     decision: confirm,
+    // @ts-expect-error resume DTOs reject LangGraph command control fields
     update: {},
     goto: '__end__',
     graph: 'parent',
