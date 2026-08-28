@@ -10,7 +10,7 @@ import {
 } from '@aic/domain';
 import { createInvestigationGraph } from '@aic/graph';
 import { createSqliteCheckpointer } from '@aic/persistence';
-import { Command, isInterrupted } from '@langchain/langgraph';
+import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
 
 const lifecycleNodes = [
   'normalize_incident',
@@ -126,6 +126,20 @@ async function interruptAndReopen(harness) {
   return interrupted;
 }
 
+function currentInterrupt(interrupted) {
+  assert.equal(isInterrupted(interrupted), true);
+  assert.equal(interrupted[INTERRUPT].length, 1);
+  const [current] = interrupted[INTERRUPT];
+  assert.equal(typeof current.id, 'string');
+  assert.notEqual(current.id.length, 0);
+  return current;
+}
+
+function resumeCurrent(interrupted, decision) {
+  const current = currentInterrupt(interrupted);
+  return new Command({ resume: { [current.id]: decision } });
+}
+
 test('persists a proposed conclusion and pending review through the repository checkpointer', async () => {
   const runId = 'run-persisted-review';
   const harness = createHarness({ runId });
@@ -151,14 +165,34 @@ test('persists a proposed conclusion and pending review through the repository c
   }
 });
 
+test('rejects a start whose thread_id differs from runId before lifecycle work begins', async () => {
+  const harness = createHarness({ runId: 'run-identity-match' });
+  const mismatchedConfig = {
+    configurable: { thread_id: 'different-thread-id' },
+  };
+
+  try {
+    await assert.rejects(
+      harness.graph.invoke(harness.state, mismatchedConfig),
+    );
+    assert.deepEqual(
+      harness.trace,
+      [],
+      'identity mismatch must fail before any user-provided lifecycle node executes',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('confirm resumes the same run and thread and completes at END', async () => {
   const runId = 'run-confirm-review';
   const harness = createHarness({ runId });
 
   try {
-    await interruptAndReopen(harness);
+    const interrupted = await interruptAndReopen(harness);
     const completed = await harness.graph.invoke(
-      new Command({ resume: { action: 'confirm' } }),
+      resumeCurrent(interrupted, { action: 'confirm' }),
       harness.config,
     );
     const persisted = await harness.graph.getState(harness.config);
@@ -174,14 +208,42 @@ test('confirm resumes the same run and thread and completes at END', async () =>
   }
 });
 
+test('rejects an unscoped confirm without consuming the pending review', async () => {
+  const harness = createHarness({ runId: 'run-unscoped-confirm' });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+
+    await assert.rejects(
+      harness.graph.invoke(
+        new Command({ resume: { action: 'confirm' } }),
+        harness.config,
+      ),
+    );
+
+    const persisted = await harness.graph.getState(harness.config);
+    assert.deepEqual(persisted.next, ['review_conclusion']);
+    assert.equal(persisted.tasks.length, 1);
+    assert.equal(persisted.tasks[0].interrupts.length, 1);
+    assert.equal(
+      persisted.tasks[0].interrupts[0].id,
+      pendingInterrupt.id,
+      'an unscoped decision must not consume or replace the pending review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('reject resumes deterministically at hypothesis generation and returns to review', async () => {
   const harness = createHarness({ runId: 'run-reject-review' });
 
   try {
-    await interruptAndReopen(harness);
+    const interrupted = await interruptAndReopen(harness);
     const traceBeforeResume = harness.trace.length;
     const interruptedAgain = await harness.graph.invoke(
-      new Command({ resume: { action: 'reject' } }),
+      resumeCurrent(interrupted, { action: 'reject' }),
       harness.config,
     );
 
@@ -202,18 +264,52 @@ test('reject resumes deterministically at hypothesis generation and returns to r
   }
 });
 
+test('a stale interrupt-id confirmation cannot complete a newer review', async () => {
+  const harness = createHarness({ runId: 'run-stale-review-decision' });
+
+  try {
+    const firstInterrupted = await interruptAndReopen(harness);
+    const firstInterrupt = currentInterrupt(firstInterrupted);
+    const secondInterrupted = await harness.graph.invoke(
+      resumeCurrent(firstInterrupted, { action: 'reject' }),
+      harness.config,
+    );
+    const secondInterrupt = currentInterrupt(secondInterrupted);
+    assert.notEqual(secondInterrupt.id, firstInterrupt.id);
+
+    const staleReplay = await harness.graph.invoke(
+      new Command({
+        resume: {
+          [firstInterrupt.id]: { action: 'confirm' },
+        },
+      }),
+      harness.config,
+    );
+
+    assert.equal(isInterrupted(staleReplay), true);
+    assert.equal(currentInterrupt(staleReplay).id, secondInterrupt.id);
+    const persisted = await harness.graph.getState(harness.config);
+    assert.deepEqual(persisted.next, ['review_conclusion']);
+    assert.equal(
+      persisted.tasks[0].interrupts[0].id,
+      secondInterrupt.id,
+      'the current pending review must survive replay of a stale decision',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('add_hypothesis persists a valid frozen-domain hypothesis and resumes at prediction derivation', async () => {
   const harness = createHarness({ runId: 'run-add-hypothesis-review' });
 
   try {
-    await interruptAndReopen(harness);
+    const interrupted = await interruptAndReopen(harness);
     const traceBeforeResume = harness.trace.length;
     const interruptedAgain = await harness.graph.invoke(
-      new Command({
-        resume: {
-          action: 'add_hypothesis',
-          hypothesis: addedHypothesis,
-        },
+      resumeCurrent(interrupted, {
+        action: 'add_hypothesis',
+        hypothesis: addedHypothesis,
       }),
       harness.config,
     );
@@ -230,6 +326,53 @@ test('add_hypothesis persists a valid frozen-domain hypothesis and resumes at pr
       'termination_check',
       'propose_conclusion',
     ]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('add_hypothesis refuses an existing id without overwriting persisted state', async () => {
+  const harness = createHarness({ runId: 'run-duplicate-human-hypothesis' });
+  const existingHypothesis = {
+    ...addedHypothesis,
+    statement: 'The existing hypothesis must remain unchanged',
+  };
+  harness.state.hypotheses = [existingHypothesis];
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assert.rejects(
+      harness.graph.invoke(
+        resumeCurrent(interrupted, {
+          action: 'add_hypothesis',
+          hypothesis: addedHypothesis,
+        }),
+        harness.config,
+      ),
+    );
+    const persisted = await harness.graph.getState(harness.config);
+    assert.deepEqual(persisted.values.hypotheses, [existingHypothesis]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('add_hypothesis refuses challenge provenance reserved for graph-owned challenge output', async () => {
+  const harness = createHarness({ runId: 'run-invalid-human-provenance' });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assert.rejects(
+      harness.graph.invoke(
+        resumeCurrent(interrupted, {
+          action: 'add_hypothesis',
+          hypothesis: { ...addedHypothesis, createdBy: 'challenge' },
+        }),
+        harness.config,
+      ),
+    );
+    const persisted = await harness.graph.getState(harness.config);
+    assert.deepEqual(persisted.values.hypotheses, []);
   } finally {
     harness.cleanup();
   }

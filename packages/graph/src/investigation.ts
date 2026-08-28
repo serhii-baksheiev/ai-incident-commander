@@ -21,7 +21,9 @@ import {
   Send,
   START,
   StateGraph,
+  getConfig,
   interrupt,
+  isCommand,
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
@@ -153,6 +155,30 @@ function controlWithoutStopKind(
   return rest;
 }
 
+function assertInteractiveRunIdentity(state: InvestigationGraphState): void {
+  if (!state.control.humanReview) return;
+
+  const threadId = getConfig().configurable?.thread_id;
+  if (threadId !== state.control.runId) {
+    throw new Error('interactive runId must match LangGraph thread_id');
+  }
+}
+
+function assertInterruptScopedResume(input: unknown): void {
+  if (!isCommand(input) || input.resume === undefined) return;
+
+  const resumeMap = input.resume;
+  if (
+    typeof resumeMap !== 'object' ||
+    resumeMap === null ||
+    Array.isArray(resumeMap) ||
+    Object.keys(resumeMap).length === 0 ||
+    Object.keys(resumeMap).some((id) => !/^[0-9a-f]{32}$/.test(id))
+  ) {
+    throw new Error('conclusion review resume must target its interrupt id');
+  }
+}
+
 function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
   return async (state) => {
     const protectedControl = {
@@ -272,7 +298,7 @@ function parseConclusionReviewDecision(
     Object.hasOwn(record, 'hypothesis')
   ) {
     const hypothesis = HypothesisSchema.safeParse(record.hypothesis);
-    if (hypothesis.success) {
+    if (hypothesis.success && hypothesis.data.createdBy === 'initial') {
       return { action: record.action, hypothesis: hypothesis.data };
     }
   }
@@ -384,13 +410,13 @@ export function createInvestigationGraph({
   };
 
   const reviewConclusion = (state: InvestigationGraphState) => {
-    const decision = parseConclusionReviewDecision(
-      interrupt({
-        kind: 'conclusion-review',
-        runId: state.control.runId,
-        conclusion: state.conclusion,
-      }),
-    );
+    assertInteractiveRunIdentity(state);
+    const resumed = interrupt({
+      kind: 'conclusion-review',
+      runId: state.control.runId,
+      conclusion: state.conclusion,
+    });
+    const decision = parseConclusionReviewDecision(resumed);
 
     if (decision.action === 'confirm') {
       return new Command({ goto: END });
@@ -404,6 +430,10 @@ export function createInvestigationGraph({
       });
     }
 
+    if (state.hypotheses.some(({ id }) => id === decision.hypothesis.id)) {
+      throw new Error('human-added hypothesis reuses an existing hypothesis id');
+    }
+
     return new Command({
       goto: 'derive_predictions',
       update: {
@@ -413,10 +443,17 @@ export function createInvestigationGraph({
     });
   };
 
-  return new StateGraph(InvestigationStateAnnotation)
+  const normalizeIncident = preserveGraphOwnedControl(
+    nodes.normalize_incident,
+  );
+
+  const graph = new StateGraph(InvestigationStateAnnotation)
     .addNode(
       'normalize_incident',
-      preserveGraphOwnedControl(nodes.normalize_incident),
+      async (state) => {
+        assertInteractiveRunIdentity(state);
+        return normalizeIncident(state);
+      },
     )
     .addNode(
       'collect_baseline',
@@ -485,4 +522,12 @@ export function createInvestigationGraph({
       ['review_conclusion', END],
     )
     .compile({ checkpointer });
+
+  const invoke = graph.invoke.bind(graph);
+  graph.invoke = (async (...args: Parameters<typeof graph.invoke>) => {
+    assertInterruptScopedResume(args[0]);
+    return invoke(...args);
+  }) as typeof graph.invoke;
+
+  return graph;
 }
