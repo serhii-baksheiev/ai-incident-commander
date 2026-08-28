@@ -19,7 +19,9 @@ export interface LangSmithPersistenceClient {
     session_name: string;
     reference_example_id: string;
   }>): Promise<void>;
-  readProject(query: Readonly<{ projectName: string }>): Promise<Readonly<{ id: string }>>;
+  readProject(
+    query: Readonly<{ projectName: string }>,
+  ): Promise<Readonly<{ id: string }>>;
   createFeedback(feedback: Readonly<{
     runId: string;
     sessionId: string;
