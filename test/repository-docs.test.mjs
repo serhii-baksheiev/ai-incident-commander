@@ -128,9 +128,63 @@ test('records the completed AIC-2 delivery before the preserved layered-boundary
   );
 });
 
+test('records the continuous Rovo repeated-escalation stop before preserving the existing journal body', () => {
+  const journal = readFileSync(journalPath, 'utf8');
+  const [, newestEntry] = journal.split(/^### /m);
+  const requiredEvidence = [
+    {
+      label: 'records the repeated-escalation stop',
+      pattern: /\*\*stopped at\*\* — `repeated-escalation`/,
+    },
+    {
+      label: 'parks AIC-4 at the pushed head pending exact owner dependency approval',
+      pattern:
+        /AIC-4[^\n]*parked[^\n]*pushed head `3d5e03e9bf3bb168bcde73091ec20c90b173542d`[^\n]*await(?:ing|s)[^\n]*exact owner approval[^\n]*`@langchain\/langgraph@1\.4\.13`[^\n]*`@langchain\/langgraph-checkpoint@1\.1\.5`[^\n]*`@langchain\/langgraph-checkpoint-sqlite@1\.0\.4`[^\n]*transitive[^\n]*`better-sqlite3@12\.11\.1`/i,
+    },
+    {
+      label: 'parks AIC-5 at the pushed head after its final split gate verdict',
+      pattern:
+        /AIC-5[^\n]*parked[^\n]*pushed head `7aba0e51de42a2464eff92d4921585a947ed5a72`[\s\S]*final pr-ship round 2\/2[^\n]*code `SHIP`[^\n]*prose `SHIP`[^\n]*security `HOLD`[^\n]*verbatim[^\n]*caught exception messages/i,
+    },
+    {
+      label: 'records that no PR or merge occurred',
+      pattern: /no PR was opened[^\n]*(?:nothing was merged|no merge)/i,
+    },
+    { label: 'records that nothing was unblocked', pattern: /nothing was unblocked/i },
+    {
+      label: 'pins both Rovo comments',
+      pattern:
+        /(?:Rovo comment `14840`[\s\S]*Rovo comment `14843`|Rovo comments? `14840`[^\n]*`14843`)/i,
+    },
+    {
+      label: 'pins the continuous Rovo run evidence',
+      pattern: /`\.claude\/runs\/20260827-223620-continuous-rovo`/,
+    },
+  ];
+  const problems = requiredEvidence
+    .filter(({ pattern }) => !pattern.test(newestEntry))
+    .map(({ label }) => label);
+
+  const historicalMarker = '### AIC-3 delivered; canonical domain contracts unblocked graph work';
+  const historicalOffset = journal.indexOf(historicalMarker);
+  const historicalJournal = journal.slice(historicalOffset);
+  if (
+    createHash('sha256').update(historicalJournal).digest('hex') !==
+    'f764a5258edbb263da6b4634f98a05f8bc4e9c99c0a2ba54d2bd54c4c01eb624'
+  ) {
+    problems.push('must preserve the entire existing journal body byte-for-byte after the new entry');
+  }
+
+  assert.deepEqual(problems, []);
+});
+
 test('records the completed AIC-3 delivery before preserving the existing journal body', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, deliveryEntry] = journal.split(/^### /m);
+  const [, ...entries] = journal.split(/^### /m);
+  const deliveryEntry = entries.find((entry) =>
+    entry.startsWith('AIC-3 delivered; canonical domain contracts unblocked graph work'),
+  );
+  assert.notEqual(deliveryEntry, undefined, 'the completed AIC-3 delivery entry must remain present');
   const requiredEvidence = [
     {
       label: 'uses a delivered AIC-3 heading',
