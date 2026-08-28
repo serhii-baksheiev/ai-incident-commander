@@ -158,7 +158,7 @@ test('replays the deterministic more-evidence cycle before routing a terminal st
     }),
   });
 
-  const result = await graph.execute(initialState());
+  const result = await graph.execute({ kind: 'start', state: initialState() });
 
   assert.deepEqual(trace, [
     'normalize_incident',
@@ -202,7 +202,7 @@ test('routes every canonical terminal stop kind through propose_conclusion to EN
       state.control.challengeRounds = 1;
     }
 
-    const result = await graph.execute(state);
+    const result = await graph.execute({ kind: 'start', state });
 
     assert.equal(result.control.stopKind, stopKind, `${stopKind} must remain distinguishable`);
     assert.deepEqual(
@@ -236,7 +236,7 @@ test('keeps termination_check as the sole owner of the final stop kind', async (
   };
   const graph = createInvestigationGraph({ nodes });
 
-  const result = await graph.execute(initialState());
+  const result = await graph.execute({ kind: 'start', state: initialState() });
 
   assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
   assert.equal(
@@ -270,7 +270,7 @@ test('merges a typed challenge result and accounts for its reserved budget in th
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.execute(state);
+  const result = await graph.execute({ kind: 'start', state });
 
   assert.deepEqual(
     Object.keys(result).sort(),
@@ -399,7 +399,7 @@ for (const malformedCase of [
     };
     const graph = createInvestigationGraph({ nodes });
 
-    const outcome = await graph.execute(state).then(
+    const outcome = await graph.execute({ kind: 'start', state }).then(
       (value) => ({ value }),
       (error) => ({ error }),
     );
@@ -433,7 +433,7 @@ test('does not let normal lifecycle nodes consume reserved challenge budget', as
   };
   const graph = createInvestigationGraph({ nodes });
 
-  const result = await graph.execute(initialState());
+  const result = await graph.execute({ kind: 'start', state: initialState() });
 
   assert.equal(result.control.challengeRounds, 0);
   assert.equal(result.control.reservedChallengeBudget, 2);
@@ -468,7 +468,7 @@ test('restores graph-owned control after in-place mutation and still performs ma
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.execute(state);
+  const result = await graph.execute({ kind: 'start', state });
 
   assert.equal(challengeCalls, 1);
   assert.equal(result.control.challengeRounds, 1);
@@ -500,7 +500,7 @@ test('terminates budget-exhausted without challenging when the reserve is empty'
   state.hypotheses = [currentLeader()];
   state.control.reservedChallengeBudget = 0;
 
-  const result = await graph.execute(state);
+  const result = await graph.execute({ kind: 'start', state });
 
   assert.equal(challengeCalls, 0);
   assert.equal(result.control.stopKind, 'budget-exhausted');
@@ -557,7 +557,7 @@ for (const invalidCounter of [
     state.hypotheses = [currentLeader()];
     state.control[invalidCounter.field] = invalidCounter.value;
 
-    const outcome = await graph.execute(state).then(
+    const outcome = await graph.execute({ kind: 'start', state }).then(
       (value) => ({ value }),
       (error) => ({ error }),
     );
@@ -597,7 +597,7 @@ test('targets the adjudicated leader for both challenge rounds and terminates a 
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.execute(state);
+  const result = await graph.execute({ kind: 'start', state });
 
   assert.equal(challengeCalls, 2);
   assert.deepEqual(challengeTargets, [
@@ -646,7 +646,7 @@ test('does not expose sufficient until termination_check runs after mandatory ch
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.execute(state);
+  const result = await graph.execute({ kind: 'start', state });
 
   assert.deepEqual(observedStopKinds, [undefined]);
   assert.equal(checks, 2);
