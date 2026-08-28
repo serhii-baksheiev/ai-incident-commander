@@ -91,7 +91,7 @@ const discriminatingTest = (round) => ({
   status: 'planned',
 });
 
-test('publishes exactly the twelve frozen lifecycle nodes and their deterministic edges', async () => {
+test('keeps the twelve frozen lifecycle handlers and adds one sequential conclusion-review node', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const graph = createInvestigationGraph({
     nodes: fakeNodes([], async () => ({ route: 'terminal', stopKind: 'stalled' })),
@@ -99,29 +99,49 @@ test('publishes exactly the twelve frozen lifecycle nodes and their deterministi
   const topology = await graph.getGraph();
 
   assert.deepEqual(
+    graphPackage.INVESTIGATION_NODE_NAMES,
+    lifecycleNodes,
+    'the graph-owned review step must not widen the frozen lifecycle handler contract',
+  );
+  assert.deepEqual(
     Object.keys(topology.nodes).sort(),
-    ['__start__', ...lifecycleNodes, '__end__'].sort(),
+    ['__start__', ...lifecycleNodes, 'review_conclusion', '__end__'].sort(),
     'the graph must not hide a ReAct or prebuilt tool-loop node beside the frozen lifecycle',
   );
   assert.deepEqual(
-    topology.edges.map(({ source, target }) => `${source}->${target}`).sort(),
+    topology.edges
+      .map(({ conditional, source, target }) =>
+        `${source}->${target}:${conditional ? 'conditional' : 'sequential'}`,
+      )
+      .sort(),
     [
-      '__start__->normalize_incident',
-      'normalize_incident->collect_baseline',
-      'collect_baseline->generate_hypotheses',
-      'generate_hypotheses->derive_predictions',
-      'derive_predictions->plan_investigation',
-      'plan_investigation->execute_investigation',
-      'execute_investigation->evaluate_predictions',
-      'evaluate_predictions->interpret_residual_evidence',
-      'interpret_residual_evidence->derive_hypothesis_state',
-      'derive_hypothesis_state->termination_check',
-      'termination_check->plan_investigation',
-      'termination_check->challenge_hypothesis',
-      'termination_check->propose_conclusion',
-      'challenge_hypothesis->execute_investigation',
-      'propose_conclusion->__end__',
+      '__start__->normalize_incident:sequential',
+      'normalize_incident->collect_baseline:sequential',
+      'collect_baseline->generate_hypotheses:sequential',
+      'generate_hypotheses->derive_predictions:sequential',
+      'derive_predictions->plan_investigation:sequential',
+      'plan_investigation->execute_investigation:sequential',
+      'execute_investigation->evaluate_predictions:sequential',
+      'evaluate_predictions->interpret_residual_evidence:sequential',
+      'interpret_residual_evidence->derive_hypothesis_state:sequential',
+      'derive_hypothesis_state->termination_check:sequential',
+      'termination_check->plan_investigation:conditional',
+      'termination_check->challenge_hypothesis:conditional',
+      'termination_check->propose_conclusion:conditional',
+      'challenge_hypothesis->execute_investigation:sequential',
+      'propose_conclusion->__end__:conditional',
+      'propose_conclusion->review_conclusion:conditional',
+      'review_conclusion->__end__:conditional',
+      'review_conclusion->derive_predictions:conditional',
+      'review_conclusion->generate_hypotheses:conditional',
     ].sort(),
+  );
+  assert.deepEqual(
+    topology.edges
+      .filter(({ target }) => target === 'review_conclusion')
+      .map(({ source }) => source),
+    ['propose_conclusion'],
+    'review must be one sequential post-conclusion step, never a Send/fan-out target',
   );
 });
 

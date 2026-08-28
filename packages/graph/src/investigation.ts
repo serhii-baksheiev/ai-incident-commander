@@ -21,7 +21,9 @@ import {
   Send,
   START,
   StateGraph,
+  interrupt,
 } from '@langchain/langgraph';
+import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
 export const INVESTIGATION_NODE_NAMES = [
   'normalize_incident',
@@ -68,6 +70,11 @@ export interface ChallengeResult {
   readonly alternative: Hypothesis;
   readonly discriminatingTests: readonly InvestigationTest[];
 }
+
+export type ConclusionReviewDecision =
+  | Readonly<{ action: 'confirm' }>
+  | Readonly<{ action: 'reject' }>
+  | Readonly<{ action: 'add_hypothesis'; hypothesis: Hypothesis }>;
 
 export type InvestigationNode = (
   state: IncidentState,
@@ -244,9 +251,42 @@ function parseChallengeResult(
   return { alternative, discriminatingTests };
 }
 
+function parseConclusionReviewDecision(
+  value: unknown,
+): ConclusionReviewDecision {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('invalid conclusion review decision');
+  }
+
+  const record = value as Record<string, unknown>;
+  if (
+    (record.action === 'confirm' || record.action === 'reject') &&
+    Object.keys(record).length === 1
+  ) {
+    return { action: record.action };
+  }
+
+  if (
+    record.action === 'add_hypothesis' &&
+    Object.keys(record).length === 2 &&
+    Object.hasOwn(record, 'hypothesis')
+  ) {
+    const hypothesis = HypothesisSchema.safeParse(record.hypothesis);
+    if (hypothesis.success) {
+      return { action: record.action, hypothesis: hypothesis.data };
+    }
+  }
+
+  throw new Error('invalid conclusion review decision');
+}
+
 export function createInvestigationGraph({
   nodes,
-}: Readonly<{ nodes: InvestigationNodes }>) {
+  checkpointer,
+}: Readonly<{
+  nodes: InvestigationNodes;
+  checkpointer?: BaseCheckpointSaver;
+}>) {
   const terminate = (
     state: InvestigationGraphState,
     stopKind: InvestigationStop,
@@ -343,6 +383,36 @@ export function createInvestigationGraph({
     };
   };
 
+  const reviewConclusion = (state: InvestigationGraphState) => {
+    const decision = parseConclusionReviewDecision(
+      interrupt({
+        kind: 'conclusion-review',
+        runId: state.control.runId,
+        conclusion: state.conclusion,
+      }),
+    );
+
+    if (decision.action === 'confirm') {
+      return new Command({ goto: END });
+    }
+
+    const control = controlWithoutStopKind(state.control);
+    if (decision.action === 'reject') {
+      return new Command({
+        goto: 'generate_hypotheses',
+        update: { control },
+      });
+    }
+
+    return new Command({
+      goto: 'derive_predictions',
+      update: {
+        hypotheses: [decision.hypothesis],
+        control,
+      },
+    });
+  };
+
   return new StateGraph(InvestigationStateAnnotation)
     .addNode(
       'normalize_incident',
@@ -395,6 +465,9 @@ export function createInvestigationGraph({
       'propose_conclusion',
       preserveGraphOwnedControl(nodes.propose_conclusion),
     )
+    .addNode('review_conclusion', reviewConclusion, {
+      ends: [END, 'generate_hypotheses', 'derive_predictions'],
+    })
     .addEdge(START, 'normalize_incident')
     .addEdge('normalize_incident', 'collect_baseline')
     .addEdge('collect_baseline', 'generate_hypotheses')
@@ -406,6 +479,10 @@ export function createInvestigationGraph({
     .addEdge('interpret_residual_evidence', 'derive_hypothesis_state')
     .addEdge('derive_hypothesis_state', 'termination_check')
     .addEdge('challenge_hypothesis', 'execute_investigation')
-    .addEdge('propose_conclusion', END)
-    .compile();
+    .addConditionalEdges(
+      'propose_conclusion',
+      (state) => (state.control.humanReview ? 'review_conclusion' : END),
+      ['review_conclusion', END],
+    )
+    .compile({ checkpointer });
 }
