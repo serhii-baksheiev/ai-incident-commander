@@ -22,20 +22,20 @@ test('links the root README to the canonical architecture brief', () => {
   assert.match(readme, /\[Architecture v1\]\(docs\/incident-commander-architecture-v1\.md\)/);
 });
 
-test('records the completed domain milestone and the persistent checkpointer as next', () => {
+test('records the persistent checkpointer milestone and read-only tools as next', () => {
   const readme = readFileSync(readmePath, 'utf8');
   assert.match(readme, /AI Incident Commander is designed as a stateful investigation system/);
   assert.match(
     readme,
-    /\| Product implementation \| [^|\n]*canonical domain contracts[^|\n]*implemented[^|\n]*\|/i,
+    /\| Product implementation \| [^|\n]*canonical domain contracts[^|\n]*persistent SQLite checkpointer[^|\n]*kill\/resume spike[^|\n]*\|/i,
   );
   assert.match(
     readme,
-    /\| Completed implementation milestone \| \[AIC-3[^\]]*canonical domain types and IncidentState\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-3\) \|/i,
+    /\| Completed implementation milestone \| \[AIC-4[^\]]*persistent[^\]]*checkpointer[^\]]*kill\/resume\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-4\) \|/i,
   );
   assert.match(
     readme,
-    /\| Next implementation milestone \| \[AIC-4[^\]]*persistent[^\]]*checkpointer[^\]]*\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-4\) \|/i,
+    /\| Next implementation milestone \| \[AIC-5 — \\?\[K4\\?\] Implement read-only tool registry and record\/replay adapters\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-5\) \|/,
   );
 });
 

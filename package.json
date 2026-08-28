@@ -29,6 +29,7 @@
     "cli": "node apps/cli/dist/index.js"
   },
   "devDependencies": {
+    "@types/node": "22.20.1",
     "dependency-cruiser": "18.2.0",
     "eslint": "10.9.1",
     "typescript": "6.0.3",

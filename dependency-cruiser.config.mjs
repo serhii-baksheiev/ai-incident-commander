@@ -12,7 +12,9 @@ export default {
       comment: 'LangChain and LangGraph stay outside the domain layer.',
       severity: 'error',
       from: { path: '^packages/domain/' },
-      to: { path: '^(?:langchain(?:/|$)|@langchain/)' },
+      to: {
+        path: '(?:^|/)node_modules/(?:langchain(?:/|$)|@langchain/)|^(?:langchain(?:/|$)|@langchain/)',
+      },
     },
   ],
   options: {

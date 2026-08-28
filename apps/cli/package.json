@@ -5,5 +5,9 @@
   "type": "module",
   "bin": {
     "aic": "dist/index.js"
+  },
+  "dependencies": {
+    "@aic/graph": "0.0.0",
+    "@aic/persistence": "0.0.0"
   }
 }
