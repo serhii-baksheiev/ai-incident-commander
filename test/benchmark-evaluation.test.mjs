@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
@@ -13,11 +14,24 @@ import { ReplayToolAdapter } from '@aic/tools/replay';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+function currentHeadSha() {
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  }).trim();
+}
+
 const expectedMetricKeys = [
   'evidence_coverage',
   'termination_correctness',
   'unsupported_claim_rate',
 ];
+
+const expectedMetricScores = {
+  evidence_coverage: 1,
+  termination_correctness: 1,
+  unsupported_claim_rate: 0,
+};
 
 const expectedLifecycleNodes = [
   'normalize_incident',
@@ -83,6 +97,85 @@ function perfectOutcomeFor(scenario) {
     stopKind: scenario.groundTruth.expectedStopKind,
     conclusionKind: scenario.groundTruth.expectedConclusionKind,
   };
+}
+
+async function runOutcomeExperiment(experimentId, mutateOutcome = (outcome) => outcome) {
+  const runBenchmarkExperiment = requireFunction(
+    evals,
+    'runBenchmarkExperiment',
+    '@aic/evals',
+  );
+
+  return runBenchmarkExperiment({
+    experimentId,
+    scenarios: evals.REPLAY_SCENARIOS,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    async investigate(record) {
+      return mutateOutcome(perfectOutcomeFor(record.scenario), record);
+    },
+    async recordEvaluation() {},
+  });
+}
+
+function failingExampleIds(experiment, metricKey) {
+  return experiment.results
+    .filter(
+      ({ metrics }) =>
+        metrics[metricKey].score !== expectedMetricScores[metricKey],
+    )
+    .map(({ exampleId }) => exampleId);
+}
+
+let controlledMutationCycle;
+
+async function getControlledMutationCycle() {
+  if (controlledMutationCycle !== undefined) return controlledMutationCycle;
+
+  controlledMutationCycle = (async () => {
+    const replayScenariosBefore = JSON.stringify(evals.REPLAY_SCENARIOS);
+    const baseline = await runOutcomeExperiment('aic-11-baseline-v0.1');
+    let removedRequiredFingerprint = false;
+    const mutation = await runOutcomeExperiment(
+      'aic-11-missing-evidence-mutation-v0.1',
+      (outcome) => {
+        if (removedRequiredFingerprint) return outcome;
+        removedRequiredFingerprint = true;
+        return {
+          ...outcome,
+          evidenceFingerprints: outcome.evidenceFingerprints.slice(1),
+        };
+      },
+    );
+    const baselineAfterMutation = await runOutcomeExperiment(
+      'aic-11-baseline-after-mutation-v0.1',
+    );
+
+    return {
+      baseline,
+      baselineAfterMutation,
+      mutation,
+      removedRequiredFingerprint,
+      replayScenariosBefore,
+    };
+  })();
+
+  return controlledMutationCycle;
+}
+
+function compareControlledExperiments({ baseline, mutation, testedHeadSha }) {
+  const compareBenchmarkExperiments = requireFunction(
+    evals,
+    'compareBenchmarkExperiments',
+    '@aic/evals',
+  );
+  return compareBenchmarkExperiments({
+    testedHeadSha: testedHeadSha ?? currentHeadSha(),
+    baseline,
+    mutation,
+    expectedScores: expectedMetricScores,
+    expectedMutationMetric: 'evidence_coverage',
+  });
 }
 
 function replayFixtureFor(scenario) {
@@ -455,6 +548,239 @@ test('compares experiments by stable example identity and stop distribution', ()
   assert.deepEqual(summarizeStopKindDistribution([candidateResult]), {
     stalled: 1,
   });
+});
+
+test('gates a controlled benchmark mutation independently for each metric', async () => {
+  const { baseline, mutation, removedRequiredFingerprint } =
+    await getControlledMutationCycle();
+  const testedHeadSha = currentHeadSha();
+
+  assert.equal(removedRequiredFingerprint, true);
+  assert.equal(baseline.records.length, 15);
+  assert.equal(mutation.records.length, 15);
+  assert.deepEqual(
+    baseline.records.map(({ exampleId }) => exampleId),
+    mutation.records.map(({ exampleId }) => exampleId),
+    'the mutation must run against the same fifteen native examples',
+  );
+  assert.equal(
+    new Set([
+      ...baseline.records.map(({ runId }) => runId),
+      ...mutation.records.map(({ runId }) => runId),
+    ]).size,
+    30,
+    'baseline and mutation experiments must use distinct fresh runs',
+  );
+
+  assert.deepEqual(
+    Object.fromEntries(
+      expectedMetricKeys.map((metricKey) => [
+        metricKey,
+        {
+          baseline: failingExampleIds(baseline, metricKey),
+          mutation: failingExampleIds(mutation, metricKey),
+        },
+      ]),
+    ),
+    {
+      evidence_coverage: {
+        baseline: [],
+        mutation: [mutation.records[0].exampleId],
+      },
+      termination_correctness: { baseline: [], mutation: [] },
+      unsupported_claim_rate: { baseline: [], mutation: [] },
+    },
+    'removing one required fingerprint must turn only evidence coverage red',
+  );
+
+  const proof = compareControlledExperiments({
+    testedHeadSha,
+    baseline,
+    mutation,
+  });
+
+  assert.equal(proof.testedHeadSha, testedHeadSha);
+  assert.deepEqual(proof.experiments, {
+    baseline: 'aic-11-baseline-v0.1',
+    mutation: 'aic-11-missing-evidence-mutation-v0.1',
+  });
+  assert.deepEqual(
+    proof.exampleIds,
+    baseline.records.map(({ exampleId }) => exampleId),
+  );
+  assert.deepEqual(proof.metrics, {
+    evidence_coverage: {
+      requiredScore: 1,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: {
+        passed: false,
+        failingExampleIds: [mutation.records[0].exampleId],
+      },
+    },
+    termination_correctness: {
+      requiredScore: 1,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: { passed: true, failingExampleIds: [] },
+    },
+    unsupported_claim_rate: {
+      requiredScore: 0,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: { passed: true, failingExampleIds: [] },
+    },
+  });
+  assert.equal(
+    Object.hasOwn(proof, 'compositeScore'),
+    false,
+    'the gate must not collapse independent metrics into a composite score',
+  );
+});
+
+test('keeps the evidence mutation scoped and leaves a later baseline green', async () => {
+  const {
+    baseline,
+    baselineAfterMutation,
+    replayScenariosBefore,
+  } = await getControlledMutationCycle();
+
+  assert.equal(JSON.stringify(evals.REPLAY_SCENARIOS), replayScenariosBefore);
+  assert.deepEqual(
+    baselineAfterMutation.records.map(({ exampleId }) => exampleId),
+    baseline.records.map(({ exampleId }) => exampleId),
+  );
+  assert.equal(
+    new Set([
+      ...baseline.records.map(({ runId }) => runId),
+      ...baselineAfterMutation.records.map(({ runId }) => runId),
+    ]).size,
+    30,
+    'the post-mutation baseline must receive fresh runs',
+  );
+  for (const metricKey of expectedMetricKeys) {
+    assert.deepEqual(failingExampleIds(baselineAfterMutation, metricKey), []);
+  }
+});
+
+test('rejects a result whose run identity does not match its benchmark record', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const mismatchedBaseline = {
+    ...baseline,
+    results: baseline.results.map((result, index) =>
+      index === 0
+        ? { ...result, runId: '00000000-0000-4000-8000-000000000000' }
+        : result),
+  };
+
+  assert.throws(
+    () => compareControlledExperiments({ baseline: mismatchedBaseline, mutation }),
+    /result runId.*record/i,
+  );
+});
+
+test('rejects baseline and mutation experiments that reuse a run identity', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const sharedRunId = baseline.records[0].runId;
+  const overlappingMutation = {
+    ...mutation,
+    records: mutation.records.map((record, index) =>
+      index === 0
+        ? {
+            ...record,
+            runId: sharedRunId,
+            threadId: sharedRunId,
+            metadata: { ...record.metadata, runId: sharedRunId },
+          }
+        : record),
+    results: mutation.results.map((result, index) =>
+      index === 0 ? { ...result, runId: sharedRunId } : result),
+  };
+
+  assert.throws(
+    () => compareControlledExperiments({ baseline, mutation: overlappingMutation }),
+    /run IDs.*overlap/i,
+  );
+});
+
+test('rejects a red baseline before accepting mutation evidence', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const redBaseline = {
+    ...baseline,
+    results: baseline.results.map((result, index) =>
+      index === 0
+        ? {
+            ...result,
+            metrics: {
+              ...result.metrics,
+              evidence_coverage: {
+                key: 'evidence_coverage',
+                score: 0.5,
+              },
+            },
+          }
+        : result),
+  };
+
+  assert.throws(
+    () => compareControlledExperiments({ baseline: redBaseline, mutation }),
+    /baseline.*pass.*metric/i,
+  );
+});
+
+test('rejects an all-green mutation for the declared evidence coverage regression', async () => {
+  const { baseline, baselineAfterMutation } = await getControlledMutationCycle();
+
+  assert.throws(
+    () => compareControlledExperiments({
+      baseline,
+      mutation: baselineAfterMutation,
+    }),
+    /mutation.*evidence_coverage/i,
+  );
+});
+
+test('rejects a mutation that turns an undeclared metric red', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const multiMetricMutation = {
+    ...mutation,
+    results: mutation.results.map((result, index) =>
+      index === 1
+        ? {
+            ...result,
+            metrics: {
+              ...result.metrics,
+              termination_correctness: {
+                key: 'termination_correctness',
+                score: 0,
+              },
+            },
+          }
+        : result),
+  };
+
+  assert.throws(
+    () => compareControlledExperiments({
+      baseline,
+      mutation: multiMetricMutation,
+    }),
+    /mutation.*termination_correctness/i,
+  );
+});
+
+test('rejects a benchmark below five scenarios with three runs each', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const truncate = (experiment) => ({
+    ...experiment,
+    records: experiment.records.slice(0, -1),
+    results: experiment.results.slice(0, -1),
+    stopKindDistribution: { sufficient: 14 },
+  });
+
+  assert.throws(
+    () => compareControlledExperiments({
+      baseline: truncate(baseline),
+      mutation: truncate(mutation),
+    }),
+    /five scenarios.*three runs/i,
+  );
 });
 
 test('runs all fifteen fresh records through createInvestigationGraph and replay', async () => {

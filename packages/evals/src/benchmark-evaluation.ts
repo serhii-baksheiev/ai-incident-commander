@@ -87,6 +87,27 @@ export interface BenchmarkExperiment {
   readonly stopKindDistribution: Partial<Record<InvestigationStop, number>>;
 }
 
+export interface BenchmarkGateResult {
+  readonly passed: boolean;
+  readonly failingExampleIds: readonly string[];
+}
+
+export interface BenchmarkMetricGate {
+  readonly requiredScore: number;
+  readonly baseline: BenchmarkGateResult;
+  readonly mutation: BenchmarkGateResult;
+}
+
+export interface BenchmarkRegressionProof {
+  readonly testedHeadSha: string;
+  readonly experiments: Readonly<{
+    baseline: string;
+    mutation: string;
+  }>;
+  readonly exampleIds: readonly string[];
+  readonly metrics: Readonly<Record<BenchmarkMetricKey, BenchmarkMetricGate>>;
+}
+
 function requireNonEmpty(value: string, label: string): void {
   if (value.length === 0) throw new Error(`${label} must not be empty`);
 }
@@ -381,4 +402,174 @@ export function summarizeStopKindDistribution(
       (distribution[actualStopKind] ?? 0) + 1;
   }
   return distribution;
+}
+
+function indexExperiment(
+  experiment: BenchmarkExperiment,
+  label: string,
+): Readonly<{
+  experimentId: string;
+  exampleIds: readonly string[];
+  runIds: readonly string[];
+  resultsByExampleId: ReadonlyMap<string, BenchmarkEvaluation>;
+}> {
+  if (
+    experiment.records.length === 0 ||
+    experiment.records.length !== experiment.results.length
+  ) {
+    throw new Error(`${label} experiment must pair every record with a result`);
+  }
+
+  const experimentId = experiment.records[0]?.experimentId;
+  if (
+    experimentId === undefined ||
+    experiment.records.some((record) => record.experimentId !== experimentId)
+  ) {
+    throw new Error(`${label} records must belong to one experiment`);
+  }
+
+  const scenarioCounts = new Map<string, number>();
+  for (const { scenario } of experiment.records) {
+    scenarioCounts.set(scenario.id, (scenarioCounts.get(scenario.id) ?? 0) + 1);
+  }
+  if (
+    scenarioCounts.size !== 5 ||
+    [...scenarioCounts.values()].some((count) => count < 3)
+  ) {
+    throw new Error(
+      `${label} benchmark must contain five scenarios with at least three runs each`,
+    );
+  }
+
+  const recordsByExampleId = new Map(
+    experiment.records.map((record) => [record.exampleId, record]),
+  );
+  const runIds = experiment.records.map(({ runId }) => runId);
+  if (
+    recordsByExampleId.size !== experiment.records.length ||
+    new Set(runIds).size !== runIds.length
+  ) {
+    throw new Error(`${label} records must have unique example and run identities`);
+  }
+
+  const resultsByExampleId = new Map<string, BenchmarkEvaluation>();
+  for (const result of experiment.results) {
+    const record = recordsByExampleId.get(result.exampleId);
+    if (
+      record === undefined ||
+      result.experimentId !== record.experimentId ||
+      resultsByExampleId.has(result.exampleId)
+    ) {
+      throw new Error(`${label} results must uniquely match their experiment`);
+    }
+    if (result.runId !== record.runId) {
+      throw new Error(`${label} result runId must match its benchmark record`);
+    }
+    resultsByExampleId.set(result.exampleId, result);
+  }
+
+  const exampleIds = experiment.records.map(({ exampleId }) => exampleId);
+  if (exampleIds.some((exampleId) => !resultsByExampleId.has(exampleId))) {
+    throw new Error(`${label} results must match every stable example`);
+  }
+
+  return { experimentId, exampleIds, runIds, resultsByExampleId };
+}
+
+function gateMetric(
+  experiment: ReturnType<typeof indexExperiment>,
+  metricKey: BenchmarkMetricKey,
+  requiredScore: number,
+): BenchmarkGateResult {
+  if (!Number.isFinite(requiredScore)) {
+    throw new Error(`${metricKey} required score must be finite`);
+  }
+
+  const failingExampleIds = experiment.exampleIds.filter((exampleId) => {
+    const metric = experiment.resultsByExampleId.get(exampleId)?.metrics[metricKey];
+    if (metric === undefined || metric.key !== metricKey) {
+      throw new Error(`benchmark result is missing metric: ${metricKey}`);
+    }
+    return metric.score !== requiredScore;
+  });
+
+  return {
+    passed: failingExampleIds.length === 0,
+    failingExampleIds,
+  };
+}
+
+export function compareBenchmarkExperiments({
+  testedHeadSha,
+  baseline,
+  mutation,
+  expectedScores,
+  expectedMutationMetric,
+}: Readonly<{
+  testedHeadSha: string;
+  baseline: BenchmarkExperiment;
+  mutation: BenchmarkExperiment;
+  expectedScores: Readonly<Record<BenchmarkMetricKey, number>>;
+  expectedMutationMetric: BenchmarkMetricKey;
+}>): BenchmarkRegressionProof {
+  if (!/^[0-9a-f]{40}$/i.test(testedHeadSha)) {
+    throw new Error('testedHeadSha must be a full Git commit SHA');
+  }
+
+  const baselineIndex = indexExperiment(baseline, 'baseline');
+  const mutationIndex = indexExperiment(mutation, 'mutation');
+  if (baselineIndex.experimentId === mutationIndex.experimentId) {
+    throw new Error('baseline and mutation experiment references must differ');
+  }
+  const baselineRunIds = new Set(baselineIndex.runIds);
+  if (mutationIndex.runIds.some((runId) => baselineRunIds.has(runId))) {
+    throw new Error('baseline and mutation run IDs must not overlap');
+  }
+  if (
+    baselineIndex.exampleIds.length !== mutationIndex.exampleIds.length ||
+    baselineIndex.exampleIds.some(
+      (exampleId, index) => mutationIndex.exampleIds[index] !== exampleId,
+    )
+  ) {
+    throw new Error('baseline and mutation must share stable example identities');
+  }
+
+  const metrics = Object.fromEntries(
+    BENCHMARK_METRIC_KEYS.map((metricKey) => {
+      const requiredScore = expectedScores[metricKey];
+      return [
+        metricKey,
+        {
+          requiredScore,
+          baseline: gateMetric(baselineIndex, metricKey, requiredScore),
+          mutation: gateMetric(mutationIndex, metricKey, requiredScore),
+        },
+      ];
+    }),
+  ) as Record<BenchmarkMetricKey, BenchmarkMetricGate>;
+
+  if (BENCHMARK_METRIC_KEYS.some((metricKey) => !metrics[metricKey].baseline.passed)) {
+    throw new Error('baseline must pass every v0.1 metric');
+  }
+  if (metrics[expectedMutationMetric]?.mutation.passed !== false) {
+    throw new Error(`mutation must turn ${expectedMutationMetric} red`);
+  }
+  for (const metricKey of BENCHMARK_METRIC_KEYS) {
+    if (
+      metricKey !== expectedMutationMetric &&
+      !metrics[metricKey].mutation.passed
+    ) {
+      throw new Error(`mutation must keep undeclared metric ${metricKey} green`);
+    }
+  }
+
+  return {
+    testedHeadSha,
+    experiments: {
+      baseline: baselineIndex.experimentId,
+      mutation: mutationIndex.experimentId,
+    },
+    exampleIds: baselineIndex.exampleIds,
+    metrics,
+  };
 }
