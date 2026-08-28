@@ -40,18 +40,28 @@ export type TerminationDecision =
   | Readonly<{ route: 'challenge-required'; stopKind?: never }>
   | Readonly<{ route: 'terminal'; stopKind: InvestigationStop }>;
 
+export const MAX_CHALLENGE_ROUNDS = 2 as const;
+
+export interface ChallengeResult {
+  readonly alternative: Hypothesis;
+  readonly discriminatingTests: readonly InvestigationTest[];
+}
+
 export type InvestigationNode = (
   state: IncidentState,
 ) => Partial<IncidentState> | Promise<Partial<IncidentState>>;
 
 export type InvestigationNodes = Omit<
   Record<InvestigationNodeName, InvestigationNode>,
-  'termination_check'
+  'termination_check' | 'challenge_hypothesis'
 > &
   Readonly<{
     termination_check(
       state: IncidentState,
     ): TerminationDecision | Promise<TerminationDecision>;
+    challenge_hypothesis(
+      state: IncidentState,
+    ): ChallengeResult | Promise<ChallengeResult>;
   }>;
 
 const InvestigationStateAnnotation = Annotation.Root({
@@ -97,18 +107,29 @@ function controlWithoutStopKind(
   return rest;
 }
 
-function preserveTerminationDecision(node: InvestigationNode): InvestigationNode {
+function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
   return async (state) => {
     const update = await node(state);
     if (update.control === undefined) return update;
 
-    const { stopKind: _ignored, ...control } = update.control;
+    const {
+      stopKind: _ignoredStopKind,
+      challengeRounds: _ignoredChallengeRounds,
+      reservedChallengeBudget: _ignoredReservedChallengeBudget,
+      ...control
+    } = update.control;
+    const protectedControl = {
+      ...control,
+      challengeRounds: state.control.challengeRounds,
+      reservedChallengeBudget: state.control.reservedChallengeBudget,
+    };
+
     return {
       ...update,
       control:
         state.control.stopKind === undefined
-          ? control
-          : { ...control, stopKind: state.control.stopKind },
+          ? protectedControl
+          : { ...protectedControl, stopKind: state.control.stopKind },
     };
   };
 }
@@ -116,6 +137,32 @@ function preserveTerminationDecision(node: InvestigationNode): InvestigationNode
 export function createInvestigationGraph({
   nodes,
 }: Readonly<{ nodes: InvestigationNodes }>) {
+  const terminate = (
+    state: typeof InvestigationStateAnnotation.State,
+    stopKind: InvestigationStop,
+  ) =>
+    new Command({
+      goto: 'propose_conclusion',
+      update: {
+        control: { ...state.control, stopKind },
+      },
+    });
+
+  const routeChallenge = (state: typeof InvestigationStateAnnotation.State) => {
+    if (state.control.challengeRounds >= MAX_CHALLENGE_ROUNDS) {
+      return terminate(state, 'ambiguous');
+    }
+
+    if (state.control.reservedChallengeBudget <= 0) {
+      return terminate(state, 'budget-exhausted');
+    }
+
+    return new Command({
+      goto: 'challenge_hypothesis',
+      update: { control: controlWithoutStopKind(state.control) },
+    });
+  };
+
   const terminationCheck = async (
     state: typeof InvestigationStateAnnotation.State,
   ) => {
@@ -126,10 +173,7 @@ export function createInvestigationGraph({
       decision.stopKind === 'sufficient' &&
       state.control.challengeRounds === 0
     ) {
-      return new Command({
-        goto: 'challenge_hypothesis',
-        update: { control: controlWithoutStopKind(state.control) },
-      });
+      return routeChallenge(state);
     }
 
     if (decision.route === 'need-more-evidence') {
@@ -140,56 +184,62 @@ export function createInvestigationGraph({
     }
 
     if (decision.route === 'challenge-required') {
-      return new Command({
-        goto: 'challenge_hypothesis',
-        update: { control: controlWithoutStopKind(state.control) },
-      });
+      return routeChallenge(state);
     }
 
-    return new Command({
-      goto: 'propose_conclusion',
-      update: {
-        control: { ...state.control, stopKind: decision.stopKind },
+    return terminate(state, decision.stopKind);
+  };
+
+  const challengeHypothesis: InvestigationNode = async (state) => {
+    const result = await nodes.challenge_hypothesis(state);
+
+    return {
+      hypotheses: [result.alternative],
+      tests: [...result.discriminatingTests],
+      control: {
+        ...controlWithoutStopKind(state.control),
+        challengeRounds: state.control.challengeRounds + 1,
+        reservedChallengeBudget: state.control.reservedChallengeBudget - 1,
       },
-    });
+    };
   };
 
   return new StateGraph(InvestigationStateAnnotation)
     .addNode(
       'normalize_incident',
-      preserveTerminationDecision(nodes.normalize_incident),
+      preserveGraphOwnedControl(nodes.normalize_incident),
     )
     .addNode(
       'collect_baseline',
-      preserveTerminationDecision(nodes.collect_baseline),
+      preserveGraphOwnedControl(nodes.collect_baseline),
     )
     .addNode(
       'generate_hypotheses',
-      preserveTerminationDecision(nodes.generate_hypotheses),
+      preserveGraphOwnedControl(nodes.generate_hypotheses),
     )
     .addNode(
       'derive_predictions',
-      preserveTerminationDecision(nodes.derive_predictions),
+      preserveGraphOwnedControl(nodes.derive_predictions),
     )
     .addNode(
       'plan_investigation',
-      preserveTerminationDecision(nodes.plan_investigation),
+      preserveGraphOwnedControl(nodes.plan_investigation),
     )
     .addNode(
       'execute_investigation',
-      preserveTerminationDecision(nodes.execute_investigation),
+      preserveGraphOwnedControl(nodes.execute_investigation),
     )
     .addNode(
       'evaluate_predictions',
-      preserveTerminationDecision(nodes.evaluate_predictions),
+      preserveGraphOwnedControl(nodes.evaluate_predictions),
     )
     .addNode(
       'interpret_residual_evidence',
-      preserveTerminationDecision(nodes.interpret_residual_evidence),
+      preserveGraphOwnedControl(nodes.interpret_residual_evidence),
     )
     .addNode(
       'derive_hypothesis_state',
-      preserveTerminationDecision(nodes.derive_hypothesis_state),
+      preserveGraphOwnedControl(nodes.derive_hypothesis_state),
     )
     .addNode('termination_check', terminationCheck, {
       ends: [
@@ -200,11 +250,11 @@ export function createInvestigationGraph({
     })
     .addNode(
       'challenge_hypothesis',
-      preserveTerminationDecision(nodes.challenge_hypothesis),
+      challengeHypothesis,
     )
     .addNode(
       'propose_conclusion',
-      preserveTerminationDecision(nodes.propose_conclusion),
+      preserveGraphOwnedControl(nodes.propose_conclusion),
     )
     .addEdge(START, 'normalize_incident')
     .addEdge('normalize_incident', 'collect_baseline')

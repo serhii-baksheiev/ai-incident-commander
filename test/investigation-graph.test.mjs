@@ -70,6 +70,21 @@ function fakeNodes(trace, terminationCheck, challengeHypothesis = async () => ({
   );
 }
 
+const challengeAlternative = (round) => ({
+  id: `challenge-alternative-${round}`,
+  statement: `Alternative produced by challenge round ${round}`,
+  createdBy: 'challenge',
+});
+
+const discriminatingTest = (round) => ({
+  id: `challenge-test-${round}`,
+  predictionId: `challenge-prediction-${round}`,
+  tool: 'logs.search',
+  input: { round },
+  cost: 'cheap',
+  status: 'planned',
+});
+
 test('publishes exactly the twelve frozen lifecycle nodes and their deterministic edges', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const graph = createInvestigationGraph({
@@ -205,10 +220,12 @@ test('keeps termination_check as the sole owner of the final stop kind', async (
   );
 });
 
-test('executes challenge_hypothesis when termination_check requires a challenge', async () => {
+test('merges a typed challenge result and accounts for its reserved budget in the graph', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
   let checks = 0;
+  const alternative = challengeAlternative(1);
+  const testPlan = discriminatingTest(1);
   const graph = createInvestigationGraph({
     nodes: fakeNodes(
       trace,
@@ -218,11 +235,9 @@ test('executes challenge_hypothesis when termination_check requires a challenge'
           ? { route: 'challenge-required' }
           : { route: 'terminal', stopKind: 'stalled' };
       },
-      async (state) => ({
-        control: {
-          ...state.control,
-          challengeRounds: state.control.challengeRounds + 1,
-        },
+      async () => ({
+        alternative,
+        discriminatingTests: [testPlan],
       }),
     ),
   });
@@ -243,25 +258,141 @@ test('executes challenge_hypothesis when termination_check requires a challenge'
       'propose_conclusion',
     ],
   );
+  assert.deepEqual(result.hypotheses, [alternative]);
+  assert.deepEqual(result.tests, [testPlan]);
   assert.equal(result.control.challengeRounds, 1);
+  assert.equal(result.control.reservedChallengeBudget, 1);
   assert.equal(result.control.stopKind, 'stalled');
+  assert.equal('confidence' in result.hypotheses[0], false);
+  assert.equal('score' in result.hypotheses[0], false);
+});
+
+test('does not let normal lifecycle nodes consume reserved challenge budget', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const nodes = fakeNodes(
+    trace,
+    async () => ({ route: 'terminal', stopKind: 'stalled' }),
+  );
+  nodes.plan_investigation = async (state) => {
+    trace.push('plan_investigation');
+    return {
+      control: {
+        ...state.control,
+        reservedChallengeBudget: 0,
+        challengeRounds: 1,
+      },
+    };
+  };
+  const graph = createInvestigationGraph({ nodes });
+
+  const result = await graph.invoke(initialState());
+
+  assert.equal(result.control.challengeRounds, 0);
+  assert.equal(result.control.reservedChallengeBudget, 2);
+});
+
+test('terminates budget-exhausted without challenging when the reserve is empty', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  let challengeCalls = 0;
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(
+      trace,
+      async () => ({ route: 'challenge-required' }),
+      async () => {
+        challengeCalls += 1;
+        return {
+          alternative: challengeAlternative(challengeCalls),
+          discriminatingTests: [discriminatingTest(challengeCalls)],
+        };
+      },
+    ),
+  });
+  const state = initialState();
+  state.control.reservedChallengeBudget = 0;
+
+  const result = await graph.invoke(state);
+
+  assert.equal(challengeCalls, 0);
+  assert.equal(result.control.stopKind, 'budget-exhausted');
+  assert.equal(result.control.challengeRounds, 0);
+  assert.equal(result.control.reservedChallengeBudget, 0);
+  assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
+});
+
+test('runs at most two leader challenges and terminates a third request as ambiguous', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const challengeInputs = [];
+  let challengeCalls = 0;
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(
+      trace,
+      async () => ({ route: 'challenge-required' }),
+      async (state) => {
+        challengeCalls += 1;
+        challengeInputs.push({
+          round: state.control.challengeRounds,
+          hypothesisIds: state.hypotheses.map(({ id }) => id),
+        });
+        return {
+          alternative: challengeAlternative(challengeCalls),
+          discriminatingTests: [discriminatingTest(challengeCalls)],
+        };
+      },
+    ),
+  });
+  const state = initialState();
+  state.hypotheses = [
+    {
+      id: 'current-leader',
+      statement: 'The current leading explanation',
+      createdBy: 'initial',
+    },
+  ];
+
+  const result = await graph.invoke(state);
+
+  assert.equal(challengeCalls, 2);
+  assert.deepEqual(challengeInputs, [
+    { round: 0, hypothesisIds: ['current-leader'] },
+    {
+      round: 1,
+      hypothesisIds: ['current-leader', 'challenge-alternative-1'],
+    },
+  ]);
+  assert.deepEqual(
+    result.hypotheses.map(({ id }) => id),
+    ['current-leader', 'challenge-alternative-1', 'challenge-alternative-2'],
+  );
+  assert.deepEqual(
+    result.tests.map(({ id }) => id),
+    ['challenge-test-1', 'challenge-test-2'],
+  );
+  assert.equal(result.control.challengeRounds, 2);
+  assert.equal(result.control.reservedChallengeBudget, 0);
+  assert.equal(result.control.stopKind, 'ambiguous');
+  assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
 });
 
 test('does not expose sufficient until termination_check runs after mandatory challenge', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
   const observedStopKinds = [];
+  let checks = 0;
   const graph = createInvestigationGraph({
     nodes: fakeNodes(
       trace,
-      async () => ({ route: 'terminal', stopKind: 'sufficient' }),
+      async () => {
+        checks += 1;
+        return { route: 'terminal', stopKind: 'sufficient' };
+      },
       async (state) => {
         observedStopKinds.push(state.control.stopKind);
         return {
-          control: {
-            ...state.control,
-            challengeRounds: state.control.challengeRounds + 1,
-          },
+          alternative: challengeAlternative(1),
+          discriminatingTests: [discriminatingTest(1)],
         };
       },
     ),
@@ -270,8 +401,10 @@ test('does not expose sufficient until termination_check runs after mandatory ch
   const result = await graph.invoke(initialState());
 
   assert.deepEqual(observedStopKinds, [undefined]);
+  assert.equal(checks, 2);
   assert.equal(trace.filter((name) => name === 'challenge_hypothesis').length, 1);
   assert.equal(trace.at(-1), 'propose_conclusion');
   assert.equal(result.control.challengeRounds, 1);
+  assert.equal(result.control.reservedChallengeBudget, 1);
   assert.equal(result.control.stopKind, 'sufficient');
 });
