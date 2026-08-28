@@ -365,7 +365,7 @@ export async function runGraphBenchmarkExperiment({
     metadata,
     async investigate(record) {
       const graph = createInvestigationGraph({ nodes: createNodes(record) });
-      const finalState = await graph.invoke(initialBenchmarkState(record));
+      const finalState = await graph.execute(initialBenchmarkState(record));
       return outcomeFromGraphState(finalState);
     },
     recordEvaluation,

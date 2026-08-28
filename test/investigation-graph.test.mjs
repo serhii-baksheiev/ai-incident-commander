@@ -91,7 +91,7 @@ const discriminatingTest = (round) => ({
   status: 'planned',
 });
 
-test('publishes exactly the twelve frozen lifecycle nodes and their deterministic edges', async () => {
+test('keeps the twelve frozen lifecycle handlers and adds one sequential conclusion-review node', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const graph = createInvestigationGraph({
     nodes: fakeNodes([], async () => ({ route: 'terminal', stopKind: 'stalled' })),
@@ -99,29 +99,49 @@ test('publishes exactly the twelve frozen lifecycle nodes and their deterministi
   const topology = await graph.getGraph();
 
   assert.deepEqual(
+    graphPackage.INVESTIGATION_NODE_NAMES,
+    lifecycleNodes,
+    'the graph-owned review step must not widen the frozen lifecycle handler contract',
+  );
+  assert.deepEqual(
     Object.keys(topology.nodes).sort(),
-    ['__start__', ...lifecycleNodes, '__end__'].sort(),
+    ['__start__', ...lifecycleNodes, 'review_conclusion', '__end__'].sort(),
     'the graph must not hide a ReAct or prebuilt tool-loop node beside the frozen lifecycle',
   );
   assert.deepEqual(
-    topology.edges.map(({ source, target }) => `${source}->${target}`).sort(),
+    topology.edges
+      .map(({ conditional, source, target }) =>
+        `${source}->${target}:${conditional ? 'conditional' : 'sequential'}`,
+      )
+      .sort(),
     [
-      '__start__->normalize_incident',
-      'normalize_incident->collect_baseline',
-      'collect_baseline->generate_hypotheses',
-      'generate_hypotheses->derive_predictions',
-      'derive_predictions->plan_investigation',
-      'plan_investigation->execute_investigation',
-      'execute_investigation->evaluate_predictions',
-      'evaluate_predictions->interpret_residual_evidence',
-      'interpret_residual_evidence->derive_hypothesis_state',
-      'derive_hypothesis_state->termination_check',
-      'termination_check->plan_investigation',
-      'termination_check->challenge_hypothesis',
-      'termination_check->propose_conclusion',
-      'challenge_hypothesis->execute_investigation',
-      'propose_conclusion->__end__',
+      '__start__->normalize_incident:sequential',
+      'normalize_incident->collect_baseline:sequential',
+      'collect_baseline->generate_hypotheses:sequential',
+      'generate_hypotheses->derive_predictions:sequential',
+      'derive_predictions->plan_investigation:sequential',
+      'plan_investigation->execute_investigation:sequential',
+      'execute_investigation->evaluate_predictions:sequential',
+      'evaluate_predictions->interpret_residual_evidence:sequential',
+      'interpret_residual_evidence->derive_hypothesis_state:sequential',
+      'derive_hypothesis_state->termination_check:sequential',
+      'termination_check->plan_investigation:conditional',
+      'termination_check->challenge_hypothesis:conditional',
+      'termination_check->propose_conclusion:conditional',
+      'challenge_hypothesis->execute_investigation:sequential',
+      'propose_conclusion->__end__:conditional',
+      'propose_conclusion->review_conclusion:conditional',
+      'review_conclusion->__end__:conditional',
+      'review_conclusion->derive_predictions:conditional',
+      'review_conclusion->generate_hypotheses:conditional',
     ].sort(),
+  );
+  assert.deepEqual(
+    topology.edges
+      .filter(({ target }) => target === 'review_conclusion')
+      .map(({ source }) => source),
+    ['propose_conclusion'],
+    'review must be one sequential post-conclusion step, never a Send/fan-out target',
   );
 });
 
@@ -138,7 +158,7 @@ test('replays the deterministic more-evidence cycle before routing a terminal st
     }),
   });
 
-  const result = await graph.invoke(initialState());
+  const result = await graph.execute(initialState());
 
   assert.deepEqual(trace, [
     'normalize_incident',
@@ -182,7 +202,7 @@ test('routes every canonical terminal stop kind through propose_conclusion to EN
       state.control.challengeRounds = 1;
     }
 
-    const result = await graph.invoke(state);
+    const result = await graph.execute(state);
 
     assert.equal(result.control.stopKind, stopKind, `${stopKind} must remain distinguishable`);
     assert.deepEqual(
@@ -216,7 +236,7 @@ test('keeps termination_check as the sole owner of the final stop kind', async (
   };
   const graph = createInvestigationGraph({ nodes });
 
-  const result = await graph.invoke(initialState());
+  const result = await graph.execute(initialState());
 
   assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
   assert.equal(
@@ -250,7 +270,7 @@ test('merges a typed challenge result and accounts for its reserved budget in th
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.invoke(state);
+  const result = await graph.execute(state);
 
   assert.deepEqual(
     Object.keys(result).sort(),
@@ -379,7 +399,7 @@ for (const malformedCase of [
     };
     const graph = createInvestigationGraph({ nodes });
 
-    const outcome = await graph.invoke(state).then(
+    const outcome = await graph.execute(state).then(
       (value) => ({ value }),
       (error) => ({ error }),
     );
@@ -413,7 +433,7 @@ test('does not let normal lifecycle nodes consume reserved challenge budget', as
   };
   const graph = createInvestigationGraph({ nodes });
 
-  const result = await graph.invoke(initialState());
+  const result = await graph.execute(initialState());
 
   assert.equal(result.control.challengeRounds, 0);
   assert.equal(result.control.reservedChallengeBudget, 2);
@@ -448,7 +468,7 @@ test('restores graph-owned control after in-place mutation and still performs ma
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.invoke(state);
+  const result = await graph.execute(state);
 
   assert.equal(challengeCalls, 1);
   assert.equal(result.control.challengeRounds, 1);
@@ -480,7 +500,7 @@ test('terminates budget-exhausted without challenging when the reserve is empty'
   state.hypotheses = [currentLeader()];
   state.control.reservedChallengeBudget = 0;
 
-  const result = await graph.invoke(state);
+  const result = await graph.execute(state);
 
   assert.equal(challengeCalls, 0);
   assert.equal(result.control.stopKind, 'budget-exhausted');
@@ -537,7 +557,7 @@ for (const invalidCounter of [
     state.hypotheses = [currentLeader()];
     state.control[invalidCounter.field] = invalidCounter.value;
 
-    const outcome = await graph.invoke(state).then(
+    const outcome = await graph.execute(state).then(
       (value) => ({ value }),
       (error) => ({ error }),
     );
@@ -577,7 +597,7 @@ test('targets the adjudicated leader for both challenge rounds and terminates a 
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.invoke(state);
+  const result = await graph.execute(state);
 
   assert.equal(challengeCalls, 2);
   assert.deepEqual(challengeTargets, [
@@ -626,7 +646,7 @@ test('does not expose sufficient until termination_check runs after mandatory ch
   const state = initialState();
   state.hypotheses = [currentLeader()];
 
-  const result = await graph.invoke(state);
+  const result = await graph.execute(state);
 
   assert.deepEqual(observedStopKinds, [undefined]);
   assert.equal(checks, 2);
