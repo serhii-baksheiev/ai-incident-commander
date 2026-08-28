@@ -61,10 +61,10 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 | --- | --- |
 | Architecture | **Frozen for v0.1 implementation** |
 | Repository and engineering guardrails | Scaffolded; Definition-of-Done command gate not configured |
-| Product implementation | Canonical domain contracts plus a persistent SQLite checkpointer and kill/resume spike implemented — see [`resumes the persisted run after process death without duplicate records or budget drift`](test/persistent-resume.test.mjs) |
+| Product implementation | Canonical domain contracts, a persistent SQLite checkpointer with a kill/resume spike, and a read-only tool registry with live and replay adapters implemented — see [`resumes the persisted run after process death without duplicate records or budget drift`](test/persistent-resume.test.mjs) and [`replays a recorded live response without invoking the live tool again`](test/tool-registry-replay.test.mjs) |
 | Scaffold milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
 | Completed implementation milestone | [AIC-4 — persistent checkpointer and kill/resume](https://sbaksheiev.atlassian.net/browse/AIC-4) |
-| Next implementation milestone | [AIC-5 — \[K4\] Implement read-only tool registry and record/replay adapters](https://sbaksheiev.atlassian.net/browse/AIC-5) |
+| Completed implementation milestone | [AIC-5 — read-only tool registry and live record / replay adapters](https://sbaksheiev.atlassian.net/browse/AIC-5) |
 
 The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
 
