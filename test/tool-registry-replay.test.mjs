@@ -111,18 +111,20 @@ test('rejects duplicate live tool ids', () => {
   );
 });
 
-test('converts a thrown live implementation error to ToolResult.error', async () => {
+test('redacts a thrown live implementation error from ToolResult.error', async () => {
   const adapter = new liveTools.LiveToolAdapter([
     incidentTool({
       execute: async () => {
-        throw new Error('log transport failed');
+        throw new Error(
+          'Authorization: Bearer test-only-not-a-secret at logs.internal.test',
+        );
       },
     }),
   ]);
 
   assert.deepEqual(await adapter.execute('logs', {}), {
     status: 'error',
-    message: 'log transport failed',
+    message: 'tool execution failed',
   });
 });
 
@@ -288,6 +290,26 @@ test('returns ToolResult.error for non-JSON replay input instead of rejecting', 
 
   assert.equal(result.status, 'error');
   assert.equal(typeof result.message, 'string');
+});
+
+test('redacts replay key generation errors from ToolResult.error', async () => {
+  const input = {};
+  Object.defineProperty(input, 'source', {
+    enumerable: true,
+    get() {
+      throw new Error(
+        'internal replay endpoint replay.internal.test exposed test-only-marker',
+      );
+    },
+  });
+  const adapter = new replayTools.ReplayToolAdapter({ version: 1, responses: {} });
+
+  const result = await adapter.execute('logs', input);
+
+  assert.deepEqual(result, {
+    status: 'error',
+    message: 'replay key generation failed',
+  });
 });
 
 test('keeps replay-miss reasons generic and excludes serialized input identity', async () => {

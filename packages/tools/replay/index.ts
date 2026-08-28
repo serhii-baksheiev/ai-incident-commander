@@ -40,10 +40,10 @@ export class ReplayToolAdapter<Output = Evidence[]> {
           reason: 'replay response is not recorded',
         }
       );
-    } catch (error) {
+    } catch {
       return {
         status: 'error',
-        message: error instanceof Error ? error.message : 'replay key generation failed',
+        message: 'replay key generation failed',
       };
     }
   }

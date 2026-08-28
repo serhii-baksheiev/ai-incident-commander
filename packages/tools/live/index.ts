@@ -36,10 +36,10 @@ export class LiveToolAdapter<Input = unknown, Output = Evidence[]> {
 
     try {
       return await tool.execute(input);
-    } catch (error) {
+    } catch {
       return {
         status: 'error',
-        message: error instanceof Error ? error.message : 'tool execution failed',
+        message: 'tool execution failed',
       };
     }
   }
