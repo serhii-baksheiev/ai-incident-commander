@@ -351,3 +351,21 @@ test('creates a fresh runId with threadId equal to it for every invocation', () 
 
   assert.equal(new Set(runIds).size, runIds.length);
 });
+
+test('marks every production benchmark invocation as literal humanReview false', () => {
+  const createBenchmarkInvocation = requireBenchmarkInvocationFactory();
+
+  for (const scenario of requireReplayScenarios()) {
+    const invocation = createBenchmarkInvocation(scenario);
+    assert.equal(
+      Object.hasOwn(invocation, 'humanReview'),
+      true,
+      `${scenario.id} must explicitly declare its benchmark review mode`,
+    );
+    assert.equal(
+      invocation.humanReview,
+      false,
+      `${scenario.id} must never enter the interactive conclusion-review path`,
+    );
+  }
+});
