@@ -205,6 +205,48 @@ test('keeps termination_check as the sole owner of the final stop kind', async (
   );
 });
 
+test('executes challenge_hypothesis when termination_check requires a challenge', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  let checks = 0;
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(
+      trace,
+      async () => {
+        checks += 1;
+        return checks === 1
+          ? { route: 'challenge-required' }
+          : { route: 'terminal', stopKind: 'stalled' };
+      },
+      async (state) => ({
+        control: {
+          ...state.control,
+          challengeRounds: state.control.challengeRounds + 1,
+        },
+      }),
+    ),
+  });
+
+  const result = await graph.invoke(initialState());
+
+  assert.equal(checks, 2);
+  assert.deepEqual(
+    trace.slice(trace.indexOf('termination_check')),
+    [
+      'termination_check',
+      'challenge_hypothesis',
+      'execute_investigation',
+      'evaluate_predictions',
+      'interpret_residual_evidence',
+      'derive_hypothesis_state',
+      'termination_check',
+      'propose_conclusion',
+    ],
+  );
+  assert.equal(result.control.challengeRounds, 1);
+  assert.equal(result.control.stopKind, 'stalled');
+});
+
 test('does not expose sufficient until termination_check runs after mandatory challenge', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
