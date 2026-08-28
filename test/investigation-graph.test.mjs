@@ -56,13 +56,13 @@ function fakeNodes(trace, terminationCheck, challengeHypothesis = async () => ({
   return Object.fromEntries(
     lifecycleNodes.map((name) => [
       name,
-      async (state) => {
+      async (state, ...args) => {
         trace.push(name);
         if (name === 'termination_check') {
           return terminationCheck(state);
         }
         if (name === 'challenge_hypothesis') {
-          return challengeHypothesis(state);
+          return challengeHypothesis(state, ...args);
         }
         return {};
       },
@@ -74,6 +74,12 @@ const challengeAlternative = (round) => ({
   id: `challenge-alternative-${round}`,
   statement: `Alternative produced by challenge round ${round}`,
   createdBy: 'challenge',
+});
+
+const currentLeader = () => ({
+  id: 'current-leader',
+  statement: 'The current leading explanation',
+  createdBy: 'initial',
 });
 
 const discriminatingTest = (round) => ({
@@ -232,7 +238,7 @@ test('merges a typed challenge result and accounts for its reserved budget in th
       async () => {
         checks += 1;
         return checks === 1
-          ? { route: 'challenge-required' }
+          ? { route: 'challenge-required', leaderId: 'current-leader' }
           : { route: 'terminal', stopKind: 'stalled' };
       },
       async () => ({
@@ -241,9 +247,16 @@ test('merges a typed challenge result and accounts for its reserved budget in th
       }),
     ),
   });
+  const state = initialState();
+  state.hypotheses = [currentLeader()];
 
-  const result = await graph.invoke(initialState());
+  const result = await graph.invoke(state);
 
+  assert.deepEqual(
+    Object.keys(result).sort(),
+    Object.keys(state).sort(),
+    'transient challenge routing must not become persisted IncidentState',
+  );
   assert.equal(checks, 2);
   assert.deepEqual(
     trace.slice(trace.indexOf('termination_check')),
@@ -258,14 +271,128 @@ test('merges a typed challenge result and accounts for its reserved budget in th
       'propose_conclusion',
     ],
   );
-  assert.deepEqual(result.hypotheses, [alternative]);
+  assert.deepEqual(result.hypotheses, [currentLeader(), alternative]);
   assert.deepEqual(result.tests, [testPlan]);
   assert.equal(result.control.challengeRounds, 1);
   assert.equal(result.control.reservedChallengeBudget, 1);
   assert.equal(result.control.stopKind, 'stalled');
-  assert.equal('confidence' in result.hypotheses[0], false);
-  assert.equal('score' in result.hypotheses[0], false);
+  assert.equal('confidence' in result.hypotheses[1], false);
+  assert.equal('score' in result.hypotheses[1], false);
 });
+
+for (const malformedCase of [
+  {
+    name: 'an alternative with numeric confidence',
+    result: () => ({
+      alternative: { ...challengeAlternative(1), confidence: 0.75 },
+      discriminatingTests: [discriminatingTest(1)],
+    }),
+  },
+  {
+    name: 'an alternative not created by challenge',
+    result: () => ({
+      alternative: { ...challengeAlternative(1), createdBy: 'initial' },
+      discriminatingTests: [discriminatingTest(1)],
+    }),
+  },
+  {
+    name: 'a string discriminating-tests collection',
+    result: () => ({
+      alternative: challengeAlternative(1),
+      discriminatingTests: 'not-an-array',
+    }),
+  },
+  {
+    name: 'an invalid discriminating test',
+    result: () => ({
+      alternative: challengeAlternative(1),
+      discriminatingTests: [{ ...discriminatingTest(1), cost: 'free' }],
+    }),
+  },
+  {
+    name: 'an empty discriminating-test list',
+    result: () => ({
+      alternative: challengeAlternative(1),
+      discriminatingTests: [],
+    }),
+  },
+  {
+    name: 'an alternative ID already present in state',
+    result: (state) => ({
+      alternative: {
+        ...challengeAlternative(1),
+        id: state.hypotheses[0].id,
+      },
+      discriminatingTests: [discriminatingTest(1)],
+    }),
+  },
+  {
+    name: 'a test ID already present in state',
+    prepare: (state) => {
+      state.tests = [discriminatingTest(1)];
+    },
+    result: () => ({
+      alternative: challengeAlternative(1),
+      discriminatingTests: [
+        {
+          ...discriminatingTest(1),
+          input: { replacement: true },
+        },
+      ],
+    }),
+  },
+]) {
+  test(`rejects ${malformedCase.name} before merging or consuming challenge budget`, async () => {
+    const createInvestigationGraph = requireGraphFactory();
+    const trace = [];
+    const postChallengeObservations = [];
+    let challengeCalls = 0;
+    let checks = 0;
+    const state = initialState();
+    state.hypotheses = [currentLeader()];
+    malformedCase.prepare?.(state);
+    const challengeResult = malformedCase.result(state);
+    const nodes = fakeNodes(
+      trace,
+      async () => {
+        checks += 1;
+        if (checks === 1) {
+          postChallengeObservations.length = 0;
+          return { route: 'challenge-required', leaderId: 'current-leader' };
+        }
+        return { route: 'terminal', stopKind: 'stalled' };
+      },
+      async () => {
+        challengeCalls += 1;
+        return challengeResult;
+      },
+    );
+    nodes.execute_investigation = async (current) => {
+      trace.push('execute_investigation');
+      postChallengeObservations.push({
+        challengeRounds: current.control.challengeRounds,
+        reservedChallengeBudget: current.control.reservedChallengeBudget,
+        hypothesisIds: current.hypotheses.map(({ id }) => id),
+        testIds: current.tests.map((item) => item?.id),
+      });
+      return {};
+    };
+    const graph = createInvestigationGraph({ nodes });
+
+    const outcome = await graph.invoke(state).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+
+    assert.equal(challengeCalls, 1);
+    assert.deepEqual(
+      postChallengeObservations,
+      [],
+      'invalid output must stop before reducers and budget accounting run',
+    );
+    assert.equal('error' in outcome, true, 'invalid output must reject invocation');
+  });
+}
 
 test('does not let normal lifecycle nodes consume reserved challenge budget', async () => {
   const createInvestigationGraph = requireGraphFactory();
@@ -292,6 +419,43 @@ test('does not let normal lifecycle nodes consume reserved challenge budget', as
   assert.equal(result.control.reservedChallengeBudget, 2);
 });
 
+test('restores graph-owned control after in-place mutation and still performs mandatory challenge', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  let challengeCalls = 0;
+  const nodes = fakeNodes(
+    trace,
+    async () => ({
+      route: 'terminal',
+      stopKind: 'sufficient',
+      leaderId: 'current-leader',
+    }),
+    async () => {
+      challengeCalls += 1;
+      return {
+        alternative: challengeAlternative(challengeCalls),
+        discriminatingTests: [discriminatingTest(challengeCalls)],
+      };
+    },
+  );
+  nodes.plan_investigation = async (state) => {
+    trace.push('plan_investigation');
+    state.control.challengeRounds = 2;
+    state.control.reservedChallengeBudget = 0;
+    return {};
+  };
+  const graph = createInvestigationGraph({ nodes });
+  const state = initialState();
+  state.hypotheses = [currentLeader()];
+
+  const result = await graph.invoke(state);
+
+  assert.equal(challengeCalls, 1);
+  assert.equal(result.control.challengeRounds, 1);
+  assert.equal(result.control.reservedChallengeBudget, 1);
+  assert.equal(result.control.stopKind, 'sufficient');
+});
+
 test('terminates budget-exhausted without challenging when the reserve is empty', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
@@ -299,7 +463,10 @@ test('terminates budget-exhausted without challenging when the reserve is empty'
   const graph = createInvestigationGraph({
     nodes: fakeNodes(
       trace,
-      async () => ({ route: 'challenge-required' }),
+      async () => ({
+        route: 'challenge-required',
+        leaderId: 'current-leader',
+      }),
       async () => {
         challengeCalls += 1;
         return {
@@ -310,6 +477,7 @@ test('terminates budget-exhausted without challenging when the reserve is empty'
     ),
   });
   const state = initialState();
+  state.hypotheses = [currentLeader()];
   state.control.reservedChallengeBudget = 0;
 
   const result = await graph.invoke(state);
@@ -321,21 +489,84 @@ test('terminates budget-exhausted without challenging when the reserve is empty'
   assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
 });
 
-test('runs at most two leader challenges and terminates a third request as ambiguous', async () => {
+for (const invalidCounter of [
+  { field: 'challengeRounds', label: 'fractional challenge rounds', value: 0.5 },
+  { field: 'challengeRounds', label: 'negative challenge rounds', value: -1 },
+  {
+    field: 'challengeRounds',
+    label: 'non-safe-integer challenge rounds',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+  {
+    field: 'reservedChallengeBudget',
+    label: 'fractional challenge reserve',
+    value: 0.5,
+  },
+  {
+    field: 'reservedChallengeBudget',
+    label: 'negative challenge reserve',
+    value: -1,
+  },
+  {
+    field: 'reservedChallengeBudget',
+    label: 'non-safe-integer challenge reserve',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+]) {
+  test(`fails closed on ${invalidCounter.label} before challenge execution`, async () => {
+    const createInvestigationGraph = requireGraphFactory();
+    const trace = [];
+    let challengeCalls = 0;
+    const graph = createInvestigationGraph({
+      nodes: fakeNodes(
+        trace,
+        async () => ({
+          route: 'challenge-required',
+          leaderId: 'current-leader',
+        }),
+        async () => {
+          challengeCalls += 1;
+          return {
+            alternative: challengeAlternative(challengeCalls),
+            discriminatingTests: [discriminatingTest(challengeCalls)],
+          };
+        },
+      ),
+    });
+    const state = initialState();
+    state.hypotheses = [currentLeader()];
+    state.control[invalidCounter.field] = invalidCounter.value;
+
+    const outcome = await graph.invoke(state).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+
+    assert.equal(challengeCalls, 0, 'invalid counters must fail before challenge execution');
+    assert.equal('error' in outcome, true, 'invalid counters must reject invocation');
+  });
+}
+
+test('targets the adjudicated leader for both challenge rounds and terminates a third request as ambiguous', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
-  const challengeInputs = [];
+  const challengeTargets = [];
   let challengeCalls = 0;
+  let checks = 0;
   const graph = createInvestigationGraph({
     nodes: fakeNodes(
       trace,
-      async () => ({ route: 'challenge-required' }),
-      async (state) => {
+      async () => {
+        checks += 1;
+        return {
+          route: 'challenge-required',
+          leaderId:
+            checks === 1 ? 'current-leader' : `challenge-alternative-${checks - 1}`,
+        };
+      },
+      async (_state, leaderId) => {
         challengeCalls += 1;
-        challengeInputs.push({
-          round: state.control.challengeRounds,
-          hypothesisIds: state.hypotheses.map(({ id }) => id),
-        });
+        challengeTargets.push(leaderId);
         return {
           alternative: challengeAlternative(challengeCalls),
           discriminatingTests: [discriminatingTest(challengeCalls)],
@@ -344,23 +575,14 @@ test('runs at most two leader challenges and terminates a third request as ambig
     ),
   });
   const state = initialState();
-  state.hypotheses = [
-    {
-      id: 'current-leader',
-      statement: 'The current leading explanation',
-      createdBy: 'initial',
-    },
-  ];
+  state.hypotheses = [currentLeader()];
 
   const result = await graph.invoke(state);
 
   assert.equal(challengeCalls, 2);
-  assert.deepEqual(challengeInputs, [
-    { round: 0, hypothesisIds: ['current-leader'] },
-    {
-      round: 1,
-      hypothesisIds: ['current-leader', 'challenge-alternative-1'],
-    },
+  assert.deepEqual(challengeTargets, [
+    'current-leader',
+    'challenge-alternative-1',
   ]);
   assert.deepEqual(
     result.hypotheses.map(({ id }) => id),
@@ -386,7 +608,11 @@ test('does not expose sufficient until termination_check runs after mandatory ch
       trace,
       async () => {
         checks += 1;
-        return { route: 'terminal', stopKind: 'sufficient' };
+        return {
+          route: 'terminal',
+          stopKind: 'sufficient',
+          leaderId: 'current-leader',
+        };
       },
       async (state) => {
         observedStopKinds.push(state.control.stopKind);
@@ -397,8 +623,10 @@ test('does not expose sufficient until termination_check runs after mandatory ch
       },
     ),
   });
+  const state = initialState();
+  state.hypotheses = [currentLeader()];
 
-  const result = await graph.invoke(initialState());
+  const result = await graph.invoke(state);
 
   assert.deepEqual(observedStopKinds, [undefined]);
   assert.equal(checks, 2);
