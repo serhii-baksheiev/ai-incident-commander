@@ -163,11 +163,14 @@ async function getControlledMutationCycle() {
   return controlledMutationCycle;
 }
 
-function compareControlledExperiments({ baseline, mutation, testedHeadSha }) {
+async function compareControlledExperiments({ baseline, mutation, testedHeadSha }) {
+  const internalGate = await import(
+    '../packages/evals/dist/benchmark-regression-gate.js'
+  );
   const compareBenchmarkExperiments = requireFunction(
-    evals,
+    internalGate,
     'compareBenchmarkExperiments',
-    '@aic/evals',
+    'the internal benchmark regression gate',
   );
   return compareBenchmarkExperiments({
     testedHeadSha: testedHeadSha ?? currentHeadSha(),
@@ -550,6 +553,10 @@ test('compares experiments by stable example identity and stop distribution', ()
   });
 });
 
+test('keeps the benchmark regression gate off the public eval package surface', () => {
+  assert.equal(evals.compareBenchmarkExperiments, undefined);
+});
+
 test('gates a controlled benchmark mutation independently for each metric', async () => {
   const { baseline, mutation, removedRequiredFingerprint } =
     await getControlledMutationCycle();
@@ -593,7 +600,7 @@ test('gates a controlled benchmark mutation independently for each metric', asyn
     'removing one required fingerprint must turn only evidence coverage red',
   );
 
-  const proof = compareControlledExperiments({
+  const proof = await compareControlledExperiments({
     testedHeadSha,
     baseline,
     mutation,
@@ -660,6 +667,133 @@ test('keeps the evidence mutation scoped and leaves a later baseline green', asy
   }
 });
 
+test('rejects changed ground truth hidden behind a stable example identity', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const changedGroundTruth = {
+    ...mutation,
+    records: mutation.records.map((record, index) =>
+      index === 0
+        ? {
+            ...record,
+            scenario: {
+              ...record.scenario,
+              groundTruth: {
+                ...record.scenario.groundTruth,
+                expectedEvidence: record.scenario.groundTruth.expectedEvidence.map(
+                  (fingerprint, evidenceIndex) =>
+                    evidenceIndex === 0
+                      ? {
+                          ...fingerprint,
+                          predicate: `${fingerprint.predicate} changed`,
+                        }
+                      : fingerprint,
+                ),
+              },
+            },
+          }
+        : record),
+  };
+
+  assert.deepEqual(
+    changedGroundTruth.records.map(({ exampleId }) => exampleId),
+    baseline.records.map(({ exampleId }) => exampleId),
+  );
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation: changedGroundTruth }),
+    /ground truth.*match/i,
+  );
+});
+
+test('rejects swapped scenario objects hidden behind stable example identities', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const firstScenario = mutation.records[0].scenario;
+  const secondScenario = mutation.records[3].scenario;
+  const swappedScenarios = {
+    ...mutation,
+    records: mutation.records.map((record, index) => {
+      const scenario = index === 0
+        ? secondScenario
+        : index === 3
+          ? firstScenario
+          : record.scenario;
+      return {
+        ...record,
+        scenario,
+        metadata: { ...record.metadata, scenarioId: scenario.id },
+      };
+    }),
+  };
+
+  assert.deepEqual(
+    swappedScenarios.records.map(({ exampleId }) => exampleId),
+    baseline.records.map(({ exampleId }) => exampleId),
+  );
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation: swappedScenarios }),
+    /scenario.*match.*example/i,
+  );
+});
+
+test('rejects a record whose scenario disagrees with its metadata', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const inconsistentMutation = {
+    ...mutation,
+    records: mutation.records.map((record, index) =>
+      index === 0
+        ? {
+            ...record,
+            metadata: { ...record.metadata, scenarioId: 'different-scenario' },
+          }
+        : record),
+  };
+
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation: inconsistentMutation }),
+    /scenario\.id.*metadata\.scenarioId/i,
+  );
+});
+
+test('rejects a record whose run identity disagrees with its metadata', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const inconsistentMutation = {
+    ...mutation,
+    records: mutation.records.map((record, index) =>
+      index === 0
+        ? {
+            ...record,
+            metadata: {
+              ...record.metadata,
+              runId: '00000000-0000-4000-8000-000000000001',
+            },
+          }
+        : record),
+  };
+
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation: inconsistentMutation }),
+    /record\.runId.*metadata\.runId/i,
+  );
+});
+
+test('rejects a record whose thread identity differs from its run identity', async () => {
+  const { baseline, mutation } = await getControlledMutationCycle();
+  const inconsistentMutation = {
+    ...mutation,
+    records: mutation.records.map((record, index) =>
+      index === 0
+        ? {
+            ...record,
+            threadId: '00000000-0000-4000-8000-000000000002',
+          }
+        : record),
+  };
+
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation: inconsistentMutation }),
+    /threadId.*runId/i,
+  );
+});
+
 test('rejects a result whose run identity does not match its benchmark record', async () => {
   const { baseline, mutation } = await getControlledMutationCycle();
   const mismatchedBaseline = {
@@ -670,7 +804,7 @@ test('rejects a result whose run identity does not match its benchmark record', 
         : result),
   };
 
-  assert.throws(
+  await assert.rejects(
     () => compareControlledExperiments({ baseline: mismatchedBaseline, mutation }),
     /result runId.*record/i,
   );
@@ -694,7 +828,7 @@ test('rejects baseline and mutation experiments that reuse a run identity', asyn
       index === 0 ? { ...result, runId: sharedRunId } : result),
   };
 
-  assert.throws(
+  await assert.rejects(
     () => compareControlledExperiments({ baseline, mutation: overlappingMutation }),
     /run IDs.*overlap/i,
   );
@@ -719,7 +853,7 @@ test('rejects a red baseline before accepting mutation evidence', async () => {
         : result),
   };
 
-  assert.throws(
+  await assert.rejects(
     () => compareControlledExperiments({ baseline: redBaseline, mutation }),
     /baseline.*pass.*metric/i,
   );
@@ -728,7 +862,7 @@ test('rejects a red baseline before accepting mutation evidence', async () => {
 test('rejects an all-green mutation for the declared evidence coverage regression', async () => {
   const { baseline, baselineAfterMutation } = await getControlledMutationCycle();
 
-  assert.throws(
+  await assert.rejects(
     () => compareControlledExperiments({
       baseline,
       mutation: baselineAfterMutation,
@@ -756,7 +890,7 @@ test('rejects a mutation that turns an undeclared metric red', async () => {
         : result),
   };
 
-  assert.throws(
+  await assert.rejects(
     () => compareControlledExperiments({
       baseline,
       mutation: multiMetricMutation,
@@ -764,6 +898,41 @@ test('rejects a mutation that turns an undeclared metric red', async () => {
     /mutation.*termination_correctness/i,
   );
 });
+
+const invalidMetricScores = [
+  ['rejects a NaN actual metric score', Number.NaN],
+  ['rejects an infinite actual metric score', Number.POSITIVE_INFINITY],
+  ['rejects a negative actual metric score', -0.1],
+  ['rejects an actual metric score above one', 1.1],
+  ['rejects a non-number actual metric score', '0.5'],
+];
+
+for (const [name, invalidScore] of invalidMetricScores) {
+  test(name, async () => {
+    const { baseline, mutation } = await getControlledMutationCycle();
+    const invalidMutation = {
+      ...mutation,
+      results: mutation.results.map((result, index) =>
+        index === 0
+          ? {
+              ...result,
+              metrics: {
+                ...result.metrics,
+                evidence_coverage: {
+                  key: 'evidence_coverage',
+                  score: invalidScore,
+                },
+              },
+            }
+          : result),
+    };
+
+    await assert.rejects(
+      () => compareControlledExperiments({ baseline, mutation: invalidMutation }),
+      /metric score.*finite number.*between 0 and 1/i,
+    );
+  });
+}
 
 test('rejects a benchmark below five scenarios with three runs each', async () => {
   const { baseline, mutation } = await getControlledMutationCycle();
@@ -774,7 +943,7 @@ test('rejects a benchmark below five scenarios with three runs each', async () =
     stopKindDistribution: { sufficient: 14 },
   });
 
-  assert.throws(
+  await assert.rejects(
     () => compareControlledExperiments({
       baseline: truncate(baseline),
       mutation: truncate(mutation),
