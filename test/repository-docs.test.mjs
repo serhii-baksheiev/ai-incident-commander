@@ -138,7 +138,15 @@ test('records the completed AIC-2 delivery before the preserved layered-boundary
 
 test('records the continuous Rovo repeated-escalation stop before preserving the existing journal body', () => {
   const journal = readFileSync(journalPath, 'utf8');
-  const [, newestEntry] = journal.split(/^### /m);
+  const [, ...entries] = journal.split(/^### /m);
+  const repeatedEscalationEntry = entries.find((entry) =>
+    entry.startsWith('Continuous Rovo loop parked AIC-4 and AIC-5 at repeated escalation'),
+  );
+  assert.notEqual(
+    repeatedEscalationEntry,
+    undefined,
+    'the continuous Rovo repeated-escalation entry must remain present',
+  );
   const requiredEvidence = [
     {
       label: 'records the repeated-escalation stop',
@@ -170,7 +178,7 @@ test('records the continuous Rovo repeated-escalation stop before preserving the
     },
   ];
   const problems = requiredEvidence
-    .filter(({ pattern }) => !pattern.test(newestEntry))
+    .filter(({ pattern }) => !pattern.test(repeatedEscalationEntry))
     .map(({ label }) => label);
 
   const historicalMarker = '### AIC-3 delivered; canonical domain contracts unblocked graph work';
