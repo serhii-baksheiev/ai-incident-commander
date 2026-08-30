@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -65,4 +66,18 @@ test('pins the downstream engineering harness to the complete published Rig 0.6.
   }
 
   assert.deepEqual(problems, []);
+});
+
+test('ignores the checkout-local Rig board selector', () => {
+  const result = spawnSync(
+    'git',
+    ['check-ignore', '--quiet', '--', '.claude/queue.board'],
+    { cwd: projectRoot },
+  );
+
+  assert.equal(
+    result.status,
+    0,
+    '.claude/queue.board must be ignored as checkout-local Rig state',
+  );
 });

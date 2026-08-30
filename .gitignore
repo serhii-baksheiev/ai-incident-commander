@@ -14,3 +14,5 @@ coverage/
 .claude/worktrees/
 # the run journal's per-run trace
 .claude/runs/
+# the checkout-local active queue board
+.claude/queue.board
