@@ -10,12 +10,16 @@
  * `.claude/rules/invariants.md` ("One mechanism, one implementation").
  *
  * The cycle is memoised on the module, so it runs once per process however many
- * callers await it. That matters beyond cost: several assertions compare the
- * three experiments to each other by native example identity, and a second
- * execution would hand them a different fifteen runs. The properties the memo
- * has to preserve are asserted in `test/benchmark-evaluation.test.mjs` ›
- * "gates a controlled benchmark mutation independently for each metric" and ›
- * "keeps the evidence mutation scoped and leaves a later baseline green".
+ * callers await it. ⚠ That is a COST optimisation and nothing more — measured at
+ * roughly 14x on this suite. It carries no correctness weight here: every caller
+ * destructures from one `await getControlledMutationCycle()`, so no assertion
+ * compares values obtained from two separate invocations, and removing the memo
+ * leaves the suite green. A caller that did compare across invocations would be
+ * relying on a property no test pins.
+ *
+ * The rejected-promise case is cached with the rest: a cycle that throws stays
+ * thrown for the life of the process, so an out-of-suite run cannot retry it
+ * in-process.
  *
  * Not here: `currentHeadSha()`. It stays in the test file because it spawns a
  * child process, and `test/child-process-environment.test.mjs` ›
@@ -37,7 +41,7 @@ import * as evals from '@aic/evals';
 import { createReplayFixtureKey } from '@aic/tools';
 import { ReplayToolAdapter } from '@aic/tools/replay';
 
-export const benchmarkVersions = {
+export const benchmarkVersions = Object.freeze({
   graphVersion: 'graph-v0.1',
   promptVersion: 'prompt-v0.1',
   toolsetVersion: 'toolset-v0.1',
@@ -48,7 +52,7 @@ export const benchmarkVersions = {
   temperature: 0,
   seed: 17,
   docsAvailable: false,
-};
+});
 
 export function requireFunction(packageNamespace, name, packageName) {
   assert.equal(
