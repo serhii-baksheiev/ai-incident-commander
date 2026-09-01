@@ -3,7 +3,9 @@
 import {
   createPersistentInvestigationRunner,
   type ExecuteInvestigationContext,
+  type InvocationTrace,
 } from '@aic/graph';
+import { resolveTracingConfig } from '@aic/observability';
 import { createSqliteCheckpointer } from '@aic/persistence';
 
 const generalHelp = `AI Incident Commander
@@ -47,8 +49,20 @@ function payloadFingerprint(context: ExecuteInvestigationContext): string {
 async function run(command: 'start' | 'resume', args: readonly string[]): Promise<void> {
   const runId = option(args, '--run-id');
   const checkpointPath = option(args, '--checkpoint');
+  // Resolved before any work starts: tracing that was asked for and cannot be
+  // delivered must stop the run, not degrade it into an untraced one.
+  const tracing = resolveTracingConfig(process.env);
+  const trace: InvocationTrace | undefined = tracing.enabled
+    ? {
+        runName: `aic-${command}`,
+        project: tracing.project,
+        tags: ['aic', `aic-${command}`],
+        metadata: { command, checkpointed: true },
+      }
+    : undefined;
   const runner = createPersistentInvestigationRunner({
     checkpointer: createSqliteCheckpointer(checkpointPath),
+    trace,
     async executeInvestigation(context) {
       const input = context.input as { observedAt?: unknown };
       const observedAt =

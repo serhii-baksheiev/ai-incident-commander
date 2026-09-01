@@ -305,3 +305,47 @@ export async function persistBenchmarkExperiment({
     experiments: [experiment],
   });
 }
+
+const TRACING_ENABLED_VALUES = new Set(['true', '1']);
+
+/**
+ * Tracing configuration resolved from an environment, never from `process.env`
+ * directly, so it is decidable in a test without mutating the process.
+ *
+ * The api key is deliberately absent from the result: callers need to know
+ * whether tracing is on and which project it targets, and the LangSmith SDK
+ * reads the key from the environment itself.
+ */
+export type TracingConfig =
+  | Readonly<{ enabled: false }>
+  | Readonly<{ enabled: true; project: string }>;
+
+/**
+ * Resolve LangSmith tracing configuration.
+ *
+ * Both the `LANGSMITH_*` and the legacy `LANGCHAIN_*` spellings are accepted,
+ * because the installed SDK reads both (`langsmith/dist/utils/env.js`).
+ *
+ * Enabled tracing without an api key THROWS rather than returning disabled:
+ * silently-off tracing is the failure this function exists to prevent.
+ */
+export function resolveTracingConfig(
+  env: Readonly<Record<string, string | undefined>>,
+): TracingConfig {
+  const flag = env.LANGSMITH_TRACING ?? env.LANGCHAIN_TRACING_V2;
+  if (flag === undefined || !TRACING_ENABLED_VALUES.has(flag.trim().toLowerCase())) {
+    return { enabled: false };
+  }
+
+  const apiKey = env.LANGSMITH_API_KEY ?? env.LANGCHAIN_API_KEY;
+  if (apiKey === undefined || apiKey.length === 0) {
+    throw new Error(
+      'tracing is enabled but no api key is set: export LANGSMITH_API_KEY (or LANGCHAIN_API_KEY)',
+    );
+  }
+
+  return {
+    enabled: true,
+    project: env.LANGSMITH_PROJECT ?? env.LANGCHAIN_PROJECT ?? 'default',
+  };
+}

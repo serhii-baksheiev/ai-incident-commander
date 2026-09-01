@@ -10,7 +10,13 @@ import {
   type ToolId,
   type Trial,
 } from '@aic/domain';
-import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
+import {
+  Annotation,
+  END,
+  START,
+  StateGraph,
+  type LangGraphRunnableConfig,
+} from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
 export * from './investigation.js';
@@ -96,11 +102,56 @@ function toResult(state: typeof PersistentInvestigationState.State): PersistentI
   };
 }
 
+/**
+ * Trace identity attached to a graph invocation. Purely descriptive: LangGraph
+ * forwards `runName`, `tags` and `metadata` to whatever tracer is active, so
+ * this adds nothing and costs nothing when tracing is off.
+ */
+export type InvocationTrace = Readonly<{
+  runName?: string;
+  project?: string;
+  metadata?: Readonly<Record<string, unknown>>;
+  tags?: readonly string[];
+}>;
+
+/**
+ * Build the config for one graph invocation.
+ *
+ * `configurable.thread_id` is what checkpoint resume keys on, so it is always
+ * present and always the runId — a trace can decorate an invocation but must
+ * never alter its identity. `runId` therefore also wins over a caller metadata
+ * key of the same name.
+ */
+export function buildInvocationConfig({
+  runId,
+  trace,
+}: Readonly<{
+  runId: string;
+  trace?: InvocationTrace;
+}>): LangGraphRunnableConfig {
+  const configurable = { thread_id: runId };
+  if (trace === undefined) {
+    return { configurable };
+  }
+  return {
+    configurable,
+    runName: trace.runName ?? 'investigation',
+    tags: [...(trace.tags ?? [])],
+    metadata: {
+      ...trace.metadata,
+      ...(trace.project === undefined ? {} : { project: trace.project }),
+      runId,
+    },
+  };
+}
+
 export function createPersistentInvestigationRunner({
   checkpointer,
   executeInvestigation,
+  trace,
 }: Readonly<{
   checkpointer: BaseCheckpointSaver;
+  trace?: InvocationTrace;
   executeInvestigation(
     context: ExecuteInvestigationContext,
   ): Promise<ExecuteInvestigationResult>;
@@ -146,7 +197,7 @@ export function createPersistentInvestigationRunner({
     .addEdge('execute_investigation', END)
     .compile({ checkpointer });
 
-  const configFor = (runId: string) => ({ configurable: { thread_id: runId } });
+  const configFor = (runId: string) => buildInvocationConfig({ runId, trace });
 
   return {
     async start({ runId, test }) {

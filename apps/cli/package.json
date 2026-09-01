@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@aic/graph": "0.0.0",
+    "@aic/observability": "0.0.0",
     "@aic/persistence": "0.0.0"
   }
 }

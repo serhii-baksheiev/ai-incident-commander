@@ -94,6 +94,36 @@ incident-lab              isolated live incident environment
 
 The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph and tools depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.
 
+## LangSmith tracing
+
+Tracing is **off by default**: with no environment set, the CLI runs entirely
+offline and makes no outbound call. It is enabled per shell:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=<your key>          # or LANGCHAIN_API_KEY
+export LANGSMITH_PROJECT=ai-incident-commander
+```
+
+⚠ **EU-region accounts must also set the endpoint.** The SDK defaults to the US
+host, and an EU key there is rejected with `403 Forbidden` on every call —
+including the read-only ones, so it looks like a bad key rather than a wrong
+region:
+
+```bash
+export LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
+```
+
+Tracing that is asked for and cannot be delivered **stops the run** instead of
+silently continuing untraced: `resolveTracingConfig` throws when
+`LANGSMITH_TRACING` is on and no key is set, before any checkpoint is written.
+Silently-off tracing is what left this project's LangSmith evidence unproven, so
+it is treated as a failure rather than a default.
+
+Each invocation is tagged and named so traces are filterable: the root run is
+`aic-start` / `aic-resume`, carrying tags `aic` and `aic-<command>` and metadata
+including the `runId`. Graph steps inherit both.
+
 ## Engineering workflow
 
 Work is tracked in the [AIC Jira project](https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards) and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
