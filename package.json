@@ -25,6 +25,7 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "node --import ./test/fixtures/no-ambient-tracing.mjs --test",
+    "test:live-lab": "node --import ./test/fixtures/no-ambient-tracing.mjs --test incident-lab/tests/*.live.mjs",
     "check": "npm run lint && npm run build && npm test",
     "cli": "node apps/cli/dist/index.js"
   },
