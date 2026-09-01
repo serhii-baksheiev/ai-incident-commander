@@ -105,5 +105,5 @@ AIC_LAB_HOST_PORT=3000 docker compose \
 
 This v0.2 lab does not add PostgreSQL, Redis, OpenTelemetry, Prometheus, Loki,
 production topology, or durable run ownership. None is required to reproduce
-the ten frozen observations above; those infrastructure concerns remain behind
-their roadmap gates.
+the frozen scenario observations above; those infrastructure concerns remain
+behind their roadmap gates.
