@@ -177,15 +177,22 @@ function assertInteractiveRunIdentity(state: InvestigationGraphState): void {
   }
 }
 
-function hasExactOwnKeys(
+function readExactOwnDataProperties(
   record: object,
   expectedKeys: readonly string[],
-): boolean {
+): Readonly<Record<string, unknown>> | undefined {
   const ownKeys = Reflect.ownKeys(record);
-  return (
-    ownKeys.length === expectedKeys.length &&
-    expectedKeys.every((key) => Object.hasOwn(record, key))
-  );
+  if (ownKeys.length !== expectedKeys.length) return undefined;
+
+  const entries: [string, unknown][] = [];
+  for (const key of expectedKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+      return undefined;
+    }
+    entries.push([key, descriptor.value]);
+  }
+  return Object.fromEntries(entries);
 }
 
 function parseInvestigationExecutionInput(
@@ -195,28 +202,27 @@ function parseInvestigationExecutionInput(
     throw new Error('invalid investigation execution input');
   }
 
-  const record = input as Record<string, unknown>;
-  if (
-    hasExactOwnKeys(record, ['kind', 'state']) &&
-    record.kind === 'start' &&
-    Object.hasOwn(record, 'state')
-  ) {
-    const state = IncidentStateSchema.safeParse(record.state);
+  const start = readExactOwnDataProperties(input, ['kind', 'state']);
+  if (start?.kind === 'start') {
+    const state = IncidentStateSchema.safeParse(start.state);
     if (state.success) return { kind: 'start', state: state.data };
   }
 
+  const resume = readExactOwnDataProperties(input, [
+    'kind',
+    'interruptId',
+    'decision',
+  ]);
   if (
-    hasExactOwnKeys(record, ['kind', 'interruptId', 'decision']) &&
-    record.kind === 'resume' &&
-    typeof record.interruptId === 'string' &&
-    /^[0-9a-f]{32}$/.test(record.interruptId) &&
-    Object.hasOwn(record, 'decision')
+    resume?.kind === 'resume' &&
+    typeof resume.interruptId === 'string' &&
+    /^[0-9a-f]{32}$/.test(resume.interruptId)
   ) {
-    const decision = ConclusionReviewDecisionSchema.safeParse(record.decision);
+    const decision = ConclusionReviewDecisionSchema.safeParse(resume.decision);
     if (decision.success) {
       return {
         kind: 'resume',
-        interruptId: record.interruptId,
+        interruptId: resume.interruptId,
         decision: decision.data,
       };
     }
@@ -233,10 +239,9 @@ function parseInvestigationExecutionConfig(
     throw new Error('invalid investigation execution config');
   }
 
-  const record = config as Record<string, unknown>;
+  const record = readExactOwnDataProperties(config, ['threadId']);
   if (
-    !hasExactOwnKeys(record, ['threadId']) ||
-    typeof record.threadId !== 'string' ||
+    typeof record?.threadId !== 'string' ||
     record.threadId.length === 0
   ) {
     throw new Error('invalid investigation execution config');

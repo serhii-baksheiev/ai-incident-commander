@@ -243,6 +243,22 @@ const hiddenExtraKeyCases = [
   },
 ];
 
+function addChangingAccessor(
+  target,
+  key,
+  { validValue, changedValue, validReads },
+) {
+  let reads = 0;
+  Object.defineProperty(target, key, {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads <= validReads ? validValue : changedValue;
+    },
+  });
+  return { target, readCount: () => reads };
+}
+
 async function interruptAndReopen(harness) {
   const interrupted = await harness.execution.execute(
     { kind: 'start', state: harness.state },
@@ -604,6 +620,134 @@ for (const hiddenExtra of hiddenExtraKeyCases) {
     }
   });
 }
+
+test('execute rejects a changing threadId accessor without consuming the pending review', async () => {
+  const runId = 'run-changing-execute-thread-id';
+  const harness = createHarness({ runId });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+    const changingConfig = addChangingAccessor({}, 'threadId', {
+      validValue: runId,
+      changedValue: 42,
+      validReads: 2,
+    });
+
+    const outcome = await harness.execution
+      .execute(
+        resumeCurrent(interrupted, { action: 'confirm' }),
+        changingConfig.target,
+      )
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+    const persisted = await harness.execution.getState(harness.config);
+
+    assert.deepEqual(
+      {
+        rejected: Object.hasOwn(outcome, 'error'),
+        accessorReads: changingConfig.readCount(),
+        next: persisted.next,
+        pendingInterruptId: persisted.tasks[0]?.interrupts[0]?.id,
+      },
+      {
+        rejected: true,
+        accessorReads: 0,
+        next: ['review_conclusion'],
+        pendingInterruptId: pendingInterrupt.id,
+      },
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('getState rejects a changing threadId accessor without reading or changing the pending review', async () => {
+  const runId = 'run-changing-get-state-thread-id';
+  const harness = createHarness({ runId });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+    const changingConfig = addChangingAccessor({}, 'threadId', {
+      validValue: runId,
+      changedValue: 42,
+      validReads: 2,
+    });
+
+    const outcome = await Promise.resolve()
+      .then(() => harness.execution.getState(changingConfig.target))
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+    const persisted = await harness.execution.getState(harness.config);
+
+    assert.deepEqual(
+      {
+        rejected: Object.hasOwn(outcome, 'error'),
+        accessorReads: changingConfig.readCount(),
+        next: persisted.next,
+        pendingInterruptId: persisted.tasks[0]?.interrupts[0]?.id,
+      },
+      {
+        rejected: true,
+        accessorReads: 0,
+        next: ['review_conclusion'],
+        pendingInterruptId: pendingInterrupt.id,
+      },
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('execute rejects a changing interruptId accessor before checkpoint mutation', async () => {
+  const runId = 'run-changing-resume-interrupt-id';
+  const harness = createHarness({ runId });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+    const changingInput = addChangingAccessor(
+      { kind: 'resume' },
+      'interruptId',
+      {
+        validValue: pendingInterrupt.id,
+        changedValue: 42,
+        validReads: 2,
+      },
+    );
+    changingInput.target.decision = { action: 'confirm' };
+
+    const outcome = await harness.execution
+      .execute(changingInput.target, harness.config)
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+    const persisted = await harness.execution.getState(harness.config);
+
+    assert.deepEqual(
+      {
+        rejected: Object.hasOwn(outcome, 'error'),
+        accessorReads: changingInput.readCount(),
+        next: persisted.next,
+        pendingInterruptId: persisted.tasks[0]?.interrupts[0]?.id,
+      },
+      {
+        rejected: true,
+        accessorReads: 0,
+        next: ['review_conclusion'],
+        pendingInterruptId: pendingInterrupt.id,
+      },
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
 
 test('rejects a raw LangGraph Command without consuming the pending review', async () => {
   const harness = createHarness({ runId: 'run-raw-command-rejected' });
