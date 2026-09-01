@@ -206,6 +206,28 @@ test(
     });
 
     try {
+      const composeConfig = await withinStage(
+        'compose security config',
+        async () => {
+          const result = await execFileAsync(
+            'docker',
+            [...composeArguments, 'config', '--format', 'json'],
+            {
+              cwd: projectRoot,
+              env: composeEnvironment,
+              timeout: LAB_BUDGET.stageTimeoutMs,
+              maxBuffer: 4 * 1024 * 1024,
+            },
+          );
+          return JSON.parse(result.stdout);
+        },
+      );
+      assert.equal(
+        composeConfig.services.checkout.ports[0].host_ip,
+        '127.0.0.1',
+        'the unauthenticated lab control API must bind only to loopback',
+      );
+
       await withinStage(
         'compose start',
         () =>
@@ -297,6 +319,16 @@ test(
         () => resetBadDeploymentLab({ baseUrl }),
       );
       assert.equal(finalResetState.activeIncident, false);
+
+      await withinStage('reset observation isolation', () =>
+        assert.rejects(
+          recordBadDeploymentCandidate({
+            baseUrl,
+            scenarioVersion: 1,
+            candidateDirectory: resolve(candidateRoot, 'after-reset'),
+          }),
+          /live observation failed for deployments: error/,
+        ));
 
       await withinStage('replay', async () => {
         const replay = new ReplayToolAdapter(firstCandidate.replayFixture);

@@ -5,7 +5,7 @@ services:
     environment:
       PORT: "3000"
     ports:
-      - "${AIC_LAB_HOST_PORT:?set AIC_LAB_HOST_PORT}:3000"
+      - "127.0.0.1:${AIC_LAB_HOST_PORT:?set AIC_LAB_HOST_PORT}:3000"
     healthcheck:
       test:
         - CMD
