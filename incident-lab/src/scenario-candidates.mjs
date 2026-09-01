@@ -12,7 +12,10 @@ import {
 } from '../scenario-definitions.mjs';
 
 async function requestJson(baseUrl, pathname, init) {
-  const response = await fetch(new URL(pathname, baseUrl), init);
+  const response = await fetch(new URL(pathname, baseUrl), {
+    ...init,
+    redirect: 'error',
+  });
   const body = await response.json();
   if (!response.ok) {
     throw new Error(

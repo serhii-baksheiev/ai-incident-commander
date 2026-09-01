@@ -159,6 +159,45 @@ test('reports replay drift against the affected scenario and observation', async
   }
 });
 
+test('reports an embedded replay response that has no recorded live call', async (t) => {
+  const candidateDirectory = await withCandidateDirectory(t);
+  for (const scenario of acceptedScenarios) {
+    const candidate = candidateFromScenario(scenario);
+    if (scenario.id === 'false-alert') {
+      candidate.replayFixture.responses[
+        createReplayFixtureKey('metrics', {
+          service: 'checkout',
+          metric: 'unrecorded_metric',
+        })
+      ] = {
+        status: 'unavailable',
+        reason: 'this response has no recorded live call',
+      };
+    }
+    await writeCandidate(candidateDirectory, candidate);
+  }
+
+  const { validateCandidateDirectory } = await requireCandidateValidationApi();
+  const report = await validateCandidateDirectory({
+    candidateDirectory,
+    acceptedScenarios,
+  });
+  const falseAlert = report.scenarios.find(
+    ({ scenarioId }) => scenarioId === 'false-alert',
+  );
+
+  assert.equal(report.status, 'drift');
+  assert.equal(falseAlert?.status, 'drift');
+  assert.ok(
+    falseAlert.differences.some(
+      (difference) =>
+        /unrecorded|without.*recorded|extra replay/i.test(difference)
+        && difference.includes('unrecorded_metric'),
+    ),
+    'every replay response must be attributable to one recorded LiveToolAdapter call',
+  );
+});
+
 test('rejects an incomplete candidate set instead of validating a partial corpus', async (t) => {
   const candidateDirectory = await withCandidateDirectory(t);
   for (const scenario of acceptedScenarios.slice(0, -1)) {

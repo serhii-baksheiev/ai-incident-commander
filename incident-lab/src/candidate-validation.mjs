@@ -67,6 +67,18 @@ function compareScenario(candidate, acceptedScenario) {
       );
     }
   }
+  const recordedReplayKeys = new Set(
+    recordedCalls.map(({ toolId, input }) =>
+      createReplayFixtureKey(toolId, input),
+    ),
+  );
+  for (const replayKey of Object.keys(candidate.replayFixture?.responses ?? {})) {
+    if (!recordedReplayKeys.has(replayKey)) {
+      differences.push(
+        `extra replay response without a recorded live call: ${replayKey}`,
+      );
+    }
+  }
   return differences;
 }
 

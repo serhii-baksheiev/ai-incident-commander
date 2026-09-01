@@ -17,6 +17,13 @@ const state = {
   labTopologyVersion: LAB_TOPOLOGY_VERSION,
 };
 
+class ApiError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
 function sendJson(response, statusCode, value) {
   response.writeHead(statusCode, { 'content-type': 'application/json' });
   response.end(`${JSON.stringify(value)}\n`);
@@ -27,12 +34,15 @@ async function readJson(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 16 * 1024) throw new Error('request body is too large');
+    if (size > 16 * 1024) throw new ApiError(400, 'request body is too large');
     chunks.push(chunk);
   }
-  return chunks.length === 0
-    ? {}
-    : JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new ApiError(400, 'request body must be valid JSON');
+  }
 }
 
 async function forwardObservation(baseUrl, scenarioId, observation) {
@@ -41,12 +51,17 @@ async function forwardObservation(baseUrl, scenarioId, observation) {
   for (const [key, value] of Object.entries(observation.input)) {
     url.searchParams.set(key, value);
   }
-  const response = await fetch(url);
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(`internal observation failed (${response.status}): ${body.error}`);
+  try {
+    const response = await fetch(url);
+    const body = await response.json();
+    if (!response.ok) {
+      throw new ApiError(503, 'internal observation dependency is unavailable');
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(503, 'internal observation dependency is unavailable');
   }
-  return body;
 }
 
 const server = createServer(async (request, response) => {
@@ -56,8 +71,12 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && requestUrl.pathname === '/health') {
       const health = await Promise.all(
         [paymentsBaseUrl, inventoryBaseUrl].map(async (baseUrl) => {
-          const dependencyResponse = await fetch(new URL('/health', baseUrl));
-          return dependencyResponse.ok;
+          try {
+            const dependencyResponse = await fetch(new URL('/health', baseUrl));
+            return dependencyResponse.ok;
+          } catch {
+            return false;
+          }
         }),
       );
       const healthy = health.every(Boolean);
@@ -137,7 +156,10 @@ const server = createServer(async (request, response) => {
 
     sendJson(response, 404, { error: 'not found' });
   } catch (error) {
-    sendJson(response, 400, { error: error.message });
+    const statusCode = error instanceof ApiError ? error.statusCode : 500;
+    sendJson(response, statusCode, {
+      error: statusCode === 500 ? 'internal server error' : error.message,
+    });
   }
 });
 
