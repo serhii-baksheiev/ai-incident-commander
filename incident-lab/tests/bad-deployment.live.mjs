@@ -320,6 +320,21 @@ test(
       );
       assert.equal(finalResetState.activeIncident, false);
 
+      const inactiveLogsResponse = await withinStage(
+        'reset logs observation isolation',
+        () => fetch(
+          new URL(
+            '/observations/logs?service=checkout&query=startup-errors',
+            baseUrl,
+          ),
+        ),
+      );
+      assert.equal(inactiveLogsResponse.status, 409);
+      assert.deepEqual(
+        await inactiveLogsResponse.json(),
+        { error: 'bad-deployment scenario is not active' },
+      );
+
       await withinStage('reset observation isolation', () =>
         assert.rejects(
           recordBadDeploymentCandidate({
