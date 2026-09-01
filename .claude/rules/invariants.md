@@ -216,25 +216,53 @@ are guessing, and a guessed invariant is the one that will fire on honest work.
 
 ## About the hooks you were given
 
-They arrive with their tests **in the generator that produced this project**, not
-in this repository — so by the rule above, as they sit here, they are checks
-without tests. That is deliberate and it has a boundary: it holds only while they
-are untouched.
+Generator-authored rulebook artifacts — rules, hooks, skills, scripts and agent
+specs — arrive with their tests **in the generator that produced this project**,
+not in this repository. There is one narrow inherited-snapshot exception: such
+an artifact may cite the generator's upstream tests, which are absent locally,
+only when the pointer says they are absent and `.claude/.rig-manifest.json`
+proves the current artifact's hash matches the installed manifest.
 
-This is the one narrow exception for a generator-authored hook: it may cite the
-generator's upstream tests **only while unchanged downstream**, and its hook
-header must identify the upstream generator tests as absent locally. That pointer
-records the evidence used to author the inherited snapshot; it does not turn the
-absent test into a local check.
+**In the generator, part of that is mechanical.** A citation there is a
+test-file name followed by `›` and a quoted test name, and the generator's
+`test/template/evidence-pointers.test.ts` (absent in a generated rig) resolves
+the citations it reads: › "names a test file this repository still has" and ›
+"quotes a test name that file still declares" go red when a target is renamed
+or a test retitled, and › "says so when the test it names is one a generated
+project never receives" goes red when a pointer into the generator's suite
+carries no word that the reader does not have it. The wording that satisfies
+the last one is `(absent in a generated rig)` beside the pointer, or the
+one-line disclosure nine scripts here open with — a phrase naming the generator
+is not enough, because it tells the reader where the test lives and nothing
+about whether they have it.
 
-**The moment you edit one, its test is yours.** A guard whose behaviour has
-changed and whose test lives somewhere else is precisely the "quietly stopped
-matching" case this rule names, and nothing here would catch it. The same applies
-if you keep a hook whose invariant you have re-scoped.
+⚠ **"the citations it reads" is not all of them**, and the test's own header
+states where the edges are: it looks only at the tree that ships into a rig,
+and it reads a citation's names from the line the file is named on and the two
+after it. A green run means no citation it read has gone dead — not that every
+pointer in the generator was verified.
+
+A manifest-backed upgrade remains an inherited, generator-owned artifact even
+though the upgrade diff changes its bytes. The exception applies **only while the
+manifest hash matches**. A hash mismatch, missing manifest, or no evidence ends
+the exception and the local test is yours; an owned guard whose behaviour changed
+while its test lives elsewhere is precisely the "quietly stopped matching" case
+this rule names.
 
 If a hook matters enough to keep, it is worth ten minutes to copy the shape from
 `.claude/skills/new-invariant/guard-invariant.example.test.mjs` and pin the
 behaviour you actually rely on.
+
+**For hooks, that ownership boundary is audited, not remembered.** `node .claude/scripts/doctor.mjs`
+reads `.claude/.rig-manifest.json` and asks of every hook in `.claude/hooks/` (and
+`.husky/`, when it exists) whether the project owns it — the bytes differ from
+what the generator installed, or the manifest has no entry — and, if so, whether
+`<hook>.test.mjs` sits beside it. A shipped, unchanged hook is not a finding; an
+owned hook with no neighbour is; a rig with no manifest gets `unknown` for every
+hook that has no test neighbour, never a pass. Exemptions are an explicit list with reasons in
+`.claude/doctor-exemptions.json`, and the report ends with what the script did
+not check. Pinned in the generator's `test/template/doctor.test.ts` — absent in a
+generated rig — › "an owned hook without a test is a FAIL, and the run is STOP".
 
 ## Adding one
 
