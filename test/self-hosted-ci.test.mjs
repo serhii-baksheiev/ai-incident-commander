@@ -14,6 +14,8 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workflowPath = resolve(projectRoot, '.github/workflows/ci.yml');
 const limaConfigPath = resolve(projectRoot, '.github/runner/lima.yaml');
@@ -83,7 +85,9 @@ function runRunnerPreflight({
 
     return spawnSync('/bin/bash', ['-c', script], {
       encoding: 'utf8',
-      env: { PATH: binPath },
+      // The probe supplies its own PATH: the preflight must see only the fake
+      // tools written above, never the ones installed on this machine.
+      env: childEnv({ PATH: binPath }),
     });
   } finally {
     rmSync(fixtureRoot, { recursive: true, force: true });

@@ -24,7 +24,7 @@
     "lint:config": "node scripts/check-domain-manifest.mjs && node scripts/check-domain-tsconfig.mjs",
     "build": "tsc -b",
     "clean": "tsc -b --clean",
-    "test": "node --test",
+    "test": "node --import ./test/fixtures/no-ambient-tracing.mjs --test",
     "check": "npm run lint && npm run build && npm test",
     "cli": "node apps/cli/dist/index.js"
   },

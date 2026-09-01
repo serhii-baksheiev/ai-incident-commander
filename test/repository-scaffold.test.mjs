@@ -15,6 +15,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const requiredDirectories = [
@@ -72,7 +74,9 @@ function runNpm(args, cwd = projectRoot) {
   return spawnSync('npm', args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, CI: '1' },
+    // `npm run cli -- --help` spawns the compiled CLI, so a leaked
+    // LANGSMITH_TRACING would have this scaffold check trace a real workspace.
+    env: childEnv({ CI: '1' }),
   });
 }
 

@@ -94,6 +94,98 @@ incident-lab              isolated live incident environment
 
 The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph and tools depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.
 
+## LangSmith tracing
+
+Tracing is **off by default**: the CLI sets no tracing flag the operator did not
+set, so an unconfigured shell produces no outbound call — see
+`test/langsmith-tracing.test.mjs` › "makes no outbound call when no tracing flag
+is set". Enable it per shell:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=<your key>          # or LANGCHAIN_API_KEY
+export LANGSMITH_PROJECT=ai-incident-commander
+```
+
+⚠ **EU-region accounts must also set the endpoint**, because the SDK's default
+host is the US one (`langsmith/dist/utils/profiles.js`, `DEFAULT_API_URL`):
+
+```bash
+export LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
+```
+
+If every call is refused on authorization, check the region before you suspect
+the key: a valid key against the wrong regional host fails the same way an
+invalid one does.
+
+**The flag vocabulary is the tracer's, not ours.** `LANGSMITH_TRACING_V2`,
+`LANGCHAIN_TRACING_V2`, `LANGSMITH_TRACING` and `LANGCHAIN_TRACING` all enable
+tracing, and only the exact value `true` does — matching
+`@langchain/core`'s `isTracingEnabled`. See › "enables tracing for every flag
+name the langchain tracer honours" and › "reports tracing disabled for a flag
+value the langchain tracer rejects". Reading a narrower set than the tracer
+would install the tracer while our key check stayed silent.
+
+**What is guaranteed, exactly:** with a tracing flag on and no api key set, the
+run stops before any checkpoint is written — › "refuses to start when tracing is
+enabled without an api key", which asserts the exit status, the message, and
+that the checkpoint file was never created. That is the only delivery failure
+detected. A wrong-region endpoint or an unreachable host still produces a run
+that completes and reports success, because the tracer reports a rejected send
+as a warning rather than failing the run it was tracing. ⚠ Not because delivery
+is backgrounded — this CLI disables that (below); the run waits, and then
+succeeds anyway.
+
+Runs are named and tagged so traces are filterable: the root run is
+`aic-start` / `aic-resume` with tags `aic` and `aic-<command>`, and every graph
+step inherits those tags and the `runId` metadata — › "sends a root run named
+for the command whose tags and runId every graph step inherits". Because the
+process exits as soon as it prints its result, an enabled run also sets
+`LANGCHAIN_CALLBACKS_BACKGROUND=false` unless the operator set it, so delivery
+blocks on finalization instead of racing exit — › "blocks background trace
+delivery so a short-lived run cannot exit before it sends".
+
+**An unreachable endpoint stalls the run by at least the SDK's client timeout,**
+which defaults to `timeout_ms` 90 000 (`langsmith/dist/client.js`). How much
+longer depends on how the endpoint fails: a refused connection was observed at
+~88 s and a host that accepts and never answers at ~121 s. Nothing outside
+bounds it: `@langchain/core` constructs that client itself and passes no
+timeout. A timeout is not retried — `langsmith/dist/utils/async_caller.js`
+rethrows it out of the retry loop — so the stall is one timeout, not four. This
+happens with or without blocking delivery. If a traced run appears to hang,
+suspect the endpoint before the graph.
+
+**`npm test` is insulated; a bare `node --test` is not.** The `npm test` script
+preloads `test/fixtures/no-ambient-tracing.mjs`, which clears the four tracer
+flags before any test module loads, and every spawned process is built from the
+allow-list in `test/fixtures/child-env.mjs`. Without them a developer with
+tracing exported wrote runs into their own workspace on every suite run. That it
+no longer happens **under `npm test`** is pinned by › "the preload clears every
+flag the langchain tracer reads" and › "runs the compiled CLI with no outbound
+call while the parent shell has tracing enabled".
+
+⚠ **The CI workflow runs `node --test` directly, so it does not get the
+preload.** `.github/workflows/ci.yml` invokes the runner rather than the script,
+and two tests currently pin that spelling — › "runs pull requests and main
+pushes only on the repository Linux ARM64 runner" and › "runs lint, build, and
+tests in CI after a clean npm install". On a self-hosted runner whose environment
+carries tracing variables, a CI run therefore traces. Closing it means pointing
+CI at `npm test` and updating those two assertions; `.github/workflows/` is a
+declared elevated path, so that is a Tier-2 change and is deliberately not made
+here.
+
+The api key reaches neither the process output nor the trace payload — ›
+"never prints the api key on stdout or stderr" and › "never sends the api key
+inside a trace payload". One operator caution the code cannot enforce: the SDK
+copies non-sensitive `LANGSMITH_*`/`LANGCHAIN_*` variables into run metadata,
+and `LANGSMITH_RUNS_ENDPOINTS` embeds api keys in its value while matching none
+of the SDK's sensitive-name patterns. Do not export it alongside tracing.
+
+**A traced run transmits the whole graph state** — every trial input and every
+evidence record, including its `statement`. Today that is synthetic
+persistence-spike text; treat sending real incident content to a third party as
+a decision to take deliberately, not a side effect of turning tracing on.
+
 ## Engineering workflow
 
 Work is tracked in the [AIC Jira project](https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards) and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.

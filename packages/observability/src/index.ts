@@ -305,3 +305,68 @@ export async function persistBenchmarkExperiment({
     experiments: [experiment],
   });
 }
+
+/**
+ * The exact set `@langchain/core` honours, in its own order
+ * (`@langchain/core/dist/utils/callbacks.js` `isTracingEnabled`), compared the
+ * way it compares: strict equality against `'true'`.
+ *
+ * Reading a narrower set than the tracer does is not a cosmetic gap. A flag
+ * this list omits installs the tracer while the key check below never runs, so
+ * graph inputs and evidence statements are posted with no credential and the
+ * rejection is swallowed as a background warning. Accepting a value the tracer
+ * rejects fails the other way: the run stops on a missing key it did not need,
+ * or runs untraced believing it is traced.
+ */
+const TRACING_FLAG_VARIABLES = [
+  'LANGSMITH_TRACING_V2',
+  'LANGCHAIN_TRACING_V2',
+  'LANGSMITH_TRACING',
+  'LANGCHAIN_TRACING',
+] as const;
+
+/**
+ * Tracing configuration resolved from an environment, never from `process.env`
+ * directly, so it is decidable in a test without mutating the process.
+ *
+ * The api key is deliberately absent from the result: callers need to know
+ * whether tracing is on and which project it targets, and the LangSmith SDK
+ * reads the key from the environment itself.
+ */
+export type TracingConfig =
+  | Readonly<{ enabled: false }>
+  | Readonly<{ enabled: true; project: string }>;
+
+/**
+ * Resolve LangSmith tracing configuration.
+ *
+ * The enablement flags are exactly those of `TRACING_FLAG_VARIABLES` above; the
+ * api key and project each accept the `LANGSMITH_*` name and its legacy
+ * `LANGCHAIN_*` twin, which is the pairing the SDK itself resolves
+ * (`langsmith/dist/utils/env.js` `getLangSmithEnvironmentVariable`).
+ *
+ * Enabled tracing without an api key THROWS rather than returning disabled:
+ * silently-off tracing is the failure this function exists to prevent. That is
+ * the only delivery failure it detects — a wrong-region endpoint or an
+ * unreachable host still produces a run that completes, because the tracer
+ * reports a rejected send as a warning rather than failing the run it traced.
+ */
+export function resolveTracingConfig(
+  env: Readonly<Record<string, string | undefined>>,
+): TracingConfig {
+  if (!TRACING_FLAG_VARIABLES.some((name) => env[name] === 'true')) {
+    return { enabled: false };
+  }
+
+  const apiKey = env.LANGSMITH_API_KEY ?? env.LANGCHAIN_API_KEY;
+  if (apiKey === undefined || apiKey.length === 0) {
+    throw new Error(
+      'tracing is enabled but no api key is set: export LANGSMITH_API_KEY (or LANGCHAIN_API_KEY)',
+    );
+  }
+
+  return {
+    enabled: true,
+    project: env.LANGSMITH_PROJECT ?? env.LANGCHAIN_PROJECT ?? 'default',
+  };
+}
