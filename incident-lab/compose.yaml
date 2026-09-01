@@ -1,0 +1,19 @@
+services:
+  checkout:
+    build:
+      context: ./checkout
+    environment:
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:${AIC_LAB_HOST_PORT:?set AIC_LAB_HOST_PORT}:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 1s
+    restart: "no"
