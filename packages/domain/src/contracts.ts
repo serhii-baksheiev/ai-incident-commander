@@ -28,6 +28,19 @@ export const HypothesisSchema = z.strictObject({
   createdBy: z.enum(['initial', 'challenge']),
 });
 
+export const HumanAddedHypothesisSchema = HypothesisSchema.extend({
+  createdBy: z.literal('initial'),
+});
+
+export const ConclusionReviewDecisionSchema = z.discriminatedUnion('action', [
+  z.strictObject({ action: z.literal('confirm') }),
+  z.strictObject({ action: z.literal('reject') }),
+  z.strictObject({
+    action: z.literal('add_hypothesis'),
+    hypothesis: HumanAddedHypothesisSchema,
+  }),
+]);
+
 export const PredictionSchema = z.strictObject({
   id: IdentifierSchema,
   hypothesisId: IdentifierSchema,
@@ -147,6 +160,12 @@ export type InvestigationPhase = z.infer<typeof InvestigationPhaseSchema>;
 export type Incident = z.infer<typeof IncidentSchema>;
 export type HypothesisStatus = z.infer<typeof HypothesisStatusSchema>;
 export type Hypothesis = z.infer<typeof HypothesisSchema>;
+export type HumanAddedHypothesis = z.infer<
+  typeof HumanAddedHypothesisSchema
+>;
+export type ConclusionReviewDecision = z.infer<
+  typeof ConclusionReviewDecisionSchema
+>;
 export type Prediction = z.infer<typeof PredictionSchema>;
 export type InvestigationTest = z.infer<typeof InvestigationTestSchema>;
 export type Trial = z.infer<typeof TrialSchema>;

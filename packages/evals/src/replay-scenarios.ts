@@ -35,6 +35,7 @@ export interface BenchmarkInvocation {
   readonly scenario: IncidentScenario;
   readonly runId: string;
   readonly threadId: string;
+  readonly humanReview: false;
 }
 
 export type RecordedToolResult =
@@ -314,5 +315,5 @@ export function createBenchmarkInvocation(
   scenario: IncidentScenario,
 ): BenchmarkInvocation {
   const runId = randomUUID();
-  return { scenario, runId, threadId: runId };
+  return { scenario, runId, threadId: runId, humanReview: false };
 }

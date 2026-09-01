@@ -1,7 +1,10 @@
 import {
+  ConclusionReviewDecisionSchema,
   HypothesisSchema,
+  IncidentStateSchema,
   InvestigationTestSchema,
   upsertById,
+  type ConclusionReviewDecision,
   type Evidence,
   type EvidenceAssessment,
   type Hypothesis,
@@ -21,7 +24,14 @@ import {
   Send,
   START,
   StateGraph,
+  getConfig,
+  interrupt,
+  type LangGraphRunnableConfig,
 } from '@langchain/langgraph';
+import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
+
+export { ConclusionReviewDecisionSchema };
+export type { ConclusionReviewDecision };
 
 export const INVESTIGATION_NODE_NAMES = [
   'normalize_incident',
@@ -68,6 +78,18 @@ export interface ChallengeResult {
   readonly alternative: Hypothesis;
   readonly discriminatingTests: readonly InvestigationTest[];
 }
+
+export type InvestigationExecutionInput =
+  | Readonly<{ kind: 'start'; state: IncidentState }>
+  | Readonly<{
+      kind: 'resume';
+      interruptId: string;
+      decision: ConclusionReviewDecision;
+    }>;
+
+export type InvestigationExecutionConfig = Readonly<{
+  threadId: string;
+}>;
 
 export type InvestigationNode = (
   state: IncidentState,
@@ -144,6 +166,108 @@ function controlWithoutStopKind(
 ): IncidentStateControl {
   const { stopKind: _stopKind, ...rest } = control;
   return rest;
+}
+
+function assertInteractiveRunIdentity(state: InvestigationGraphState): void {
+  if (!state.control.humanReview) return;
+
+  const threadId = getConfig().configurable?.thread_id;
+  if (threadId !== state.control.runId) {
+    throw new Error('interactive runId must match LangGraph thread_id');
+  }
+}
+
+function readExactOwnDataProperties(
+  record: object,
+  expectedKeys: readonly string[],
+): Readonly<Record<string, unknown>> | undefined {
+  const ownKeys = Reflect.ownKeys(record);
+  if (ownKeys.length !== expectedKeys.length) return undefined;
+
+  const entries: [string, unknown][] = [];
+  for (const key of expectedKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+      return undefined;
+    }
+    entries.push([key, descriptor.value]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function parseInvestigationExecutionInput(
+  input: unknown,
+): InvestigationExecutionInput {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new Error('invalid investigation execution input');
+  }
+
+  const start = readExactOwnDataProperties(input, ['kind', 'state']);
+  if (start?.kind === 'start') {
+    const state = IncidentStateSchema.safeParse(start.state);
+    if (state.success) return { kind: 'start', state: state.data };
+  }
+
+  const resume = readExactOwnDataProperties(input, [
+    'kind',
+    'interruptId',
+    'decision',
+  ]);
+  if (
+    resume?.kind === 'resume' &&
+    typeof resume.interruptId === 'string' &&
+    /^[0-9a-f]{32}$/.test(resume.interruptId)
+  ) {
+    const decision = ConclusionReviewDecisionSchema.safeParse(resume.decision);
+    if (decision.success) {
+      return {
+        kind: 'resume',
+        interruptId: resume.interruptId,
+        decision: decision.data,
+      };
+    }
+  }
+
+  throw new Error('invalid investigation execution input');
+}
+
+function parseInvestigationExecutionConfig(
+  config: unknown,
+): InvestigationExecutionConfig | undefined {
+  if (config === undefined) return undefined;
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new Error('invalid investigation execution config');
+  }
+
+  const record = readExactOwnDataProperties(config, ['threadId']);
+  if (
+    typeof record?.threadId !== 'string' ||
+    record.threadId.length === 0
+  ) {
+    throw new Error('invalid investigation execution config');
+  }
+
+  return { threadId: record.threadId };
+}
+
+function langGraphConfigOf(
+  config: InvestigationExecutionConfig | undefined,
+): LangGraphRunnableConfig | undefined {
+  return config === undefined
+    ? undefined
+    : { configurable: { thread_id: config.threadId } };
+}
+
+function assertHumanHypothesisIdIsAvailable(
+  state: Pick<InvestigationGraphState, 'hypotheses'>,
+  decision: ConclusionReviewDecision,
+): void {
+  if (
+    decision.action === 'add_hypothesis' &&
+    state.hypotheses.some(({ id }) => id === decision.hypothesis.id)
+  ) {
+    throw new Error('human-added hypothesis reuses an existing hypothesis id');
+  }
 }
 
 function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
@@ -246,7 +370,11 @@ function parseChallengeResult(
 
 export function createInvestigationGraph({
   nodes,
-}: Readonly<{ nodes: InvestigationNodes }>) {
+  checkpointer,
+}: Readonly<{
+  nodes: InvestigationNodes;
+  checkpointer?: BaseCheckpointSaver;
+}>) {
   const terminate = (
     state: InvestigationGraphState,
     stopKind: InvestigationStop,
@@ -343,10 +471,50 @@ export function createInvestigationGraph({
     };
   };
 
-  return new StateGraph(InvestigationStateAnnotation)
+  const reviewConclusion = (state: InvestigationGraphState) => {
+    assertInteractiveRunIdentity(state);
+    const decision = ConclusionReviewDecisionSchema.parse(
+      interrupt({
+        kind: 'conclusion-review',
+        runId: state.control.runId,
+        conclusion: state.conclusion,
+      }),
+    );
+
+    if (decision.action === 'confirm') {
+      return new Command({ goto: END });
+    }
+
+    const control = controlWithoutStopKind(state.control);
+    if (decision.action === 'reject') {
+      return new Command({
+        goto: 'generate_hypotheses',
+        update: { control },
+      });
+    }
+
+    assertHumanHypothesisIdIsAvailable(state, decision);
+
+    return new Command({
+      goto: 'derive_predictions',
+      update: {
+        hypotheses: [decision.hypothesis],
+        control,
+      },
+    });
+  };
+
+  const normalizeIncident = preserveGraphOwnedControl(
+    nodes.normalize_incident,
+  );
+
+  const graph = new StateGraph(InvestigationStateAnnotation)
     .addNode(
       'normalize_incident',
-      preserveGraphOwnedControl(nodes.normalize_incident),
+      async (state) => {
+        assertInteractiveRunIdentity(state);
+        return normalizeIncident(state);
+      },
     )
     .addNode(
       'collect_baseline',
@@ -395,6 +563,9 @@ export function createInvestigationGraph({
       'propose_conclusion',
       preserveGraphOwnedControl(nodes.propose_conclusion),
     )
+    .addNode('review_conclusion', reviewConclusion, {
+      ends: [END, 'generate_hypotheses', 'derive_predictions'],
+    })
     .addEdge(START, 'normalize_incident')
     .addEdge('normalize_incident', 'collect_baseline')
     .addEdge('collect_baseline', 'generate_hypotheses')
@@ -406,6 +577,86 @@ export function createInvestigationGraph({
     .addEdge('interpret_residual_evidence', 'derive_hypothesis_state')
     .addEdge('derive_hypothesis_state', 'termination_check')
     .addEdge('challenge_hypothesis', 'execute_investigation')
-    .addEdge('propose_conclusion', END)
-    .compile();
+    .addConditionalEdges(
+      'propose_conclusion',
+      (state) => (state.control.humanReview ? 'review_conclusion' : END),
+      ['review_conclusion', END],
+    )
+    .compile({ checkpointer });
+
+  return Object.freeze({
+    async execute(
+      input: InvestigationExecutionInput,
+      config?: InvestigationExecutionConfig,
+    ) {
+      const request = parseInvestigationExecutionInput(input);
+      const executionConfig = parseInvestigationExecutionConfig(config);
+      if (
+        request.kind === 'start' &&
+        request.state.control.humanReview &&
+        executionConfig?.threadId !== request.state.control.runId
+      ) {
+        throw new Error('interactive runId must match execution threadId');
+      }
+      if (request.kind === 'resume' && executionConfig === undefined) {
+        throw new Error('interactive resume requires an execution threadId');
+      }
+      const langGraphConfig = langGraphConfigOf(executionConfig);
+      if (
+        request.kind === 'resume' &&
+        request.decision.action === 'add_hypothesis' &&
+        langGraphConfig !== undefined
+      ) {
+        const snapshot = await graph.getState(langGraphConfig);
+        const targetsPendingInterrupt = snapshot.tasks.some(({ interrupts }) =>
+          interrupts.some(({ id }) => id === request.interruptId),
+        );
+        if (targetsPendingInterrupt) {
+          assertHumanHypothesisIdIsAvailable(
+            snapshot.values,
+            request.decision,
+          );
+        }
+      }
+      const graphInput =
+        request.kind === 'start'
+          ? request.state
+          : new Command({
+              resume: {
+                [request.interruptId]: request.decision,
+              },
+            });
+      return graph.invoke(
+        graphInput as Parameters<typeof graph.invoke>[0],
+        langGraphConfig,
+      );
+    },
+    async getGraph() {
+      const topology = await graph.getGraph();
+      const nodes = Object.fromEntries(
+        Object.keys(topology.nodes).map((id) => [id, Object.freeze({ id })]),
+      );
+      const edges = topology.edges.map(({ source, target, conditional }) =>
+        Object.freeze({
+          source,
+          target,
+          conditional: Boolean(conditional),
+        }),
+      );
+
+      return Object.freeze({
+        nodes: Object.freeze(nodes),
+        edges: Object.freeze(edges),
+      });
+    },
+    async getState(config: InvestigationExecutionConfig) {
+      const executionConfig = parseInvestigationExecutionConfig(config);
+      if (executionConfig === undefined) {
+        throw new Error('getState requires an execution threadId');
+      }
+      return graph.getState({
+        configurable: { thread_id: executionConfig.threadId },
+      });
+    },
+  });
 }
