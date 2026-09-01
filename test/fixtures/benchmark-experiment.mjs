@@ -99,6 +99,7 @@ async function runOutcomeExperiment(experimentId, mutateOutcome = (outcome) => o
 
   return runBenchmarkExperiment({
     experimentId,
+    scenarioSet: 'ad-hoc',
     scenarios: acceptedV01Scenarios(),
     runsPerScenario: 3,
     metadata: benchmarkVersions,

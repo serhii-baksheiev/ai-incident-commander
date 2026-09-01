@@ -116,7 +116,10 @@ interface BenchmarkPlanOptions {
   readonly metadata: BenchmarkVersions;
 }
 
-export type BenchmarkScenarioSet = 'calibration' | 'final-evaluation';
+export type BenchmarkScenarioSet =
+  | 'ad-hoc'
+  | 'calibration'
+  | 'final-evaluation';
 
 interface BenchmarkPlanWithScenarios extends BenchmarkPlanOptions {
   readonly scenarios: readonly IncidentScenario[];
@@ -200,37 +203,39 @@ export function createFinalEvaluationBenchmarkPlan(
   });
 }
 
+type BenchmarkScenarioSelection =
+  | Readonly<{
+      scenarioSet: 'ad-hoc';
+      scenarios: readonly IncidentScenario[];
+    }>
+  | Readonly<{
+      scenarioSet: 'calibration' | 'final-evaluation';
+      scenarios?: never;
+    }>;
+
 function createExecutionBenchmarkPlan(
-  options: BenchmarkPlanWithScenarios &
-    Readonly<{ scenarioSet?: BenchmarkScenarioSet }>,
+  options: BenchmarkPlanOptions & BenchmarkScenarioSelection,
 ): BenchmarkRecord[] {
-  if (options.scenarioSet === undefined) {
-    return createBenchmarkPlan(options);
-  }
-
-  const allowedScenarioIds = new Set(
-    options.scenarioSet === 'calibration'
-      ? BENCHMARK_SCENARIO_PARTITIONS.calibration
-      : [
-          ...BENCHMARK_SCENARIO_PARTITIONS.calibration,
-          ...BENCHMARK_SCENARIO_PARTITIONS.holdout,
-        ],
-  );
-  const unexpectedScenarioIds = options.scenarios
-    .map(({ id }) => id)
-    .filter((scenarioId) => !allowedScenarioIds.has(scenarioId));
-
-  if (unexpectedScenarioIds.length > 0) {
-    const policyViolation =
-      options.scenarioSet === 'calibration'
-        ? 'calibration benchmark cannot consume hold-out or undeclared scenarios'
-        : 'final-evaluation benchmark cannot consume undeclared scenarios';
+  if (
+    options.scenarioSet !== 'ad-hoc' &&
+    options.scenarioSet !== 'calibration' &&
+    options.scenarioSet !== 'final-evaluation'
+  ) {
     throw new Error(
-      `${policyViolation}: ${unexpectedScenarioIds.join(', ')}`,
+      'benchmark execution requires an explicit ad-hoc, calibration, or final-evaluation scenarioSet',
     );
   }
-
-  return buildBenchmarkPlan(options);
+  if (options.scenarioSet === 'ad-hoc') {
+    return createBenchmarkPlan(options);
+  }
+  if (Object.hasOwn(options, 'scenarios')) {
+    throw new Error(
+      `${options.scenarioSet} benchmark derives its scenarios from the declared partition and rejects caller-supplied scenarios that could bypass the hold-out policy`,
+    );
+  }
+  return options.scenarioSet === 'calibration'
+    ? createCalibrationBenchmarkPlan(options)
+    : createFinalEvaluationBenchmarkPlan(options);
 }
 
 export function evaluateUnsupportedClaimRate({
@@ -336,41 +341,28 @@ export function evaluateBenchmarkRecord({
   };
 }
 
-export async function runBenchmarkExperiment({
-  experimentId,
-  scenarioSet,
-  scenarios,
-  runsPerScenario,
-  metadata,
-  investigate,
-  recordEvaluation,
-}: Readonly<{
-  experimentId: string;
-  scenarioSet?: BenchmarkScenarioSet;
-  scenarios: readonly IncidentScenario[];
-  runsPerScenario: number;
-  metadata: BenchmarkVersions;
-  investigate(record: BenchmarkRecord): Promise<BenchmarkOutcome>;
-  recordEvaluation(payload: Readonly<{
-    record: BenchmarkRecord;
-    result: BenchmarkEvaluation;
-  }>): Promise<void>;
-}>): Promise<BenchmarkExperiment> {
-  const records = createExecutionBenchmarkPlan({
-    experimentId,
-    scenarioSet,
-    scenarios,
-    runsPerScenario,
-    metadata,
-  });
+type BenchmarkExperimentOptions = BenchmarkPlanOptions &
+  BenchmarkScenarioSelection &
+  Readonly<{
+    investigate(record: BenchmarkRecord): Promise<BenchmarkOutcome>;
+    recordEvaluation(payload: Readonly<{
+      record: BenchmarkRecord;
+      result: BenchmarkEvaluation;
+    }>): Promise<void>;
+  }>;
+
+export async function runBenchmarkExperiment(
+  options: BenchmarkExperimentOptions,
+): Promise<BenchmarkExperiment> {
+  const records = createExecutionBenchmarkPlan(options);
   const results: BenchmarkEvaluation[] = [];
 
   for (const record of records) {
     const result = evaluateBenchmarkRecord({
       record,
-      outcome: await investigate(record),
+      outcome: await options.investigate(record),
     });
-    await recordEvaluation({ record, result });
+    await options.recordEvaluation({ record, result });
     results.push(result);
   }
 
@@ -429,41 +421,31 @@ function outcomeFromGraphState(state: IncidentState): BenchmarkOutcome {
   };
 }
 
-export async function runGraphBenchmarkExperiment({
-  experimentId,
-  scenarioSet,
-  scenarios,
-  runsPerScenario,
-  metadata,
-  createNodes,
-  recordEvaluation,
-}: Readonly<{
-  experimentId: string;
-  scenarioSet?: BenchmarkScenarioSet;
-  scenarios: readonly IncidentScenario[];
-  runsPerScenario: number;
-  metadata: BenchmarkVersions;
-  createNodes(record: BenchmarkRecord): InvestigationNodes;
-  recordEvaluation(payload: Readonly<{
-    record: BenchmarkRecord;
-    result: BenchmarkEvaluation;
-  }>): Promise<void>;
-}>): Promise<BenchmarkExperiment> {
+type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
+  BenchmarkScenarioSelection &
+  Readonly<{
+    createNodes(record: BenchmarkRecord): InvestigationNodes;
+    recordEvaluation(payload: Readonly<{
+      record: BenchmarkRecord;
+      result: BenchmarkEvaluation;
+    }>): Promise<void>;
+  }>;
+
+export async function runGraphBenchmarkExperiment(
+  options: GraphBenchmarkExperimentOptions,
+): Promise<BenchmarkExperiment> {
   return runBenchmarkExperiment({
-    experimentId,
-    scenarioSet,
-    scenarios,
-    runsPerScenario,
-    metadata,
+    ...options,
     async investigate(record) {
-      const graph = createInvestigationGraph({ nodes: createNodes(record) });
+      const graph = createInvestigationGraph({
+        nodes: options.createNodes(record),
+      });
       const finalState = await graph.execute({
         kind: 'start',
         state: initialBenchmarkState(record),
       });
       return outcomeFromGraphState(finalState);
     },
-    recordEvaluation,
   });
 }
 

@@ -40,6 +40,14 @@ const expectedMetricScores = {
   unsupported_claim_rate: 0,
 };
 
+const structuralOnlyOutcome = Object.freeze({
+  claims: Object.freeze([]),
+  supportingEvidenceIds: Object.freeze([]),
+  evidenceFingerprints: Object.freeze([]),
+  stopKind: 'stalled',
+  conclusionKind: 'inconclusive',
+});
+
 const acceptedV01ScenarioIds = [
   'bad-deployment',
   'db-pool-exhaustion',
@@ -432,7 +440,6 @@ test('executes every declared scenario through the final-evaluation benchmark pa
   const experiment = await runBenchmarkExperiment({
     experimentId: 'final-evaluation-execution-v0.2',
     scenarioSet: 'final-evaluation',
-    scenarios: evals.REPLAY_SCENARIOS,
     runsPerScenario: 3,
     metadata: benchmarkVersions,
     async investigate(record) {
@@ -496,6 +503,68 @@ for (const [name, scenarioIds] of [
     );
   });
 }
+
+test('rejects an implicit five-scenario mix containing hold-out before execution', async () => {
+  const runBenchmarkExperiment = requireFunction(
+    evals,
+    'runBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const mixedScenarioIds = [
+    ...acceptedV01ScenarioIds.slice(0, 4),
+    expectedHoldoutScenarioIds[0],
+  ];
+  const scenarios = mixedScenarioIds.map((scenarioId) => {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `missing declared scenario: ${scenarioId}`);
+    return scenario;
+  });
+  let investigateCalls = 0;
+
+  await assert.rejects(() => runBenchmarkExperiment({
+    experimentId: 'implicit-mixed-scenario-set-v0.2',
+    scenarios,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    async investigate() {
+      investigateCalls += 1;
+      return structuralOnlyOutcome;
+    },
+    async recordEvaluation() {},
+  }));
+  assert.equal(
+    investigateCalls,
+    0,
+    'an omitted scenarioSet must not turn a mixed five-scenario list into tuning data',
+  );
+});
+
+test('rejects a final-evaluation subset before execution', async () => {
+  const runBenchmarkExperiment = requireFunction(
+    evals,
+    'runBenchmarkExperiment',
+    '@aic/evals',
+  );
+  let investigateCalls = 0;
+
+  await assert.rejects(() => runBenchmarkExperiment({
+    experimentId: 'incomplete-final-evaluation-v0.2',
+    scenarioSet: 'final-evaluation',
+    scenarios: acceptedV01Scenarios(),
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    async investigate() {
+      investigateCalls += 1;
+      return structuralOnlyOutcome;
+    },
+    async recordEvaluation() {},
+  }));
+  assert.equal(
+    investigateCalls,
+    0,
+    'final evaluation must validate full declared membership before its first run',
+  );
+});
 
 test('adds stable native identities without changing the fifteen accepted v0.1 examples', () => {
   const createFinalEvaluationBenchmarkPlan = requireFunction(
@@ -1059,6 +1128,7 @@ test('runs all fifteen fresh records through createInvestigationGraph and replay
 
   const experiment = await runGraphBenchmarkExperiment({
     experimentId: 'baseline-v0.1',
+    scenarioSet: 'ad-hoc',
     scenarios: acceptedV01Scenarios(),
     runsPerScenario: 3,
     metadata: benchmarkVersions,
@@ -1111,7 +1181,6 @@ test('runs the complete expanded corpus through createInvestigationGraph and rep
   const experiment = await runGraphBenchmarkExperiment({
     experimentId: 'final-graph-evaluation-v0.2',
     scenarioSet: 'final-evaluation',
-    scenarios: evals.REPLAY_SCENARIOS,
     runsPerScenario: 3,
     metadata: benchmarkVersions,
     createNodes(record) {

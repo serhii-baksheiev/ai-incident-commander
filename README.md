@@ -59,20 +59,21 @@ Deliberate non-goals for v0.1 include write actions, autonomous remediation, mul
 
 The replay corpus contains ten scenarios. Eight are calibration cases available
 to prompt/model iteration; `incomplete-evidence` and
-`challenge-changes-leader` are the declared hold-out cases. The tuning path is
-`createCalibrationBenchmarkPlan()`, which ignores a caller-supplied `scenarios`
-property and selects only the static calibration partition.
-`runBenchmarkExperiment({ scenarioSet: 'final-evaluation', ... })` executes
-both partitions, while `createFinalEvaluationBenchmarkPlan()` constructs that
-complete static plan. The original five v0.1 scenarios and their fifteen stable
-native example IDs remain the regression floor.
+`challenge-changes-leader` are the declared hold-out cases. Calibration and
+final-evaluation execution accept no caller-supplied scenario list: each derives
+its complete corpus from `BENCHMARK_SCENARIO_PARTITIONS`. Caller-selected sets
+must use the explicit `ad-hoc` mode, which carries neither calibration nor final
+completeness semantics. The original five v0.1 scenarios and their fifteen
+stable native example IDs remain the regression floor.
 
 Executable policy proof: `test/benchmark-evaluation.test.mjs` › "declares a
 complete non-overlapping calibration and hold-out policy before tuning", ›
 "keeps prompt and model iteration off hold-out cases even when they are passed
 accidentally", › "includes calibration and hold-out cases in the final
 evaluation plan", and › "executes every declared scenario through the
-final-evaluation benchmark path". Preservation is pinned by
+final-evaluation benchmark path", › "rejects an implicit five-scenario mix
+containing hold-out before execution", and › "rejects a final-evaluation subset
+before execution". Preservation is pinned by
 `test/replay-scenarios.test.mjs` ›
 "preserves the five accepted v0.1 ground truths and replay fixtures" and
 `test/benchmark-evaluation.test.mjs` › "adds stable native identities without
