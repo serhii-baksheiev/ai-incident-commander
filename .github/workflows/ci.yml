@@ -93,4 +93,4 @@ jobs:
         run: npm run build
 
       - name: Full test suite
-        run: node --test
+        run: npm test
