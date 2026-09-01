@@ -142,6 +142,22 @@ process exits as soon as it prints its result, an enabled run also sets
 blocks on finalization instead of racing exit — › "blocks background trace
 delivery so a short-lived run cannot exit before it sends".
 
+**Two costs, measured on this machine.** Blocking delivery adds roughly 700 ms
+to a run (1.6 s against a reachable endpoint, versus 0.9 s in the background and
+0.37 s untraced) — the price of not losing the trace. And an **unreachable**
+endpoint stalls the run for about 90 seconds: the SDK's client defaults to
+`timeout_ms` 90 000 with four retries (`langsmith/dist/client.js`), which no
+environment variable bounds, because `@langchain/core` constructs that client
+itself. This happens with or without blocking delivery. If a traced run appears
+to hang, suspect the endpoint before the graph.
+
+**The test suite is insulated from all of this.** `npm test` preloads
+`test/fixtures/no-ambient-tracing.mjs`, which clears the four tracer flags
+before any test module loads, and every spawned process is built from the
+allow-list in `test/fixtures/child-env.mjs`. Without them a developer with
+tracing exported wrote 23 runs into their own workspace on every suite run —
+measured against a local counting sink, now zero.
+
 The api key reaches neither the process output nor the trace payload — ›
 "never prints the api key on stdout or stderr" and › "never sends the api key
 inside a trace payload". One operator caution the code cannot enforce: the SDK

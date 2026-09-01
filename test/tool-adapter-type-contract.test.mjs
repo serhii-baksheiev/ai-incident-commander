@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compilerPath = resolve(projectRoot, 'node_modules/typescript/bin/tsc');
 const fixturePath = resolve(
@@ -31,6 +33,7 @@ test('defaults live and replay execution to ToolResult<Evidence[]>', () => {
     {
       cwd: projectRoot,
       encoding: 'utf8',
+      env: childEnv(),
     },
   );
 

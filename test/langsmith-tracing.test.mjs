@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import * as graph from '@aic/graph';
 import * as observability from '@aic/observability';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
@@ -60,32 +62,6 @@ function buildInvocationConfig(input) {
   return requireFunction(graph, 'buildInvocationConfig', '@aic/graph')(input);
 }
 
-/**
- * The environment a spawned CLI gets, as an ALLOW-LIST.
- *
- * A deny-list over a copy of `process.env` was the previous shape and it leaked:
- * it named eight variables while the SDK reads many more, and
- * `LANGSMITH_RUNS_ENDPOINTS` is the one that costs. In its array form the SDK
- * skips the endpoint-conflict check entirely, so a developer who exports write
- * replicas would have this suite replicate its runs into their real workspace
- * under their real key. An allow-list cannot acquire that failure by the SDK
- * gaining a variable.
- *
- * `PATH` and `HOME` are what node itself needs; `NODE_*` is passed through so a
- * runner's node options survive. Everything else must be named by the caller.
- */
-function childEnv(overrides) {
-  const env = {};
-  for (const name of ['PATH', 'HOME']) {
-    const value = process.env[name];
-    if (value !== undefined) env[name] = value;
-  }
-  for (const [name, value] of Object.entries(process.env)) {
-    if (name.startsWith('NODE_') && value !== undefined) env[name] = value;
-  }
-  return { ...env, ...overrides };
-}
-
 function commandDiagnostics(args, result) {
   return `${process.execPath} ${args.join(' ')} exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
 }
@@ -94,11 +70,11 @@ function commandDiagnostics(args, result) {
  * Runs the compiled CLI asynchronously — `spawnSync` would block this process's
  * event loop, and the ingest sink below serves from it.
  */
-function runCli(args, env) {
+function runCli(args, overrides) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, args, {
       cwd: projectRoot,
-      env,
+      env: childEnv(overrides),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -482,15 +458,12 @@ test(
         const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
         // The endpoint is pointed AT the sink on purpose: the run stays offline
         // because no flag enabled tracing, not because it had nowhere to send.
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_API_KEY: fakeTracingValue,
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_API_KEY: fakeTracingValue,
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+        });
 
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
         assert.equal(
@@ -516,16 +489,13 @@ test(
       await withCheckpointDirectory('aic-tracing-ingest-', async (checkpoint) => {
         const runId = 'run-tracing-ingest';
         const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_TRACING: 'true',
-            LANGSMITH_API_KEY: fakeTracingValue,
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_TRACING: 'true',
+          LANGSMITH_API_KEY: fakeTracingValue,
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+        });
 
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
 
@@ -580,16 +550,13 @@ test(
           '--checkpoint',
           checkpoint,
         ];
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_TRACING: 'true',
-            LANGSMITH_API_KEY: fakeTracingValue,
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_TRACING: 'true',
+          LANGSMITH_API_KEY: fakeTracingValue,
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+        });
 
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
         // The SDK echoes the non-sensitive LANGSMITH_*/LANGCHAIN_* variables it
@@ -620,17 +587,14 @@ test(
           '--checkpoint',
           checkpoint,
         ];
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_TRACING: 'true',
-            LANGSMITH_API_KEY: fakeTracingValue,
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-            LANGCHAIN_CALLBACKS_BACKGROUND: 'true',
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_TRACING: 'true',
+          LANGSMITH_API_KEY: fakeTracingValue,
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+          LANGCHAIN_CALLBACKS_BACKGROUND: 'true',
+        });
 
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
         assert.equal(
@@ -658,15 +622,12 @@ test(
           '--checkpoint',
           checkpoint,
         ];
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_TRACING: 'true',
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_TRACING: 'true',
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+        });
 
         assert.notEqual(
           executed.status,
@@ -691,17 +652,14 @@ test(
       await withCheckpointDirectory('aic-tracing-cli-', async (checkpoint) => {
         const runId = 'run-tracing-cli';
         const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_TRACING: 'true',
-            LANGSMITH_API_KEY: fakeTracingValue,
-            LANGCHAIN_API_KEY: fakeTracingValue,
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_TRACING: 'true',
+          LANGSMITH_API_KEY: fakeTracingValue,
+          LANGCHAIN_API_KEY: fakeTracingValue,
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+        });
 
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
         assert.equal(JSON.parse(executed.stdout).runId, runId);
@@ -740,16 +698,13 @@ test(
           '--checkpoint',
           checkpoint,
         ];
-        const executed = await runCli(
-          args,
-          childEnv({
-            LANGSMITH_TRACING: 'true',
-            LANGSMITH_API_KEY: fakeTracingValue,
-            LANGSMITH_PROJECT: 'aic-v0.1',
-            LANGSMITH_ENDPOINT: sink.endpoint,
-            LANGCHAIN_ENDPOINT: sink.endpoint,
-          }),
-        );
+        const executed = await runCli(args, {
+          LANGSMITH_TRACING: 'true',
+          LANGSMITH_API_KEY: fakeTracingValue,
+          LANGSMITH_PROJECT: 'aic-v0.1',
+          LANGSMITH_ENDPOINT: sink.endpoint,
+          LANGCHAIN_ENDPOINT: sink.endpoint,
+        });
 
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
         const bodies = sink.requests

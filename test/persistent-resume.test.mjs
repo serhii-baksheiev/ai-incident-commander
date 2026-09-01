@@ -6,6 +6,8 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workerPath = resolve(projectRoot, 'test/fixtures/persistent-resume-worker.mjs');
 const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
@@ -13,6 +15,7 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 function spawnWorker(args) {
   const child = spawn(process.execPath, [workerPath, ...args], {
     cwd: projectRoot,
+    env: childEnv(),
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let stdout = '';
@@ -242,6 +245,7 @@ test('publishes separate CLI start and resume command contracts', () => {
     const result = spawnSync(process.execPath, args, {
       cwd: projectRoot,
       encoding: 'utf8',
+      env: childEnv(),
     });
     assert.equal(result.status, 0, commandDiagnostics(args, result));
     assert.match(result.stdout, new RegExp(`Usage: aic ${command}(?:\\s|$)`));
@@ -272,6 +276,7 @@ test(
         const executed = spawnSync(process.execPath, args, {
           cwd: projectRoot,
           encoding: 'utf8',
+          env: childEnv(),
           timeout: 8_000,
         });
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));

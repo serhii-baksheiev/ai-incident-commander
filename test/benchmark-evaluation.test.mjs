@@ -5,6 +5,8 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
 import * as graph from '@aic/graph';
@@ -18,6 +20,7 @@ function currentHeadSha() {
   return execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: projectRoot,
     encoding: 'utf8',
+    env: childEnv(),
   }).trim();
 }
 
