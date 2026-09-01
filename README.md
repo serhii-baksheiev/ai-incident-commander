@@ -164,15 +164,19 @@ no longer happens **under `npm test`** is pinned by › "the preload clears ever
 flag the langchain tracer reads" and › "runs the compiled CLI with no outbound
 call while the parent shell has tracing enabled".
 
-⚠ **The CI workflow runs `node --test` directly, so it does not get the
-preload.** `.github/workflows/ci.yml` invokes the runner rather than the script,
-and two tests currently pin that spelling — › "runs pull requests and main
-pushes only on the repository Linux ARM64 runner" and › "runs lint, build, and
-tests in CI after a clean npm install". On a self-hosted runner whose environment
-carries tracing variables, a CI run therefore traces. Closing it means pointing
-CI at `npm test` and updating those two assertions; `.github/workflows/` is a
-declared elevated path, so that is a Tier-2 change and is deliberately not made
-here.
+CI is covered by the same preload, because the workflow runs the suite through
+`npm test` rather than invoking the runner directly — › "the CI step that runs
+the suite goes through npm test, not node --test" reads
+`.github/workflows/ci.yml` and refuses a step that would bypass it. That check
+matters on a self-hosted runner, which inherits the machine's environment.
+
+⚠ What the preload does **not** clear is `LANGSMITH_API_KEY` itself. That is the
+right scope for flag-gated tracing — a key alone traces nothing — but a
+`langsmith` `Client` constructed directly reads the key with no flag involved.
+`createLangSmithClient()` is such a constructor, and it is the default value of
+the `client` parameter on `persistBenchmarkExperiment(s)` — so a call that omits
+that argument sends through a client holding whatever key the environment
+carries.
 
 The api key reaches neither the process output nor the trace payload — ›
 "never prints the api key on stdout or stderr" and › "never sends the api key

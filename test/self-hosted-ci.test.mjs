@@ -147,7 +147,7 @@ test('runs pull requests and main pushes only on the repository Linux ARM64 runn
   for (const tool of ['bash', 'git', 'node']) {
     assert.match(workflow, new RegExp(`\\b${tool}\\b`), `runner preflight must check ${tool}`);
   }
-  assert.match(workflow, /^\s+run:\s*node --test\s*$/m);
+  assert.match(workflow, /^\s+run:\s*npm test\s*$/m);
 });
 
 test('fails the runner preflight when a Lima host filesystem mount is present', () => {

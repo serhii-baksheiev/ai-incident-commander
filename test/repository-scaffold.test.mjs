@@ -262,7 +262,7 @@ test('runs lint, build, and tests in CI after a clean npm install', () => {
     resolve(projectRoot, '.github/workflows/ci.yml'),
     'the repository CI workflow must exist',
   );
-  const commands = ['run: npm ci', 'run: npm run lint', 'run: npm run build', 'run: node --test'];
+  const commands = ['run: npm ci', 'run: npm run lint', 'run: npm run build', 'run: npm test'];
   const commandPositions = commands.map((command) => workflow.indexOf(command));
 
   assert.equal(
