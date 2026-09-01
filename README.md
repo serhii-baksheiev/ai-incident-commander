@@ -62,15 +62,18 @@ to prompt/model iteration; `incomplete-evidence` and
 `challenge-changes-leader` are the declared hold-out cases. The tuning path is
 `createCalibrationBenchmarkPlan()`, which ignores a caller-supplied `scenarios`
 property and selects only the static calibration partition.
-`createFinalEvaluationBenchmarkPlan()` executes both partitions. The original
-five v0.1 scenarios and their fifteen stable native example IDs remain the
-regression floor.
+`runBenchmarkExperiment({ scenarioSet: 'final-evaluation', ... })` executes
+both partitions, while `createFinalEvaluationBenchmarkPlan()` constructs that
+complete static plan. The original five v0.1 scenarios and their fifteen stable
+native example IDs remain the regression floor.
 
 Executable policy proof: `test/benchmark-evaluation.test.mjs` › "declares a
 complete non-overlapping calibration and hold-out policy before tuning", ›
 "keeps prompt and model iteration off hold-out cases even when they are passed
-accidentally", and › "includes calibration and hold-out cases in the final
-evaluation plan". Preservation is pinned by `test/replay-scenarios.test.mjs` ›
+accidentally", › "includes calibration and hold-out cases in the final
+evaluation plan", and › "executes every declared scenario through the
+final-evaluation benchmark path". Preservation is pinned by
+`test/replay-scenarios.test.mjs` ›
 "preserves the five accepted v0.1 ground truths and replay fixtures" and
 `test/benchmark-evaluation.test.mjs` › "adds stable native identities without
 changing the fifteen accepted v0.1 examples".

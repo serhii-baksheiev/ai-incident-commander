@@ -420,6 +420,83 @@ test('includes calibration and hold-out cases in the final evaluation plan', () 
   assert.equal(finalEvaluation.length, evals.REPLAY_SCENARIOS.length * 3);
 });
 
+test('executes every declared scenario through the final-evaluation benchmark path', async () => {
+  const runBenchmarkExperiment = requireFunction(
+    evals,
+    'runBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const investigatedScenarioIds = [];
+  const recorded = [];
+
+  const experiment = await runBenchmarkExperiment({
+    experimentId: 'final-evaluation-execution-v0.2',
+    scenarioSet: 'final-evaluation',
+    scenarios: evals.REPLAY_SCENARIOS,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    async investigate(record) {
+      investigatedScenarioIds.push(record.scenario.id);
+      return perfectOutcomeFor(record.scenario);
+    },
+    async recordEvaluation(payload) {
+      recorded.push(payload);
+    },
+  });
+
+  assert.equal(experiment.records.length, 30);
+  assert.equal(experiment.results.length, 30);
+  assert.equal(recorded.length, 30);
+  assert.deepEqual(
+    [...new Set(investigatedScenarioIds)].sort(),
+    evals.REPLAY_SCENARIOS.map(({ id }) => id).sort(),
+    'final evaluation must execute hold-out cases, not merely place them in a plan',
+  );
+});
+
+for (const [name, scenarioIds] of [
+  ['a hold-out-only list', expectedHoldoutScenarioIds],
+  [
+    'the mixed five-scenario bypass',
+    [...acceptedV01ScenarioIds.slice(0, 4), expectedHoldoutScenarioIds[0]],
+  ],
+]) {
+  test(`rejects ${name} before prompt or model iteration executes`, async () => {
+    const runBenchmarkExperiment = requireFunction(
+      evals,
+      'runBenchmarkExperiment',
+      '@aic/evals',
+    );
+    const scenarios = scenarioIds.map((scenarioId) => {
+      const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+      assert.ok(scenario, `missing declared scenario: ${scenarioId}`);
+      return scenario;
+    });
+    let investigateCalls = 0;
+
+    await assert.rejects(
+      () => runBenchmarkExperiment({
+        experimentId: 'prompt-model-iteration-v0.2',
+        scenarioSet: 'calibration',
+        scenarios,
+        runsPerScenario: 3,
+        metadata: benchmarkVersions,
+        async investigate(record) {
+          investigateCalls += 1;
+          return perfectOutcomeFor(record.scenario);
+        },
+        async recordEvaluation() {},
+      }),
+      /(?:hold.?out.*calibration|calibration.*hold.?out)/i,
+    );
+    assert.equal(
+      investigateCalls,
+      0,
+      'hold-out validation must happen before the first tuning run',
+    );
+  });
+}
+
 test('adds stable native identities without changing the fifteen accepted v0.1 examples', () => {
   const createFinalEvaluationBenchmarkPlan = requireFunction(
     evals,
@@ -1018,6 +1095,51 @@ test('runs all fifteen fresh records through createInvestigationGraph and replay
       record.scenario.fixture.entries.length,
       `${record.exampleId} must execute all recorded calls via ReplayToolAdapter`,
     );
+  }
+});
+
+test('runs the complete expanded corpus through createInvestigationGraph and replay', async () => {
+  const runGraphBenchmarkExperiment = requireFunction(
+    evals,
+    'runGraphBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const traces = new Map();
+  const replayCounts = new Map();
+  const recorded = [];
+
+  const experiment = await runGraphBenchmarkExperiment({
+    experimentId: 'final-graph-evaluation-v0.2',
+    scenarioSet: 'final-evaluation',
+    scenarios: evals.REPLAY_SCENARIOS,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    createNodes(record) {
+      assert.equal(record.metadata.humanReview, false);
+      assert.equal(record.threadId, record.runId);
+      traces.set(record.runId, []);
+      replayCounts.set(record.runId, 0);
+      return replayBackedNodes(record, traces, replayCounts);
+    },
+    async recordEvaluation(payload) {
+      recorded.push(payload);
+    },
+  });
+
+  assert.equal(recorded.length, 30);
+  assert.equal(experiment.records.length, 30);
+  assert.equal(experiment.results.length, 30);
+  assert.deepEqual(
+    [...new Set(experiment.records.map(({ scenario }) => scenario.id))].sort(),
+    evals.REPLAY_SCENARIOS.map(({ id }) => id).sort(),
+  );
+  for (const record of experiment.records) {
+    assert.equal(
+      replayCounts.get(record.runId),
+      record.scenario.fixture.entries.length,
+      `${record.exampleId} must execute every recorded call through ReplayToolAdapter`,
+    );
+    assert.equal(traces.get(record.runId).includes('execute_investigation'), true);
   }
 });
 

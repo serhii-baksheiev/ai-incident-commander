@@ -116,6 +116,8 @@ interface BenchmarkPlanOptions {
   readonly metadata: BenchmarkVersions;
 }
 
+export type BenchmarkScenarioSet = 'calibration' | 'final-evaluation';
+
 interface BenchmarkPlanWithScenarios extends BenchmarkPlanOptions {
   readonly scenarios: readonly IncidentScenario[];
 }
@@ -196,6 +198,39 @@ export function createFinalEvaluationBenchmarkPlan(
       ...BENCHMARK_SCENARIO_PARTITIONS.holdout,
     ]),
   });
+}
+
+function createExecutionBenchmarkPlan(
+  options: BenchmarkPlanWithScenarios &
+    Readonly<{ scenarioSet?: BenchmarkScenarioSet }>,
+): BenchmarkRecord[] {
+  if (options.scenarioSet === undefined) {
+    return createBenchmarkPlan(options);
+  }
+
+  const allowedScenarioIds = new Set(
+    options.scenarioSet === 'calibration'
+      ? BENCHMARK_SCENARIO_PARTITIONS.calibration
+      : [
+          ...BENCHMARK_SCENARIO_PARTITIONS.calibration,
+          ...BENCHMARK_SCENARIO_PARTITIONS.holdout,
+        ],
+  );
+  const unexpectedScenarioIds = options.scenarios
+    .map(({ id }) => id)
+    .filter((scenarioId) => !allowedScenarioIds.has(scenarioId));
+
+  if (unexpectedScenarioIds.length > 0) {
+    const policyViolation =
+      options.scenarioSet === 'calibration'
+        ? 'calibration benchmark cannot consume hold-out or undeclared scenarios'
+        : 'final-evaluation benchmark cannot consume undeclared scenarios';
+    throw new Error(
+      `${policyViolation}: ${unexpectedScenarioIds.join(', ')}`,
+    );
+  }
+
+  return buildBenchmarkPlan(options);
 }
 
 export function evaluateUnsupportedClaimRate({
@@ -303,6 +338,7 @@ export function evaluateBenchmarkRecord({
 
 export async function runBenchmarkExperiment({
   experimentId,
+  scenarioSet,
   scenarios,
   runsPerScenario,
   metadata,
@@ -310,6 +346,7 @@ export async function runBenchmarkExperiment({
   recordEvaluation,
 }: Readonly<{
   experimentId: string;
+  scenarioSet?: BenchmarkScenarioSet;
   scenarios: readonly IncidentScenario[];
   runsPerScenario: number;
   metadata: BenchmarkVersions;
@@ -319,8 +356,9 @@ export async function runBenchmarkExperiment({
     result: BenchmarkEvaluation;
   }>): Promise<void>;
 }>): Promise<BenchmarkExperiment> {
-  const records = createBenchmarkPlan({
+  const records = createExecutionBenchmarkPlan({
     experimentId,
+    scenarioSet,
     scenarios,
     runsPerScenario,
     metadata,
@@ -393,6 +431,7 @@ function outcomeFromGraphState(state: IncidentState): BenchmarkOutcome {
 
 export async function runGraphBenchmarkExperiment({
   experimentId,
+  scenarioSet,
   scenarios,
   runsPerScenario,
   metadata,
@@ -400,6 +439,7 @@ export async function runGraphBenchmarkExperiment({
   recordEvaluation,
 }: Readonly<{
   experimentId: string;
+  scenarioSet?: BenchmarkScenarioSet;
   scenarios: readonly IncidentScenario[];
   runsPerScenario: number;
   metadata: BenchmarkVersions;
@@ -411,6 +451,7 @@ export async function runGraphBenchmarkExperiment({
 }>): Promise<BenchmarkExperiment> {
   return runBenchmarkExperiment({
     experimentId,
+    scenarioSet,
     scenarios,
     runsPerScenario,
     metadata,
