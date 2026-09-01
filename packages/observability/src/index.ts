@@ -348,8 +348,8 @@ export type TracingConfig =
  * Enabled tracing without an api key THROWS rather than returning disabled:
  * silently-off tracing is the failure this function exists to prevent. That is
  * the only delivery failure it detects — a wrong-region endpoint or an
- * unreachable host still produces a run that completes, because the SDK sends
- * in the background.
+ * unreachable host still produces a run that completes, because the tracer
+ * reports a rejected send as a warning rather than failing the run it traced.
  */
 export function resolveTracingConfig(
   env: Readonly<Record<string, string | undefined>>,

@@ -128,10 +128,13 @@ would install the tracer while our key check stayed silent.
 
 **What is guaranteed, exactly:** with a tracing flag on and no api key set, the
 run stops before any checkpoint is written — › "refuses to start when tracing is
-enabled without an api key". That is the only delivery failure detected. A
-wrong-region endpoint or an unreachable host still produces a run that
-completes, because the SDK sends in the background and reports the rejection as
-a warning.
+enabled without an api key", which asserts the exit status, the message, and
+that the checkpoint file was never created. That is the only delivery failure
+detected. A wrong-region endpoint or an unreachable host still produces a run
+that completes and reports success, because the tracer reports a rejected send
+as a warning rather than failing the run it was tracing. ⚠ Not because delivery
+is backgrounded — this CLI disables that (below); the run waits, and then
+succeeds anyway.
 
 Runs are named and tagged so traces are filterable: the root run is
 `aic-start` / `aic-resume` with tags `aic` and `aic-<command>`, and every graph
@@ -142,21 +145,34 @@ process exits as soon as it prints its result, an enabled run also sets
 blocks on finalization instead of racing exit — › "blocks background trace
 delivery so a short-lived run cannot exit before it sends".
 
-**Two costs, measured on this machine.** Blocking delivery adds roughly 700 ms
-to a run (1.6 s against a reachable endpoint, versus 0.9 s in the background and
-0.37 s untraced) — the price of not losing the trace. And an **unreachable**
-endpoint stalls the run for about 90 seconds: the SDK's client defaults to
-`timeout_ms` 90 000 with four retries (`langsmith/dist/client.js`), which no
-environment variable bounds, because `@langchain/core` constructs that client
-itself. This happens with or without blocking delivery. If a traced run appears
-to hang, suspect the endpoint before the graph.
+**An unreachable endpoint stalls the run by at least the SDK's client timeout,**
+which defaults to `timeout_ms` 90 000 (`langsmith/dist/client.js`). How much
+longer depends on how the endpoint fails: a refused connection was observed at
+~88 s and a host that accepts and never answers at ~121 s. Nothing outside
+bounds it: `@langchain/core` constructs that client itself and passes no
+timeout. A timeout is not retried — `langsmith/dist/utils/async_caller.js`
+rethrows it out of the retry loop — so the stall is one timeout, not four. This
+happens with or without blocking delivery. If a traced run appears to hang,
+suspect the endpoint before the graph.
 
-**The test suite is insulated from all of this.** `npm test` preloads
-`test/fixtures/no-ambient-tracing.mjs`, which clears the four tracer flags
-before any test module loads, and every spawned process is built from the
+**`npm test` is insulated; a bare `node --test` is not.** The `npm test` script
+preloads `test/fixtures/no-ambient-tracing.mjs`, which clears the four tracer
+flags before any test module loads, and every spawned process is built from the
 allow-list in `test/fixtures/child-env.mjs`. Without them a developer with
-tracing exported wrote 23 runs into their own workspace on every suite run —
-measured against a local counting sink, now zero.
+tracing exported wrote runs into their own workspace on every suite run. That it
+no longer happens **under `npm test`** is pinned by › "the preload clears every
+flag the langchain tracer reads" and › "runs the compiled CLI with no outbound
+call while the parent shell has tracing enabled".
+
+⚠ **The CI workflow runs `node --test` directly, so it does not get the
+preload.** `.github/workflows/ci.yml` invokes the runner rather than the script,
+and two tests currently pin that spelling — › "runs pull requests and main
+pushes only on the repository Linux ARM64 runner" and › "runs lint, build, and
+tests in CI after a clean npm install". On a self-hosted runner whose environment
+carries tracing variables, a CI run therefore traces. Closing it means pointing
+CI at `npm test` and updating those two assertions; `.github/workflows/` is a
+declared elevated path, so that is a Tier-2 change and is deliberately not made
+here.
 
 The api key reaches neither the process output nor the trace payload — ›
 "never prints the api key on stdout or stderr" and › "never sends the api key

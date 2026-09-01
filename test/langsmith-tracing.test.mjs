@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -638,6 +638,15 @@ test(
           executed.stderr,
           /LANGSMITH_API_KEY/,
           commandDiagnostics(args, executed),
+        );
+        // The refusal has to land BEFORE any work: the README states the run
+        // stops "before any checkpoint is written", and only this assertion
+        // holds that half of the claim. `createSqliteCheckpointer` is what
+        // creates the file, so its absence is the observable.
+        assert.equal(
+          existsSync(checkpoint),
+          false,
+          `the refusal must precede the checkpoint, leaving no file behind\n${commandDiagnostics(args, executed)}`,
         );
       });
     });
