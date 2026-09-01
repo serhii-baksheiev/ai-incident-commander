@@ -25,7 +25,9 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "node --import ./test/fixtures/no-ambient-tracing.mjs --test",
-    "test:live-lab": "node --import ./test/fixtures/no-ambient-tracing.mjs --test incident-lab/tests/*.live.mjs",
+    "test:live-lab": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs --test --test-concurrency=1 incident-lab/tests/*.live.mjs",
+    "live-lab:regenerate": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs incident-lab/bin/regenerate.mjs",
+    "live-lab:validate-candidates": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs incident-lab/bin/validate-candidates.mjs",
     "check": "npm run lint && npm run build && npm test",
     "cli": "node apps/cli/dist/index.js"
   },

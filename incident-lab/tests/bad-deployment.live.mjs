@@ -24,6 +24,7 @@ const composeFile = resolve(projectRoot, 'incident-lab/compose.yaml');
 const LAB_BUDGET = Object.freeze({
   composeStartTimeoutMs: 60_000,
   stageTimeoutMs: 15_000,
+  teardownTimeoutMs: 45_000,
   runTimeoutMs: 150_000,
   scenarioRuns: 2,
   observationsPerRun: 2,
@@ -92,7 +93,7 @@ function assertCandidateEnvelope(candidate) {
       schemaVersion: 1,
       scenarioId: 'bad-deployment',
       scenarioVersion: 1,
-      labTopologyVersion: 1,
+      labTopologyVersion: 2,
       replayFixtureVersion: REPLAY_FIXTURE_VERSION,
     },
   );
@@ -180,7 +181,7 @@ test(
           {
             cwd: projectRoot,
             env: composeEnvironment,
-            timeout: LAB_BUDGET.stageTimeoutMs,
+            timeout: LAB_BUDGET.teardownTimeoutMs,
             maxBuffer: 4 * 1024 * 1024,
           },
         );
@@ -222,8 +223,12 @@ test(
           return JSON.parse(result.stdout);
         },
       );
+      assert.ok(
+        composeConfig.services.api,
+        'the completed lab topology must expose its control surface as api',
+      );
       assert.equal(
-        composeConfig.services.checkout.ports[0].host_ip,
+        composeConfig.services.api.ports[0].host_ip,
         '127.0.0.1',
         'the unauthenticated lab control API must bind only to loopback',
       );

@@ -1,11 +1,56 @@
 services:
-  checkout:
+  api:
     build:
-      context: ./checkout
+      context: .
+      dockerfile: services/Dockerfile
+    command: ["node", "api.mjs"]
     environment:
       PORT: "3000"
+      PAYMENTS_BASE_URL: "http://payments:3000"
+      INVENTORY_BASE_URL: "http://inventory:3000"
     ports:
       - "127.0.0.1:${AIC_LAB_HOST_PORT:?set AIC_LAB_HOST_PORT}:3000"
+    depends_on:
+      payments:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 1s
+    restart: "no"
+  payments:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+    command: ["node", "payments.mjs"]
+    environment:
+      PORT: "3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 1s
+    restart: "no"
+  inventory:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+    command: ["node", "inventory.mjs"]
+    environment:
+      PORT: "3000"
     healthcheck:
       test:
         - CMD
