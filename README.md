@@ -80,9 +80,9 @@ before execution". Preservation is pinned by
 changing the fifteen accepted v0.1 examples".
 
 Benchmark execution callbacks receive `BenchmarkExecutionInput`, an explicit
-ground-truth-free projection containing only experiment/example/run/thread/
-scenario identities, the replay fixture, and versioned runtime metadata. They
-never receive the full
+ground-truth-free projection containing only `experimentId`, `exampleId`,
+`runId`, `threadId`, `scenarioId`, the replay fixture, and versioned runtime
+metadata. They never receive the full
 `BenchmarkRecord` or `IncidentScenario`; those remain on the evaluator,
 regression-gate, persistence, and LangSmith dataset/evidence side. This is a
 source-level contract boundary, not a capability sandbox: code in the same
