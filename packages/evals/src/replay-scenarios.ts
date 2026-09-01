@@ -27,6 +27,7 @@ export interface IncidentScenario {
     expectedConclusionKind: IncidentConclusion['kind'];
     expectedEvidence: readonly EvidenceFingerprint[];
     misleadingEvidence?: readonly EvidenceFingerprint[];
+    expectedLeaderChangeAfterChallenge?: boolean;
   }>;
   readonly fixture: ScenarioReplayFixture;
 }
@@ -309,7 +310,271 @@ export const REPLAY_SCENARIOS: readonly IncidentScenario[] = [
       },
     ),
   },
+  {
+    id: 'multiple-plausible-causes',
+    groundTruth: {
+      expectedStopKind: 'ambiguous',
+      expectedConclusionKind: 'multiple-causes',
+      expectedEvidence: [
+        {
+          kind: 'metric',
+          source: 'metrics/payments',
+          predicate: 'payment error rate rises during the incident window',
+        },
+        {
+          kind: 'dependency',
+          source: 'dependencies/payments',
+          predicate: 'inventory-api latency rises during the same window',
+        },
+      ],
+    },
+    fixture: replayFixture(
+      {
+        toolId: 'metrics',
+        input: { service: 'payments', metric: 'error_rate', window: 'incident' },
+        result: ok(
+          evidence(
+            'payments-error-rate-incident',
+            'metric',
+            'metrics/payments',
+            'payment error rate rose during the incident window',
+          ),
+        ),
+      },
+      {
+        toolId: 'dependencies',
+        input: { service: 'payments', window: 'incident' },
+        result: ok(
+          evidence(
+            'inventory-api-latency-incident',
+            'dependency',
+            'dependencies/payments',
+            'inventory-api latency rose during the same incident window',
+          ),
+        ),
+      },
+    ),
+  },
+  {
+    id: 'transient-self-resolved',
+    groundTruth: {
+      rootCause: {
+        component: 'payments-cache',
+        mechanism: 'a brief cache stampede exhausted request workers',
+        trigger: 'catalog refresh',
+      },
+      expectedStopKind: 'sufficient',
+      expectedConclusionKind: 'root-cause',
+      expectedEvidence: [
+        {
+          kind: 'metric',
+          source: 'metrics/payments-cache',
+          predicate: 'worker saturation is present only during the incident window',
+        },
+        {
+          kind: 'log',
+          source: 'logs/payments',
+          predicate: 'cache refill burst ends before the recovery window',
+        },
+      ],
+    },
+    fixture: replayFixture(
+      {
+        toolId: 'metrics',
+        input: { service: 'payments-cache', metric: 'worker_saturation', window: 'incident' },
+        result: ok(
+          evidence(
+            'payments-cache-transient-saturation',
+            'metric',
+            'metrics/payments-cache',
+            'worker saturation appeared only during the incident window',
+          ),
+        ),
+      },
+      {
+        toolId: 'logs',
+        input: { service: 'payments', query: 'cache-refill', window: 'recovery' },
+        result: ok(
+          evidence(
+            'payments-cache-refill-ended',
+            'log',
+            'logs/payments',
+            'the cache refill burst ended before the recovery window',
+          ),
+        ),
+      },
+    ),
+  },
+  {
+    id: 'incomplete-evidence',
+    groundTruth: {
+      expectedStopKind: 'stalled',
+      expectedConclusionKind: 'inconclusive',
+      expectedEvidence: [
+        {
+          kind: 'log',
+          source: 'logs/checkout',
+          predicate: 'contains intermittent upstream timeout symptoms',
+        },
+      ],
+    },
+    fixture: replayFixture(
+      {
+        toolId: 'logs',
+        input: { service: 'checkout', query: 'upstream-timeout' },
+        result: ok(
+          evidence(
+            'checkout-intermittent-upstream-timeout',
+            'log',
+            'logs/checkout',
+            'checkout recorded intermittent upstream timeout symptoms',
+          ),
+        ),
+      },
+      {
+        toolId: 'traces',
+        input: { service: 'checkout', window: 'incident' },
+        result: {
+          status: 'unavailable',
+          reason: 'incident-window traces expired before collection',
+        },
+      },
+    ),
+  },
+  {
+    id: 'challenge-changes-leader',
+    groundTruth: {
+      rootCause: {
+        component: 'inventory-api',
+        mechanism: 'connection pool saturation delayed payment authorization',
+        trigger: 'inventory traffic spike',
+      },
+      expectedStopKind: 'sufficient',
+      expectedConclusionKind: 'root-cause',
+      expectedEvidence: [
+        {
+          kind: 'dependency',
+          source: 'dependencies/payments',
+          predicate: 'inventory-api reports connection pool saturation',
+        },
+      ],
+      misleadingEvidence: [
+        {
+          kind: 'deploy',
+          source: 'deployments/payments',
+          predicate: 'payments deployment overlaps the incident window',
+        },
+      ],
+      expectedLeaderChangeAfterChallenge: true,
+    },
+    fixture: replayFixture(
+      {
+        toolId: 'deployments',
+        input: { service: 'payments', window: 'incident-and-recovery' },
+        result: ok(
+          evidence(
+            'payments-deployment-overlap',
+            'deploy',
+            'deployments/payments',
+            'a payments deployment overlapped the incident window',
+          ),
+        ),
+      },
+      {
+        toolId: 'dependencies',
+        input: { service: 'payments', window: 'incident-and-recovery' },
+        result: ok(
+          evidence(
+            'inventory-api-challenge-saturation',
+            'dependency',
+            'dependencies/payments',
+            'inventory-api reported connection pool saturation',
+          ),
+        ),
+      },
+    ),
+  },
+  {
+    id: 'challenge-keeps-leader',
+    groundTruth: {
+      rootCause: {
+        component: 'payments',
+        mechanism: 'a deployment introduced an authorization timeout regression',
+        trigger: 'payments-v19',
+      },
+      expectedStopKind: 'sufficient',
+      expectedConclusionKind: 'root-cause',
+      expectedEvidence: [
+        {
+          kind: 'deploy',
+          source: 'deployments/payments',
+          predicate: 'payments-v19 begins immediately before authorization timeouts',
+        },
+        {
+          kind: 'log',
+          source: 'logs/payments',
+          predicate: 'authorization timeouts start after payments-v19',
+        },
+      ],
+      expectedLeaderChangeAfterChallenge: false,
+    },
+    fixture: replayFixture(
+      {
+        toolId: 'deployments',
+        input: { service: 'payments', window: 'payments-v19-incident' },
+        result: ok(
+          evidence(
+            'payments-v19-before-timeouts',
+            'deploy',
+            'deployments/payments',
+            'payments-v19 completed immediately before authorization timeouts began',
+          ),
+        ),
+      },
+      {
+        toolId: 'logs',
+        input: { service: 'payments', query: 'authorization-timeout' },
+        result: ok(
+          evidence(
+            'payments-v19-authorization-timeouts',
+            'log',
+            'logs/payments',
+            'authorization timeouts started after payments-v19',
+          ),
+        ),
+      },
+      {
+        toolId: 'dependencies',
+        input: { service: 'payments', window: 'payments-v19-incident' },
+        result: ok(
+          evidence(
+            'payments-v19-dependencies-healthy',
+            'dependency',
+            'dependencies/payments',
+            'payments dependencies remained healthy during the incident window',
+          ),
+        ),
+      },
+    ),
+  },
 ];
+
+export const BENCHMARK_SCENARIO_PARTITIONS = Object.freeze({
+  calibration: Object.freeze([
+    'bad-deployment',
+    'db-pool-exhaustion',
+    'false-alert',
+    'deployment-caused-incident-a',
+    'dependency-caused-incident-b',
+    'multiple-plausible-causes',
+    'transient-self-resolved',
+    'challenge-keeps-leader',
+  ]),
+  holdout: Object.freeze([
+    'incomplete-evidence',
+    'challenge-changes-leader',
+  ]),
+});
 
 export function createBenchmarkInvocation(
   scenario: IncidentScenario,

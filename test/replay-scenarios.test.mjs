@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
@@ -18,12 +19,33 @@ import {
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const expectedScenarioIds = [
+const expectedV01ScenarioIds = [
   'bad-deployment',
   'db-pool-exhaustion',
   'false-alert',
   'deployment-caused-incident-a',
   'dependency-caused-incident-b',
+];
+
+const expectedV01ScenarioDigests = {
+  'bad-deployment':
+    '5ee83c56c0527e103aa1e6162efb819977637088b253bc353d1eeddd64a59022',
+  'db-pool-exhaustion':
+    'cbb3f23d5cc11d055ca4b9965921ba7f8365aaeef0ca8f366e1ca74ec366077d',
+  'false-alert':
+    '4173e429605648642451c4d3781b9dfb6ccf689f79b56b8422d0b9d790a6a31b',
+  'deployment-caused-incident-a':
+    'd98c15e82be4a655e08db9d1f7c44167170e26b9170b44dad782a7b07dc3771c',
+  'dependency-caused-incident-b':
+    '8e85d4b902b28aa52c6a71e5597fff7ec954176fccc84da4836600b3bab0dc56',
+};
+
+const requiredV02GapScenarioIds = [
+  'multiple-plausible-causes',
+  'transient-self-resolved',
+  'incomplete-evidence',
+  'challenge-changes-leader',
+  'challenge-keeps-leader',
 ];
 
 const conclusionKinds = new Set([
@@ -110,14 +132,88 @@ function assertEvidenceFingerprint(fingerprint, label) {
   assertNonEmptyString(fingerprint.predicate, `${label}.predicate`);
 }
 
-test('publishes exactly the five named v0.1 replay scenarios', () => {
+test('preserves the five accepted v0.1 ground truths and replay fixtures', () => {
   const scenarios = requireReplayScenarios();
+  const byId = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
 
-  assert.deepEqual(
-    scenarios.map(({ id }) => id).sort(),
-    [...expectedScenarioIds].sort(),
-  );
+  for (const scenarioId of expectedV01ScenarioIds) {
+    const scenario = byId.get(scenarioId);
+    assert.ok(scenario, `missing accepted v0.1 scenario: ${scenarioId}`);
+    const digest = createHash('sha256')
+      .update(JSON.stringify(scenario))
+      .digest('hex');
+    assert.equal(
+      digest,
+      expectedV01ScenarioDigests[scenarioId],
+      `${scenarioId} ground truth and replay fixture are frozen v0.1 regression evidence`,
+    );
+  }
 });
+
+test('expands the benchmark to at least ten unique and behavior-named cases', () => {
+  const scenarios = requireReplayScenarios();
+  const scenarioIds = scenarios.map(({ id }) => id);
+
+  assert.ok(
+    scenarios.length >= 10,
+    'the v0.2 benchmark must contain at least ten scenarios',
+  );
+  assert.equal(new Set(scenarioIds).size, scenarioIds.length, 'scenario IDs must be unique');
+  for (const scenarioId of requiredV02GapScenarioIds) {
+    assert.equal(scenarioIds.includes(scenarioId), true, `missing benchmark case: ${scenarioId}`);
+  }
+});
+
+for (const [scenarioId, expected] of Object.entries({
+  'multiple-plausible-causes': {
+    expectedStopKind: 'ambiguous',
+    expectedConclusionKind: 'multiple-causes',
+  },
+  'transient-self-resolved': {
+    expectedStopKind: 'sufficient',
+    expectedConclusionKind: 'root-cause',
+  },
+  'incomplete-evidence': {
+    expectedStopKind: 'stalled',
+    expectedConclusionKind: 'inconclusive',
+  },
+})) {
+  test(`pins ${scenarioId} to its distinct terminal behavior`, () => {
+    const byId = new Map(
+      requireReplayScenarios().map((scenario) => [scenario.id, scenario]),
+    );
+    const scenario = byId.get(scenarioId);
+    assert.ok(scenario, `${scenarioId} must be present`);
+    assert.deepEqual(
+      {
+        expectedStopKind: scenario.groundTruth.expectedStopKind,
+        expectedConclusionKind: scenario.groundTruth.expectedConclusionKind,
+      },
+      expected,
+      `${scenarioId} must encode its distinct terminal behavior`,
+    );
+  });
+}
+
+for (const [scenarioId, expectedLeaderChangeAfterChallenge] of [
+  ['challenge-changes-leader', true],
+  ['challenge-keeps-leader', false],
+]) {
+  test(`pins ${scenarioId} to its challenge leader expectation`, () => {
+    const byId = new Map(
+      requireReplayScenarios().map((scenario) => [scenario.id, scenario]),
+    );
+    const scenario = byId.get(scenarioId);
+    assert.ok(scenario, `${scenarioId} must be present`);
+    assert.equal(
+      scenario.groundTruth.expectedLeaderChangeAfterChallenge,
+      expectedLeaderChangeAfterChallenge,
+      `${scenarioId} must state whether challenge changes the leader`,
+    );
+    assert.equal(scenario.groundTruth.expectedStopKind, 'sufficient');
+    assert.equal(scenario.groundTruth.expectedConclusionKind, 'root-cause');
+  });
+}
 
 test('keeps @aic/evals independent of @aic/tools', () => {
   const manifest = JSON.parse(
@@ -137,7 +233,7 @@ test('keeps @aic/evals independent of @aic/tools', () => {
   );
 });
 
-test('preserves the frozen structured ground truth and false-alert outcome', () => {
+test('keeps structured ground truth explicit for every expanded scenario', () => {
   const scenarios = requireReplayScenarios();
 
   for (const scenario of scenarios) {
@@ -150,11 +246,14 @@ test('preserves the frozen structured ground truth and false-alert outcome', () 
       ...(groundTruth.misleadingEvidence === undefined
         ? []
         : ['misleadingEvidence']),
+      ...(groundTruth.expectedLeaderChangeAfterChallenge === undefined
+        ? []
+        : ['expectedLeaderChangeAfterChallenge']),
     ];
     assert.deepEqual(
       Object.keys(groundTruth).sort(),
       expectedKeys.sort(),
-      `${scenario.id} must preserve the frozen groundTruth shape`,
+      `${scenario.id} groundTruth must contain only the declared structured fields`,
     );
     assert.equal(
       InvestigationStopSchema.safeParse(groundTruth.expectedStopKind).success,
@@ -189,6 +288,8 @@ test('preserves the frozen structured ground truth and false-alert outcome', () 
       assert.equal(groundTruth.expectedConclusionKind, 'no-incident');
       continue;
     }
+
+    if (groundTruth.rootCause === undefined) continue;
 
     assert.deepEqual(
       Object.keys(groundTruth.rootCause).sort(),
