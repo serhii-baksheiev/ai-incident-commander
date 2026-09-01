@@ -10,16 +10,15 @@
  * `.claude/rules/invariants.md` ("One mechanism, one implementation").
  *
  * The cycle is memoised on the module, so it runs once per process however many
- * callers await it. ⚠ That is a COST optimisation and nothing more — measured at
- * roughly 14x on this suite. It carries no correctness weight here: every caller
- * destructures from one `await getControlledMutationCycle()`, so no assertion
- * compares values obtained from two separate invocations, and removing the memo
- * leaves the suite green. A caller that did compare across invocations would be
- * relying on a property no test pins.
+ * callers await it. ⚠ It carries no correctness weight: every caller destructures
+ * from one `await getControlledMutationCycle()` — grep the call sites — so no
+ * assertion compares values obtained from two separate invocations. A caller that
+ * did compare across invocations would be relying on a property no test pins.
  *
  * The rejected-promise case is cached with the rest: a cycle that throws stays
  * thrown for the life of the process, so an out-of-suite run cannot retry it
- * in-process.
+ * in-process. That is the memo's one visible cost, and it is worth knowing before
+ * relying on it outside the suite.
  *
  * Not here: `currentHeadSha()`. It stays in the test file because it spawns a
  * child process, and `test/child-process-environment.test.mjs` ›
