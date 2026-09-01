@@ -40,8 +40,6 @@ Run the Docker-backed acceptance lane with:
 npm run test:live-lab
 ```
 
-The ordinary `npm test` and `npm run check` lanes remain Docker-independent.
-
 ## Regenerate and validate candidates
 
 Start the lab on a chosen loopback port:
@@ -80,7 +78,9 @@ and observation. It never writes to the accepted fixture source. See
 `test/incident-lab-candidate-validation.test.mjs` › "rejects an incomplete
 candidate set instead of validating a partial corpus", "rejects an extra
 candidate instead of silently widening the accepted corpus", and "reports
-replay drift against the affected scenario and observation".
+replay drift against the affected scenario and observation". Its "accepts
+exactly the five matching v0.1 candidates without changing accepted replay
+fixtures" test pins source preservation.
 
 Candidate promotion is deliberately separate and human-reviewed:
 
