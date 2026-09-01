@@ -173,8 +173,17 @@ matters on a self-hosted runner, which inherits the machine's environment.
 ⚠ What the preload does **not** clear is `LANGSMITH_API_KEY` itself. That is the
 right scope for flag-gated tracing — a key alone traces nothing — but a
 `langsmith` `Client` constructed directly reads the key with no flag involved.
-`createLangSmithClient()` is such a constructor; every current call site injects
-a client instead, so nothing reaches it today.
+`createLangSmithClient()` is such a constructor. No current path sends through
+one: both `persistBenchmarkExperiment(s)` call sites inject a client instead,
+and the only bare construction is a test that inspects the object without using
+it.
+
+The api key reaches neither the process output nor the trace payload — ›
+"never prints the api key on stdout or stderr" and › "never sends the api key
+inside a trace payload". One operator caution the code cannot enforce: the SDK
+copies non-sensitive `LANGSMITH_*`/`LANGCHAIN_*` variables into run metadata,
+and `LANGSMITH_RUNS_ENDPOINTS` embeds api keys in its value while matching none
+of the SDK's sensitive-name patterns. Do not export it alongside tracing.
 
 **A traced run transmits the whole graph state** — every trial input and every
 evidence record, including its `statement`. Today that is synthetic

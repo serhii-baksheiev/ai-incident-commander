@@ -78,7 +78,14 @@ test('the CI step that runs the suite goes through npm test, not node --test', a
   const bypassing = workflow
     .split('\n')
     .filter((line) => !/^\s*#/.test(line))
-    .filter((line) => /(?:^|\s)node\s+--test\b/.test(line) && !line.includes('--import'))
+    // The escape hatch has to name the scrubber, not merely any `--import`:
+    // `node --import ./unrelated.mjs --test` bypasses the preload just as
+    // completely as a bare `node --test`.
+    .filter(
+      (line) =>
+        /(?:^|\s)node\s+--test\b/.test(line) &&
+        !/--import\s+\S*no-ambient-tracing\.mjs\b/.test(line),
+    )
     .map((line) => line.trim());
   assert.deepEqual(
     bypassing,
@@ -87,10 +94,24 @@ test('the CI step that runs the suite goes through npm test, not node --test', a
       'self-hosted runner with LANGSMITH_* exported writes every CI run into a real workspace ' +
       'under a real API key',
   );
+  // The invariant is that the suite runs THROUGH THE PRELOAD, not that it runs
+  // through npm. `npm test` is the repository's spelling of that (flags such as
+  // `--silent` are the same command); an explicit `node --import <scrubber>
+  // --test` is the same guarantee written out, and is accepted for that reason
+  // rather than blocked for not being npm.
+  const PRELOAD = /--import\s+\S*no-ambient-tracing\.mjs\b/;
   assert.equal(
-    runCommands.includes('npm test'),
+    runCommands.some(
+      (command) =>
+        /^npm\s+test(?:\s|$)/.test(command) ||
+        (/(?:^|\s)node\s/.test(command) &&
+          PRELOAD.test(command) &&
+          /\s--test\b/.test(command)),
+    ),
     true,
-    'the CI suite step must run `npm test`, whose --import preload scrubs the tracer flags ' +
-      'the self-hosted runner inherits from its shell',
+    'the CI suite step must run through the no-ambient-tracing preload — `npm test`, or an ' +
+      'explicit `node --import ./test/fixtures/no-ambient-tracing.mjs --test`. Without it a ' +
+      'self-hosted runner with LANGSMITH_* exported writes every CI run into a real workspace ' +
+      'under a real API key',
   );
 });
