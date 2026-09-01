@@ -109,3 +109,21 @@ npm run cli -- --help
 npm run cli -- start --run-id demo --checkpoint ./checkpoints.sqlite
 npm run cli -- resume --run-id demo --checkpoint ./checkpoints.sqlite
 ```
+
+### LangSmith tracing
+
+LangGraph emits LangSmith traces automatically when tracing is enabled. Export
+the tracing configuration in the shell that starts the application; keep the
+API key in the environment and never commit it to the repository.
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=<your-langsmith-api-key>
+export LANGSMITH_PROJECT=ai-incident-commander
+
+npm run cli -- start --run-id traced-demo --checkpoint ./checkpoints.sqlite
+```
+
+Set `LANGSMITH_ENDPOINT` when using a non-default or regional endpoint. Set
+`LANGSMITH_WORKSPACE_ID` only when the LangSmith API key is scoped to an
+organization workspace.
