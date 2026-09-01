@@ -173,10 +173,10 @@ matters on a self-hosted runner, which inherits the machine's environment.
 ⚠ What the preload does **not** clear is `LANGSMITH_API_KEY` itself. That is the
 right scope for flag-gated tracing — a key alone traces nothing — but a
 `langsmith` `Client` constructed directly reads the key with no flag involved.
-`createLangSmithClient()` is such a constructor. No current path sends through
-one: both `persistBenchmarkExperiment(s)` call sites inject a client instead,
-and the only bare construction is a test that inspects the object without using
-it.
+`createLangSmithClient()` is such a constructor, and it is the default value of
+the `client` parameter on `persistBenchmarkExperiment(s)` — so a call that omits
+that argument sends through a client holding whatever key the environment
+carries.
 
 The api key reaches neither the process output nor the trace payload — ›
 "never prints the api key on stdout or stderr" and › "never sends the api key
