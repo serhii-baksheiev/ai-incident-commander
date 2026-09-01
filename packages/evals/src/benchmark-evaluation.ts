@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import {
+  deriveHypothesisStatus,
   INCIDENT_STATE_SCHEMA_VERSION,
   STATUS_RULES_VERSION,
+  type HypothesisStatus,
   type IncidentConclusion,
   type IncidentState,
   type InvestigationStop,
@@ -12,6 +14,15 @@ import {
   type InvestigationNodes,
 } from '@aic/graph';
 
+import {
+  evaluateChallengeEffect,
+  evaluateFalseAlertOutcome,
+  evaluateMisleadingEvidenceHandling,
+  type BehaviorMetric,
+  type ChallengeEffectObservation,
+  type EvidenceAssessmentObservation,
+  type RootCause,
+} from './behavior-evaluators.js';
 import {
   BENCHMARK_SCENARIO_PARTITIONS,
   REPLAY_SCENARIOS,
@@ -33,6 +44,7 @@ export interface BenchmarkVersions {
   readonly promptVersion: string;
   readonly toolsetVersion: string;
   readonly statusRulesVersion: string;
+  readonly evaluatorVersion: string;
   readonly toolMode: 'live' | 'replay';
   readonly knowledgeSetVersion: string;
   readonly memoryEnabled: boolean;
@@ -56,6 +68,16 @@ export interface BenchmarkRecord {
   readonly metadata: BenchmarkRunMetadata;
 }
 
+export interface BenchmarkExecutionInput {
+  readonly experimentId: string;
+  readonly exampleId: string;
+  readonly scenarioId: string;
+  readonly fixture: IncidentScenario['fixture'];
+  readonly runId: string;
+  readonly threadId: string;
+  readonly metadata: BenchmarkRunMetadata;
+}
+
 export interface BenchmarkMetric<Key extends BenchmarkMetricKey> {
   readonly key: Key;
   readonly score: number;
@@ -73,7 +95,17 @@ export interface BenchmarkOutcome {
   readonly evidenceFingerprints: readonly EvidenceFingerprint[];
   readonly stopKind: InvestigationStop;
   readonly conclusionKind: IncidentConclusion['kind'];
+  readonly rootCause?: RootCause;
+  readonly rootCauseHypothesisId?: string;
+  readonly evidenceAssessments?: readonly EvidenceAssessmentObservation[];
+  readonly challengeEffect?: ChallengeEffectObservation;
 }
+
+export type BehaviorMetrics = Partial<{
+  misleading_evidence_handling: BehaviorMetric<'misleading_evidence_handling'>;
+  false_alert_correctness: BehaviorMetric<'false_alert_correctness'>;
+  challenge_effect: BehaviorMetric<'challenge_effect'>;
+}>;
 
 export interface BenchmarkEvaluation {
   readonly experimentId: string;
@@ -81,6 +113,7 @@ export interface BenchmarkEvaluation {
   readonly runId: string;
   readonly actualStopKind: InvestigationStop;
   readonly metrics: BenchmarkMetrics;
+  readonly behaviorMetrics: BehaviorMetrics;
 }
 
 export interface BenchmarkExperiment {
@@ -327,6 +360,50 @@ export function evaluateBenchmarkRecord({
     stopKind: outcome.stopKind,
     conclusionKind: outcome.conclusionKind,
   });
+  const behaviorMetrics: BehaviorMetrics = {};
+  const { groundTruth } = record.scenario;
+
+  if (
+    groundTruth.rootCause !== undefined &&
+    groundTruth.misleadingEvidence !== undefined
+  ) {
+    const result = evaluateMisleadingEvidenceHandling({
+      evaluatorVersion: record.metadata.evaluatorVersion,
+      groundTruth: {
+        rootCause: groundTruth.rootCause,
+        expectedEvidence: groundTruth.expectedEvidence,
+        misleadingEvidence: groundTruth.misleadingEvidence,
+      },
+      outcome: {
+        ...outcome,
+        evidenceAssessments: outcome.evidenceAssessments ?? [],
+      },
+    });
+    behaviorMetrics[result.key] = result;
+  }
+  if (groundTruth.expectedConclusionKind === 'no-incident') {
+    const result = evaluateFalseAlertOutcome({
+      evaluatorVersion: record.metadata.evaluatorVersion,
+      groundTruth,
+      outcome,
+    });
+    behaviorMetrics[result.key] = result;
+  }
+  if (groundTruth.expectedLeaderChangeAfterChallenge !== undefined) {
+    const result = evaluateChallengeEffect({
+      evaluatorVersion: record.metadata.evaluatorVersion,
+      groundTruth: {
+        expectedLeaderChangeAfterChallenge:
+          groundTruth.expectedLeaderChangeAfterChallenge,
+      },
+      outcome: outcome.challengeEffect ?? {
+        challengeNodeExecuted: false,
+        challengeInvocationCount: 0,
+        executedDiscriminatingTrialCount: 0,
+      },
+    });
+    behaviorMetrics[result.key] = result;
+  }
 
   return {
     experimentId: record.experimentId,
@@ -338,13 +415,14 @@ export function evaluateBenchmarkRecord({
       [evidenceCoverage.key]: evidenceCoverage,
       [terminationCorrectness.key]: terminationCorrectness,
     },
+    behaviorMetrics,
   };
 }
 
 type BenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
-    investigate(record: BenchmarkRecord): Promise<BenchmarkOutcome>;
+    investigate(input: BenchmarkExecutionInput): Promise<BenchmarkOutcome>;
     recordEvaluation(payload: Readonly<{
       record: BenchmarkRecord;
       result: BenchmarkEvaluation;
@@ -358,9 +436,18 @@ export async function runBenchmarkExperiment(
   const results: BenchmarkEvaluation[] = [];
 
   for (const record of records) {
+    const executionInput: BenchmarkExecutionInput = {
+      experimentId: record.experimentId,
+      exampleId: record.exampleId,
+      scenarioId: record.scenario.id,
+      fixture: record.scenario.fixture,
+      runId: record.runId,
+      threadId: record.threadId,
+      metadata: record.metadata,
+    };
     const result = evaluateBenchmarkRecord({
       record,
-      outcome: await options.investigate(record),
+      outcome: await options.investigate(executionInput),
     });
     await options.recordEvaluation({ record, result });
     results.push(result);
@@ -373,13 +460,13 @@ export async function runBenchmarkExperiment(
   };
 }
 
-function initialBenchmarkState(record: BenchmarkRecord): IncidentState {
-  if (record.metadata.statusRulesVersion !== STATUS_RULES_VERSION) {
+function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
+  if (input.metadata.statusRulesVersion !== STATUS_RULES_VERSION) {
     throw new Error('benchmark status-rules version does not match the graph');
   }
 
   return {
-    incident: { id: record.scenario.id },
+    incident: { id: input.scenarioId },
     hypotheses: [],
     predictions: [],
     tests: [],
@@ -387,7 +474,7 @@ function initialBenchmarkState(record: BenchmarkRecord): IncidentState {
     evidence: [],
     assessments: [],
     control: {
-      runId: record.runId,
+      runId: input.runId,
       schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
       statusRulesVersion: STATUS_RULES_VERSION,
       phase: 'normalizing',
@@ -400,12 +487,16 @@ function initialBenchmarkState(record: BenchmarkRecord): IncidentState {
   };
 }
 
-function outcomeFromGraphState(state: IncidentState): BenchmarkOutcome {
+function outcomeFromGraphState(
+  state: IncidentState,
+  challengeEffect?: ChallengeEffectObservation,
+): BenchmarkOutcome {
   if (state.control.stopKind === undefined || state.conclusion === undefined) {
     throw new Error('benchmark graph must produce a stop kind and conclusion');
   }
 
   const observedEvidenceIds = new Set(state.evidence.map(({ id }) => id));
+  const evidenceById = new Map(state.evidence.map((item) => [item.id, item]));
   return {
     claims: state.conclusion.causes.map(({ evidenceIds }) => ({ evidenceIds })),
     supportingEvidenceIds: state.conclusion.causes.flatMap(({ evidenceIds }) =>
@@ -418,13 +509,48 @@ function outcomeFromGraphState(state: IncidentState): BenchmarkOutcome {
     })),
     stopKind: state.control.stopKind,
     conclusionKind: state.conclusion.kind,
+    rootCause: state.conclusion.causes[0]?.cause,
+    rootCauseHypothesisId: state.conclusion.causes[0]?.hypothesisId,
+    evidenceAssessments: state.assessments.flatMap((assessment) => {
+      const evidence = evidenceById.get(assessment.evidenceId);
+      return evidence === undefined
+        ? []
+        : [{
+            fingerprint: {
+              kind: evidence.kind,
+              source: evidence.source,
+              predicate: evidence.statement,
+            },
+            hypothesisId: assessment.hypothesisId,
+            effect: assessment.effect,
+          }];
+    }),
+    challengeEffect,
   };
+}
+
+function hypothesisStatus(
+  state: IncidentState,
+  hypothesisId: string | undefined,
+): HypothesisStatus | undefined {
+  if (
+    hypothesisId === undefined ||
+    !state.hypotheses.some(({ id }) => id === hypothesisId)
+  ) {
+    return undefined;
+  }
+  return deriveHypothesisStatus({
+    hypothesisId,
+    predictions: state.predictions,
+    assessments: state.assessments,
+    evidence: state.evidence,
+  });
 }
 
 type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
-    createNodes(record: BenchmarkRecord): InvestigationNodes;
+    createNodes(input: BenchmarkExecutionInput): InvestigationNodes;
     recordEvaluation(payload: Readonly<{
       record: BenchmarkRecord;
       result: BenchmarkEvaluation;
@@ -436,15 +562,69 @@ export async function runGraphBenchmarkExperiment(
 ): Promise<BenchmarkExperiment> {
   return runBenchmarkExperiment({
     ...options,
-    async investigate(record) {
+    async investigate(input) {
+      const nodes = options.createNodes(input);
+      let challengeInvocationCount = 0;
+      let leaderBeforeChallengeId: string | undefined;
+      let leaderAfterChallengeId: string | undefined;
+      let leaderStatusBeforeChallenge: HypothesisStatus | undefined;
+      let leaderStatusAfterChallenge: HypothesisStatus | undefined;
+      const discriminatingTestIds = new Set<string>();
       const graph = createInvestigationGraph({
-        nodes: options.createNodes(record),
+        nodes: {
+          ...nodes,
+          async termination_check(state) {
+            const decision = await nodes.termination_check(state);
+            const isPreChallengeDecision =
+              decision.route === 'challenge-required' ||
+              (decision.route === 'terminal' &&
+                decision.stopKind === 'sufficient' &&
+                state.control.challengeRounds === 0);
+            if (isPreChallengeDecision && leaderBeforeChallengeId === undefined) {
+              leaderBeforeChallengeId = decision.leaderId;
+              leaderStatusBeforeChallenge = hypothesisStatus(
+                state,
+                decision.leaderId,
+              );
+            }
+            if (
+              decision.route === 'terminal' &&
+              decision.stopKind === 'sufficient' &&
+              state.control.challengeRounds > 0
+            ) {
+              leaderAfterChallengeId = decision.leaderId;
+              leaderStatusAfterChallenge = hypothesisStatus(
+                state,
+                decision.leaderId,
+              );
+            }
+            return decision;
+          },
+          async challenge_hypothesis(state, leaderId) {
+            challengeInvocationCount += 1;
+            const result = await nodes.challenge_hypothesis(state, leaderId);
+            for (const test of result.discriminatingTests) {
+              discriminatingTestIds.add(test.id);
+            }
+            return result;
+          },
+        },
       });
       const finalState = await graph.execute({
         kind: 'start',
-        state: initialBenchmarkState(record),
+        state: initialBenchmarkState(input),
       });
-      return outcomeFromGraphState(finalState);
+      return outcomeFromGraphState(finalState, {
+        challengeNodeExecuted: challengeInvocationCount > 0,
+        challengeInvocationCount,
+        leaderBeforeChallengeId,
+        leaderAfterChallengeId,
+        leaderStatusBeforeChallenge,
+        leaderStatusAfterChallenge,
+        executedDiscriminatingTrialCount: finalState.trials.filter(({ testId }) =>
+          discriminatingTestIds.has(testId),
+        ).length,
+      });
     },
   });
 }

@@ -79,6 +79,28 @@ before execution". Preservation is pinned by
 `test/benchmark-evaluation.test.mjs` › "adds stable native identities without
 changing the fifteen accepted v0.1 examples".
 
+Benchmark execution callbacks receive `BenchmarkExecutionInput`, an explicit
+ground-truth-free projection containing only run/example/scenario identities,
+the replay fixture, and versioned runtime metadata. They never receive the full
+`BenchmarkRecord` or `IncidentScenario`; those remain on the evaluator,
+regression-gate, persistence, and LangSmith dataset/evidence side. This is a
+source-level contract boundary, not a capability sandbox: code in the same
+process can still import the public replay corpus, but the execution callback
+cannot obtain evaluator expectations from its argument.
+
+Executable boundary proof: `test/behavior-evaluators.test.mjs` › "keeps
+scenario ground truth outside the investigation execution callback" and ›
+"graph benchmark keeps ground truth outside createNodes and records a challenge
+with no investigation change".
+
+Behavior-evaluator persistence is additive. Accepted v0.1 records without
+`evaluatorVersion` and `behaviorMetrics` remain readable. New records must
+declare both fields together, and unknown evaluator versions fail loudly.
+Executable compatibility proof: `test/behavior-evaluators.test.mjs` ›
+"persists accepted v0.1 records without behavior-evaluator fields", › "rejects
+behavior metrics when their evaluator version is absent", and › "rejects an
+explicitly unsupported persisted evaluator version".
+
 ## Project status
 
 | Area | Status |
