@@ -106,10 +106,14 @@ function toResult(state: typeof PersistentInvestigationState.State): PersistentI
  * Trace identity attached to a graph invocation. Purely descriptive: LangGraph
  * forwards `runName`, `tags` and `metadata` to whatever tracer is active, so
  * this adds nothing and costs nothing when tracing is off.
+ *
+ * There is deliberately no `project` field. Which LangSmith project a run lands
+ * in is decided by `LANGSMITH_PROJECT`, read by the SDK — a field here could
+ * only ever label a run, and a label that looks like routing is worse than no
+ * field at all.
  */
 export type InvocationTrace = Readonly<{
   runName?: string;
-  project?: string;
   metadata?: Readonly<Record<string, unknown>>;
   tags?: readonly string[];
 }>;
@@ -139,7 +143,6 @@ export function buildInvocationConfig({
     tags: [...(trace.tags ?? [])],
     metadata: {
       ...trace.metadata,
-      ...(trace.project === undefined ? {} : { project: trace.project }),
       runId,
     },
   };

@@ -18,16 +18,26 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 const fakeKeyBody = 'f'.repeat(32);
 const fakeTracingValue = ['lsv2', 'pt', fakeKeyBody].join('_');
 
-const TRACING_VARIABLES = [
-  'LANGSMITH_TRACING',
-  'LANGSMITH_API_KEY',
-  'LANGSMITH_PROJECT',
-  'LANGSMITH_ENDPOINT',
+/**
+ * The flag names `@langchain/core`'s `isTracingEnabled` honours. Duplicated here
+ * on purpose: reading the list from `@aic/observability` would make every test
+ * below agree with the implementation by construction, including when the
+ * implementation is wrong.
+ */
+const TRACING_FLAG_VARIABLES = [
+  'LANGSMITH_TRACING_V2',
   'LANGCHAIN_TRACING_V2',
-  'LANGCHAIN_API_KEY',
-  'LANGCHAIN_PROJECT',
-  'LANGCHAIN_ENDPOINT',
+  'LANGSMITH_TRACING',
+  'LANGCHAIN_TRACING',
 ];
+
+/**
+ * Values that look like an operator meant "on" and that the tracer does not
+ * accept: it compares with `=== 'true'`. Resolving any of these to enabled is
+ * the silently-untraced-run failure in its other direction — the run stops on a
+ * missing key it never needed, or reports tracing the tracer never installed.
+ */
+const REJECTED_FLAG_VALUES = ['1', 'TRUE', 'True', 'yes', 'on', 'false', ''];
 
 function requireFunction(packageNamespace, name, packageName) {
   assert.equal(
@@ -50,10 +60,29 @@ function buildInvocationConfig(input) {
   return requireFunction(graph, 'buildInvocationConfig', '@aic/graph')(input);
 }
 
-/** A process env with every tracing variable cleared, then the overrides applied. */
-function tracingEnv(overrides) {
-  const env = { ...process.env };
-  for (const variable of TRACING_VARIABLES) delete env[variable];
+/**
+ * The environment a spawned CLI gets, as an ALLOW-LIST.
+ *
+ * A deny-list over a copy of `process.env` was the previous shape and it leaked:
+ * it named eight variables while the SDK reads many more, and
+ * `LANGSMITH_RUNS_ENDPOINTS` is the one that costs. In its array form the SDK
+ * skips the endpoint-conflict check entirely, so a developer who exports write
+ * replicas would have this suite replicate its runs into their real workspace
+ * under their real key. An allow-list cannot acquire that failure by the SDK
+ * gaining a variable.
+ *
+ * `PATH` and `HOME` are what node itself needs; `NODE_*` is passed through so a
+ * runner's node options survive. Everything else must be named by the caller.
+ */
+function childEnv(overrides) {
+  const env = {};
+  for (const name of ['PATH', 'HOME']) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  for (const [name, value] of Object.entries(process.env)) {
+    if (name.startsWith('NODE_') && value !== undefined) env[name] = value;
+  }
   return { ...env, ...overrides };
 }
 
@@ -90,11 +119,23 @@ function runCli(args, env) {
   });
 }
 
-/** A local sink standing in for the LangSmith ingest endpoint — no network leaves the box. */
+/**
+ * A local sink standing in for the LangSmith ingest endpoint. It COUNTS every
+ * request and KEEPS every body: a sink that discards both can only prove that
+ * nothing crashed, which is what let a run with no trace wiring at all pass.
+ */
 function startIngestSink() {
+  const requests = [];
   const server = createServer((request, response) => {
-    request.on('data', () => {});
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
     request.on('end', () => {
+      requests.push({
+        method: request.method,
+        url: request.url ?? '',
+        contentType: request.headers['content-type'],
+        body: Buffer.concat(chunks),
+      });
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end('{}');
     });
@@ -105,32 +146,135 @@ function startIngestSink() {
       const { port } = server.address();
       resolveServer({
         endpoint: `http://127.0.0.1:${port}`,
+        requests,
         close: () => new Promise((closed) => server.close(closed)),
       });
     });
   });
 }
 
-test('reports tracing disabled when LANGSMITH_TRACING is unset', () => {
+/** Split one `multipart/form-data` body into its named parts. */
+function multipartParts(request) {
+  const boundary = /boundary=(?<boundary>[^;]+)/.exec(
+    request.contentType ?? '',
+  )?.groups?.boundary;
+  assert.ok(
+    boundary,
+    `an ingest request must be multipart, got content-type: ${request.contentType}`,
+  );
+  const parts = new Map();
+  for (const segment of request.body.toString('utf8').split(`--${boundary}`)) {
+    const separator = segment.indexOf('\r\n\r\n');
+    if (separator < 0) continue;
+    const name = /name="(?<name>[^"]+)"/.exec(segment.slice(0, separator))
+      ?.groups?.name;
+    if (name === undefined) continue;
+    parts.set(name, segment.slice(separator + 4).replace(/\r\n$/, ''));
+  }
+  return parts;
+}
+
+/**
+ * The runs the CLI actually posted, as `{id, name, tags, parentRunId, metadata}`.
+ *
+ * The LangSmith ingest protocol carries one part per run (`post.<id>`) plus a
+ * sibling part per field, of which `extra` holds the metadata — see the
+ * multipart encoder in `langsmith/dist/client.js`.
+ */
+function ingestedRuns(sink) {
+  const runs = [];
+  for (const request of sink.requests) {
+    if (!request.url.endsWith('/runs/multipart')) continue;
+    const parts = multipartParts(request);
+    for (const [name, value] of parts) {
+      const id = /^post\.(?<id>[^.]+)$/.exec(name)?.groups?.id;
+      if (id === undefined) continue;
+      const payload = JSON.parse(value);
+      const extra = parts.get(`post.${id}.extra`);
+      runs.push({
+        id: payload.id,
+        name: payload.name,
+        tags: payload.tags ?? [],
+        parentRunId: payload.parent_run_id,
+        metadata: extra === undefined ? {} : (JSON.parse(extra).metadata ?? {}),
+      });
+    }
+  }
+  return runs;
+}
+
+function runNamed(runs, name) {
+  const found = runs.filter((run) => run.name === name);
+  assert.equal(
+    found.length,
+    1,
+    `expected exactly one ingested run named ${name}, got: ${JSON.stringify(runs.map((run) => run.name))}`,
+  );
+  return found[0];
+}
+
+/** A temporary checkpoint directory, removed however the test ends. */
+async function withCheckpointDirectory(prefix, body) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    return await body(join(temporaryRoot, 'checkpoints.sqlite'));
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+/** A sink, closed however the test ends. */
+async function withIngestSink(body) {
+  const sink = await startIngestSink();
+  try {
+    return await body(sink);
+  } finally {
+    await sink.close();
+  }
+}
+
+test('reports tracing disabled when no tracing flag is set', () => {
   const config = resolveTracingConfig({});
 
   assert.equal(
     config.enabled,
     false,
-    'an env without LANGSMITH_TRACING must resolve to disabled tracing',
+    'an env with no tracing flag must resolve to disabled tracing',
   );
 });
 
-test('enables tracing for both "true" and "1" and carries the configured project', () => {
-  for (const flag of ['true', '1']) {
+test('enables tracing for every flag name the langchain tracer honours', () => {
+  for (const flag of TRACING_FLAG_VARIABLES) {
     const config = resolveTracingConfig({
-      LANGSMITH_TRACING: flag,
+      [flag]: 'true',
       LANGSMITH_API_KEY: fakeTracingValue,
       LANGSMITH_PROJECT: 'aic-v0.1',
     });
 
-    assert.equal(config.enabled, true, `LANGSMITH_TRACING=${flag} must enable tracing`);
+    assert.equal(
+      config.enabled,
+      true,
+      `${flag}=true installs the tracer, so it must resolve to enabled`,
+    );
     assert.equal(config.project, 'aic-v0.1');
+  }
+});
+
+test('reports tracing disabled for a flag value the langchain tracer rejects', () => {
+  for (const flag of TRACING_FLAG_VARIABLES) {
+    for (const value of REJECTED_FLAG_VALUES) {
+      const config = resolveTracingConfig({
+        [flag]: value,
+        LANGSMITH_API_KEY: fakeTracingValue,
+        LANGSMITH_PROJECT: 'aic-v0.1',
+      });
+
+      assert.equal(
+        config.enabled,
+        false,
+        `${flag}=${JSON.stringify(value)} does not install the tracer, so it must resolve to disabled`,
+      );
+    }
   }
 });
 
@@ -148,33 +292,35 @@ test('falls back to the LangSmith default project when none is configured', () =
   );
 });
 
-test('reports tracing disabled for LANGSMITH_TRACING=false even with an api key present', () => {
+test('accepts LANGCHAIN_PROJECT as the project fallback', () => {
   const config = resolveTracingConfig({
-    LANGSMITH_TRACING: 'false',
+    LANGSMITH_TRACING: 'true',
     LANGSMITH_API_KEY: fakeTracingValue,
-    LANGSMITH_PROJECT: 'aic-v0.1',
+    LANGCHAIN_PROJECT: 'aic-legacy',
   });
 
   assert.equal(
-    config.enabled,
-    false,
-    'an explicit false must disable tracing regardless of the rest of the env',
+    config.project,
+    'aic-legacy',
+    'the legacy project variable the SDK still reads must resolve the same way here',
   );
 });
 
 test('refuses enabled tracing without an api key and names the missing variable', () => {
-  assert.throws(
-    () => resolveTracingConfig({ LANGSMITH_TRACING: 'true', LANGSMITH_PROJECT: 'aic-v0.1' }),
-    (error) => {
-      assert.ok(error instanceof Error);
-      assert.match(
-        error.message,
-        /LANGSMITH_API_KEY/,
-        'the refusal must name the missing variable rather than tracing silently off',
-      );
-      return true;
-    },
-  );
+  for (const flag of TRACING_FLAG_VARIABLES) {
+    assert.throws(
+      () => resolveTracingConfig({ [flag]: 'true', LANGSMITH_PROJECT: 'aic-v0.1' }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(
+          error.message,
+          /LANGSMITH_API_KEY/,
+          `${flag}=true with no key must name the missing variable rather than tracing silently off`,
+        );
+        return true;
+      },
+    );
+  }
 });
 
 test('accepts LANGCHAIN_API_KEY as the api key fallback', () => {
@@ -211,8 +357,13 @@ test('never carries the api key value into the resolved tracing config', () => {
 });
 
 test('reads only its argument and never process.env', () => {
+  const ambient = [
+    ...TRACING_FLAG_VARIABLES,
+    'LANGSMITH_API_KEY',
+    'LANGSMITH_PROJECT',
+  ];
   const saved = Object.fromEntries(
-    TRACING_VARIABLES.map((variable) => [variable, process.env[variable]]),
+    ambient.map((variable) => [variable, process.env[variable]]),
   );
 
   try {
@@ -248,7 +399,6 @@ test('keeps configurable.thread_id equal to the runId when a trace is attached',
     runId: 'run-2',
     trace: {
       runName: 'aic-investigation',
-      project: 'aic-v0.1',
       tags: ['aic'],
       metadata: { scenarioId: 'scenario-1' },
     },
@@ -266,7 +416,6 @@ test('carries the run name, tags and runId metadata of the requested trace', () 
     runId: 'run-3',
     trace: {
       runName: 'aic-investigation',
-      project: 'aic-v0.1',
       tags: ['aic', 'v0.1'],
       metadata: { scenarioId: 'scenario-1' },
     },
@@ -280,6 +429,19 @@ test('carries the run name, tags and runId metadata of the requested trace', () 
     'a traced run must be findable in LangSmith by the runId it was started with',
   );
   assert.equal(config.metadata.scenarioId, 'scenario-1');
+});
+
+test('names an unnamed trace "investigation" rather than leaving it to LangGraph', () => {
+  const config = buildInvocationConfig({
+    runId: 'run-6',
+    trace: { tags: ['aic'] },
+  });
+
+  assert.equal(
+    config.runName,
+    'investigation',
+    'a trace without a run name must still be filterable by name in LangSmith',
+  );
 });
 
 test('merges caller metadata without letting it overwrite the runId', () => {
@@ -310,91 +472,296 @@ test('leaves the caller trace metadata object unmutated', () => {
   );
 });
 
-test('refuses to start when tracing is enabled without an api key', { timeout: 30_000 }, async () => {
-  const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-tracing-no-key-'));
-  const sink = await startIngestSink();
+test(
+  'makes no outbound call when no tracing flag is set',
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-offline-', async (checkpoint) => {
+        const runId = 'run-tracing-offline';
+        const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+        // The endpoint is pointed AT the sink on purpose: the run stays offline
+        // because no flag enabled tracing, not because it had nowhere to send.
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_API_KEY: fakeTracingValue,
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+          }),
+        );
 
-  try {
-    const args = [
-      cliPath,
-      'start',
-      '--run-id',
-      'run-tracing-no-key',
-      '--checkpoint',
-      join(temporaryRoot, 'checkpoints.sqlite'),
-    ];
-    const executed = await runCli(
-      args,
-      tracingEnv({
-        LANGSMITH_TRACING: 'true',
-        LANGSMITH_PROJECT: 'aic-v0.1',
-        LANGSMITH_ENDPOINT: sink.endpoint,
-        LANGCHAIN_ENDPOINT: sink.endpoint,
-      }),
-    );
+        assert.equal(executed.status, 0, commandDiagnostics(args, executed));
+        assert.equal(
+          JSON.parse(executed.stdout).runId,
+          runId,
+          'the run must really have happened, or zero requests proves nothing',
+        );
+        assert.deepEqual(
+          sink.requests.map((request) => `${request.method} ${request.url}`),
+          [],
+          'an untraced run must make no outbound call at all',
+        );
+      });
+    });
+  },
+);
 
-    assert.notEqual(
-      executed.status,
-      0,
-      `tracing requested without a key must fail loudly, not run untraced\n${commandDiagnostics(args, executed)}`,
-    );
-    assert.match(
-      executed.stderr,
-      /LANGSMITH_API_KEY/,
-      commandDiagnostics(args, executed),
-    );
-  } finally {
-    await sink.close();
-    rmSync(temporaryRoot, { recursive: true, force: true });
-  }
-});
+test(
+  'sends a root run named for the command whose tags and runId every graph step inherits',
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-ingest-', async (checkpoint) => {
+        const runId = 'run-tracing-ingest';
+        const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_TRACING: 'true',
+            LANGSMITH_API_KEY: fakeTracingValue,
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+          }),
+        );
 
-test('never prints the api key on stdout or stderr', { timeout: 30_000 }, async () => {
-  const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-tracing-cli-'));
-  const sink = await startIngestSink();
-  const runId = 'run-tracing-cli';
+        assert.equal(executed.status, 0, commandDiagnostics(args, executed));
 
-  try {
-    const args = [
-      cliPath,
-      'start',
-      '--run-id',
-      runId,
-      '--checkpoint',
-      join(temporaryRoot, 'checkpoints.sqlite'),
-    ];
-    const executed = await runCli(
-      args,
-      tracingEnv({
-        LANGSMITH_TRACING: 'true',
-        LANGSMITH_API_KEY: fakeTracingValue,
-        LANGCHAIN_API_KEY: fakeTracingValue,
-        LANGSMITH_PROJECT: 'aic-v0.1',
-        LANGSMITH_ENDPOINT: sink.endpoint,
-        LANGCHAIN_ENDPOINT: sink.endpoint,
-      }),
-    );
+        const runs = ingestedRuns(sink);
+        const root = runNamed(runs, 'aic-start');
+        const step = runNamed(runs, 'execute_investigation');
 
-    assert.equal(executed.status, 0, commandDiagnostics(args, executed));
-    assert.equal(JSON.parse(executed.stdout).runId, runId);
+        assert.equal(root.parentRunId, undefined, 'aic-start must be the root run');
+        assert.deepEqual(
+          root.tags,
+          ['aic', 'aic-start'],
+          'the root run must carry exactly the tags the CLI names it with',
+        );
+        assert.equal(
+          root.metadata.runId,
+          runId,
+          'the root run must be findable by the runId it was started with',
+        );
 
-    for (const [stream, text] of [
-      ['stdout', executed.stdout],
-      ['stderr', executed.stderr],
-    ]) {
-      assert.equal(
-        text.includes(fakeTracingValue),
-        false,
-        `${stream} must never carry the api key value`,
-      );
-      assert.equal(
-        text.includes(fakeKeyBody),
-        false,
-        `${stream} must never carry a fragment of the api key value`,
-      );
-    }
-  } finally {
-    await sink.close();
-    rmSync(temporaryRoot, { recursive: true, force: true });
-  }
-});
+        assert.equal(
+          step.parentRunId,
+          root.id,
+          'the graph step must hang off the root run, not start a second trace',
+        );
+        for (const tag of ['aic', 'aic-start']) {
+          assert.ok(
+            step.tags.includes(tag),
+            `the graph step must inherit the tag ${tag}, got: ${JSON.stringify(step.tags)}`,
+          );
+        }
+        assert.equal(
+          step.metadata.runId,
+          runId,
+          'the graph step must inherit the runId metadata of the invocation',
+        );
+      });
+    });
+  },
+);
+
+test(
+  'blocks background trace delivery so a short-lived run cannot exit before it sends',
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-flush-', async (checkpoint) => {
+        const args = [
+          cliPath,
+          'start',
+          '--run-id',
+          'run-tracing-flush',
+          '--checkpoint',
+          checkpoint,
+        ];
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_TRACING: 'true',
+            LANGSMITH_API_KEY: fakeTracingValue,
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+          }),
+        );
+
+        assert.equal(executed.status, 0, commandDiagnostics(args, executed));
+        // The SDK echoes the non-sensitive LANGSMITH_*/LANGCHAIN_* variables it
+        // saw into every run's metadata, which is where the value the CLI chose
+        // becomes observable from outside the process.
+        assert.equal(
+          runNamed(ingestedRuns(sink), 'aic-start').metadata
+            .LANGCHAIN_CALLBACKS_BACKGROUND,
+          'false',
+          'a traced run of a process that exits immediately must send before it exits',
+        );
+      });
+    });
+  },
+);
+
+test(
+  "keeps an operator's explicit LANGCHAIN_CALLBACKS_BACKGROUND value",
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-bg-', async (checkpoint) => {
+        const args = [
+          cliPath,
+          'start',
+          '--run-id',
+          'run-tracing-bg',
+          '--checkpoint',
+          checkpoint,
+        ];
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_TRACING: 'true',
+            LANGSMITH_API_KEY: fakeTracingValue,
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+            LANGCHAIN_CALLBACKS_BACKGROUND: 'true',
+          }),
+        );
+
+        assert.equal(executed.status, 0, commandDiagnostics(args, executed));
+        assert.equal(
+          runNamed(ingestedRuns(sink), 'aic-start').metadata
+            .LANGCHAIN_CALLBACKS_BACKGROUND,
+          'true',
+          'the CLI may supply a default for this, never overrule the operator',
+        );
+      });
+    });
+  },
+);
+
+test(
+  'refuses to start when tracing is enabled without an api key',
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-no-key-', async (checkpoint) => {
+        const args = [
+          cliPath,
+          'start',
+          '--run-id',
+          'run-tracing-no-key',
+          '--checkpoint',
+          checkpoint,
+        ];
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_TRACING: 'true',
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+          }),
+        );
+
+        assert.notEqual(
+          executed.status,
+          0,
+          `tracing requested without a key must fail loudly, not run untraced\n${commandDiagnostics(args, executed)}`,
+        );
+        assert.match(
+          executed.stderr,
+          /LANGSMITH_API_KEY/,
+          commandDiagnostics(args, executed),
+        );
+      });
+    });
+  },
+);
+
+test(
+  'never prints the api key on stdout or stderr',
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-cli-', async (checkpoint) => {
+        const runId = 'run-tracing-cli';
+        const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_TRACING: 'true',
+            LANGSMITH_API_KEY: fakeTracingValue,
+            LANGCHAIN_API_KEY: fakeTracingValue,
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+          }),
+        );
+
+        assert.equal(executed.status, 0, commandDiagnostics(args, executed));
+        assert.equal(JSON.parse(executed.stdout).runId, runId);
+
+        for (const [stream, text] of [
+          ['stdout', executed.stdout],
+          ['stderr', executed.stderr],
+        ]) {
+          assert.equal(
+            text.includes(fakeTracingValue),
+            false,
+            `${stream} must never carry the api key value`,
+          );
+          assert.equal(
+            text.includes(fakeKeyBody),
+            false,
+            `${stream} must never carry a fragment of the api key value`,
+          );
+        }
+      });
+    });
+  },
+);
+
+test(
+  'never sends the api key inside a trace payload',
+  { timeout: 30_000 },
+  async () => {
+    await withIngestSink(async (sink) => {
+      await withCheckpointDirectory('aic-tracing-payload-', async (checkpoint) => {
+        const args = [
+          cliPath,
+          'start',
+          '--run-id',
+          'run-tracing-payload',
+          '--checkpoint',
+          checkpoint,
+        ];
+        const executed = await runCli(
+          args,
+          childEnv({
+            LANGSMITH_TRACING: 'true',
+            LANGSMITH_API_KEY: fakeTracingValue,
+            LANGSMITH_PROJECT: 'aic-v0.1',
+            LANGSMITH_ENDPOINT: sink.endpoint,
+            LANGCHAIN_ENDPOINT: sink.endpoint,
+          }),
+        );
+
+        assert.equal(executed.status, 0, commandDiagnostics(args, executed));
+        const bodies = sink.requests
+          .map((request) => request.body.toString('utf8'))
+          .join('\n');
+        assert.ok(bodies.length > 0, 'the traced run must have sent something');
+        assert.equal(
+          bodies.includes(fakeKeyBody),
+          false,
+          'the api key belongs in the request header, never in a run payload',
+        );
+      });
+    });
+  },
+);

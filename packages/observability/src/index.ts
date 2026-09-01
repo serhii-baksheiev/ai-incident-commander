@@ -306,7 +306,24 @@ export async function persistBenchmarkExperiment({
   });
 }
 
-const TRACING_ENABLED_VALUES = new Set(['true', '1']);
+/**
+ * The exact set `@langchain/core` honours, in its own order
+ * (`@langchain/core/dist/utils/callbacks.js` `isTracingEnabled`), compared the
+ * way it compares: strict equality against `'true'`.
+ *
+ * Reading a narrower set than the tracer does is not a cosmetic gap. A flag
+ * this list omits installs the tracer while the key check below never runs, so
+ * graph inputs and evidence statements are posted with no credential and the
+ * rejection is swallowed as a background warning. Accepting a value the tracer
+ * rejects fails the other way: the run stops on a missing key it did not need,
+ * or runs untraced believing it is traced.
+ */
+const TRACING_FLAG_VARIABLES = [
+  'LANGSMITH_TRACING_V2',
+  'LANGCHAIN_TRACING_V2',
+  'LANGSMITH_TRACING',
+  'LANGCHAIN_TRACING',
+] as const;
 
 /**
  * Tracing configuration resolved from an environment, never from `process.env`
@@ -323,17 +340,21 @@ export type TracingConfig =
 /**
  * Resolve LangSmith tracing configuration.
  *
- * Both the `LANGSMITH_*` and the legacy `LANGCHAIN_*` spellings are accepted,
- * because the installed SDK reads both (`langsmith/dist/utils/env.js`).
+ * The enablement flags are exactly those of `TRACING_FLAG_VARIABLES` above; the
+ * api key and project each accept the `LANGSMITH_*` name and its legacy
+ * `LANGCHAIN_*` twin, which is the pairing the SDK itself resolves
+ * (`langsmith/dist/utils/env.js` `getLangSmithEnvironmentVariable`).
  *
  * Enabled tracing without an api key THROWS rather than returning disabled:
- * silently-off tracing is the failure this function exists to prevent.
+ * silently-off tracing is the failure this function exists to prevent. That is
+ * the only delivery failure it detects — a wrong-region endpoint or an
+ * unreachable host still produces a run that completes, because the SDK sends
+ * in the background.
  */
 export function resolveTracingConfig(
   env: Readonly<Record<string, string | undefined>>,
 ): TracingConfig {
-  const flag = env.LANGSMITH_TRACING ?? env.LANGCHAIN_TRACING_V2;
-  if (flag === undefined || !TRACING_ENABLED_VALUES.has(flag.trim().toLowerCase())) {
+  if (!TRACING_FLAG_VARIABLES.some((name) => env[name] === 'true')) {
     return { enabled: false };
   }
 

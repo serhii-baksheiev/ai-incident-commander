@@ -96,8 +96,10 @@ The dependency direction is intentionally one-way: `domain` imports no LangChain
 
 ## LangSmith tracing
 
-Tracing is **off by default**: with no environment set, the CLI runs entirely
-offline and makes no outbound call. It is enabled per shell:
+Tracing is **off by default**: the CLI sets no tracing flag the operator did not
+set, so an unconfigured shell produces no outbound call — see
+`test/langsmith-tracing.test.mjs` › "makes no outbound call when no tracing flag
+is set". Enable it per shell:
 
 ```bash
 export LANGSMITH_TRACING=true
@@ -105,24 +107,52 @@ export LANGSMITH_API_KEY=<your key>          # or LANGCHAIN_API_KEY
 export LANGSMITH_PROJECT=ai-incident-commander
 ```
 
-⚠ **EU-region accounts must also set the endpoint.** The SDK defaults to the US
-host, and an EU key there is rejected with `403 Forbidden` on every call —
-including the read-only ones, so it looks like a bad key rather than a wrong
-region:
+⚠ **EU-region accounts must also set the endpoint**, because the SDK's default
+host is the US one (`langsmith/dist/utils/profiles.js`, `DEFAULT_API_URL`):
 
 ```bash
 export LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
 ```
 
-Tracing that is asked for and cannot be delivered **stops the run** instead of
-silently continuing untraced: `resolveTracingConfig` throws when
-`LANGSMITH_TRACING` is on and no key is set, before any checkpoint is written.
-Silently-off tracing is what left this project's LangSmith evidence unproven, so
-it is treated as a failure rather than a default.
+If every call is refused on authorization, check the region before you suspect
+the key: a valid key against the wrong regional host fails the same way an
+invalid one does.
 
-Each invocation is tagged and named so traces are filterable: the root run is
-`aic-start` / `aic-resume`, carrying tags `aic` and `aic-<command>` and metadata
-including the `runId`. Graph steps inherit both.
+**The flag vocabulary is the tracer's, not ours.** `LANGSMITH_TRACING_V2`,
+`LANGCHAIN_TRACING_V2`, `LANGSMITH_TRACING` and `LANGCHAIN_TRACING` all enable
+tracing, and only the exact value `true` does — matching
+`@langchain/core`'s `isTracingEnabled`. See › "enables tracing for every flag
+name the langchain tracer honours" and › "reports tracing disabled for a flag
+value the langchain tracer rejects". Reading a narrower set than the tracer
+would install the tracer while our key check stayed silent.
+
+**What is guaranteed, exactly:** with a tracing flag on and no api key set, the
+run stops before any checkpoint is written — › "refuses to start when tracing is
+enabled without an api key". That is the only delivery failure detected. A
+wrong-region endpoint or an unreachable host still produces a run that
+completes, because the SDK sends in the background and reports the rejection as
+a warning.
+
+Runs are named and tagged so traces are filterable: the root run is
+`aic-start` / `aic-resume` with tags `aic` and `aic-<command>`, and every graph
+step inherits those tags and the `runId` metadata — › "sends a root run named
+for the command whose tags and runId every graph step inherits". Because the
+process exits as soon as it prints its result, an enabled run also sets
+`LANGCHAIN_CALLBACKS_BACKGROUND=false` unless the operator set it, so delivery
+blocks on finalization instead of racing exit — › "blocks background trace
+delivery so a short-lived run cannot exit before it sends".
+
+The api key reaches neither the process output nor the trace payload — ›
+"never prints the api key on stdout or stderr" and › "never sends the api key
+inside a trace payload". One operator caution the code cannot enforce: the SDK
+copies non-sensitive `LANGSMITH_*`/`LANGCHAIN_*` variables into run metadata,
+and `LANGSMITH_RUNS_ENDPOINTS` embeds api keys in its value while matching none
+of the SDK's sensitive-name patterns. Do not export it alongside tracing.
+
+**A traced run transmits the whole graph state** — every trial input and every
+evidence record, including its `statement`. Today that is synthetic
+persistence-spike text; treat sending real incident content to a third party as
+a decision to take deliberately, not a side effect of turning tracing on.
 
 ## Engineering workflow
 
