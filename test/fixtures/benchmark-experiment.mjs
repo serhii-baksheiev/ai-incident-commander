@@ -74,6 +74,22 @@ export function perfectOutcomeFor(scenario) {
   };
 }
 
+const acceptedV01ScenarioIds = [
+  'bad-deployment',
+  'db-pool-exhaustion',
+  'false-alert',
+  'deployment-caused-incident-a',
+  'dependency-caused-incident-b',
+];
+
+function acceptedV01Scenarios() {
+  return acceptedV01ScenarioIds.map((scenarioId) => {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `missing accepted v0.1 scenario: ${scenarioId}`);
+    return scenario;
+  });
+}
+
 async function runOutcomeExperiment(experimentId, mutateOutcome = (outcome) => outcome) {
   const runBenchmarkExperiment = requireFunction(
     evals,
@@ -83,7 +99,7 @@ async function runOutcomeExperiment(experimentId, mutateOutcome = (outcome) => o
 
   return runBenchmarkExperiment({
     experimentId,
-    scenarios: evals.REPLAY_SCENARIOS,
+    scenarios: acceptedV01Scenarios(),
     runsPerScenario: 3,
     metadata: benchmarkVersions,
     async investigate(record) {

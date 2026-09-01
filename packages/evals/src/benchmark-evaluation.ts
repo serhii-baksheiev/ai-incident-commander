@@ -13,6 +13,8 @@ import {
 } from '@aic/graph';
 
 import {
+  BENCHMARK_SCENARIO_PARTITIONS,
+  REPLAY_SCENARIOS,
   createBenchmarkInvocation,
   type EvidenceFingerprint,
   type IncidentScenario,
@@ -108,21 +110,23 @@ function stableExampleId(scenarioId: string, runNumber: number): string {
   ].join('-');
 }
 
-export function createBenchmarkPlan({
+interface BenchmarkPlanOptions {
+  readonly experimentId: string;
+  readonly runsPerScenario: number;
+  readonly metadata: BenchmarkVersions;
+}
+
+interface BenchmarkPlanWithScenarios extends BenchmarkPlanOptions {
+  readonly scenarios: readonly IncidentScenario[];
+}
+
+function buildBenchmarkPlan({
   experimentId,
   scenarios,
   runsPerScenario,
   metadata,
-}: Readonly<{
-  experimentId: string;
-  scenarios: readonly IncidentScenario[];
-  runsPerScenario: number;
-  metadata: BenchmarkVersions;
-}>): BenchmarkRecord[] {
+}: BenchmarkPlanWithScenarios): BenchmarkRecord[] {
   requireNonEmpty(experimentId, 'experimentId');
-  if (scenarios.length !== 5) {
-    throw new Error('the v0.1 benchmark requires exactly five scenarios');
-  }
   if (!Number.isSafeInteger(runsPerScenario) || runsPerScenario < 3) {
     throw new Error('the v0.1 benchmark requires at least three runs per scenario');
   }
@@ -145,6 +149,53 @@ export function createBenchmarkPlan({
       };
     }),
   );
+}
+
+export function createBenchmarkPlan(
+  options: BenchmarkPlanWithScenarios,
+): BenchmarkRecord[] {
+  if (options.scenarios.length !== 5) {
+    throw new Error('the v0.1 benchmark requires exactly five scenarios');
+  }
+  return buildBenchmarkPlan(options);
+}
+
+function scenariosForPartition(
+  scenarioIds: readonly string[],
+): IncidentScenario[] {
+  const scenariosById = new Map(
+    REPLAY_SCENARIOS.map((scenario) => [scenario.id, scenario]),
+  );
+  return scenarioIds.map((scenarioId) => {
+    const scenario = scenariosById.get(scenarioId);
+    if (scenario === undefined) {
+      throw new Error(`benchmark partition names unknown scenario: ${scenarioId}`);
+    }
+    return scenario;
+  });
+}
+
+export function createCalibrationBenchmarkPlan(
+  options: BenchmarkPlanOptions,
+): BenchmarkRecord[] {
+  return buildBenchmarkPlan({
+    ...options,
+    scenarios: scenariosForPartition(
+      BENCHMARK_SCENARIO_PARTITIONS.calibration,
+    ),
+  });
+}
+
+export function createFinalEvaluationBenchmarkPlan(
+  options: BenchmarkPlanOptions,
+): BenchmarkRecord[] {
+  return buildBenchmarkPlan({
+    ...options,
+    scenarios: scenariosForPartition([
+      ...BENCHMARK_SCENARIO_PARTITIONS.calibration,
+      ...BENCHMARK_SCENARIO_PARTITIONS.holdout,
+    ]),
+  });
 }
 
 export function evaluateUnsupportedClaimRate({

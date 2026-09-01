@@ -40,6 +40,44 @@ const expectedMetricScores = {
   unsupported_claim_rate: 0,
 };
 
+const acceptedV01ScenarioIds = [
+  'bad-deployment',
+  'db-pool-exhaustion',
+  'false-alert',
+  'deployment-caused-incident-a',
+  'dependency-caused-incident-b',
+];
+
+const acceptedV01ExampleIds = [
+  'c14e9030-60d5-89f5-9488-84993d6fc6ca',
+  'ae3bd54e-06b6-8423-ba59-e6855f95f0f2',
+  '94f9d1cf-6914-87b2-a213-fbfb7a358cd1',
+  '13f75678-c0cd-8ce7-a144-3b07160a7a40',
+  '85cc633e-09ce-82f5-a620-6db31f4a1858',
+  '128a8860-cb97-80a2-bfae-a8d948fc7b9e',
+  'de62ed11-b5bf-859e-a3b1-be4ab531cadb',
+  '3fabb8f1-1bd6-8fea-8d63-c97c9ec7fac3',
+  '7b9efa5d-de95-8180-bef4-568a5f215cc9',
+  'fda246df-187d-8f70-9d30-4aa7d32d63b8',
+  'fe932583-2509-8449-9c1d-bc059d54d4d0',
+  '00d9e595-7c46-8b5f-abb8-5fbf5b1f98bf',
+  '43e98931-cb85-8a5c-91e8-b276e9e0e240',
+  '86051c38-8cd2-86fb-a16b-78cb50878cb1',
+  '602db4a5-7406-8e46-812e-e163dc6310e0',
+];
+
+const expectedCalibrationScenarioIds = [
+  ...acceptedV01ScenarioIds,
+  'multiple-plausible-causes',
+  'transient-self-resolved',
+  'challenge-keeps-leader',
+];
+
+const expectedHoldoutScenarioIds = [
+  'incomplete-evidence',
+  'challenge-changes-leader',
+];
+
 const expectedLifecycleNodes = [
   'normalize_incident',
   'collect_baseline',
@@ -58,6 +96,14 @@ const expectedLifecycleNodes = [
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function acceptedV01Scenarios() {
+  return acceptedV01ScenarioIds.map((scenarioId) => {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `missing accepted v0.1 scenario: ${scenarioId}`);
+    return scenario;
+  });
+}
+
 function createPlan(experimentId, metadata = benchmarkVersions) {
   const createBenchmarkPlan = requireFunction(
     evals,
@@ -66,7 +112,7 @@ function createPlan(experimentId, metadata = benchmarkVersions) {
   );
   return createBenchmarkPlan({
     experimentId,
-    scenarios: evals.REPLAY_SCENARIOS,
+    scenarios: acceptedV01Scenarios(),
     runsPerScenario: 3,
     metadata,
   });
@@ -242,12 +288,16 @@ async function capturePluralPersistence() {
   return { datasetId, experiments, events, examples, projects, runs };
 }
 
-test('plans three fresh runs for each of five stable benchmark examples', () => {
-  assert.equal(evals.REPLAY_SCENARIOS.length, 5);
+test('preserves three fresh runs for each of the five accepted v0.1 scenarios', () => {
   const baseline = createPlan('baseline-v0.1');
   const candidate = createPlan('candidate-v0.1');
 
   assert.equal(baseline.length, 15);
+  assert.deepEqual(
+    baseline.map(({ exampleId }) => exampleId),
+    acceptedV01ExampleIds,
+    'the fifteen accepted native LangSmith example identities are immutable',
+  );
   const countsByScenario = new Map();
   const runIds = new Set();
   const threadIds = new Set();
@@ -280,6 +330,133 @@ test('plans three fresh runs for each of five stable benchmark examples', () => 
     baseline.some((record, index) => record.runId === candidate[index].runId),
     false,
     'each experiment must receive fresh run and thread identities',
+  );
+});
+
+test('declares a complete non-overlapping calibration and hold-out policy before tuning', () => {
+  const partitions = evals.BENCHMARK_SCENARIO_PARTITIONS;
+  assert.ok(
+    partitions && typeof partitions === 'object',
+    '@aic/evals must export the static BENCHMARK_SCENARIO_PARTITIONS declaration',
+  );
+  assert.equal(Object.isFrozen(partitions), true);
+  assert.equal(Object.isFrozen(partitions.calibration), true);
+  assert.equal(Object.isFrozen(partitions.holdout), true);
+  assert.deepEqual(Object.keys(partitions).sort(), ['calibration', 'holdout']);
+  assert.deepEqual(partitions.calibration, expectedCalibrationScenarioIds);
+  assert.deepEqual(partitions.holdout, expectedHoldoutScenarioIds);
+
+  const calibration = new Set(partitions.calibration);
+  const holdout = new Set(partitions.holdout);
+  const allScenarioIds = evals.REPLAY_SCENARIOS.map(({ id }) => id);
+  assert.equal(calibration.size, partitions.calibration.length);
+  assert.equal(holdout.size, partitions.holdout.length);
+  assert.deepEqual(
+    [...calibration].filter((scenarioId) => holdout.has(scenarioId)),
+    [],
+    'a scenario cannot be both tuning data and hold-out evidence',
+  );
+  assert.deepEqual(
+    [...calibration, ...holdout].sort(),
+    [...allScenarioIds].sort(),
+    'every scenario must have exactly one declared benchmark role',
+  );
+  assert.ok(
+    holdout.size / allScenarioIds.length >= 0.2,
+    'at least twenty percent of the expanded corpus must remain hold-out',
+  );
+});
+
+test('keeps prompt and model iteration off hold-out cases even when they are passed accidentally', () => {
+  const createCalibrationBenchmarkPlan = requireFunction(
+    evals,
+    'createCalibrationBenchmarkPlan',
+    '@aic/evals',
+  );
+  const attemptedHoldoutInjection = expectedHoldoutScenarioIds.map((scenarioId) =>
+    evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId),
+  );
+  const shared = {
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+  };
+  const calibration = createCalibrationBenchmarkPlan({
+    ...shared,
+    experimentId: 'prompt-iteration-v0.2',
+    scenarios: attemptedHoldoutInjection,
+  });
+
+  assert.deepEqual(
+    [...new Set(calibration.map(({ scenario }) => scenario.id))],
+    expectedCalibrationScenarioIds,
+    'the tuning path must select only the static calibration declaration',
+  );
+  assert.deepEqual(
+    calibration.filter(({ scenario }) =>
+      expectedHoldoutScenarioIds.includes(scenario.id),
+    ),
+    [],
+    'even an accidental scenarios argument must not inject hold-out data into tuning',
+  );
+});
+
+test('includes calibration and hold-out cases in the final evaluation plan', () => {
+  const createFinalEvaluationBenchmarkPlan = requireFunction(
+    evals,
+    'createFinalEvaluationBenchmarkPlan',
+    '@aic/evals',
+  );
+  const finalEvaluation = createFinalEvaluationBenchmarkPlan({
+    experimentId: 'final-evaluation-v0.2',
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+  });
+
+  assert.deepEqual(
+    [...new Set(finalEvaluation.map(({ scenario }) => scenario.id))].sort(),
+    [...expectedCalibrationScenarioIds, ...expectedHoldoutScenarioIds].sort(),
+    'the final evaluation path must execute calibration and hold-out cases',
+  );
+  assert.equal(finalEvaluation.length, evals.REPLAY_SCENARIOS.length * 3);
+});
+
+test('adds stable native identities without changing the fifteen accepted v0.1 examples', () => {
+  const createFinalEvaluationBenchmarkPlan = requireFunction(
+    evals,
+    'createFinalEvaluationBenchmarkPlan',
+    '@aic/evals',
+  );
+  const shared = { runsPerScenario: 3, metadata: benchmarkVersions };
+  const baseline = createFinalEvaluationBenchmarkPlan({
+    ...shared,
+    experimentId: 'expanded-baseline-v0.2',
+  });
+  const candidate = createFinalEvaluationBenchmarkPlan({
+    ...shared,
+    experimentId: 'expanded-candidate-v0.2',
+  });
+  const acceptedRecords = baseline.filter(({ scenario }) =>
+    acceptedV01ScenarioIds.includes(scenario.id),
+  );
+  const newRecords = baseline.filter(
+    ({ scenario }) => !acceptedV01ScenarioIds.includes(scenario.id),
+  );
+
+  assert.deepEqual(
+    acceptedRecords.map(({ exampleId }) => exampleId),
+    acceptedV01ExampleIds,
+  );
+  assert.equal(newRecords.length >= 15, true);
+  assert.equal(
+    newRecords.every(({ exampleId }) =>
+      uuidPattern.test(exampleId) && !acceptedV01ExampleIds.includes(exampleId),
+    ),
+    true,
+  );
+  assert.deepEqual(
+    baseline.map(({ exampleId, scenario }) => ({ exampleId, scenarioId: scenario.id })),
+    candidate.map(({ exampleId, scenario }) => ({ exampleId, scenarioId: scenario.id })),
+    'all expanded native example identities must be stable across experiments',
   );
 });
 
@@ -805,7 +982,7 @@ test('runs all fifteen fresh records through createInvestigationGraph and replay
 
   const experiment = await runGraphBenchmarkExperiment({
     experimentId: 'baseline-v0.1',
-    scenarios: evals.REPLAY_SCENARIOS,
+    scenarios: acceptedV01Scenarios(),
     runsPerScenario: 3,
     metadata: benchmarkVersions,
     createNodes(record) {
