@@ -186,6 +186,7 @@ function parseInvestigationExecutionInput(
 
   const record = input as Record<string, unknown>;
   if (
+    Object.hasOwn(record, 'kind') &&
     record.kind === 'start' &&
     Object.keys(record).length === 2 &&
     Object.hasOwn(record, 'state')
@@ -195,6 +196,7 @@ function parseInvestigationExecutionInput(
   }
 
   if (
+    Object.hasOwn(record, 'kind') &&
     record.kind === 'resume' &&
     Object.keys(record).length === 3 &&
     typeof record.interruptId === 'string' &&
@@ -225,6 +227,7 @@ function parseInvestigationExecutionConfig(
   const record = config as Record<string, unknown>;
   if (
     Object.keys(record).length !== 1 ||
+    !Object.hasOwn(record, 'threadId') ||
     typeof record.threadId !== 'string' ||
     record.threadId.length === 0
   ) {
@@ -633,7 +636,7 @@ export function createInvestigationGraph({
         edges: Object.freeze(edges),
       });
     },
-    getState(config: InvestigationExecutionConfig) {
+    async getState(config: InvestigationExecutionConfig) {
       const executionConfig = parseInvestigationExecutionConfig(config);
       if (executionConfig === undefined) {
         throw new Error('getState requires an execution threadId');

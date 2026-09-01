@@ -214,6 +214,12 @@ function createHarness({ humanReview = true, runId }) {
   };
 }
 
+function configWithInheritedThreadId(threadId) {
+  return Object.assign(Object.create({ threadId }), {
+    checkpoint_id: 'forbidden-checkpoint-selector',
+  });
+}
+
 async function interruptAndReopen(harness) {
   const interrupted = await harness.execution.execute(
     { kind: 'start', state: harness.state },
@@ -354,6 +360,94 @@ test('rejects raw checkpoint selectors without consuming the pending review', as
     assert.equal(persisted.tasks.length, 1);
     assert.equal(persisted.tasks[0].interrupts.length, 1);
     assert.equal(persisted.tasks[0].interrupts[0].id, pendingInterrupt.id);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('execute rejects an inherited threadId with an own checkpoint selector without consuming the pending review', async () => {
+  const runId = 'run-inherited-execute-config-rejected';
+  const harness = createHarness({ runId });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    const pendingInterrupt = currentInterrupt(interrupted);
+    const inheritedConfig = configWithInheritedThreadId(runId);
+    assert.deepEqual(Object.keys(inheritedConfig), ['checkpoint_id']);
+    assert.equal(Object.hasOwn(inheritedConfig, 'threadId'), false);
+
+    const outcome = await harness.execution
+      .execute(
+        resumeCurrent(interrupted, { action: 'confirm' }),
+        inheritedConfig,
+      )
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+    const persisted = await harness.execution.getState(harness.config);
+
+    assert.deepEqual(
+      {
+        rejected: Object.hasOwn(outcome, 'error'),
+        next: persisted.next,
+        pendingInterruptId: persisted.tasks[0]?.interrupts[0]?.id,
+      },
+      {
+        rejected: true,
+        next: ['review_conclusion'],
+        pendingInterruptId: pendingInterrupt.id,
+      },
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('getState rejects an inherited threadId with an own checkpoint selector', async () => {
+  const runId = 'run-inherited-get-state-config-rejected';
+  const harness = createHarness({ runId });
+
+  try {
+    await interruptAndReopen(harness);
+    const inheritedConfig = configWithInheritedThreadId(runId);
+    assert.deepEqual(Object.keys(inheritedConfig), ['checkpoint_id']);
+    assert.equal(Object.hasOwn(inheritedConfig, 'threadId'), false);
+
+    await assert.rejects(harness.execution.getState(inheritedConfig));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('rejects a start with inherited kind and own checkpoint selector before graph execution', async () => {
+  const harness = createHarness({
+    humanReview: false,
+    runId: 'run-inherited-start-kind-rejected',
+  });
+  const inheritedStart = Object.assign(Object.create({ kind: 'start' }), {
+    state: harness.state,
+    checkpoint_id: 'forbidden-checkpoint-selector',
+  });
+
+  try {
+    assert.deepEqual(Object.keys(inheritedStart), ['state', 'checkpoint_id']);
+    assert.equal(Object.hasOwn(inheritedStart, 'kind'), false);
+
+    const outcome = await harness.execution
+      .execute(inheritedStart, harness.config)
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+
+    assert.deepEqual(
+      {
+        rejected: Object.hasOwn(outcome, 'error'),
+        trace: harness.trace,
+      },
+      { rejected: true, trace: [] },
+    );
   } finally {
     harness.cleanup();
   }
