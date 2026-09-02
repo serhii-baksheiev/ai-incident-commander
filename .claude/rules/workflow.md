@@ -117,8 +117,12 @@ travels one path to merge, in this order:
    stack-specific and lives in `stack/*`; the criterion here does not name one.
 
 **Post-merge tail:** verify the deployed surface is healthy (the target's
-post-deploy verdict — `autonomy.md`), then update `PLAN.md` (close the task,
-record any follow-up in a queue). Merge is not the finish line; a healthy
+post-deploy verdict — `autonomy.md`), then close the task **through the queue
+adapter** — `close(ticket, …)`, whose answer the `loop` skill says how to read.
+Hand-editing `PLAN.md` closes nothing while the config names a tracker. A
+follow-up the run found is **proposed, never filed**: it goes through the capped
+triage proposal the `loop` skill defines, because the queue is human-filled and
+the agent authors no work for itself. Merge is not the finish line; a healthy
 runtime and an honest plan are.
 
 ## PR policy
