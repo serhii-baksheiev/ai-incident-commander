@@ -240,18 +240,32 @@ function requireResourceEvidence(
   if (result.resources === undefined) return undefined;
 
   const evidence = result.resources;
+  if (typeof evidence !== 'object' || evidence === null || Array.isArray(evidence)) {
+    throw new Error('benchmark resource evidence is not an object');
+  }
+
+  // OWN data properties only, the idiom `readDeclaredLlmCalls` uses in the graph
+  // for the same hazard: read through the prototype chain and a polluted
+  // `Object.prototype.resumeCount` supplies a count the run never declared —
+  // manufacturing the exact reading this function exists to refuse.
+  const own = (key: string): unknown => {
+    const descriptor = Object.getOwnPropertyDescriptor(evidence, key);
+    return descriptor === undefined || !Object.hasOwn(descriptor, 'value')
+      ? undefined
+      : descriptor.value;
+  };
+
   // Absent version and wrong version are different failures: one is evidence
   // that forgot to say what it is, the other is evidence this layer cannot
   // read. Reporting them the same way sends the reader looking for the wrong
   // problem.
-  if (evidence.schemaVersion === undefined) {
+  const schemaVersion = own('schemaVersion');
+  if (schemaVersion === undefined) {
     throw new Error('benchmark resource evidence missing schemaVersion');
   }
-  if (evidence.schemaVersion !== PERSISTED_RESOURCE_SCHEMA_VERSION) {
+  if (schemaVersion !== PERSISTED_RESOURCE_SCHEMA_VERSION) {
     throw new Error(
-      `benchmark resource schema version is not supported: ${String(
-        evidence.schemaVersion,
-      )}`,
+      `benchmark resource schema version is not supported: ${String(schemaVersion)}`,
     );
   }
 
@@ -259,9 +273,16 @@ function requireResourceEvidence(
     schemaVersion: PERSISTED_RESOURCE_SCHEMA_VERSION,
   };
   for (const key of PERSISTED_RESOURCE_KEYS) {
-    const value = evidence[key];
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
+    const value = own(key);
+    if (value === undefined) {
       throw new Error(`benchmark resource evidence missing ${key}`);
+    }
+    // The same rule the graph applies to its own counters: a count is a
+    // non-negative safe integer. Restated rather than imported because this
+    // layer keeps its own outbound vocabulary — but it must not be LOOSER than
+    // the graph's, or a negative duration crosses the boundary as evidence.
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`benchmark resource evidence ${key} is not a count`);
     }
     projected[key] = value;
   }
@@ -424,6 +445,23 @@ async function persistPreparedExperiment({
         key: metric.key,
         score: metric.score,
       });
+    }
+
+    // Each resource axis gets its OWN feedback key beside the quality ones —
+    // the item asks for "separate feedback/output keys" preserving every
+    // individual dimension, and a dimension that reaches only `outputs` is one
+    // surface short of that. Nothing is blended: no composite key is emitted,
+    // and `schemaVersion` is metadata about the shape rather than an axis, so
+    // it stays out of the score stream.
+    if (resources !== undefined) {
+      for (const key of PERSISTED_RESOURCE_KEYS) {
+        await client.createFeedback({
+          runId: record.runId,
+          sessionId: project.id,
+          key,
+          score: resources[key] as number,
+        });
+      }
     }
   }
 }

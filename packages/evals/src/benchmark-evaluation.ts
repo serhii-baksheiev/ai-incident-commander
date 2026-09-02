@@ -122,11 +122,20 @@ export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 1 as const;
  * fall while quality falls with it, which is the comparison this evidence
  * exists to make impossible to fake.
  *
- * `retryCount` is a structural zero, not a measurement: `Trial.attempt` is
- * written as `1` by every producer in this repository and no retry path exists,
- * so counting retries truthfully counts none. It is published anyway, as an
- * axis that reads zero, rather than omitted — the same treatment
- * `declaredLlmCallsUsed` gets while no LLM executes.
+ * `retryCount` is DERIVED from the executed state — the trials past their first
+ * attempt — rather than asserted. It reads zero today because nothing in this
+ * repository retries, but it is a measurement, so the day a retry path lands it
+ * reports without anyone remembering to change it. A literal zero would have
+ * gone on reading zero, which is the "spent nothing on that axis" claim this
+ * evidence must never manufacture.
+ * see benchmark-resource-evidence.test.mjs › "counts the trials past their first
+ * attempt rather than publishing a constant retry count"
+ *
+ * ⚠ `resumeCount` reads zero in every benchmark run for a structural reason,
+ * not a measured one: the benchmark sets `humanReview: false`, so the node that
+ * counts resumes is unreachable there. The axis is real on an interactive run.
+ * see benchmark-resource-evidence.test.mjs › "pins resumeCount at zero for every
+ * benchmark run, because the benchmark never enables human review"
  */
 export interface BenchmarkResourceEvidence {
   readonly schemaVersion: number;
@@ -697,13 +706,25 @@ export async function runGraphBenchmarkExperiment(
         state: initialBenchmarkState(input),
       });
       measuredByRunId.set(input.runId, {
-        // Read off the executed control block, which the graph owns and a node
-        // cannot write — so these are observations, not self-reports.
+        // These two, and `resumeCount` below, are read off the executed control
+        // block: the graph owns it and a node's update cannot write it, so they
+        // are observations rather than self-reports.
         logicalIterationsUsed: finalState.control.iterationsUsed,
         declaredLlmCallsUsed: finalState.control.llmCallsUsed,
+        // ⚠ NOT covered by the sentence above, and the difference is the whole
+        // point of it. `trials` is a node-written channel — `execute_investigation`
+        // puts them there and the reducer upserts them unparsed — and in a
+        // benchmark that node IS the system under test. So this axis is as
+        // trustworthy as the fixture that produced it, which is exactly the
+        // provenance the generic path refuses to publish at all. It is measured
+        // here because the item asks for "tool calls/trials used" and this graph
+        // has no independent tool-call channel to read instead.
         toolCallsUsed: finalState.trials.length,
-        // Structural zero — see BenchmarkResourceEvidence.
-        retryCount: 0,
+        // Derived from the executed state, not asserted: a literal zero would
+        // keep reading zero on the day a retry path lands, which is the
+        // "spent nothing on that axis" reading this evidence must never
+        // manufacture. It is zero today because nothing retries.
+        retryCount: finalState.trials.filter(({ attempt }) => attempt > 1).length,
         resumeCount: finalState.control.resumeCount,
       });
       return outcomeFromGraphState(finalState, {

@@ -2,10 +2,12 @@
  * Stage B of AIC-63: the benchmark reports what a run COST, on its own axes.
  *
  * Three settled decisions this file encodes rather than re-litigates:
- *   - `retryCount` is a structural zero. `Trial.attempt` is the constant `1` at
- *     its only producer (`packages/graph/src/index.ts`) and no retry mechanism
- *     exists, so the field is published as `0` and is honest about it — the same
- *     treatment AIC-62 gave `llmCallsUsed`.
+ *   - `retryCount` is MEASURED off the executed trials, never written as a
+ *     literal: it is how many trials the graph left past their first attempt.
+ *     Every in-repo producer writes `attempt: 1` today, so the published figure
+ *     is zero — but it must be zero because nothing was counted, not because a
+ *     constant was typed. A fixture that DOES raise an attempt is below, and it
+ *     is what separates the two.
  *   - No composite and no derived "recovery overhead". Every axis is published
  *     as its own field, so nothing blends quality with resource and nothing
  *     blends the logical budget with recovery.
@@ -49,6 +51,15 @@ const resourceFieldNames = [
 ];
 
 /**
+ * The axes a run actually SPENDS: every declared dimension except the schema
+ * version, which describes the shape of the evidence rather than a figure any
+ * run paid. Read by the feedback assertions so the two lists cannot drift.
+ */
+const measuredResourceAxisNames = resourceFieldNames.filter(
+  (name) => name !== 'schemaVersion',
+);
+
+/**
  * What the probe fixture below spends, chosen so no two measured axes share a
  * value: an implementation that reported the iteration count for the tool count
  * would pass a fixture where both happened to be 3.
@@ -75,9 +86,10 @@ function probeTrials(runId) {
     id: `resource-probe-trial-${runId}-${index + 1}`,
     runId,
     testId: `resource-probe-test-${runId}-${index + 1}`,
-    // The structural zero, at its source: nothing in this repository produces a
-    // trial with a second attempt, so a retry count read off these trials is 0
-    // by construction rather than by estimate.
+    // Every trial here is on its first attempt, so a retry count MEASURED off
+    // these trials is honestly zero. The retry fixture further down raises the
+    // attempt, and an implementation that writes the zero rather than counting
+    // it passes this fixture and fails that one.
     attempt: 1,
     tool: 'replay:logs',
     input: { probe: index + 1 },
@@ -173,6 +185,129 @@ function getGraphResourceExperiment() {
   })();
 
   return graphResourceExperiment;
+}
+
+/**
+ * The attempts the retry probe's trials carry, and what a truthful count of
+ * them is. Three first attempts and two later ones: zero is wrong, and so is
+ * "one per trial", so an implementation cannot pass this by writing either.
+ */
+const retryProbeAttempts = Object.freeze([1, 1, 1, 2, 3]);
+const expectedRetryCount = retryProbeAttempts.filter(
+  (attempt) => attempt > 1,
+).length;
+
+function retryProbeTrials(runId) {
+  return retryProbeAttempts.map((attempt, index) => ({
+    id: `retry-probe-trial-${runId}-${index + 1}`,
+    runId,
+    testId: `retry-probe-test-${runId}-${index + 1}`,
+    attempt,
+    tool: 'replay:logs',
+    input: { probe: index + 1 },
+    status: attempt === 1 ? 'ok' : 'error',
+    durationMs: 1,
+    evidenceIds: [],
+  }));
+}
+
+/**
+ * The calibration probe above, with one difference that is the whole point: its
+ * trials do not all sit on their first attempt. Its other axes are given values
+ * shared with nothing else here (one iteration, seven declared llm calls, five
+ * trials), so a counter reported for the wrong axis is visible.
+ */
+function retryProbeNodes(input, observed) {
+  const leaderId = `retry-probe-leader-${input.runId}`;
+  const empty = async () => ({});
+
+  return {
+    normalize_incident: empty,
+    collect_baseline: empty,
+    generate_hypotheses: async () => ({
+      hypotheses: [{
+        id: leaderId,
+        statement: 'retry probe leader',
+        createdBy: 'initial',
+      }],
+      declaredLlmCalls: 7,
+    }),
+    derive_predictions: empty,
+    plan_investigation: empty,
+    execute_investigation: async () => ({ trials: retryProbeTrials(input.runId) }),
+    evaluate_predictions: empty,
+    interpret_residual_evidence: empty,
+    derive_hypothesis_state: empty,
+    async termination_check() {
+      return { route: 'terminal', stopKind: 'stalled' };
+    },
+    async challenge_hypothesis() {
+      throw new Error('challenge must not run in the retry probe fixture');
+    },
+    // The independent observation again: what the executed state really holds,
+    // read by something other than the publisher.
+    async propose_conclusion(state) {
+      observed.set(input.runId, {
+        trialCount: state.trials.length,
+        trialsPastFirstAttempt: state.trials.filter(
+          ({ attempt }) => attempt > 1,
+        ).length,
+      });
+      return { conclusion: { kind: 'inconclusive', causes: [] } };
+    },
+  };
+}
+
+let retryGraphExperiment;
+
+/**
+ * The retry probe's own graph-backed run of the calibration partition, memoised
+ * for cost exactly as the probe above is. It runs the declared partition rather
+ * than a hand-picked scenario list, so nothing here restates the hold-out
+ * boundary.
+ */
+function getRetryGraphExperiment() {
+  if (retryGraphExperiment !== undefined) return retryGraphExperiment;
+
+  retryGraphExperiment = (async () => {
+    const runGraphBenchmarkExperiment = requireFunction(
+      evals,
+      'runGraphBenchmarkExperiment',
+      '@aic/evals',
+    );
+    const observed = new Map();
+    const experiment = await runGraphBenchmarkExperiment({
+      experimentId: 'resource-evidence-retry-v0.2',
+      scenarioSet: 'calibration',
+      runsPerScenario: 3,
+      metadata: benchmarkVersions,
+      createNodes: (input) => retryProbeNodes(input, observed),
+      async recordEvaluation() {},
+    });
+    return { experiment, observed };
+  })();
+
+  return retryGraphExperiment;
+}
+
+/**
+ * Plants one own property on `Object.prototype` for the duration of `body`, and
+ * takes it off again whatever happens. The planted value is what an evidence
+ * object that never declared the field appears to carry to anything that reads
+ * it through the prototype chain.
+ */
+async function withPollutedObjectPrototype(key, value, body) {
+  Object.defineProperty(Object.prototype, key, {
+    configurable: true,
+    enumerable: false,
+    value,
+    writable: true,
+  });
+  try {
+    return await body();
+  } finally {
+    delete Object.prototype[key];
+  }
 }
 
 function capturingClient() {
@@ -324,14 +459,48 @@ test('measures wall-clock duration around the investigation rather than reportin
   }
 });
 
-test('reports retryCount as a structural zero because no producer raises a trial attempt', async () => {
+test('publishes a retry count of zero when every trial is on its first attempt', async () => {
   const { experiment } = await getGraphResourceExperiment();
 
   for (const result of experiment.results) {
     assert.equal(
       result.resources?.retryCount,
       0,
-      'no retry mechanism exists, so the retry count is zero by construction and says so',
+      'a run whose trials never left their first attempt spent no retries, and says so',
+    );
+  }
+});
+
+test('counts the trials past their first attempt rather than publishing a constant retry count', async () => {
+  const { experiment, observed } = await getRetryGraphExperiment();
+
+  assert.equal(experiment.results.length, 24);
+  assert.equal(observed.size, 24);
+  assert.deepEqual(
+    [...new Set([...observed.values()].map((spend) => JSON.stringify(spend)))],
+    [JSON.stringify({
+      trialCount: retryProbeAttempts.length,
+      trialsPastFirstAttempt: expectedRetryCount,
+    })],
+    'the retry fixture must really produce the attempts it claims, or the rest of this test proves nothing',
+  );
+  assert.equal(
+    expectedRetryCount !== 0 &&
+      expectedRetryCount !== retryProbeAttempts.length,
+    true,
+    'the fixture only discriminates while a retry count of zero AND a retry count of every trial are both wrong',
+  );
+
+  for (const result of experiment.results) {
+    assert.equal(
+      result.resources?.retryCount,
+      expectedRetryCount,
+      'retryCount must be the number of trials past their first attempt, read off the executed state',
+    );
+    assert.equal(
+      result.resources.toolCallsUsed,
+      retryProbeAttempts.length,
+      'the retry count and the tool count are separate axes and must not be the same number',
     );
   }
 });
@@ -428,6 +597,159 @@ for (const field of resourceFieldNames) {
   });
 }
 
+/**
+ * A field the evidence never declared, planted where a prototype-chain read
+ * would find it. `schemaVersion` is planted at the version this layer accepts,
+ * because planting an unsupported one would be refused for the wrong reason and
+ * prove nothing.
+ */
+for (const field of resourceFieldNames) {
+  test(`refuses resource evidence whose ${field} exists only on Object.prototype`, async () => {
+    const version = requireResourceSchemaVersion();
+    const capture = capturingClient();
+    const { experiment } = singleRecordExperiment((result) => {
+      const { [field]: _omitted, ...partial } = measuredResources();
+      return { ...result, resources: partial };
+    });
+
+    await withPollutedObjectPrototype(
+      field,
+      field === 'schemaVersion' ? version : 999,
+      () => assert.rejects(
+        () => observability.persistBenchmarkExperiment({
+          client: capture.client,
+          datasetName: `resource-evidence-inherited-${field}-v0.2`,
+          experiment,
+        }),
+        new RegExp(`resource.*${field}|${field}.*resource`, 'i'),
+        `an inherited property is not evidence: a ${field} the run never declared must still be refused by name`,
+      ),
+    );
+
+    assert.equal(
+      Object.hasOwn(Object.prototype, field),
+      false,
+      'the planted property must not outlive the test that planted it',
+    );
+    assert.equal(capture.runs.length, 0);
+  });
+}
+
+test('publishes its own resource values while Object.prototype carries decoys', async () => {
+  const version = requireResourceSchemaVersion();
+  const capture = capturingClient();
+  const resources = measuredResources();
+  const { experiment } = singleRecordExperiment((result) => ({
+    ...result,
+    resources,
+  }));
+
+  await withPollutedObjectPrototype('resumeCount', 999, () =>
+    withPollutedObjectPrototype('toolCallsUsed', 999, () =>
+      observability.persistBenchmarkExperiment({
+        client: capture.client,
+        datasetName: 'resource-evidence-own-values-v0.2',
+        experiment,
+      })));
+
+  assert.equal(Object.hasOwn(Object.prototype, 'resumeCount'), false);
+  assert.equal(Object.hasOwn(Object.prototype, 'toolCallsUsed'), false);
+  assert.equal(capture.runs.length, 1);
+  assert.deepEqual(
+    capture.runs[0].outputs.resources,
+    { ...resources, schemaVersion: version },
+    'refusing an inherited field must not stop a run from publishing the fields it does own',
+  );
+});
+
+/**
+ * The graph refuses these values where the counters are produced; the outbound
+ * projection is a second reader of the same numbers and must refuse them too,
+ * or the boundary publishes a figure the producer would not have written.
+ */
+for (const [label, value] of [
+  ['a negative', -5],
+  ['a fractional', 1.7],
+  ['an unsafe-integer', 9007199254741000],
+]) {
+  test(`refuses ${label} resource count before any run is created`, async () => {
+    requireResourceSchemaVersion();
+
+    for (const field of measuredResourceAxisNames) {
+      const capture = capturingClient();
+      const { experiment } = singleRecordExperiment((result) => ({
+        ...result,
+        resources: measuredResources({ [field]: value }),
+      }));
+
+      await assert.rejects(
+        () => observability.persistBenchmarkExperiment({
+          client: capture.client,
+          datasetName: `resource-evidence-${label.replace(/\s+/g, '-')}-${field}-v0.2`,
+          experiment,
+        }),
+        new RegExp(`resource.*${field}|${field}.*resource`, 'i'),
+        `every resource axis is a non-negative safe integer, and ${String(value)} is not one: ${field}`,
+      );
+      assert.equal(capture.runs.length, 0, `a refused ${field} must create no run`);
+    }
+  });
+}
+
+test('refuses a null resources field by name instead of dereferencing it', async () => {
+  const capture = capturingClient();
+  const { experiment } = singleRecordExperiment((result) => ({
+    ...result,
+    resources: null,
+  }));
+
+  await assert.rejects(
+    () => observability.persistBenchmarkExperiment({
+      client: capture.client,
+      datasetName: 'resource-evidence-null-v0.2',
+      experiment,
+    }),
+    (error) => {
+      assert.equal(
+        error instanceof TypeError,
+        false,
+        `declared-but-null resource evidence must be refused, not read through: ${error.message}`,
+      );
+      assert.match(
+        error.message,
+        /resource/i,
+        'the refusal must name what it refused',
+      );
+      return true;
+    },
+  );
+  assert.equal(capture.runs.length, 0);
+});
+
+/**
+ * A characterisation PIN, not a requirement: `resumeCount` can only rise on the
+ * graph's human-review resume path, and the benchmark declares `humanReview`
+ * false on every record, so the axis is a structural zero for the whole
+ * benchmark. It is pinned so that stops being invisible — a change that makes
+ * the axis reachable turns this red and asks for a decision.
+ */
+test('pins resumeCount at zero for every benchmark run, because the benchmark never enables human review', async () => {
+  const { experiment } = await getGraphResourceExperiment();
+
+  assert.equal(
+    experiment.records.every(({ metadata }) => metadata.humanReview === false),
+    true,
+    'the benchmark declares humanReview false, so the resume path is unreachable from it',
+  );
+  for (const result of experiment.results) {
+    assert.equal(
+      result.resources?.resumeCount,
+      0,
+      'no benchmark run can resume, so every published resume count is zero',
+    );
+  }
+});
+
 test('projects resource evidence through an exact outbound allowlist, one key per dimension', async () => {
   const version = requireResourceSchemaVersion();
   const canary = 'must-not-cross-the-sdk-boundary';
@@ -462,10 +784,62 @@ test('projects resource evidence through an exact outbound allowlist, one key pe
     false,
     'an undeclared resource property must never cross any LangSmith SDK call',
   );
+  // REWRITTEN pin. The previous assertion here required resource keys to stay
+  // OUT of the feedback stream, which narrowed AIC-63 ("separate LangSmith
+  // feedback/output keys ... preserve every individual quality and resource
+  // dimension") to outputs alone — a narrowing nobody ruled on. Every axis is
+  // its own feedback entry; nothing is blended into a composite.
+  const [publishedResult] = experiment.results;
+  const qualityFeedback = [
+    ...Object.values(publishedResult.metrics),
+    ...Object.values(publishedResult.behaviorMetrics ?? {}),
+  ];
+  const feedbackByKey = new Map();
+  for (const entry of capture.feedback) {
+    assert.equal(
+      feedbackByKey.has(entry.key),
+      false,
+      `each dimension is published once, under its own key: ${entry.key}`,
+    );
+    feedbackByKey.set(entry.key, entry);
+  }
+
+  assert.deepEqual(
+    [...feedbackByKey.keys()].sort(),
+    [
+      ...qualityFeedback.map(({ key }) => key),
+      ...measuredResourceAxisNames,
+    ].sort(),
+    'every quality metric and every measured resource axis is its own feedback key, and no key merges dimensions',
+  );
+  for (const metric of qualityFeedback) {
+    assert.equal(
+      feedbackByKey.get(metric.key).score,
+      metric.score,
+      `the quality feedback must be unchanged by resource publication: ${metric.key}`,
+    );
+  }
+  for (const axis of measuredResourceAxisNames) {
+    assert.equal(
+      feedbackByKey.get(axis).score,
+      resources[axis],
+      `${axis} must cross as the value that was measured, not a normalised score`,
+    );
+    assert.equal(
+      feedbackByKey.get(axis).sessionId,
+      capture.feedback[0].sessionId,
+      `${axis} feedback belongs to the same project session as the quality feedback`,
+    );
+  }
   assert.equal(
-    capture.feedback.some(({ key }) => resourceFieldNames.includes(key)),
+    feedbackByKey.has('schemaVersion'),
     false,
-    'resource evidence is not a score, so it must not enter the metric feedback stream',
+    'schemaVersion describes the shape of the evidence and is not an axis anything spent',
+  );
+  assert.equal(
+    feedbackByKey.has('resources'),
+    false,
+    'a single resources key would be the composite this design refuses',
   );
 });
 
@@ -485,5 +859,15 @@ test('accepts a persisted v0.1 evaluation that carries no resource evidence at a
     Object.keys(run.outputs).sort(),
     ['actualStopKind', 'behaviorMetrics', 'metrics'],
     'a record written before resource evidence existed stays readable and gains no empty placeholder',
+  );
+  assert.equal(
+    capture.feedback.some(({ key }) => measuredResourceAxisNames.includes(key)),
+    false,
+    'an unmeasured run publishes no resource feedback: a key carrying undefined would read as a measurement',
+  );
+  assert.equal(
+    capture.feedback.length > 0,
+    true,
+    'the quality feedback a v0.1 record has always produced is unaffected',
   );
 });
