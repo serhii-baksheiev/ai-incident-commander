@@ -76,6 +76,7 @@ function initialState(runId, control = {}) {
       llmCallBudget: 8,
       iterationsUsed: 0,
       llmCallsUsed: 0,
+      resumeCount: 0,
       reservedChallengeBudget: 2,
       challengeRounds: 0,
       humanReview: true,
@@ -227,6 +228,22 @@ const outdatedPersistedControls = [
       schemaVersion: INCIDENT_STATE_SCHEMA_VERSION - 1,
     }),
   },
+  // The two rows above follow the current version wherever it goes; these two
+  // pin the version the resume counter replaced, so a later bump cannot quietly
+  // stop refusing a version-2 checkpoint.
+  {
+    label: 'a version-2 checkpoint written before the resume counter existed',
+    slug: 'version-2-without-resume-count',
+    rewrite: (control) => {
+      const { resumeCount: _resumeCount, ...rest } = control;
+      return { ...rest, schemaVersion: 2 };
+    },
+  },
+  {
+    label: 'a version-2 checkpoint that already carries the resume counter',
+    slug: 'version-2-with-resume-count',
+    rewrite: (control) => ({ ...control, schemaVersion: 2 }),
+  },
 ];
 
 const namesTheVersionBoundary = /schema ?version|incompatible version/i;
@@ -281,6 +298,124 @@ for (const persisted of outdatedPersistedControls) {
     });
   }
 }
+
+/**
+ * The graph owns `resumeCount`, and a resume is the only thing that moves it:
+ * pausing at the interrupt is not one, and neither is a lifecycle node replayed
+ * by the resume — a reject re-enters the graph and runs a whole cycle again, so
+ * a counter incremented per node would report several resumes for one human
+ * decision.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`counts one resume for a human ${label} decision, however many nodes replay after it`, async () => {
+    const harness = createHarness({ runId: `run-resume-count-${label}` });
+
+    try {
+      const interrupted = await harness.start();
+
+      assert.equal(
+        (await harness.control()).resumeCount,
+        0,
+        'a run paused at the interrupt has not been resumed yet',
+      );
+
+      const outcome = await harness.resume(interrupted, decision(1));
+
+      assert.equal(
+        'error' in outcome,
+        false,
+        `a human ${label} must resume the run: ${outcome.error?.message ?? ''}`,
+      );
+      assert.equal(
+        (await harness.control()).resumeCount,
+        1,
+        `one human ${label} is one resume, whatever the resume replayed`,
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+test('counts every resume of a run the human sent back before confirming it', async () => {
+  const harness = createHarness({ runId: 'run-resume-count-twice' });
+
+  try {
+    const rejected = await harness.resume(await harness.start(), {
+      action: 'reject',
+    });
+
+    assert.equal(
+      'error' in rejected,
+      false,
+      `a rejected conclusion must re-enter the graph: ${
+        rejected.error?.message ?? ''
+      }`,
+    );
+    assert.equal(
+      (await harness.control()).resumeCount,
+      1,
+      'the first resume must be counted before the second one happens',
+    );
+
+    const confirmed = await harness.resume(rejected.value, {
+      action: 'confirm',
+    });
+
+    assert.equal(
+      'error' in confirmed,
+      false,
+      `a confirmed conclusion must end the run: ${
+        confirmed.error?.message ?? ''
+      }`,
+    );
+    assert.equal(
+      (await harness.control()).resumeCount,
+      2,
+      'two human decisions are two resumes, and the confirm path must carry the count to the end',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('counts the resumes a human spends re-entering the graph without counting the replayed nodes', async () => {
+  const harness = createHarness({
+    runId: 'run-resume-count-replay',
+    terminationCheck: alwaysNeedsMoreEvidence,
+    control: { maxIterations: 1, llmCallBudget: 100 },
+  });
+
+  try {
+    let interrupted = await harness.start();
+
+    for (const round of [1, 2, 3]) {
+      const traceBeforeResume = harness.trace.length;
+      const outcome = await harness.resume(interrupted, { action: 'reject' });
+
+      assert.equal(
+        'error' in outcome,
+        false,
+        `resume ${round} must re-enter the graph: ${outcome.error?.message ?? ''}`,
+      );
+      interrupted = outcome.value;
+      const replayedNodes = harness.trace.length - traceBeforeResume;
+      const control = await harness.control();
+
+      assert.ok(
+        replayedNodes > 1,
+        `resume ${round} must replay more than one node, or this proves nothing`,
+      );
+      assert.equal(
+        control.resumeCount,
+        round,
+        `resume ${round} replayed ${replayedNodes} nodes and must still count as one resume`,
+      );
+    }
+  } finally {
+    harness.cleanup();
+  }
+});
 
 const humanReEntryRoutes = [
   {

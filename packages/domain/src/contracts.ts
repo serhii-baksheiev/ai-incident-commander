@@ -156,6 +156,10 @@ export const IncidentStateControlSchema = z.strictObject({
   // rewrite the graph-owned logical budgets".
   iterationsUsed: LogicalCountSchema,
   llmCallsUsed: LogicalCountSchema,
+  // How many times a paused run was resumed. Graph-owned like the two above,
+  // and required for the same reason: an absent count reads as "never resumed",
+  // which is exactly what a run that lost its history would also look like.
+  resumeCount: LogicalCountSchema,
   stopKind: InvestigationStopSchema.optional(),
   humanReview: z.boolean(),
 });

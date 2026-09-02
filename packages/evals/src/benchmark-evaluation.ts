@@ -484,6 +484,7 @@ function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
       challengeRounds: 0,
       iterationsUsed: 0,
       llmCallsUsed: 0,
+      resumeCount: 0,
       humanReview: false,
     },
   };

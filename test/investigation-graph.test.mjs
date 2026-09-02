@@ -39,6 +39,7 @@ const initialState = () => ({
     llmCallBudget: 8,
     iterationsUsed: 0,
     llmCallsUsed: 0,
+    resumeCount: 0,
     reservedChallengeBudget: 2,
     challengeRounds: 0,
     humanReview: false,
@@ -870,6 +871,85 @@ test('restores graph-owned logical budgets after in-place mutation by a lifecycl
   assert.equal(result.control.llmCallsUsed, 0);
 });
 
+test('leaves resumeCount at zero on a run that never pauses for a human', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(trace, async () => ({ route: 'terminal', stopKind: 'stalled' })),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(outcome, 'an unattended run must resolve');
+  assert.equal(
+    result.control.resumeCount,
+    0,
+    'a run nobody resumed must report no resumes, not an invented one',
+  );
+});
+
+test('does not let normal lifecycle nodes rewrite the graph-owned resume counter', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      trace,
+      async () => ({ route: 'terminal', stopKind: 'stalled' }),
+      async (state) => ({
+        control: {
+          ...state.control,
+          resumeCount: 42,
+        },
+      }),
+    ),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(
+    outcome,
+    'the run must resolve with the graph-owned resume counter intact',
+  );
+  assert.equal(
+    result.control.resumeCount,
+    0,
+    'only the graph may write resumeCount, so a node claiming resumes must be ignored',
+  );
+});
+
+/**
+ * The node here mutates the control it was handed and returns that same object,
+ * because mutating it and returning nothing proves nothing: the graph hands a
+ * node a shallow copy of control, so an unreturned mutation never reaches the
+ * channel whether the counter is protected or not.
+ */
+test('restores the graph-owned resume counter when a lifecycle node mutates the control it was handed', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      trace,
+      async () => ({ route: 'terminal', stopKind: 'stalled' }),
+      async (state) => {
+        state.control.resumeCount = 42;
+        return { control: state.control };
+      },
+    ),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(
+    outcome,
+    'the run must resolve with the graph-owned resume counter intact',
+  );
+  assert.equal(
+    result.control.resumeCount,
+    0,
+    'a mutated resume counter must be restored, not carried into the persisted control',
+  );
+});
+
 /**
  * A corrupt-counter case only proves fail-closed behaviour if the same fixture
  * without the corruption runs to completion, so each one asserts that baseline
@@ -914,6 +994,13 @@ for (const invalidBudgetCounter of [
   {
     field: 'maxIterations',
     label: 'a non-safe-integer iteration budget',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+  { field: 'resumeCount', label: 'a fractional resume count', value: 0.5 },
+  { field: 'resumeCount', label: 'a negative resume count', value: -1 },
+  {
+    field: 'resumeCount',
+    label: 'a non-safe-integer resume count',
     value: Number.MAX_SAFE_INTEGER + 1,
   },
   { field: 'llmCallBudget', label: 'a fractional llm call budget', value: 0.5 },

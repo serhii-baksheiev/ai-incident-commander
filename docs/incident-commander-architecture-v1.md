@@ -215,6 +215,7 @@ type IncidentState = {
 
     iterationsUsed: number;
     llmCallsUsed: number;
+    resumeCount: number;
 
     challengeRounds: number;
     stopKind?: InvestigationStop;
@@ -226,7 +227,7 @@ type IncidentState = {
 
 Collections use reducers with upsert-by-id semantics. `schemaVersion` is mandatory because checkpoints persist the state shape.
 
-The three budgets and the two usage counters are **graph-owned**: a node update
+The three budgets and the three usage counters are **graph-owned**: a node update
 can neither raise a limit nor rewrite usage. A node reports LLM consumption only
 through a declaration channel the graph validates; no node writes `llmCallsUsed`
 itself. Each budget terminates through the same existing `budget-exhausted` stop
@@ -264,7 +265,8 @@ execution path exists yet — nothing in `packages/` sets `declaredLlmCalls`, so
 see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
 declares an llm call"
 
-`schemaVersion` is `2` from this change. The counters are required fields, so
+`schemaVersion` is `3`: it moves whenever the strict control object gains a
+required field — `2` for the logical budget counters, `3` for `resumeCount`. The counters are required fields, so
 state persisted under version 1 is refused rather than coerced to an invented
 usage of zero — on the `kind: 'start'` path by the schema's version literal, and
 on the resume path by the graph's own version guard, because a restored

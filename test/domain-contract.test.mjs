@@ -82,13 +82,14 @@ const state = {
   },
   control: {
     runId: 'run-1',
-    schemaVersion: 2,
+    schemaVersion: 3,
     statusRulesVersion: 'v0.1',
     phase: 'concluding',
     maxIterations: 8,
     llmCallBudget: 12,
     iterationsUsed: 3,
     llmCallsUsed: 5,
+    resumeCount: 2,
     reservedChallengeBudget: 2,
     challengeRounds: 1,
     stopKind: 'sufficient',
@@ -189,7 +190,7 @@ test('upserts collection members by replacing in place and appending new ids', (
 });
 
 test('publishes explicit state and baseline status-rule versions', () => {
-  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 2);
+  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 3);
   assert.equal(domain.STATUS_RULES_VERSION, state.control.statusRulesVersion);
   assert.deepEqual(domain.BASELINE_STATUS_RULES, {
     version: domain.STATUS_RULES_VERSION,
@@ -257,6 +258,40 @@ test('requires the graph-owned usage counters on every control record', () => {
   }
 });
 
+test('rejects control state persisted at schema version 2, before the resume counter existed', () => {
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(state).success,
+    true,
+    'the current-version fixture must parse, or this rejection proves nothing',
+  );
+
+  const candidate = structuredClone(state);
+  candidate.control.schemaVersion = 2;
+
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(candidate).success,
+    false,
+    'state persisted before the resume counter must fail loudly, not be coerced',
+  );
+});
+
+test('requires the graph-owned resume counter on every control record', () => {
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(state).success,
+    true,
+    'the fixture carrying the resume counter must parse, or this rejection proves nothing',
+  );
+
+  const candidate = structuredClone(state);
+  delete candidate.control.resumeCount;
+
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(candidate).success,
+    false,
+    'control without resumeCount must be rejected instead of silently defaulted to zero',
+  );
+});
+
 /**
  * The graph refuses a budget or usage counter that is not a whole non-negative
  * count, one node into the run. The schema is the boundary that decides what a
@@ -268,6 +303,7 @@ const logicalBudgetCounters = [
   'llmCallBudget',
   'iterationsUsed',
   'llmCallsUsed',
+  'resumeCount',
 ];
 
 for (const invalidCount of [

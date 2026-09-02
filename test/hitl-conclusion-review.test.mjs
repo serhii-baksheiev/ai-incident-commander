@@ -155,6 +155,7 @@ function initialState(runId, humanReview) {
       llmCallBudget: 8,
       iterationsUsed: 0,
       llmCallsUsed: 0,
+      resumeCount: 0,
       reservedChallengeBudget: 2,
       challengeRounds: 0,
       humanReview,
