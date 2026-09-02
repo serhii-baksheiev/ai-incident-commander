@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { childEnv } from './fixtures/child-env.mjs';
@@ -151,6 +152,36 @@ test('derives stable Trial and Evidence ids from their frozen identity inputs', 
 });
 
 test(
+  'the start-mode worker stays alive until it is killed, so the kill is what ends it',
+  { timeout: 20_000 },
+  async () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-worker-liveness-'));
+    const checkpointPath = join(temporaryRoot, 'checkpoints.sqlite');
+    const runId = 'run-kill-liveness';
+    const testId = 'test-checkout';
+    let worker;
+
+    try {
+      worker = spawnWorker(['start', checkpointPath, runId, testId]);
+      await waitForMessage(worker, 'inside-execute-investigation');
+
+      await delay(200);
+
+      assert.deepEqual(
+        { exitCode: worker.child.exitCode, signalCode: worker.child.signalCode },
+        { exitCode: null, signalCode: null },
+        `the start-mode worker was gone 200ms after it reported being inside executeInvestigation: a non-null exitCode or signalCode here means the process death the resume test asserts would be the child's own exit, not the kill, and that kill has only been racing it\n${worker.diagnostics()}`,
+      );
+    } finally {
+      if (worker?.child.exitCode === null && worker.child.signalCode === null) {
+        worker.child.kill('SIGKILL');
+      }
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   'resumes the persisted run after process death without duplicate records or budget drift',
   { timeout: 25_000 },
   async () => {
@@ -173,7 +204,11 @@ test(
 
       assert.equal(firstWorker.child.kill('SIGKILL'), true, 'the test must kill the child process');
       const killed = await waitForExit(firstWorker);
-      assert.equal(killed.signal, 'SIGKILL');
+      assert.equal(
+        killed.signal,
+        'SIGKILL',
+        `the killed child reported no SIGKILL, which means it exited on its own before the kill landed; its own exit code was ${firstWorker.child.exitCode}\n${firstWorker.diagnostics()}`,
+      );
 
       resumedWorker = spawnWorker(['resume', checkpointPath, runId]);
       const replayed = await waitForMessage(resumedWorker, 'inside-execute-investigation');
