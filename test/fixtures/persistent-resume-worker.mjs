@@ -16,6 +16,21 @@ async function main() {
       });
 
       if (mode === 'start') {
+        // The test kills this process, and it must not beat the test to it. A
+        // never-resolving await holds no libuv handle, and Node leaves the IPC
+        // channel unref'd until something listens on it — so without this ref
+        // the child exited on its own before the kill could land, and the kill
+        // was racing an exit it usually, but not always, won: on the losing
+        // side the parent signalled a zombie and waitpid reported the original
+        // exit status, no signal (AIC-68).
+        //
+        // The ref holds only while the parent keeps the channel open, which is
+        // what the test does for its whole duration. It is not a claim that
+        // this process cannot exit at all: with the channel as its one live
+        // handle, closing it ends the process with no signal.
+        // see persistent-resume.test.mjs ›
+        // "the start-mode worker stays alive until it is killed, so the kill is what ends it"
+        process.channel.ref();
         await new Promise(() => {});
       }
 
