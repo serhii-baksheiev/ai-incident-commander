@@ -333,8 +333,15 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 
 /**
  * Wraps a lifecycle node so the graph keeps ownership of every control field a
- * node must not decide: the stop kind, the challenge counters, and — since
- * AIC-62 — the two logical budgets and their usage counters.
+ * node must not decide. The `protectedControl` object below is the one list of
+ * those fields; this comment deliberately does not repeat it, because the copy
+ * that used to be here fell behind the code — AIC-63 added `resumeCount` and
+ * the sentence never named it, not even when AIC-65 rewrote it to add `runId`
+ * and `humanReview`. `humanReview` is what the `propose_conclusion`
+ * edge routes on and `runId` is what the interactive identity check compares
+ * against the thread, so a node writing either could route a conclusion past
+ * its human review — pinned in hitl-conclusion-review.test.mjs › "does not let
+ * a lifecycle node disarm both the review gate and the run identity at once".
  *
  * `countsLogicalIteration` is what makes `iterationsUsed` graph-owned rather
  * than node-reported: the increment happens HERE, on entry to the wrapped node,
@@ -351,6 +358,8 @@ function preserveGraphOwnedControl(
 
     const protectedControl = {
       stopKind: current.stopKind,
+      runId: current.runId,
+      humanReview: current.humanReview,
       challengeRounds: current.challengeRounds,
       reservedChallengeBudget: current.reservedChallengeBudget,
       maxIterations: current.maxIterations,
@@ -363,6 +372,8 @@ function preserveGraphOwnedControl(
     const result = await node(incidentStateOf(state as InvestigationGraphState));
     const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
     const graphOwned = {
+      runId: protectedControl.runId,
+      humanReview: protectedControl.humanReview,
       challengeRounds: protectedControl.challengeRounds,
       reservedChallengeBudget: protectedControl.reservedChallengeBudget,
       maxIterations: protectedControl.maxIterations,
@@ -376,6 +387,8 @@ function preserveGraphOwnedControl(
     // update the current control is, so a graph-owned increment still lands.
     const {
       stopKind: _ignoredStopKind,
+      runId: _ignoredRunId,
+      humanReview: _ignoredHumanReview,
       challengeRounds: _ignoredChallengeRounds,
       reservedChallengeBudget: _ignoredReservedChallengeBudget,
       maxIterations: _ignoredMaxIterations,

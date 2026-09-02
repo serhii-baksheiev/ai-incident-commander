@@ -163,11 +163,13 @@ function initialState(runId, humanReview) {
   };
 }
 
-function tracedNodes(trace) {
+const defaultProposeConclusion = async () => ({ conclusion: proposedConclusion });
+
+function tracedNodes(trace, { proposeConclusion = defaultProposeConclusion } = {}) {
   return Object.fromEntries(
     lifecycleNodes.map((name) => [
       name,
-      async () => {
+      async (state) => {
         trace.push(name);
         if (name === 'termination_check') {
           return { route: 'terminal', stopKind: 'stalled' };
@@ -176,7 +178,7 @@ function tracedNodes(trace) {
           throw new Error('challenge must not run in this stalled-review fixture');
         }
         if (name === 'propose_conclusion') {
-          return { conclusion: proposedConclusion };
+          return proposeConclusion(state);
         }
         return {};
       },
@@ -184,13 +186,13 @@ function tracedNodes(trace) {
   );
 }
 
-function createHarness({ humanReview = true, runId }) {
+function createHarness({ humanReview = true, runId, proposeConclusion }) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-hitl-review-'));
   const checkpointPath = join(temporaryRoot, 'checkpoints.sqlite');
   const trace = [];
   let checkpointer = createSqliteCheckpointer(checkpointPath);
   let execution = graphPackage.createInvestigationGraph({
-    nodes: tracedNodes(trace),
+    nodes: tracedNodes(trace, { proposeConclusion }),
     checkpointer,
   });
   const config = { threadId: runId };
@@ -205,7 +207,7 @@ function createHarness({ humanReview = true, runId }) {
       checkpointer.db.close();
       checkpointer = createSqliteCheckpointer(checkpointPath);
       execution = graphPackage.createInvestigationGraph({
-        nodes: tracedNodes(trace),
+        nodes: tracedNodes(trace, { proposeConclusion }),
         checkpointer,
       });
     },
@@ -1043,6 +1045,147 @@ test('humanReview=false bypasses review and completes at END', async () => {
       'termination_check',
       'propose_conclusion',
     ]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * A START with humanReview:false is the legitimate unattended path (the test
+ * above). These fixtures are about a NODE flipping the review gate or the run
+ * identity mid-run: `humanReview` decides whether `propose_conclusion` routes
+ * to `review_conclusion` or END, and `runId` is what the interactive identity
+ * check compares against the thread, so both are graph-owned like the budgets.
+ */
+const foreignRunId = 'someone-elses-run';
+
+function proposeWithControlUpdate(rewrite) {
+  return async (state) => ({
+    conclusion: proposedConclusion,
+    control: { ...state.control, ...rewrite },
+  });
+}
+
+/**
+ * The node mutates the control it was handed and returns that same object,
+ * for the same reason as the resume-counter twin in investigation-graph: an
+ * unreturned mutation never reaches the channel whether the field is protected
+ * or not, so it would prove nothing.
+ */
+function proposeWithMutatedControl(rewrite) {
+  return async (state) => {
+    Object.assign(state.control, rewrite);
+    return { conclusion: proposedConclusion, control: state.control };
+  };
+}
+
+async function assertReviewGateIntact(harness, runId) {
+  const persisted = await harness.execution.getState(harness.config);
+  assert.deepEqual(
+    persisted.next,
+    ['review_conclusion'],
+    'a rogue control update must not route the conclusion past the human review',
+  );
+  assert.equal(
+    persisted.values.control.humanReview,
+    true,
+    'only the graph may write humanReview, so a node dropping it must be ignored',
+  );
+  assert.equal(
+    persisted.values.control.runId,
+    runId,
+    'only the graph may write runId, so a node rewriting it must be ignored',
+  );
+}
+
+async function confirmAndAssertIdentity(harness, interrupted, runId) {
+  const completed = await harness.execution.execute(
+    resumeCurrent(interrupted, { action: 'confirm' }),
+    harness.config,
+  );
+  assert.equal(isInterrupted(completed), false);
+  assert.equal(completed.control.humanReview, true);
+  assert.equal(completed.control.runId, runId);
+}
+
+test('does not let a lifecycle node drop humanReview to skip the conclusion review', async () => {
+  const runId = 'run-node-drops-human-review';
+  const harness = createHarness({
+    runId,
+    proposeConclusion: proposeWithControlUpdate({ humanReview: false }),
+  });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assertReviewGateIntact(harness, runId);
+    await confirmAndAssertIdentity(harness, interrupted, runId);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('restores humanReview when a lifecycle node mutates the control it was handed', async () => {
+  const runId = 'run-node-mutates-human-review';
+  const harness = createHarness({
+    runId,
+    proposeConclusion: proposeWithMutatedControl({ humanReview: false }),
+  });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assertReviewGateIntact(harness, runId);
+    await confirmAndAssertIdentity(harness, interrupted, runId);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('does not let a lifecycle node rewrite the graph-owned runId', async () => {
+  const runId = 'run-node-rewrites-run-id';
+  const harness = createHarness({
+    runId,
+    proposeConclusion: proposeWithControlUpdate({ runId: foreignRunId }),
+  });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assertReviewGateIntact(harness, runId);
+    await confirmAndAssertIdentity(harness, interrupted, runId);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('restores the graph-owned runId when a lifecycle node mutates the control it was handed', async () => {
+  const runId = 'run-node-mutates-run-id';
+  const harness = createHarness({
+    runId,
+    proposeConclusion: proposeWithMutatedControl({ runId: foreignRunId }),
+  });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assertReviewGateIntact(harness, runId);
+    await confirmAndAssertIdentity(harness, interrupted, runId);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('does not let a lifecycle node disarm both the review gate and the run identity at once', async () => {
+  const runId = 'run-node-disarms-review-and-identity';
+  const harness = createHarness({
+    runId,
+    proposeConclusion: proposeWithControlUpdate({
+      humanReview: false,
+      runId: foreignRunId,
+    }),
+  });
+
+  try {
+    const interrupted = await interruptAndReopen(harness);
+    await assertReviewGateIntact(harness, runId);
+    await confirmAndAssertIdentity(harness, interrupted, runId);
   } finally {
     harness.cleanup();
   }
