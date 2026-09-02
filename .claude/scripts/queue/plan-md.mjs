@@ -17,6 +17,7 @@ import { withAsOf } from './as-of.mjs';
 import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
+export const claimedState = 'open';
 
 const AGENT_QUEUE = /^##\s+Agent queue\s*$/i;
 const OPERATOR_QUEUE = /^##\s+Operator queue\s*$/i;
@@ -129,9 +130,10 @@ export const parsePlan = (plan) => {
       blocks: [],
       priority: items.length,
       createdAt: null,
-      // A flat list carries no marker at all, so revalidation at SELECT records
-      // `changed: null` for it — a blind spot, never an "unchanged".
+      // A flat list carries no compatibility marker; claim fingerprints still
+      // provide the authoritative revalidation baseline.
       updatedAt: null,
+      commentary: { count: 0, ids: [] },
       triage: MARKERS.triage.test(raw),
       trigger: MARKERS.triggerAuto.test(raw)
         ? 'auto'
@@ -284,6 +286,7 @@ export const triageItemFor = (proposal) => {
       `- **part to change** — ${proposal.part}`,
       `- **proposed change** — ${proposal.change}`,
       `- **how the next run proves it** — ${proposal.proof}`,
+      ...(proposal.measured ? [`- **measured** — ${proposal.measured}`, `- **inferred** — ${proposal.inferred}`] : []),
       '',
       `fingerprint: ${fingerprint}`,
       ...(proposal.asOf ? [`asOf: ${proposal.asOf}`] : []),
@@ -359,6 +362,7 @@ export const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 const bulletFor = (item, proposal, seen) =>
   `- **${oneLine(item.title)}** — finding: ${oneLine(proposal.finding)} · ` +
   `part: ${oneLine(proposal.part)} · proof: ${oneLine(proposal.proof)} · ` +
+  `${proposal.measured ? `measured: ${oneLine(proposal.measured)} · inferred: ${oneLine(proposal.inferred)} · ` : ''}` +
   `${proposal.asOf ? `asOf: ${proposal.asOf} · ` : ''}` +
   `fingerprint: \`${item.fingerprint}\` · seen ×${seen}`;
 

@@ -39,6 +39,32 @@ node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies, o
   (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and never from a file in the
   repo; the project or the JQL goes in `.claude/queue.json`.
 
+A config may declare several boards (`boards: { <name>: options }` plus a
+default `board`); the active one is chosen per checkout, not by editing the
+composed file:
+
+```bash
+node .claude/scripts/queue/index.mjs board        # the active board and the declared ones
+node .claude/scripts/queue/index.mjs board <board-id>  # switch this checkout: writes .claude/queue.board
+```
+
+The selector is per-checkout runtime state, the same class as
+`.claude/queue.state.json`: it needs its own `.gitignore` line, which a generated
+project ships and an `init`-installed rig adds by hand. An undeclared name is
+refused, never read as "no board" (see `test/template/queue-board.test.ts` ›
+"refuses a board nobody declared instead of falling back" — in the generator,
+absent in a generated rig). It is a rulebook path for `guard-rulebook`:
+`.claude/queue.board` is refused even when an item allow-list names it,
+and the `board` command itself refuses a switch while the checkout is unattended. This
+does not prevent an arbitrary direct shell write to the selector — edit-tool
+hooks cannot see one. `.claude/queue.state.json` stays per config, not per board:
+the tier the last close recorded rations the next selection whichever board it
+lands on. This is repository-risk state, not tracker metadata: switching from
+one independent queue to another must not turn a previous mechanism close into
+permission for a second one in the same checkout. Pinned in the generator's
+`test/template/queue-board.test.ts` (absent in a generated rig) › "keeps
+completed-tier spacing repository-global when the active board switches".
+
 Adding a fourth is an adapter, not a rewrite: `core.mjs` holds every selection
 decision and each adapter only maps its tracker's records onto the neutral shape.
 
@@ -53,13 +79,14 @@ state-vs-queue split exists to prevent.
 node .claude/scripts/preflight.mjs
 ```
 
-Four items are scripted (kill switch absent · `RIG_RUN_DIR` not already
-exported · local default branch matches the remote · the last deploy concluded
-successfully) and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
+Five items are scripted (kill switch absent · `RIG_RUN_DIR` not already
+exported · the versioned revalidation detection contract is supported · local
+default branch matches the remote · the last deploy concluded successfully)
+and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
 leaves no record cannot tell you it was skipped.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted four are clean; the rest are
+knowing which ground is soft. **GO** → the scripted five are clean; the rest are
 still yours.
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
@@ -87,14 +114,61 @@ export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
 
+⚠ **That export reaches the commands THIS shell runs and nothing else.** A
+`PreToolUse` hook is spawned by the harness with the harness's own environment,
+never with a variable the session exported — pinned in the generator's
+`test/template/guard-rulebook.test.ts` (absent in a generated rig) › "only a
+flag arms it — an exported RIG_UNATTENDED=1 with no flag changes nothing" —
+and in some harnesses the export does not even survive to the next Bash call.
+
+🔴 **So re-export it in every call that needs it.** `RIG_RUN_DIR` is how the run
+directory reaches the commands that read it from the environment — and two of
+the commands this skill invokes read it from somewhere else instead.
+`unattended-flag.mjs` does not read the variable; it takes the directory as
+`--run-dir`, which is why the call below passes it explicitly.
+`revalidation-report.mjs` does not read it either; it takes `--runs <dir>`.
+For every other command this skill invokes the variable is the whole of it, and
+passing the flag is not a fallback but an unrecognised argument — after which a
+command writes into a run directory nobody declared, or refuses for want of one
+while the caller believes it was told. Modules this skill *imports* rather than
+invokes are a third case again: `run-journal.mjs` and `queue/state.mjs` are
+handed a `runDir` by their caller, which is why §9 lists it among the details
+that must be copied rather than re-derived.
+
+`--run-dir` is taken by `unattended-flag.mjs`, and by no other script under
+`.claude/scripts/`. That is measured over the whole tree rather than against a
+list, in both directions, by the generator's
+`test/template/correspondence.test.ts` (absent in a generated rig) › "names
+exactly the commands that take --run-dir, and only those" — so a script anywhere
+in that tree that gains the flag without this sentence gaining its name goes
+red.
+
+What a hook CAN see is a file, so the unattended signal is one:
+
+```bash
+# at claim time, from the paths the item names (repo-relative prefixes, with
+# their trailing slash); the guard refuses every other rulebook edit while it is on
+node .claude/scripts/unattended-flag.mjs on --root "$PWD" --item <item-id> --run-dir "$RIG_RUN_DIR" --allow <prefix> [<prefix>…]
+```
+
+`guard-rulebook` reads it (`.claude/rules/autonomy.md`, "Never"): with the flag
+on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under the generated
+rulebook — both harnesses' rules, skills, agents and hook wiring, plus their
+scripts, queue config and integrity manifest — is refused unless its
+path starts with an allowed prefix; the board selector is the one always-refused
+exception and cannot be admitted by an allow-list. With no flag the guard does nothing. An
+item that needs a rulebook path names it here — a decision made at claim
+time, never a default — and the stop step below turns the flag off. Pinned in
+the generator's `test/template/guard-rulebook.test.ts` — absent in a generated
+rig — › "blocks a hook-config edit with an empty allow-list, naming path, item and the rule".
+
 ⚠ **The export outlives the run's own calls.** Everything the session spawns
 inherits it — and a test suite that spawns the queue CLI would write fixture
-records into this run's trace (AR-139: 38 fixture selections and 22 fixture
-revalidation events in one session, two tests exiting 1). So preflight refuses
-to start on a `RIG_RUN_DIR` already exported. The generator's own test harness
+records into this run's trace. So preflight refuses to start on a
+`RIG_RUN_DIR` already exported. The generator's own test harness
 also scrubs the variable before any test file loads — its `test/setup-env.ts`,
-pinned by its `test/template/rig-run-dir-scrub.test.ts` › "holds with the
-variable exported around the whole vitest process" — and **neither file ships
+pinned by its `test/template/rig-run-dir-scrub.test.ts` (absent in a generated
+rig) › "holds with the variable exported around the whole vitest process" — and **neither file ships
 into a generated rig**: here, nothing scrubs it, and a rig's own test setup is
 the place to do the same.
 
@@ -146,12 +220,12 @@ reported by `hygiene` as `owner-mismatch`. It clears the way `trigger-human`
 does: a human moves the item or re-marks it. An unmarked item is unconditional.
 Two items of another product once entered this queue as normal spacers and
 escalated `PREMISE FALSE` back to back — a run-level stop spent on work that
-was never this checkout's (AR-132). Pinned in the generator's
+was never this checkout's. Pinned in the generator's
 `test/template/queue-owner.test.ts` — absent in a generated rig — › "holds an
 item whose owner is another repository, with the cause named".
 
 🔴 **An item's lifecycle is a label a human wrote, and the loop infers none of
-it** (AR-144). Four words, read by `lifecycleOf` in `core.mjs` so every adapter
+it**. Four words, read by `lifecycleOf` in `core.mjs` so every adapter
 means the same thing — three of lifecycle, one of scheduling:
 
 - `keep-core` — the problem and the responsibility are valid and the item is
@@ -233,59 +307,72 @@ and the work turns out to touch an elevated path (`CLAUDE.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
-**Selection also revalidates the item against its last take-up.** `next`
-records the selected item's `updatedAt` marker in the run state (`takeUps`) and,
-when the item is offered again, compares the two — against this run's take-up
-when it has one, otherwise against the newest earlier run's under `.claude/runs/`
-(AR-138: before that, an item taken up yesterday compared against nothing and
-read as a first sight). A proposal the loop files carries its own baseline: the
-`jira` and `github-issues` adapters record the filed item's marker as a take-up
-in the run that filed it. The event names which it used — `baseline:
-this-run | previous-run | null` — pinned in the generator's
-`test/template/revalidation-baseline.test.ts` — absent in a generated rig — ›
-"holds when the marker moved past the earlier run’s take-up, and names that
-baseline". A marker that
-moved prints a `revalidate:` line and the JSON carries `revalidation.changed:
-true`: **re-read the item before acting on it**, then record what the re-read
-concluded — whether the change altered the action is the evidence this exists to
-collect, and the comparison alone cannot supply it:
+**Selection is the first point of the one revalidation chain.** On the first
+successful SELECT, `next` creates a versioned content-blind baseline at
+`.rig/claims/<item-id>.json` and reports `BASELINE_CREATED`. Add that record to
+the task's branch: a later SELECT, BEFORE_PR or BEFORE_CLOSE refuses an
+untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
+The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR and
+includes workflow state normalised to the state that checkpoint expects;
+`commentary` is observed there but becomes hold-authoritative only at
+BEFORE_CLOSE. Neither set stores title, description or comment bodies.
+For Jira and GitHub issues, the adapter's successful `claim` writes its
+observable `in-progress` transition into that same record as `workflowClaim`.
+Only that durable acknowledgement makes the claimed state expected at a resumed
+SELECT, BEFORE_PR or BEFORE_CLOSE; the same tracker state reached without it is
+external drift and HOLDs. PLAN.md remains `open` because it has no observable
+claim transition. The checkpoint-aware edge is pinned in the generator's
+`test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
+› "keeps a resumed SELECT current after the Jira adapter records its own claim
+transition", › "GitHub claim records the durable transition that makes
+in-progress CURRENT", › "holds claim:scope at resumed SELECT for the same transition
+made outside the adapter", › "accepts an in-progress transition performed by
+the Jira adapter claim operation", and › "holds claim:scope when an external
+actor moves the item to the expected claimed state".
+The durable/evidence boundary and rollback rule are recorded in
+`docs/decisions/content-blind-revalidation.md`.
+
+`takeUps` and `updatedAt` remain in run state and in the event's `task` field as
+evidence/compatibility state. They do not decide `CURRENT`, `CHANGED`,
+`CONFLICT` or `UNVERIFIABLE`, do not decide whether a first baseline may be
+created, and never appear as a drift source. The event may still name
+`baseline: this-run | previous-run | null` so older evidence remains readable.
+First sight versus resume comes only from the SELECT events in the current and
+bounded sibling run journals. If those journals cannot prove first sight, a
+missing claim is `UNVERIFIABLE`; an `updatedAt` marker can neither create nor
+withhold the claim. Hitting the sibling entry/read cap makes that proof
+incomplete and therefore fails closed; "not found in the bounded subset" never
+means "never selected".
+
+On `CHANGED`, `CONFLICT` or `UNVERIFIABLE`, **re-read before acting**, then
+record what the re-read concluded:
 
 ```bash
 node .claude/scripts/revalidate.mjs outcome --point SELECT --ticket <item-id> --action-changed <true | false> --note '<what changed, or why it changes nothing>'
 ```
 
-It appends one `revalidation-outcome` record whose `answers` names the
-revalidation it resolves, so the report can pair the two without guessing. The
+It appends one typed `revalidation-outcome` record whose `detectionId` names the
+stable detection it resolves (and retains the legacy `answers` sequence), so
+the report can pair the two across harness runs without guessing. The
 note is stored verbatim from argv, so keep it in single quotes: inside double
 quotes the shell expands a backtick or a `$` before the command sees it.
 Nothing forces this record — a `revalidation` event with no matching outcome is
 counted as `unresolved`, which is the honest word for a re-read the run skipped.
 
-Under a declared run directory, every selection logs one `revalidation` event
-`{ticket, point: SELECT, changed, source, action, task}` — the same shape the
-BEFORE_PR and BEFORE_CLOSE points write. **No-change is always recorded**, one
-line per selection and no sampling: the rule is explicit so the report's
-`opportunities` is a count and not an estimate. An adapter with no marker
-(`plan-md`) logs `changed: null`, never "unchanged". ⚠ The marker also moves on
-the run's own claim and comments. The `jira` and `github-issues` adapters
-re-record the take-up after each write they make — claim, comment, close,
-escalate — so a move made through the adapter is not a hold (AR-140, from the
-journal's RX3/RX4 entry: every BEFORE_PR catch of that run was the run's own
-comment, counted by `revalidation-report.mjs`); a
-comment posted by any other route — a REST call by hand, a connector — still
-moves it like anyone else's, and a `true` can still be self-inflicted that way
-— the re-read decides, which is why the outcome is recorded separately, and a
-hold the re-read overturns is counted as a false hold with its source named.
-Pinned in the generator's `test/template/self-inflicted-marker.test.ts` — absent
-in a generated rig — › "%s leaves the take-up at the marker the write produced",
-an `it.each` over claim, comment, close and escalate. The
+Under a declared run directory, every selection logs one versioned
+`revalidation` detection — the same shape BEFORE_PR and BEFORE_CLOSE write.
+**No-change is always recorded**, one line per selection and no sampling: the
+rule is explicit so the report's `opportunities` is a count and not an estimate.
+The `jira` and `github-issues` adapters still re-record take-ups after their own
+writes for compatibility and attribution evidence; that state is never the
+fingerprint baseline. The
 four-week view is `node .claude/scripts/revalidation-report.mjs --since <date>`,
 over this rig's `.claude/runs/` (or a `--runs <dir>`). The behaviour is pinned in the
-generator's `test/template/queue-revalidation.test.ts` — absent in a generated
-rig — › "an adapter with no marker records a blind spot, not \"unchanged\"", ›
-"a moved marker holds on task:updatedAt, re-snapshots, and journals the change"
-and › "the loop skill's outcome command records what the re-read concluded", and
-in `test/template/revalidation-evidence.test.ts`.
+generator's `test/template/content-blind-revalidation.test.ts` (absent in a generated rig) › "creates a
+versioned content-blind claim and returns BASELINE_CREATED" and › "defers an
+added comment through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE", plus
+`test/template/revalidation-evidence.test.ts` (absent in a generated rig) › "the journaled events of SELECT,
+BEFORE_PR and BEFORE_CLOSE share exactly the common keys and value types".
 
 **Then, before the Red step: `check-premises`.** The item was written by someone
 who was not reading the code at the time, and everything downstream — the failing
@@ -319,7 +406,7 @@ exits 1 whatever the reviewer said. Save the whole answer to a file under the ru
 directory — `$RIG_RUN_DIR/check-premises.md`, one file per gate so two answers
 never overwrite each other — and pass that path (`-` reads stdin instead). The
 same holds for every `<report>` in this skill, as `pr-ship` already does for its
-reviewers (AR-117). Pinned in the generator's `test/template/loop-report-file.test.ts`
+reviewers. Pinned in the generator's `test/template/loop-report-file.test.ts`
 — absent in a generated rig — › "states that the report is a file the session
 writes from the subagent answer, before the first check".
 
@@ -364,8 +451,8 @@ reviewer verdict, an exhausted gate-round cap, a false premise in the item itsel
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
-**two escalations in a row** · **budget** · **nothing selectable** · **queue
-empty**.
+**revalidation hold** · **two escalations in a row** · **budget** · **nothing
+selectable** · **queue empty**.
 
 🔴 **Their inputs come from a file, not from your memory — and that is why they
 fire at all.** `escalations` and `lastDeployVerdict` live in
@@ -515,7 +602,7 @@ inventory of findings** — and this had to be settled, because the two readings
 disagreed the first time a stop arrived without an inventory. An exhausted
 gate-round cap names its stage (the gate) and its wall (the branch's rounds are
 spent — the count, not a verdict on whether the fixes were converging, which the
-counter never measured; AR-115), while the individual blockers behind it are not persisted anywhere until
+counter never measured), while the individual blockers behind it are not persisted anywhere until
 per-round verdicts exist. That is a `documented-stall`: the record locates the wall
 and the next reader knows where to look.
 
@@ -651,10 +738,13 @@ declared in §1. Five things about it are worth knowing before relying on it:
   so a stale record cannot read as the current one — which is the whole failure a
   journal exists to prevent.
 - ⚠ **The trace can stop before the run does, and the two failures part ways
-  here.** A journal that can no longer accept records — a sequence already
-  broken, a file that will not parse, a run already marked ended — is a lost
-  trace, **not** a reason to withhold work the queue can still hand out: the
-  selection prints, stderr carries a `run journal:` line, the exit code stays 0.
+  here.** After a durable claim exists, a journal that can no longer accept
+  records — a sequence already broken, a file that will not parse, a run already
+  marked ended — is a lost trace, **not** by itself a reason to withhold work the
+  queue can still hand out: the selection prints, stderr carries a `run journal:`
+  line, and the claim still decides drift. Before the first claim, the boundary
+  is stricter: an unreadable current or bounded sibling journal means SELECT
+  cannot prove first sight, so an absent claim is `UNVERIFIABLE` and exits 2.
   The refusals are the ones where nothing has happened yet and a second fixes
   it, and there are **four**: the declaration is empty, its directory does not
   exist, the path is not a directory, or the journal module is missing. Each
@@ -688,6 +778,23 @@ If no run directory was declared, there is nothing to close and this step is
 skipped — say so in the journal entry rather than leaving the reader to guess
 which of the two happened.
 
+**And turn the unattended flag off** — it outlives the run otherwise, and the
+next attended session would find its rulebook edits refused in the name of an
+item nobody is working:
+
+```bash
+node .claude/scripts/unattended-flag.mjs off --root "$PWD"
+```
+
+If that command reports a legacy machine-wide flag, it deliberately leaves a
+foreign pre-upgrade authorization in place and the checkout stays fail-closed.
+Inspect the exact reported record and confirm that no pre-upgrade run still uses
+it, then remove only that record with
+`node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>`.
+Run scoped `off --root "$PWD"` again to surface the next record, and repeat the
+inspection one at a time; do not record the flag as off until the scoped command
+succeeds.
+
 At every **stop** — not at a checkpoint — turn the run's findings into **at most
 three** improvement proposals. **The cap is the mechanism, not a budget:** an
 unbounded improvement list is another diary, and three forces a choice. Each names
@@ -713,12 +820,41 @@ node --input-type=module -e '
     part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
     change:  "<concretely enough to diff>",
     proof:   "<the observation that would differ next run>",
-  }, { project: "<KEY>" }));   // jira only — the project key from .claude/queue.json;
+    // a pair: what the probe touched, and what is concluded from it. The
+    // mechanism accepts a proposal without them; this procedure does not.
+    measured: "<the paths the probe actually exercised>",
+    inferred: "<the conclusion, citing only surfaces named in measured>",
+  }, { project: "<KEY>" }));   // jira only — the ACTIVE board's key: `queue/index.mjs board --json` → options.project;
                                // plan-md and github-issues take no second argument
 '
 ```
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
+
+**A finding can say what it measured and what it inferred, as two paired fields.**
+A proposal whose premise was never true had no check at filing, only at take-up
+— one such proposal was filed, promoted and claimed before its platform
+conclusion was traced to a probe that had touched one hook. So `measured` and `inferred`
+are separate, and `validateProposal` refuses an `inferred` that cites a path
+`measured` does not, naming both fields and the path; one field without the
+other is refused too, and neither files as before. The surface is a cited path
+(`citedPathsOf`), so a conclusion that names no path passes this check — it
+catches the path-shaped overreach and nothing subtler.
+
+⚠ **The pair is how a proposal opts into the check, and a proposal filed without
+it is not checked at all** — `validateProposal` keeps the four-part contract, so
+that shape with neither field still files as it always did. That is the
+stated limit, not an oversight: making the fields mandatory would refuse every
+proposal the three adapters already file, and the loop is the author this rule
+is for. So **every proposal this loop files carries both fields** — the snippet
+above supplies them, and a stop that cannot say what it measured has nothing
+to propose. A reviewer reading a filed proposal without the pair reads a
+proposal that skipped this procedure. Pinned in the generator's
+`test/template/queue.test.ts` — absent in a generated rig — › "refuses a
+proposal whose inference names a surface its measurement did not touch", ›
+"files a proposal whose inference stays inside what it measured", › "refuses one
+of the two fields without the other" and › "a proposal with neither field files
+as today".
 
 **The filed item also records the commit it was measured against** — an `asOf:`
 line, HEAD of this checkout unless the call passes its own `asOf` (`null` files
@@ -728,7 +864,7 @@ reports one whose cited paths changed since its `asOf` as
 one git cannot diff from as `proposal-asof-unanswerable` — never as clean. Two
 proposals in a row once escalated `PREMISE FALSE` because the merge that
 falsified each landed after it was filed, and selection hands out the oldest
-first (AR-116). The behaviour is pinned in the generator's
+first. The behaviour is pinned in the generator's
 `test/template/proposal-asof.test.ts` — absent in a generated rig — ›
 "names the overtaken one, the unanswerable one, and stays silent on the current one".
 
@@ -745,7 +881,7 @@ the selection query cannot reach. Add the heading — never the Agent queue.
 
 One adapter needs the second argument the snippet above carries: `jira` requires
 `options.project` and throws rather than filing without it — loudly, so nothing
-is lost, but a call that drops it files nothing (AR-117).
+is lost, but a call that drops it files nothing.
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
@@ -781,20 +917,19 @@ three poisons the only channel by which this project learns.
   the very next query.
 - **Closing:** first ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
-  underneath it (AR-135):
+  underneath it:
 
   ```bash
   node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>
   ```
 
-  It compares the item's marker against the newer of this run's last
-  validation and its take-up — an adapter re-records the take-up after each
-  write of its own (§2, AR-140), so a comment posted after BEFORE_PR does not
-  hold the close; pinned in the generator's
-  `test/template/self-inflicted-marker.test.ts` › "continues when the run’s own
-  write moved the marker after the last validation" — and its
-  state against the `in-progress` a close expects, journals one `revalidation`
-  event at `point: BEFORE_CLOSE`, and lists the item's dependants with each
+  It compares the tracked claim's `scope` and `commentary` fingerprint sets;
+  commentary becomes hold-authoritative only here. Marker/take-up movement is
+  retained in evidence but cannot decide drift. A missing claim is
+  `UNVERIFIABLE` and stops the close. The adapter's expected claimed state is
+  part of the same `claim:scope` comparison rather than a second state-drift
+  decision. The check journals one `revalidation` event at `point:
+  BEFORE_CLOSE` and lists the item's dependants with each
   one's state re-read for the write-back below — pinned in the generator's
   `test/template/revalidate.test.ts` (absent in a generated rig) › "appends
   exactly one BEFORE_CLOSE revalidation event after the BEFORE_PR one, and does
@@ -802,7 +937,7 @@ three poisons the only channel by which this project learns.
   and reads a hold as a stop" and › "re-reads each dependant's state, and names
   one the tracker no longer offers". On a `github-issues` queue that list is
   empty: a single `gh issue view` carries no cross-index, so `find` answers no
-  `blocks` there (`test/template/close-transitioned.test.ts` › "github asks `gh
+  `blocks` there (`test/template/close-transitioned.test.ts` (absent in a generated rig) › "github asks `gh
   issue view` with the full field list and maps CLOSED to closed"). A
   hold (exit 2) stops the close: re-read the item, record the outcome with
   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_CLOSE --ticket
@@ -814,7 +949,7 @@ three poisons the only channel by which this project learns.
   `true` says the close landed, because every adapter reads the item back after
   the transition — `jira` the status category after the POST, `github-issues`
   `gh issue view --json state`, `plan-md` the line being there and then gone
-  (the generator's `test/template/close-transitioned.test.ts` › "GETs the issue
+  (the generator's `test/template/close-transitioned.test.ts` (absent in a generated rig) › "GETs the issue
   status after the transition POST and reports transitioned: true when the
   category is done", › "runs `issue view <id> --json state` after `issue close`
   and reports transitioned: true on CLOSED", › "reports transitioned: true once
