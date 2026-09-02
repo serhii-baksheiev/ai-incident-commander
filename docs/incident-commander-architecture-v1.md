@@ -585,17 +585,21 @@ Three properties are load-bearing, and each is a rule rather than a preference:
   number computed from them.
 - **Provenance decides what may be published, and the line is who originated the
   number** — not which channel the graph owns, because the graph owns the
-  control block either way. Three axes are **graph-originated**: logical
-  iterations and resumes, which the graph increments itself and no node update
-  can write, and wall-clock duration, which the runner times and the
-  investigation never reports. Two are **node-originated** and say so:
-  `declaredLlmCallsUsed` is the sum of what nodes *declared* — the graph
-  validates and accumulates, but does not observe the calls — and `toolCallsUsed`
-  counts `trials`, a node-written channel. In a benchmark the node is the system
-  under test, so those two are as trustworthy as the fixture that produced them.
-  They are recorded anyway: a declared count is the only honest thing to record
-  while no provider exists to observe instead, and this graph has no independent
-  tool-call channel. Evidence reaches an
+  control block either way. The six axes split three and three.
+
+  **Graph-originated** — `logicalIterationsUsed` and `resumeCount`, which the
+  graph increments itself and no node update can write, and
+  `wallClockDurationMs`, which the runner times and the investigation never
+  reports.
+
+  **Node-originated** — `declaredLlmCallsUsed`, the sum of what nodes *declared*
+  (the graph validates and accumulates but never observes a call);
+  `toolCallsUsed`, a count of `trials`, a node-written channel; and `retryCount`,
+  derived from those same trials by a node-supplied `attempt`. In a benchmark the
+  node is the system under test, so **all three** are as trustworthy as the
+  fixture that produced them. They are recorded anyway: a declared count is the
+  only honest thing to record while no provider exists to observe instead, and
+  this graph has no independent tool-call channel. Evidence reaches an
   evaluation through a channel separate from the opaque `investigate` callback,
   so a callback reporting its own spend is ignored and the generic path
   publishes none rather than an unverified number. see
@@ -624,11 +628,13 @@ entry per axis beside the quality scores, which is a convenience projection for
 reading and charting. `schemaVersion` stays out of the score stream — it
 describes the shape, not a spend.
 
-⚠ Measured on a live read-back: LangSmith **lower-cases feedback keys**, so
-`declaredLlmCallsUsed` is read back as `declaredllmcallsused`. The axes stay
-separate and the mapping is unambiguous, but a reader searching the feedback
-stream for the camelCase name will not find it. `outputs.resources` keeps the
-names as written. Both are projected through the same
+⚠ LangSmith **lower-cases feedback keys**, so `declaredLlmCallsUsed` is read
+back as `declaredllmcallsused`. The axes stay separate and the mapping is
+unambiguous, but a reader searching the feedback stream for the camelCase name
+will not find it; `outputs.resources` keeps the names as written. This is a
+claim about a third-party system, so it rests on a recorded read-back rather
+than on a local test, which could only assert the capturing fake:
+`docs/decisions/langsmith-resource-readback.md`. Both are projected through the same
 exact-allowlist *discipline* as run metadata — not the same allowlist, and not the same failure
 mode: `projectRunMetadata` rebuilds from its own key list and leaves a missing
 optional field undefined, while resource evidence has its own list and
