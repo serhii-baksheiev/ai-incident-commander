@@ -91,9 +91,33 @@ export type InvestigationExecutionConfig = Readonly<{
   threadId: string;
 }>;
 
+/**
+ * What a lifecycle node hands back to the graph.
+ *
+ * `declaredLlmCalls` is the ONE channel through which a node reports LLM
+ * consumption, and it is a declaration rather than a write: the node says how
+ * many calls it made, the graph validates that number and folds it into the
+ * counter it owns. A node cannot reach `control.llmCallsUsed` itself — see
+ * `preserveGraphOwnedControl`.
+ *
+ * Nothing in this repository declares anything today, because no LLM execution
+ * path exists. That is why `llmCallsUsed` is observed to be exactly 0 rather
+ * than estimated: an unused channel reports nothing, where a synthesised count
+ * would be cost evidence nobody measured. The boundary is here so a real
+ * provider, when one arrives, reports through it instead of inventing its own.
+ *
+ * ⚠ Limit, by construction: `termination_check` and `challenge_hypothesis`
+ * return their own decision types and so have no channel of their own. Their
+ * consumption is not declarable, and this is stated rather than hidden — see
+ * `investigation-graph.test.mjs` › "adds a node-declared llm call count to
+ * llmCallsUsed through the typed boundary" for what the channel does cover.
+ */
+export type InvestigationNodeResult = Partial<IncidentState> &
+  Readonly<{ declaredLlmCalls?: number }>;
+
 export type InvestigationNode = (
   state: IncidentState,
-) => Partial<IncidentState> | Promise<Partial<IncidentState>>;
+) => InvestigationNodeResult | Promise<InvestigationNodeResult>;
 
 export type InvestigationNodes = Omit<
   Record<InvestigationNodeName, InvestigationNode>,
@@ -270,27 +294,77 @@ function assertHumanHypothesisIdIsAvailable(
   }
 }
 
-function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
-  return async (state) => {
-    const protectedControl = {
-      stopKind: state.control.stopKind,
-      challengeRounds: state.control.challengeRounds,
-      reservedChallengeBudget: state.control.reservedChallengeBudget,
-    };
-    const update = await node(incidentStateOf(state as InvestigationGraphState));
-    if (update.control === undefined) return update;
+/**
+ * Reads a node's LLM declaration, and refuses anything that is not a count.
+ *
+ * Absent is the ordinary case and means zero — no node in this repository
+ * declares anything. Present-but-not-a-count is a different case and throws:
+ * the node tried to report consumption and got the shape wrong, and folding
+ * that into a graph-owned counter would corrupt the one number the budget is
+ * decided from.
+ */
+function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
+  const declared = result.declaredLlmCalls;
+  if (declared === undefined) return 0;
 
+  if (typeof declared !== 'number' || !Number.isSafeInteger(declared) || declared < 0) {
+    throw new Error('invalid declared llm call count');
+  }
+
+  return declared;
+}
+
+/**
+ * Wraps a lifecycle node so the graph keeps ownership of every control field a
+ * node must not decide: the stop kind, the challenge counters, and — since
+ * AIC-62 — the two logical budgets and their usage counters.
+ *
+ * `countsLogicalIteration` is what makes `iterationsUsed` graph-owned rather
+ * than node-reported: the increment happens HERE, on entry to the wrapped node,
+ * so a node cannot fail to count its own iteration or count it twice.
+ */
+function preserveGraphOwnedControl(
+  node: InvestigationNode,
+  options: Readonly<{ countsLogicalIteration?: boolean }> = {},
+): InvestigationNode {
+  return async (state) => {
+    const current = (state as InvestigationGraphState).control;
+    assertLogicalBudgetCounters(current);
+
+    const protectedControl = {
+      stopKind: current.stopKind,
+      challengeRounds: current.challengeRounds,
+      reservedChallengeBudget: current.reservedChallengeBudget,
+      maxIterations: current.maxIterations,
+      llmCallBudget: current.llmCallBudget,
+      iterationsUsed:
+        current.iterationsUsed + (options.countsLogicalIteration ? 1 : 0),
+      llmCallsUsed: current.llmCallsUsed,
+    };
+    const result = await node(incidentStateOf(state as InvestigationGraphState));
+    const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
+    const graphOwned = {
+      challengeRounds: protectedControl.challengeRounds,
+      reservedChallengeBudget: protectedControl.reservedChallengeBudget,
+      maxIterations: protectedControl.maxIterations,
+      llmCallBudget: protectedControl.llmCallBudget,
+      iterationsUsed: protectedControl.iterationsUsed,
+      llmCallsUsed: protectedControl.llmCallsUsed + readDeclaredLlmCalls(result),
+    };
+
+    // The node's own control update is the base only when it sent one; with no
+    // update the current control is, so a graph-owned increment still lands.
     const {
       stopKind: _ignoredStopKind,
       challengeRounds: _ignoredChallengeRounds,
       reservedChallengeBudget: _ignoredReservedChallengeBudget,
+      maxIterations: _ignoredMaxIterations,
+      llmCallBudget: _ignoredLlmCallBudget,
+      iterationsUsed: _ignoredIterationsUsed,
+      llmCallsUsed: _ignoredLlmCallsUsed,
       ...control
-    } = update.control;
-    const controlUpdate = {
-      ...control,
-      challengeRounds: protectedControl.challengeRounds,
-      reservedChallengeBudget: protectedControl.reservedChallengeBudget,
-    };
+    } = update.control ?? current;
+    const controlUpdate = { ...control, ...graphOwned };
 
     return {
       ...update,
@@ -300,6 +374,27 @@ function preserveGraphOwnedControl(node: InvestigationNode): InvestigationNode {
           : { ...controlUpdate, stopKind: protectedControl.stopKind },
     };
   };
+}
+
+/**
+ * Fails closed on a logical budget or usage counter that is not a count.
+ *
+ * Runs before any budget is spent, and before a node runs, because the whole
+ * point of a budget is that the number it is decided from is trustworthy: a
+ * fractional or negative counter silently changes what "exhausted" means, and a
+ * run that continued on one would report usage nobody can reconcile.
+ */
+function assertLogicalBudgetCounters(control: IncidentStateControl): void {
+  for (const [field, value] of [
+    ['iteration budget', control.maxIterations],
+    ['llm call budget', control.llmCallBudget],
+    ['logical iteration counter', control.iterationsUsed],
+    ['llm call counter', control.llmCallsUsed],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`invalid ${field}`);
+    }
+  }
 }
 
 function assertChallengeCounters(control: IncidentStateControl): void {
@@ -420,6 +515,8 @@ export function createInvestigationGraph({
     state: InvestigationGraphState,
   ) => {
     assertChallengeCounters(state.control);
+    assertLogicalBudgetCounters(state.control);
+
     const decision = await nodes.termination_check(incidentStateOf(state));
 
     if (
@@ -431,6 +528,24 @@ export function createInvestigationGraph({
     }
 
     if (decision.route === 'need-more-evidence') {
+      // A logical budget bounds what the graph may still SPEND, so it is read
+      // on the continue path and not against a decision that has already
+      // concluded: a run that reached a terminal stop kind keeps it, rather
+      // than having an exhausted budget overwrite the finding.
+      //
+      // `budget-exhausted` is the existing stop kind for a spent budget — the
+      // reserved challenge reserve already terminates through it — so an
+      // exhausted logical budget reads the same way rather than inventing one.
+      // Like that reserve, the check runs after `termination_check` has been
+      // consulted, which keeps this node the sole owner of the stop kind and
+      // keeps one trace shape across all three budgets.
+      if (
+        state.control.iterationsUsed >= state.control.maxIterations ||
+        state.control.llmCallsUsed >= state.control.llmCallBudget
+      ) {
+        return terminate(state, 'budget-exhausted');
+      }
+
       return new Command({
         goto: 'plan_investigation',
         update: { control: controlWithoutStopKind(state.control) },
@@ -530,7 +645,12 @@ export function createInvestigationGraph({
     )
     .addNode(
       'plan_investigation',
-      preserveGraphOwnedControl(nodes.plan_investigation),
+      // Entering this node IS a logical investigation iteration — it is the
+      // node the loop-back edge returns to, so counting here counts exactly the
+      // iterations `maxIterations` is meant to bound.
+      preserveGraphOwnedControl(nodes.plan_investigation, {
+        countsLogicalIteration: true,
+      }),
     )
     .addNode(
       'execute_investigation',

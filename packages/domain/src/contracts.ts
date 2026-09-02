@@ -138,6 +138,12 @@ export const IncidentStateControlSchema = z.strictObject({
   llmCallBudget: z.number(),
   reservedChallengeBudget: z.number(),
   challengeRounds: z.number(),
+  // Usage against the two logical budgets above. Required, not optional: an
+  // absent counter would have to be read as zero, which is indistinguishable
+  // from a run that has spent nothing — see INCIDENT_STATE_SCHEMA_VERSION.
+  // The graph owns both; a node update can never write them.
+  iterationsUsed: z.number(),
+  llmCallsUsed: z.number(),
   stopKind: InvestigationStopSchema.optional(),
   humanReview: z.boolean(),
 });
