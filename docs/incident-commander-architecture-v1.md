@@ -442,6 +442,7 @@ graphVersion
 promptVersion
 toolsetVersion
 statusRulesVersion
+evaluatorVersion (for versioned behavior-evaluator records)
 toolMode: live | replay
 knowledgeSetVersion
 memoryEnabled
@@ -450,6 +451,10 @@ temperature
 seed (where supported)
 docsAvailable (when relevant)
 ```
+
+The versioned metadata projection is pinned by
+`test/benchmark-evaluation.test.mjs` › "allowlists outbound run metadata and
+omits undefined optional fields".
 
 Baseline status rules are fixed **before** the first experiment and versioned.
 
@@ -471,6 +476,27 @@ At least **3 runs per scenario** are required until stability is empirically dem
 - false-alert / no-incident correctness;
 - challenge-effect evaluator;
 - LLM judge only where structural evaluation is insufficient.
+
+The public benchmark execution callbacks (`investigate` and `createNodes`)
+receive a ground-truth-free `BenchmarkExecutionInput` allowlist projection:
+experiment/example/run/thread/scenario identities, the replay fixture, and
+versioned runtime metadata. They do not receive `BenchmarkRecord`,
+`IncidentScenario`, ground truth, or evaluator expectations. The complete
+record remains confined to evaluator, regression-gate, persistence, and
+LangSmith dataset/evidence boundaries.
+
+Executable boundary proof: `test/behavior-evaluators.test.mjs` › "keeps
+scenario ground truth outside the investigation execution callback" and ›
+"graph benchmark keeps ground truth outside createNodes and records a challenge
+with no investigation change".
+
+Persisted v0.1 records remain readable without behavior-evaluator fields. A
+v0.2 behavior-evaluator payload declares `evaluatorVersion` and
+`behaviorMetrics` together; partial or unknown-version payloads fail loudly.
+Executable compatibility proof: `test/behavior-evaluators.test.mjs` ›
+"persists accepted v0.1 records without behavior-evaluator fields", › "rejects
+behavior metrics when their evaluator version is absent", and › "rejects an
+explicitly unsupported persisted evaluator version".
 
 LLM judges use a cheaper model and separate eval budget.
 

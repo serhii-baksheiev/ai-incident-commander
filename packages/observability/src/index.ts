@@ -8,6 +8,29 @@ const PERSISTED_METRIC_KEYS = [
   'termination_correctness',
 ] as const;
 
+const PERSISTED_BEHAVIOR_METRIC_KEYS = [
+  'misleading_evidence_handling',
+  'false_alert_correctness',
+  'challenge_effect',
+] as const;
+
+const PERSISTED_BEHAVIOR_EVALUATOR_VERSION =
+  'behavior-evaluators-v0.2' as const;
+
+const PERSISTED_BEHAVIOR_METRIC_REASONS = new Set([
+  'passed',
+  'misleading-evidence-not-investigated',
+  'expected-evidence-missing',
+  'root-cause-mismatch',
+  'misleading-evidence-not-reconciled',
+  'insufficient-investigation',
+  'incorrect-outcome',
+  'challenge-not-observed',
+  'leader-observation-missing',
+  'no-investigation-change',
+  'leader-change-mismatch',
+]);
+
 interface NativeDataset {
   readonly id: string;
 }
@@ -59,6 +82,7 @@ export interface PersistedBenchmarkRunMetadata {
   readonly promptVersion: string;
   readonly toolsetVersion: string;
   readonly statusRulesVersion: string;
+  readonly evaluatorVersion?: string;
   readonly toolMode: 'live' | 'replay';
   readonly knowledgeSetVersion: string;
   readonly memoryEnabled: boolean;
@@ -88,6 +112,19 @@ export interface PersistedBenchmarkEvaluation {
   readonly metrics: Readonly<
     Record<string, Readonly<{ key: string; score: number }>>
   >;
+  readonly behaviorMetrics?: Readonly<
+    Partial<
+      Record<
+        (typeof PERSISTED_BEHAVIOR_METRIC_KEYS)[number],
+        Readonly<{
+          evaluatorVersion: string;
+          key: string;
+          score: number;
+          reason: string;
+        }>
+      >
+    >
+  >;
 }
 
 export interface PersistedBenchmarkExperiment {
@@ -115,6 +152,12 @@ function assertResultIdentity(
 function projectRunMetadata(
   metadata: PersistedBenchmarkRunMetadata,
 ): Record<string, unknown> {
+  if (
+    metadata.evaluatorVersion !== undefined &&
+    metadata.evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
+  ) {
+    throw new Error('benchmark evaluator version is not supported');
+  }
   const projected: Record<string, unknown> = {
     runId: metadata.runId,
     scenarioId: metadata.scenarioId,
@@ -128,6 +171,9 @@ function projectRunMetadata(
     humanReview: metadata.humanReview,
     temperature: metadata.temperature,
   };
+  if (metadata.evaluatorVersion !== undefined) {
+    projected.evaluatorVersion = metadata.evaluatorVersion;
+  }
   if (metadata.seed !== undefined) projected.seed = metadata.seed;
   if (metadata.docsAvailable !== undefined) {
     projected.docsAvailable = metadata.docsAvailable;
@@ -153,6 +199,65 @@ function requireMetrics(
     (typeof PERSISTED_METRIC_KEYS)[number],
     Readonly<{ key: string; score: number }>
   >;
+}
+
+function requireBehaviorMetrics(
+  result: PersistedBenchmarkEvaluation,
+  evaluatorVersion: string | undefined,
+): Readonly<
+  Partial<
+    Record<
+      (typeof PERSISTED_BEHAVIOR_METRIC_KEYS)[number],
+      Readonly<{
+        evaluatorVersion: string;
+        key: string;
+        score: number;
+        reason: string;
+      }>
+    >
+  >
+> {
+  if (
+    (result.behaviorMetrics === undefined) !==
+    (evaluatorVersion === undefined)
+  ) {
+    throw new Error(
+      'behavior metric evaluator version and behavior metrics must be declared together',
+    );
+  }
+  if (result.behaviorMetrics === undefined) return {};
+
+  const declaredKeys = new Set<string>(PERSISTED_BEHAVIOR_METRIC_KEYS);
+  const projected: Record<string, Readonly<{
+    evaluatorVersion: string;
+    key: string;
+    score: number;
+    reason: string;
+  }>> = {};
+  for (const [key, metric] of Object.entries(result.behaviorMetrics)) {
+    if (!declaredKeys.has(key) || metric?.key !== key) {
+      throw new Error(`benchmark result has unknown behavior metric: ${key}`);
+    }
+    if (
+      evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION ||
+      metric.evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
+    ) {
+      throw new Error(`behavior metric evaluator version mismatch: ${key}`);
+    }
+    if (metric.score !== 0 && metric.score !== 1) {
+      throw new Error(`behavior metric score must be zero or one: ${key}`);
+    }
+    if (!PERSISTED_BEHAVIOR_METRIC_REASONS.has(metric.reason)) {
+      throw new Error(`behavior metric reason is not declared: ${key}`);
+    }
+    projected[key] = {
+      evaluatorVersion: metric.evaluatorVersion,
+      key: metric.key,
+      score: metric.score,
+      reason: metric.reason,
+    };
+  }
+  return projected;
 }
 
 function createNativeExamples(
@@ -214,6 +319,10 @@ async function persistPreparedExperiment({
     }
     assertResultIdentity(record, result);
     const metrics = requireMetrics(result);
+    const behaviorMetrics = requireBehaviorMetrics(
+      result,
+      record.metadata.evaluatorVersion,
+    );
 
     await client.createRun({
       id: record.runId,
@@ -228,12 +337,16 @@ async function persistPreparedExperiment({
       outputs: {
         actualStopKind: result.actualStopKind,
         metrics,
+        behaviorMetrics,
       },
       extra: { metadata: projectRunMetadata(record.metadata) },
       reference_example_id: record.exampleId,
     });
 
-    for (const metric of Object.values(metrics)) {
+    for (const metric of [
+      ...Object.values(metrics),
+      ...Object.values(behaviorMetrics),
+    ]) {
       await client.createFeedback({
         runId: record.runId,
         sessionId: project.id,

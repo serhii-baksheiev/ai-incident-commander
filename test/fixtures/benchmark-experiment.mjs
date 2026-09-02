@@ -45,6 +45,7 @@ export const benchmarkVersions = Object.freeze({
   promptVersion: 'prompt-v0.1',
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,
+  evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
   toolMode: 'replay',
   knowledgeSetVersion: 'knowledge-none-v0.1',
   memoryEnabled: false,
@@ -97,14 +98,21 @@ async function runOutcomeExperiment(experimentId, mutateOutcome = (outcome) => o
     '@aic/evals',
   );
 
+  const scenarios = acceptedV01Scenarios();
+  const scenariosById = new Map(
+    scenarios.map((scenario) => [scenario.id, scenario]),
+  );
+
   return runBenchmarkExperiment({
     experimentId,
     scenarioSet: 'ad-hoc',
-    scenarios: acceptedV01Scenarios(),
+    scenarios,
     runsPerScenario: 3,
     metadata: benchmarkVersions,
-    async investigate(record) {
-      return mutateOutcome(perfectOutcomeFor(record.scenario), record);
+    async investigate(input) {
+      const scenario = scenariosById.get(input.scenarioId);
+      assert.ok(scenario, `missing execution scenario: ${input.scenarioId}`);
+      return mutateOutcome(perfectOutcomeFor(scenario), input);
     },
     async recordEvaluation() {},
   });
@@ -146,11 +154,11 @@ export async function getControlledMutationCycle() {
   return controlledMutationCycle;
 }
 
-function replayFixtureFor(scenario) {
+function replayFixtureFor(fixture) {
   return {
-    version: scenario.fixture.version,
+    version: fixture.version,
     responses: Object.fromEntries(
-      scenario.fixture.entries.map(({ toolId, input, result }) => [
+      fixture.entries.map(({ toolId, input, result }) => [
         createReplayFixtureKey(toolId, input),
         result,
       ]),
@@ -159,7 +167,7 @@ function replayFixtureFor(scenario) {
 }
 
 export function replayBackedNodes(record, traces, replayCounts) {
-  const replay = new ReplayToolAdapter(replayFixtureFor(record.scenario));
+  const replay = new ReplayToolAdapter(replayFixtureFor(record.fixture));
   const leaderId = `leader-${record.runId}`;
   const visit = (nodeName, update = {}) => async () => {
     traces.get(record.runId).push(nodeName);
@@ -183,7 +191,7 @@ export function replayBackedNodes(record, traces, replayCounts) {
       if (state.evidence.length > 0) return {};
 
       const evidence = [];
-      for (const entry of record.scenario.fixture.entries) {
+      for (const entry of record.fixture.entries) {
         const replayed = await replay.execute(entry.toolId, entry.input);
         assert.deepEqual(replayed, entry.result);
         replayCounts.set(record.runId, replayCounts.get(record.runId) + 1);
@@ -210,7 +218,7 @@ export function replayBackedNodes(record, traces, replayCounts) {
         discriminatingTests: [{
           id: `challenge-test-${record.runId}`,
           predictionId: `challenge-prediction-${record.runId}`,
-          tool: record.scenario.fixture.entries[0].toolId,
+          tool: record.fixture.entries[0].toolId,
           input: { replay: true },
           cost: 'cheap',
           status: 'planned',

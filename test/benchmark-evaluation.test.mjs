@@ -112,6 +112,14 @@ function acceptedV01Scenarios() {
   });
 }
 
+function scenarioForExecutionInput(input) {
+  const scenario = evals.REPLAY_SCENARIOS.find(
+    ({ id }) => id === input.scenarioId,
+  );
+  assert.ok(scenario, `missing execution scenario: ${input.scenarioId}`);
+  return scenario;
+}
+
 function createPlan(experimentId, metadata = benchmarkVersions) {
   const createBenchmarkPlan = requireFunction(
     evals,
@@ -442,9 +450,10 @@ test('executes every declared scenario through the final-evaluation benchmark pa
     scenarioSet: 'final-evaluation',
     runsPerScenario: 3,
     metadata: benchmarkVersions,
-    async investigate(record) {
-      investigatedScenarioIds.push(record.scenario.id);
-      return perfectOutcomeFor(record.scenario);
+    async investigate(input) {
+      const scenario = scenarioForExecutionInput(input);
+      investigatedScenarioIds.push(input.scenarioId);
+      return perfectOutcomeFor(scenario);
     },
     async recordEvaluation(payload) {
       recorded.push(payload);
@@ -488,9 +497,9 @@ for (const [name, scenarioIds] of [
         scenarios,
         runsPerScenario: 3,
         metadata: benchmarkVersions,
-        async investigate(record) {
+        async investigate(input) {
           investigateCalls += 1;
-          return perfectOutcomeFor(record.scenario);
+          return perfectOutcomeFor(scenarioForExecutionInput(input));
         },
         async recordEvaluation() {},
       }),
@@ -1302,14 +1311,18 @@ test('creates native examples before a dataset-backed experiment and links every
     assert.equal(run.reference_example_id, captured.records[index].exampleId);
     assert.equal(nativeExampleIds.has(run.reference_example_id), true);
   });
-  assert.equal(captured.feedback.length, 45);
+  assert.equal(captured.feedback.length, 51);
   assert.equal(
     captured.feedback.every(({ sessionId }) => sessionId === captured.projectId),
     true,
   );
   assert.deepEqual(
     [...new Set(captured.feedback.map(({ key }) => key))].sort(),
-    expectedMetricKeys,
+    [
+      ...expectedMetricKeys,
+      'false_alert_correctness',
+      'misleading_evidence_handling',
+    ].sort(),
   );
 });
 
@@ -1322,6 +1335,7 @@ test('allowlists outbound run metadata and omits undefined optional fields', asy
     [canaryKey]: 'must-not-cross-the-sdk-boundary',
   });
   const expectedMetadataKeys = [
+    'evaluatorVersion',
     'graphVersion',
     'humanReview',
     'knowledgeSetVersion',
@@ -1340,6 +1354,7 @@ test('allowlists outbound run metadata and omits undefined optional fields', asy
     const record = captured.records[index];
     assert.deepEqual(Object.keys(run.extra.metadata).sort(), expectedMetadataKeys);
     assert.deepEqual(run.extra.metadata, {
+      evaluatorVersion: benchmarkVersions.evaluatorVersion,
       graphVersion: benchmarkVersions.graphVersion,
       humanReview: false,
       knowledgeSetVersion: benchmarkVersions.knowledgeSetVersion,
