@@ -421,6 +421,29 @@ export function evaluateBenchmarkRecord({
     conclusionKind: outcome.conclusionKind,
   });
   const behaviorMetrics: BehaviorMetrics = {};
+  /**
+   * Behavior metrics are recorded with CreateDataProperty semantics, never with
+   * `behaviorMetrics[result.key] = result`.
+   *
+   * That assignment is an ordinary `[[Set]]`: it walks the prototype chain, and
+   * an inherited accessor named like a metric swallows it — no own property is
+   * created, and the metric is gone one layer ABOVE the hardened persistence
+   * projection, before that projection is ever reached. The failure is silent
+   * in the worst way: the object stays `{}` rather than becoming `undefined`,
+   * so the persistence layer's paired-declaration guard does not fire either,
+   * and the record publishes a declared `evaluatorVersion` with zero behavior
+   * metrics — an investigation that reads as never having been measured.
+   */
+  const recordBehaviorMetric = (
+    metric: NonNullable<BehaviorMetrics[keyof BehaviorMetrics]>,
+  ): void => {
+    Object.defineProperty(behaviorMetrics, metric.key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: metric,
+    });
+  };
   const { groundTruth } = record.scenario;
 
   if (
@@ -439,7 +462,7 @@ export function evaluateBenchmarkRecord({
         evidenceAssessments: outcome.evidenceAssessments ?? [],
       },
     });
-    behaviorMetrics[result.key] = result;
+    recordBehaviorMetric(result);
   }
   if (groundTruth.expectedConclusionKind === 'no-incident') {
     const result = evaluateFalseAlertOutcome({
@@ -447,7 +470,7 @@ export function evaluateBenchmarkRecord({
       groundTruth,
       outcome,
     });
-    behaviorMetrics[result.key] = result;
+    recordBehaviorMetric(result);
   }
   if (groundTruth.expectedLeaderChangeAfterChallenge !== undefined) {
     const result = evaluateChallengeEffect({
@@ -462,7 +485,7 @@ export function evaluateBenchmarkRecord({
         executedDiscriminatingTrialCount: 0,
       },
     });
-    behaviorMetrics[result.key] = result;
+    recordBehaviorMetric(result);
   }
 
   return {

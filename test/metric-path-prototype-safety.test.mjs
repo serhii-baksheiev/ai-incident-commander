@@ -192,6 +192,44 @@ test('refuses a result whose metrics container exists only on Object.prototype',
   assert.equal(capture.runs.length, 0);
 });
 
+/**
+ * The completeness half of the metadata key lists, and the reason it is a test
+ * rather than a type.
+ *
+ * `projectRunMetadata` now walks two `as const` lists instead of a literal, and
+ * the `satisfies` clauses beside them catch only a name that is not a field of
+ * `PersistedBenchmarkRunMetadata`. They cannot catch the opposite: a field ADDED
+ * to the metadata that neither list names is simply never published, silently,
+ * and the record then describes a run configuration it did not run under. This
+ * asserts the other direction against a real record.
+ */
+test('publishes every declared metadata field and nothing else', async () => {
+  const capture = capturingClient();
+  const { record, experiment } = singleRecordExperiment();
+
+  await observability.persistBenchmarkExperiment({
+    client: capture.client,
+    datasetName: 'metric-path-metadata-completeness-v0.2',
+    experiment,
+  });
+
+  assert.equal(capture.runs.length, 1);
+  const [run] = capture.runs;
+  const declared = Object.keys(record.metadata)
+    .filter((field) => record.metadata[field] !== undefined)
+    .sort();
+
+  assert.ok(
+    declared.length > 0,
+    'the fixture record must declare metadata, or this test asserts nothing',
+  );
+  assert.deepEqual(
+    Object.keys(run.extra.metadata).sort(),
+    declared,
+    'a metadata field this record declares must reach the published record: a field the projection does not name is dropped without a word, and the run then describes a configuration it did not run under',
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* projectRunMetadata — the READ side                                         */
 /* -------------------------------------------------------------------------- */
