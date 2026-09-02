@@ -233,6 +233,13 @@ through a declaration channel the graph validates; no node writes `llmCallsUsed`
 itself. Each budget terminates through the same existing `budget-exhausted` stop
 kind — no new kind was introduced.
 
+`runId` and `humanReview` are graph-owned in the same way: both are fixed when a
+run starts, `humanReview` is what routes `propose_conclusion` to the human
+review or to END, and `runId` is what the interactive identity check compares
+against the thread — so a node update to either is restored by the graph
+(`test/hitl-conclusion-review.test.mjs` › "does not let a lifecycle node disarm
+both the review gate and the run identity at once").
+
 **Where the iteration cap does and does not bite.** `iterationsUsed` is
 incremented by the graph on entry to `plan_investigation`, and `maxIterations`
 is read on the automatic `need-more-evidence` edge out of `termination_check`.
