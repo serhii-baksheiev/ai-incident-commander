@@ -37,6 +37,8 @@ const initialState = () => ({
     phase: 'normalizing',
     maxIterations: 4,
     llmCallBudget: 8,
+    iterationsUsed: 0,
+    llmCallsUsed: 0,
     reservedChallengeBudget: 2,
     challengeRounds: 0,
     humanReview: false,
@@ -656,3 +658,327 @@ test('does not expose sufficient until termination_check runs after mandatory ch
   assert.equal(result.control.reservedChallengeBudget, 1);
   assert.equal(result.control.stopKind, 'sufficient');
 });
+
+const budgetedNodes = (trace, terminationCheck, planResult = async () => ({})) => {
+  const nodes = fakeNodes(trace, terminationCheck);
+  nodes.plan_investigation = async (state) => {
+    trace.push('plan_investigation');
+    return planResult(state);
+  };
+  return nodes;
+};
+
+const runToCompletion = (graph, state) =>
+  graph.execute({ kind: 'start', state }).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+
+const assertResolved = (outcome, message) => {
+  assert.equal(
+    'error' in outcome,
+    false,
+    `${message}: ${outcome.error?.message ?? ''}`,
+  );
+  return outcome.value;
+};
+
+test('terminates budget-exhausted when the iteration budget is spent instead of running away', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(trace, async () => ({ route: 'need-more-evidence' })),
+  });
+  const state = initialState();
+  state.control.maxIterations = 2;
+
+  const outcome = await runToCompletion(graph, state);
+
+  const result = assertResolved(
+    outcome,
+    'an exhausted iteration budget must stop the graph, not abort the run',
+  );
+  assert.equal(result.control.stopKind, 'budget-exhausted');
+  assert.equal(
+    trace.filter((name) => name === 'plan_investigation').length,
+    2,
+    'the graph must not plan a third iteration beyond maxIterations',
+  );
+  assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
+});
+
+test('counts one logical iteration per plan_investigation entry up to the iteration budget', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(trace, async () => ({ route: 'need-more-evidence' })),
+  });
+  const state = initialState();
+  state.control.maxIterations = 2;
+
+  const outcome = await runToCompletion(graph, state);
+
+  const result = assertResolved(outcome, 'the iteration budget must end the run cleanly');
+  assert.equal(result.control.iterationsUsed, 2);
+  assert.equal(
+    result.control.iterationsUsed,
+    trace.filter((name) => name === 'plan_investigation').length,
+    'iterationsUsed must report the iterations the graph really ran',
+  );
+});
+
+test('counts a single logical iteration when the first termination check ends the run', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(trace, async () => ({ route: 'terminal', stopKind: 'stalled' })),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(outcome, 'a single-pass run must resolve');
+  assert.equal(result.control.iterationsUsed, 1);
+  assert.equal(result.control.stopKind, 'stalled');
+});
+
+test('leaves llmCallsUsed at zero when no node declares an llm call', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(trace, async () => ({ route: 'terminal', stopKind: 'stalled' })),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(outcome, 'a run without any llm execution must resolve');
+  assert.equal(
+    result.control.llmCallsUsed,
+    0,
+    'with no llm execution path the graph must not invent consumption',
+  );
+});
+
+test('adds a node-declared llm call count to llmCallsUsed through the typed boundary', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      trace,
+      async () => ({ route: 'terminal', stopKind: 'stalled' }),
+      async () => ({ declaredLlmCalls: 3 }),
+    ),
+  });
+  const state = initialState();
+
+  const outcome = await runToCompletion(graph, state);
+
+  const result = assertResolved(outcome, 'a declared llm call count must be accepted');
+  assert.equal(result.control.llmCallsUsed, 3);
+  assert.deepEqual(
+    Object.keys(result).sort(),
+    Object.keys(state).sort(),
+    'a declared call count must not become persisted IncidentState',
+  );
+  assert.equal(
+    'declaredLlmCalls' in result.control,
+    false,
+    'the declaration channel must not leak into control',
+  );
+});
+
+test('terminates budget-exhausted when declared llm calls reach llmCallBudget', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      trace,
+      async () => ({ route: 'need-more-evidence' }),
+      async () => ({ declaredLlmCalls: 2 }),
+    ),
+  });
+  const state = initialState();
+  state.control.maxIterations = 8;
+  state.control.llmCallBudget = 4;
+
+  const outcome = await runToCompletion(graph, state);
+
+  const result = assertResolved(
+    outcome,
+    'an exhausted llm call budget must stop the graph, not abort the run',
+  );
+  assert.equal(result.control.stopKind, 'budget-exhausted');
+  assert.equal(result.control.llmCallsUsed, 4);
+  assert.equal(
+    trace.filter((name) => name === 'plan_investigation').length,
+    2,
+    'the graph must not spend a third batch of declared calls past llmCallBudget',
+  );
+  assert.deepEqual(trace.slice(-2), ['termination_check', 'propose_conclusion']);
+});
+
+test('does not let normal lifecycle nodes rewrite the graph-owned logical budgets', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      trace,
+      async () => ({ route: 'terminal', stopKind: 'stalled' }),
+      async (state) => ({
+        control: {
+          ...state.control,
+          maxIterations: 99,
+          llmCallBudget: 99,
+          iterationsUsed: 0,
+          llmCallsUsed: 42,
+        },
+      }),
+    ),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(outcome, 'the run must resolve with the graph-owned budgets intact');
+  assert.equal(result.control.maxIterations, 4);
+  assert.equal(result.control.llmCallBudget, 8);
+  assert.equal(result.control.iterationsUsed, 1);
+  assert.equal(result.control.llmCallsUsed, 0);
+});
+
+test('restores graph-owned logical budgets after in-place mutation by a lifecycle node', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      trace,
+      async () => ({ route: 'terminal', stopKind: 'stalled' }),
+      async (state) => {
+        state.control.maxIterations = 99;
+        state.control.llmCallBudget = 99;
+        state.control.iterationsUsed = 0;
+        state.control.llmCallsUsed = 42;
+        return {};
+      },
+    ),
+  });
+
+  const outcome = await runToCompletion(graph, initialState());
+
+  const result = assertResolved(outcome, 'the run must resolve with the graph-owned budgets intact');
+  assert.equal(result.control.maxIterations, 4);
+  assert.equal(result.control.llmCallBudget, 8);
+  assert.equal(result.control.iterationsUsed, 1);
+  assert.equal(result.control.llmCallsUsed, 0);
+});
+
+/**
+ * A corrupt-counter case only proves fail-closed behaviour if the same fixture
+ * without the corruption runs to completion, so each one asserts that baseline
+ * first: a fixture the graph rejects wholesale would pass every rejection
+ * assertion below for the wrong reason.
+ */
+const assertUncorruptedRunResolves = async (
+  createInvestigationGraph,
+  planResult = async () => ({}),
+) => {
+  const graph = createInvestigationGraph({
+    nodes: budgetedNodes(
+      [],
+      async () => ({ route: 'terminal', stopKind: 'stalled' }),
+      planResult,
+    ),
+  });
+
+  assertResolved(
+    await runToCompletion(graph, initialState()),
+    'the same fixture without the corrupt value must resolve',
+  );
+};
+
+for (const invalidBudgetCounter of [
+  { field: 'iterationsUsed', label: 'fractional iterations used', value: 0.5 },
+  { field: 'iterationsUsed', label: 'negative iterations used', value: -1 },
+  {
+    field: 'iterationsUsed',
+    label: 'non-safe-integer iterations used',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+  { field: 'llmCallsUsed', label: 'fractional llm calls used', value: 0.5 },
+  { field: 'llmCallsUsed', label: 'negative llm calls used', value: -1 },
+  {
+    field: 'llmCallsUsed',
+    label: 'non-safe-integer llm calls used',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+  { field: 'maxIterations', label: 'a fractional iteration budget', value: 0.5 },
+  { field: 'maxIterations', label: 'a negative iteration budget', value: -1 },
+  {
+    field: 'maxIterations',
+    label: 'a non-safe-integer iteration budget',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+  { field: 'llmCallBudget', label: 'a fractional llm call budget', value: 0.5 },
+  { field: 'llmCallBudget', label: 'a negative llm call budget', value: -1 },
+  {
+    field: 'llmCallBudget',
+    label: 'a non-safe-integer llm call budget',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+]) {
+  test(`fails closed on ${invalidBudgetCounter.label} before spending a logical budget`, async () => {
+    const createInvestigationGraph = requireGraphFactory();
+    await assertUncorruptedRunResolves(createInvestigationGraph);
+
+    const trace = [];
+    const graph = createInvestigationGraph({
+      nodes: fakeNodes(trace, async () => ({ route: 'terminal', stopKind: 'stalled' })),
+    });
+    const state = initialState();
+    state.control[invalidBudgetCounter.field] = invalidBudgetCounter.value;
+
+    const outcome = await runToCompletion(graph, state);
+
+    assert.equal('error' in outcome, true, 'a corrupt logical budget must reject invocation');
+    assert.equal(
+      trace.includes('propose_conclusion'),
+      false,
+      'a corrupt logical budget must fail before the run spends budget on a conclusion',
+    );
+  });
+}
+
+for (const invalidDeclaration of [
+  { label: 'a fractional', value: 0.5 },
+  { label: 'a negative', value: -1 },
+  { label: 'a non-safe-integer', value: Number.MAX_SAFE_INTEGER + 1 },
+  { label: 'a non-numeric', value: '2' },
+]) {
+  test(`fails closed on a node declaring ${invalidDeclaration.label} llm call count`, async () => {
+    const createInvestigationGraph = requireGraphFactory();
+    await assertUncorruptedRunResolves(
+      createInvestigationGraph,
+      async () => ({ declaredLlmCalls: 1 }),
+    );
+
+    const trace = [];
+    const graph = createInvestigationGraph({
+      nodes: budgetedNodes(
+        trace,
+        async () => ({ route: 'terminal', stopKind: 'stalled' }),
+        async () => ({ declaredLlmCalls: invalidDeclaration.value }),
+      ),
+    });
+
+    const outcome = await runToCompletion(graph, initialState());
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'an unusable llm call declaration must reject the invocation',
+    );
+    assert.equal(
+      trace.includes('propose_conclusion'),
+      false,
+      'an unusable llm call declaration must fail before a conclusion is proposed',
+    );
+  });
+}
