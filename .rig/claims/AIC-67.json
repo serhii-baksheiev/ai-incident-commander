@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "AIC-67",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "5b465192abeb7168fd7dd13985748da296f023c4c3dfcd6f772e9d5c63d4405c",
+      "targetSha": "76bab7d834989e584f9242c697cd7519bc5aca80"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "1166b18c5afaf0fa7a9c8e038e779f9a02cb9e4bd3b92679b706c9a1a3c72f84",
+      "count": 1
+    }
+  }
+}
