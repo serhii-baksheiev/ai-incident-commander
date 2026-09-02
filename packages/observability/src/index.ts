@@ -218,12 +218,12 @@ function assertResultIdentity(
  *
  * 🔴 That is a claim about this FUNCTION, and it does not extend to the layer.
  * Many reads in this file are still plain `[[Get]]`s, and they are NOT
- * inventoried here — deliberately, after four attempts to list them produced
- * four different subsets. Each draft fixed the last omission and introduced the
- * next, which is what `.claude/rules/invariants.md` predicts of prose about a
- * mechanism ("prefer deleting a rule to adding one"): a hand-maintained
- * inventory across a file this size has nothing checking it, so it is wrong the
- * day it is written and wronger after the next edit.
+ * inventoried here — deliberately, because each successive draft of the list
+ * fixed the last omission and introduced the next. That is what
+ * `.claude/rules/invariants.md` asks of prose about a mechanism ("State the
+ * limits — and test them"): a hand-maintained inventory across a file this size
+ * has nothing checking it, so it is wrong the day it is written and wronger
+ * after the next edit.
  *
  * So this header states the boundary instead of enumerating it: **nothing here
  * entitles a reader to conclude that no published value came from a getter.**
@@ -617,6 +617,13 @@ async function persistPreparedExperiment({
   }
 }
 
+/**
+ * ⚠ `client` is read off the options object with a plain `[[Get]]`, and a
+ * destructuring default fires only on `undefined` — so an inherited `client`
+ * suppresses the default below and every outbound call in this layer goes
+ * wherever it points. AIC-69 carries the measurement; this note is here because
+ * the reasoning lives on `ownValue` and nobody editing this signature reads it.
+ */
 export async function persistBenchmarkExperiments({
   client = createLangSmithClient(),
   datasetName,
@@ -663,6 +670,7 @@ export async function persistBenchmarkExperiments({
   }
 }
 
+/** ⚠ Same inherited-`client` hazard as its plural sibling above — AIC-69. */
 export async function persistBenchmarkExperiment({
   client = createLangSmithClient(),
   datasetName,
