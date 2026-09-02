@@ -12,5 +12,8 @@
       "value": "1166b18c5afaf0fa7a9c8e038e779f9a02cb9e4bd3b92679b706c9a1a3c72f84",
       "count": 1
     }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
   }
 }
