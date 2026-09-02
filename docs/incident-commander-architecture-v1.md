@@ -215,6 +215,7 @@ type IncidentState = {
 
     iterationsUsed: number;
     llmCallsUsed: number;
+    resumeCount: number;
 
     challengeRounds: number;
     stopKind?: InvestigationStop;
@@ -226,7 +227,7 @@ type IncidentState = {
 
 Collections use reducers with upsert-by-id semantics. `schemaVersion` is mandatory because checkpoints persist the state shape.
 
-The three budgets and the two usage counters are **graph-owned**: a node update
+The three budgets and the three usage counters are **graph-owned**: a node update
 can neither raise a limit nor rewrite usage. A node reports LLM consumption only
 through a declaration channel the graph validates; no node writes `llmCallsUsed`
 itself. Each budget terminates through the same existing `budget-exhausted` stop
@@ -258,13 +259,20 @@ in §7 includes challenge alternative generation. `llmCallBudget` therefore cann
 count those calls when a provider arrives. Recorded here because the budget
 design is read here.
 
+**Token and currency cost are explicitly unsupported.** No axis carries either,
+and none is derived from a call count: with no LLM execution path there is no
+price to apply and no token to count, so any such figure would be invented. A
+zero LLM count is published as a real zero rather than converted into a zero
+cost.
+
 `llmCallBudget` is a versioned safety cap, not a calibrated one: no LLM
 execution path exists yet — nothing in `packages/` sets `declaredLlmCalls`, so
 `llmCallsUsed` stays `0` by construction rather than by estimate.
 see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
 declares an llm call"
 
-`schemaVersion` is `2` from this change. The counters are required fields, so
+`schemaVersion` is `3`: it moves whenever the strict control object gains a
+required field — `2` for the logical budget counters, `3` for `resumeCount`. The counters are required fields, so
 state persisted under version 1 is refused rather than coerced to an invented
 usage of zero — on the `kind: 'start'` path by the schema's version literal, and
 on the resume path by the graph's own version guard, because a restored
@@ -275,15 +283,21 @@ it refused on; the start path does not, because `parseInvestigationExecutionInpu
 collapses every schema failure into a single `invalid investigation execution
 input`. Both refuse, one explains.
 
-⚠ **An unresolved tension with the durable-execution invariant below.** §6 states
-that naive `counter++` inside replayable nodes is forbidden for budget
-accounting, and that logical budget accounting reconciles with unique committed
-call/trial records. `iterationsUsed` is computed as a function of the entering
-state rather than mutated in place, so it is stable across a replay from the
-same checkpoint — but it is **not** reconciled against committed records, and
-that half of the invariant is unmet. Recovery instrumentation is AIC-63's scope.
-This is recorded, not resolved: the resolution belongs in this document, decided
-by its owner, not in one change's history.
+⚠ **An unresolved tension with the durable-execution invariant below, and AIC-63
+did not resolve it.** §6 states that naive `counter++` inside replayable nodes is
+forbidden for budget accounting, and that logical budget accounting reconciles
+with unique committed call/trial records. All three usage counters are computed
+as a function of the entering state rather than mutated in place, so each is
+stable across a replay from the same checkpoint — `resumeCount` included, which
+is incremented inside `review_conclusion`, a replayable node. **None of them is
+reconciled against committed records**, and that half of the invariant remains
+unmet.
+
+What AIC-63 did close is the *measurement* half: resumes are now counted at all,
+and recovery is visible as its own axes rather than being invisible. What it did
+not close is reconciliation. Do not read "recovery instrumentation shipped" as
+"the §6 invariant is satisfied" — the resolution still belongs in this document,
+decided by its owner, not in one change's history.
 
 ## 6. Run identity and persistence
 
@@ -308,7 +322,10 @@ After resume:
 - no duplicate Evidence records;
 - execution continues from committed checkpoint state;
 - logical budget accounting reconciles with unique committed call/trial records;
-- physical retry cost may be recorded separately as recovery overhead.
+- physical retry cost may be recorded separately as recovery overhead — as raw
+  axes only. §14 forbids a derived "recovery overhead" figure, so "separately"
+  here means `resumeCount` and duration reported side by side, never blended
+  into one number.
 
 Naive `counter++` inside replayable nodes is forbidden for budget accounting.
 
@@ -551,6 +568,90 @@ Executable boundary proof: `test/behavior-evaluators.test.mjs` › "keeps
 scenario ground truth outside the investigation execution callback" and ›
 "graph benchmark keeps ground truth outside createNodes and records a challenge
 with no investigation change".
+
+### v0.2 resource evidence
+
+Quality alone cannot tell an improvement from a change that bought the same
+answer more expensively, so a benchmark evaluation may also carry **resource
+evidence**: a versioned object with one field per axis — logical iterations,
+declared LLM calls, tool calls, wall-clock duration, retry count, resume count.
+
+Three properties are load-bearing, and each is a rule rather than a preference:
+
+- **No composite within resource evidence, and no derived "recovery overhead".**
+  A blended figure can fall while quality falls with it, which is exactly the
+  comparison this evidence exists to make impossible to fake. This rule is about
+  the resource axes and what crosses the outbound boundary; it does not disturb
+  the dashboard-only composite named at the top of this section, which blends
+  quality metrics and is never published as resource evidence.
+  see `test/benchmark-resource-evidence.test.mjs` › "projects resource evidence
+  through an exact outbound allowlist, one key per dimension"
+
+  Recovery is visible as its own raw axes (`resumeCount`, duration), not as a
+  number computed from them.
+- **Provenance decides what may be published, and the line is who originated the
+  number** — not which channel the graph owns, because the graph owns the
+  control block either way. The six axes split three and three.
+
+  **Graph-originated** — `logicalIterationsUsed` and `resumeCount`, which the
+  graph increments itself and no node update can write, and
+  `wallClockDurationMs`, which the runner times and the investigation never
+  reports.
+
+  **Node-originated** — `declaredLlmCallsUsed`, the sum of what nodes *declared*
+  (the graph validates and accumulates but never observes a call);
+  `toolCallsUsed`, a count of `trials`, a node-written channel; and `retryCount`,
+  derived from those same trials by a node-supplied `attempt`. In a benchmark the
+  node is the system under test, so **all three** are as trustworthy as the
+  fixture that produced them. They are recorded anyway: a declared count is the
+  only honest thing to record while no provider exists to observe instead, and
+  this graph has no independent tool-call channel. Evidence reaches an
+  evaluation through a channel separate from the opaque `investigate` callback,
+  so a callback reporting its own spend is ignored and the generic path
+  publishes none rather than an unverified number. see
+  `test/benchmark-resource-evidence.test.mjs` › "publishes no resource evidence
+  for an opaque investigate callback, even when the callback reports some"
+- **Zeroes are distinguished by why they are zero.** `retryCount` is *derived*
+  from the trials past their first attempt: it reads zero today because nothing
+  retries, and it reports without further work once something does.
+  `declaredLlmCallsUsed` and, in a benchmark, `resumeCount` are *structural*
+  zeroes — no LLM executes, and the benchmark sets `humanReview: false`, so the
+  resume-counting node is unreachable there. Publishing all three as visible
+  axes reading zero is deliberate; conflating a derived zero with a structural
+  one is what would mislead.
+
+  `retryCount` inherits `toolCallsUsed`'s dependence on the producer's trial-id
+  convention: a trial retried under one id upserts in place and counts once,
+  while a fresh id per attempt counts each.
+  see `test/benchmark-resource-evidence.test.mjs` › "counts the trials past
+  their first attempt rather than publishing a constant retry count" and ›
+  "pins resumeCount at zero for every benchmark run, because the benchmark never
+  enables human review"
+
+Outbound, resource evidence reaches LangSmith on **two** surfaces: the run's
+`outputs.resources`, which is authoritative and complete, and one `createFeedback`
+entry per axis beside the quality scores, which is a convenience projection for
+reading and charting. `schemaVersion` stays out of the score stream — it
+describes the shape, not a spend.
+
+⚠ LangSmith **lower-cases feedback keys**, so `declaredLlmCallsUsed` is read
+back as `declaredllmcallsused`. The axes stay separate and the mapping is
+unambiguous, but a reader searching the feedback stream for the camelCase name
+will not find it; `outputs.resources` keeps the names as written. This is a
+claim about a third-party system, so it rests on a recorded read-back rather
+than on a local test, which could only assert the capturing fake:
+`docs/decisions/langsmith-resource-readback.md`. Both are projected through the same
+exact-allowlist *discipline* as run metadata — not the same allowlist, and not the same failure
+mode: `projectRunMetadata` rebuilds from its own key list and leaves a missing
+optional field undefined, while resource evidence has its own list and
+**refuses**. Absent evidence is accepted — that is what every v0.1 record looks
+like — while a **present** object at an unknown schema version, or missing a
+declared dimension, is refused before the run is created. A silently dropped
+axis would read downstream as "spent nothing on that axis", which is the one
+reading that must never be manufactured.
+see `test/benchmark-resource-evidence.test.mjs` › "refuses resource evidence at
+an unknown schema version before any run is created" and ›
+"refuses resource evidence missing ${field} before any run is created"
 
 Persisted v0.1 records remain readable without behavior-evaluator fields. A
 v0.2 behavior-evaluator payload declares `evaluatorVersion` and

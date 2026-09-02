@@ -8,6 +8,24 @@ const PERSISTED_METRIC_KEYS = [
   'termination_correctness',
 ] as const;
 
+/**
+ * The resource axes this layer will persist, and the ONLY ones.
+ *
+ * `PERSISTED_RESOURCE_SCHEMA_VERSION` is the shape this layer can read. An
+ * evidence object at any other version is refused rather than projected: the
+ * fields it declares may mean something else, and publishing them under the
+ * names below would be a measurement claim nobody made.
+ */
+const PERSISTED_RESOURCE_SCHEMA_VERSION = 1;
+const PERSISTED_RESOURCE_KEYS = [
+  'logicalIterationsUsed',
+  'declaredLlmCallsUsed',
+  'toolCallsUsed',
+  'wallClockDurationMs',
+  'retryCount',
+  'resumeCount',
+] as const;
+
 const PERSISTED_BEHAVIOR_METRIC_KEYS = [
   'misleading_evidence_handling',
   'false_alert_correctness',
@@ -112,6 +130,7 @@ export interface PersistedBenchmarkEvaluation {
   readonly metrics: Readonly<
     Record<string, Readonly<{ key: string; score: number }>>
   >;
+  readonly resources?: Readonly<Record<string, unknown>>;
   readonly behaviorMetrics?: Readonly<
     Partial<
       Record<
@@ -201,6 +220,83 @@ function requireMetrics(
   >;
 }
 
+/**
+ * Projects resource evidence, or refuses it.
+ *
+ * Absent is not an error: every record written before this evidence existed
+ * carries none, and the generic benchmark path publishes none by design.
+ *
+ * PRESENT is held to the throwing standard `requireBehaviorMetrics` uses rather
+ * than the dropping one `requireMetrics` uses, and the difference matters: a
+ * silently dropped resource axis reads downstream as "this run spent nothing on
+ * that axis", which is the one reading that must never be manufactured. An
+ * unknown schema version or a missing declared field is therefore refused
+ * before the run is created. An UNDECLARED extra property is dropped by the
+ * projection — it is not a claim this layer is being asked to publish.
+ */
+function requireResourceEvidence(
+  result: PersistedBenchmarkEvaluation,
+): Readonly<Record<string, number>> | undefined {
+  if (result.resources === undefined) return undefined;
+
+  const evidence = result.resources;
+  if (typeof evidence !== 'object' || evidence === null || Array.isArray(evidence)) {
+    throw new Error('benchmark resource evidence is not an object');
+  }
+
+  // OWN data properties only, the idiom `readDeclaredLlmCalls` uses in the graph
+  // for the same hazard: read through the prototype chain and a polluted
+  // `Object.prototype.resumeCount` supplies a count the run never declared —
+  // manufacturing the exact reading this function exists to refuse.
+  const own = (key: string): unknown => {
+    const descriptor = Object.getOwnPropertyDescriptor(evidence, key);
+    return descriptor === undefined || !Object.hasOwn(descriptor, 'value')
+      ? undefined
+      : descriptor.value;
+  };
+
+  // Absent version and wrong version are different failures: one is evidence
+  // that forgot to say what it is, the other is evidence this layer cannot
+  // read. Reporting them the same way sends the reader looking for the wrong
+  // problem.
+  const schemaVersion = own('schemaVersion');
+  if (schemaVersion === undefined) {
+    throw new Error('benchmark resource evidence missing schemaVersion');
+  }
+  if (schemaVersion !== PERSISTED_RESOURCE_SCHEMA_VERSION) {
+    throw new Error(
+      `benchmark resource schema version is not supported: ${String(schemaVersion)}`,
+    );
+  }
+
+  // Built with CreateDataProperty semantics, NOT assignment. `projected[key] =`
+  // is an ordinary [[Set]] that walks the prototype chain, so an inherited
+  // ACCESSOR named like an axis swallows the write: no own property is created,
+  // the axis vanishes from the published outputs — reading downstream as "spent
+  // nothing on that axis" — and the feedback projection then reads the
+  // inherited getter back out and publishes a number no run declared. Refusing
+  // to READ a polluted value is only half the job if the WRITE can still be
+  // intercepted. `requireMetrics` above already builds this way.
+  const entries: [string, number][] = [
+    ['schemaVersion', PERSISTED_RESOURCE_SCHEMA_VERSION],
+  ];
+  for (const key of PERSISTED_RESOURCE_KEYS) {
+    const value = own(key);
+    if (value === undefined) {
+      throw new Error(`benchmark resource evidence missing ${key}`);
+    }
+    // The same rule the graph applies to its own counters: a count is a
+    // non-negative safe integer. Restated rather than imported because this
+    // layer keeps its own outbound vocabulary — but it must not be LOOSER than
+    // the graph's, or a negative duration crosses the boundary as evidence.
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`benchmark resource evidence ${key} is not a count`);
+    }
+    entries.push([key, value]);
+  }
+  return Object.fromEntries(entries);
+}
+
 function requireBehaviorMetrics(
   result: PersistedBenchmarkEvaluation,
   evaluatorVersion: string | undefined,
@@ -250,12 +346,21 @@ function requireBehaviorMetrics(
     if (!PERSISTED_BEHAVIOR_METRIC_REASONS.has(metric.reason)) {
       throw new Error(`behavior metric reason is not declared: ${key}`);
     }
-    projected[key] = {
-      evaluatorVersion: metric.evaluatorVersion,
-      key: metric.key,
-      score: metric.score,
-      reason: metric.reason,
-    };
+    // Same CreateDataProperty reasoning as the resource projection further down
+    // this file: an
+    // inherited accessor named like a behavior metric would otherwise swallow
+    // this write.
+    Object.defineProperty(projected, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: {
+        evaluatorVersion: metric.evaluatorVersion,
+        key: metric.key,
+        score: metric.score,
+        reason: metric.reason,
+      },
+    });
   }
   return projected;
 }
@@ -319,6 +424,7 @@ async function persistPreparedExperiment({
     }
     assertResultIdentity(record, result);
     const metrics = requireMetrics(result);
+    const resources = requireResourceEvidence(result);
     const behaviorMetrics = requireBehaviorMetrics(
       result,
       record.metadata.evaluatorVersion,
@@ -338,6 +444,9 @@ async function persistPreparedExperiment({
         actualStopKind: result.actualStopKind,
         metrics,
         behaviorMetrics,
+        // One key per dimension, never merged into a score, and absent when the
+        // run was not measured.
+        ...(resources === undefined ? {} : { resources }),
       },
       extra: { metadata: projectRunMetadata(record.metadata) },
       reference_example_id: record.exampleId,
@@ -353,6 +462,23 @@ async function persistPreparedExperiment({
         key: metric.key,
         score: metric.score,
       });
+    }
+
+    // Each resource axis gets its OWN feedback key beside the quality ones —
+    // the item asks for "separate feedback/output keys" preserving every
+    // individual dimension, and a dimension that reaches only `outputs` is one
+    // surface short of that. Nothing is blended: no composite key is emitted,
+    // and `schemaVersion` is metadata about the shape rather than an axis, so
+    // it stays out of the score stream.
+    if (resources !== undefined) {
+      for (const key of PERSISTED_RESOURCE_KEYS) {
+        await client.createFeedback({
+          runId: record.runId,
+          sessionId: project.id,
+          key,
+          score: resources[key],
+        });
+      }
     }
   }
 }

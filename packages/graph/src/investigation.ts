@@ -358,6 +358,7 @@ function preserveGraphOwnedControl(
       iterationsUsed:
         current.iterationsUsed + (options.countsLogicalIteration ? 1 : 0),
       llmCallsUsed: current.llmCallsUsed,
+      resumeCount: current.resumeCount,
     };
     const result = await node(incidentStateOf(state as InvestigationGraphState));
     const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
@@ -368,6 +369,7 @@ function preserveGraphOwnedControl(
       llmCallBudget: protectedControl.llmCallBudget,
       iterationsUsed: protectedControl.iterationsUsed,
       llmCallsUsed: protectedControl.llmCallsUsed + readDeclaredLlmCalls(result),
+      resumeCount: protectedControl.resumeCount,
     };
 
     // The node's own control update is the base only when it sent one; with no
@@ -380,6 +382,7 @@ function preserveGraphOwnedControl(
       llmCallBudget: _ignoredLlmCallBudget,
       iterationsUsed: _ignoredIterationsUsed,
       llmCallsUsed: _ignoredLlmCallsUsed,
+      resumeCount: _ignoredResumeCount,
       ...control
     } = update.control ?? current;
     const controlUpdate = { ...control, ...graphOwned };
@@ -416,6 +419,7 @@ function assertLogicalBudgetCounters(control: IncidentStateControl): void {
     ['llm call budget', control.llmCallBudget],
     ['logical iteration counter', control.iterationsUsed],
     ['llm call counter', control.llmCallsUsed],
+    ['resume counter', control.resumeCount],
   ] as const) {
     if (!isLogicalCount(value)) {
       throw new Error(`invalid ${field}`);
@@ -667,11 +671,33 @@ export function createInvestigationGraph({
       }),
     );
 
+    // Reaching here means the run was RESUMED: `interrupt()` throws on the
+    // first pass, so everything below it executes once per resume and never on
+    // the initial visit. That makes this the one site where a resume is
+    // observable, and the graph — not a node — is what counts it.
+    //
+    // The increment rides on all three decision paths, `confirm` included:
+    // that path used to carry no update at all, so a confirmed run would have
+    // reported one resume fewer than it spent.
+    //
+    // Both halves rest on LangGraph's replay behaviour, which is a third party's
+    // and can change under an upgrade, so neither is asserted here on faith:
+    // see hitl-resume-contract.test.mjs › "counts one resume for a human
+    // ${label} decision, however many nodes replay after it" and ›
+    // "counts the resumes a human spends re-entering the graph without counting
+    // the replayed nodes", and for the never-on-the-initial-visit half,
+    // investigation-graph.test.mjs › "leaves resumeCount at zero on a run that
+    // never pauses for a human"
+    const resumedControl = {
+      ...state.control,
+      resumeCount: state.control.resumeCount + 1,
+    };
+
     if (decision.action === 'confirm') {
-      return new Command({ goto: END });
+      return new Command({ goto: END, update: { control: resumedControl } });
     }
 
-    const control = controlWithoutStopKind(state.control);
+    const control = controlWithoutStopKind(resumedControl);
     if (decision.action === 'reject') {
       return new Command({
         goto: 'generate_hypotheses',

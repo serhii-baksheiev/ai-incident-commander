@@ -93,11 +93,15 @@ export function deriveEvidenceId({
 
 /**
  * ⚠ This runner shares `INCIDENT_STATE_SCHEMA_VERSION` with `IncidentState`,
- * and that constant moved 1 -> 2 for a change to `IncidentStateControl` — a
- * shape THIS state does not carry. So the bump declares an incompatibility that
- * does not exist here, and nothing on the resume path validates the stamped
- * value: a checkpoint written before the bump still returns `1` through a field
- * whose type now says `2`.
+ * and that constant moves for changes to `IncidentStateControl` — 1 -> 2 for the
+ * logical budget counters, 2 -> 3 for `resumeCount` — a shape THIS state does
+ * not carry. So each bump declares an incompatibility that does not exist here,
+ * and nothing on the resume path validates the stamped value: a checkpoint
+ * written before a bump still returns the version it was written at — by now 1
+ * or 2 — through a field typed `typeof INCIDENT_STATE_SCHEMA_VERSION`, i.e.
+ * whatever that constant currently is. The number is deliberately not restated
+ * here: it goes stale on the next bump, and a half-updated comment reads as
+ * freshly checked.
  *
  * Accepted rather than fixed: decoupling the two versions means a second version
  * taxonomy, and one version per persisted-state family is the cheaper wrong

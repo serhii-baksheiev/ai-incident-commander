@@ -102,6 +102,18 @@ Executable compatibility proof: `test/behavior-evaluators.test.mjs` ›
 behavior metrics when their evaluator version is absent", and › "rejects an
 explicitly unsupported persisted evaluator version".
 
+Resource-evidence persistence is additive on the same terms. A benchmark
+evaluation may carry a versioned resource object — one field per axis, no
+composite and no derived "recovery overhead". Records carrying none stay
+readable, which is what every accepted v0.1 record looks like; a **present**
+object at an unknown schema version, or missing a declared dimension, is refused
+before the run is created rather than dropped, because a dropped axis reads
+downstream as "spent nothing on that axis". Executable compatibility proof:
+`test/benchmark-resource-evidence.test.mjs` › "accepts a persisted v0.1
+evaluation that carries no resource evidence at all", › "refuses resource
+evidence at an unknown schema version before any run is created", and ›
+"refuses resource evidence missing ${field} before any run is created".
+
 ## Project status
 
 | Area | Status |
