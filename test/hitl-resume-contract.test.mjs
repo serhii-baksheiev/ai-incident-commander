@@ -396,6 +396,153 @@ for (const counter of corruptPersistedCounters) {
 }
 
 /**
+ * The challenge counters need their own rows, for a reason the logical
+ * counters' header does NOT give.
+ *
+ * `LogicalCountSchema` is not what guards these two: `IncidentStateControlSchema`
+ * declares `reservedChallengeBudget` and `challengeRounds` as bare `z.number()`,
+ * which accepts -1 on the `kind: 'start'` path as readily as a checkpoint does
+ * on the resume path. What refuses such a value is the graph's own
+ * `assertChallengeCounters`, called from `routeChallenge`, `terminationCheck`,
+ * `challengeHypothesis` and — since these rows went green — `reviewConclusion`.
+ * The first three read the counters to decide something; a `confirm` decides
+ * nothing from them and reaches END without visiting any of the three, which is
+ * why the corruption has to be planted on a checkpoint and resumed rather than
+ * passed at start, and why `reviewConclusion` had to assert them itself.
+ *
+ * Like the rows above, these hold the schema version at the CURRENT one: the
+ * refusal has to name the counter rather than the version.
+ */
+const corruptPersistedChallengeCounters = [
+  {
+    field: 'challengeRounds',
+    label: 'challenge round counter',
+    namesTheCounter: /invalid challenge round counter/,
+    // This counter is the only one with an upper bound, so it is the only one
+    // whose table carries a value that is a perfectly good count and still not
+    // a state this graph can be in.
+    corruptions: [
+      ...corruptCounterValues,
+      {
+        label: 'past-the-cap',
+        slug: 'past-the-cap',
+        value: graphPackage.MAX_CHALLENGE_ROUNDS + 1,
+      },
+    ],
+  },
+  {
+    field: 'reservedChallengeBudget',
+    label: 'reserved challenge budget',
+    namesTheCounter: /invalid reserved challenge budget/,
+    corruptions: corruptCounterValues,
+  },
+];
+
+for (const counter of corruptPersistedChallengeCounters) {
+  for (const corruption of counter.corruptions) {
+    test(`refuses a current-version checkpoint carrying a ${corruption.label} ${counter.label}, and names the counter`, async () => {
+      const slug = `${counter.field}-${corruption.slug}`;
+      await assertCurrentVersionResumeResolves(
+        `run-current-version-counter-${slug}`,
+        { action: 'confirm' },
+      );
+
+      const harness = createHarness({ runId: `run-corrupt-counter-${slug}` });
+
+      try {
+        const interrupted = await harness.start();
+        const traceBeforeResume = [...harness.trace];
+        harness.rewriteEveryPersistedControl((control) => ({
+          ...control,
+          schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
+          [counter.field]: corruption.value,
+        }));
+
+        const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+        assert.equal(
+          'error' in outcome,
+          true,
+          'a checkpoint whose challenge counter no other entry point would accept must be refused, not resumed to completion',
+        );
+        assert.match(
+          outcome.error.message,
+          counter.namesTheCounter,
+          'the refusal must name the counter it refused on',
+        );
+        assert.doesNotMatch(
+          outcome.error.message,
+          namesTheVersionBoundary,
+          'a corrupt counter at the current version must not surface as a version complaint',
+        );
+        assert.notEqual(
+          outcome.error.message,
+          'invalid investigation execution input',
+          'a corrupt counter must not surface as the opaque input refusal',
+        );
+        assert.deepEqual(
+          harness.trace,
+          traceBeforeResume,
+          'the refusal must land before the resumed run executes another lifecycle node',
+        );
+      } finally {
+        harness.cleanup();
+      }
+    });
+  }
+}
+
+/**
+ * The rows above all resume with `confirm`, which is the route the finding was
+ * reported on. It is not the only route the refusal has to cover, and where the
+ * assertion SITS is what decides that: above `interrupt()` and above the branch
+ * on the decision, it refuses before the resumed run reads the decision at all.
+ * Moved into the confirm branch it would still satisfy every row above, while a
+ * reject went back to running a whole lifecycle cycle before anything refused
+ * it. So the route is a dimension of its own here, not a detail of the fixture.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`refuses a negative challenge round counter before a resumed ${label} executes another node`, async () => {
+    await assertCurrentVersionResumeResolves(
+      `run-current-version-challenge-route-${label}`,
+      decision(1),
+    );
+
+    const harness = createHarness({ runId: `run-challenge-route-${label}` });
+
+    try {
+      const interrupted = await harness.start();
+      const traceBeforeResume = [...harness.trace];
+      harness.rewriteEveryPersistedControl((control) => ({
+        ...control,
+        schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
+        challengeRounds: -1,
+      }));
+
+      const outcome = await harness.resume(interrupted, decision(1));
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a checkpoint whose challenge counter no other entry point would accept must be refused on every resume route',
+      );
+      assert.match(
+        outcome.error.message,
+        /invalid challenge round counter/,
+        'the refusal must name the counter it refused on',
+      );
+      assert.deepEqual(
+        harness.trace,
+        traceBeforeResume,
+        'the refusal must land before the resumed run executes another lifecycle node, whichever route the human took',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
  * The graph owns `resumeCount`, and a resume is the only thing that moves it:
  * pausing at the interrupt is not one, and neither is a lifecycle node replayed
  * by the resume — a reject re-enters the graph and runs a whole cycle again, so
