@@ -91,6 +91,19 @@ export function deriveEvidenceId({
   return hashIdentity([trialId, payloadFingerprint]);
 }
 
+/**
+ * ⚠ This runner shares `INCIDENT_STATE_SCHEMA_VERSION` with `IncidentState`,
+ * and that constant moved 1 -> 2 for a change to `IncidentStateControl` — a
+ * shape THIS state does not carry. So the bump declares an incompatibility that
+ * does not exist here, and nothing on the resume path validates the stamped
+ * value: a checkpoint written before the bump still returns `1` through a field
+ * whose type now says `2`.
+ *
+ * Accepted rather than fixed: decoupling the two versions means a second version
+ * taxonomy, and one version per persisted-state family is the cheaper wrong
+ * answer than two that can disagree. Stated here because this is where the next
+ * reader of this file will be, not in a pull request they will never open.
+ */
 function toResult(state: typeof PersistentInvestigationState.State): PersistentInvestigationResult {
   return {
     schemaVersion: state.schemaVersion,

@@ -153,6 +153,8 @@ function initialState(runId, humanReview) {
       phase: 'concluding',
       maxIterations: 4,
       llmCallBudget: 8,
+      iterationsUsed: 0,
+      llmCallsUsed: 0,
       reservedChallengeBudget: 2,
       challengeRounds: 0,
       humanReview,

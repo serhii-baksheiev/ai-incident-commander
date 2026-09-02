@@ -482,6 +482,8 @@ function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
       llmCallBudget: 8,
       reservedChallengeBudget: 2,
       challengeRounds: 0,
+      iterationsUsed: 0,
+      llmCallsUsed: 0,
       humanReview: false,
     },
   };

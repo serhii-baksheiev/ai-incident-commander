@@ -82,11 +82,13 @@ const state = {
   },
   control: {
     runId: 'run-1',
-    schemaVersion: 1,
+    schemaVersion: 2,
     statusRulesVersion: 'v0.1',
     phase: 'concluding',
     maxIterations: 8,
     llmCallBudget: 12,
+    iterationsUsed: 3,
+    llmCallsUsed: 5,
     reservedChallengeBudget: 2,
     challengeRounds: 1,
     stopKind: 'sufficient',
@@ -187,7 +189,7 @@ test('upserts collection members by replacing in place and appending new ids', (
 });
 
 test('publishes explicit state and baseline status-rule versions', () => {
-  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 1);
+  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 2);
   assert.equal(domain.STATUS_RULES_VERSION, state.control.statusRulesVersion);
   assert.deepEqual(domain.BASELINE_STATUS_RULES, {
     version: domain.STATUS_RULES_VERSION,
@@ -217,4 +219,84 @@ test('publishes explicit state and baseline status-rule versions', () => {
       },
     },
   });
+});
+
+test('rejects control state persisted under the previous schema version', () => {
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(state).success,
+    true,
+    'the current-version fixture must parse, or this rejection proves nothing',
+  );
+
+  const candidate = structuredClone(state);
+  candidate.control.schemaVersion = 1;
+
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(candidate).success,
+    false,
+    'state persisted before the logical-budget counters must fail loudly, not be coerced',
+  );
+});
+
+test('requires the graph-owned usage counters on every control record', () => {
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(state).success,
+    true,
+    'the fixture carrying both counters must parse, or these rejections prove nothing',
+  );
+
+  for (const counter of ['iterationsUsed', 'llmCallsUsed']) {
+    const candidate = structuredClone(state);
+    delete candidate.control[counter];
+
+    assert.equal(
+      domain.IncidentStateSchema.safeParse(candidate).success,
+      false,
+      `control without ${counter} must be rejected instead of silently defaulted`,
+    );
+  }
+});
+
+/**
+ * The graph refuses a budget or usage counter that is not a whole non-negative
+ * count, one node into the run. The schema is the boundary that decides what a
+ * counter IS, so it has to refuse the same values — otherwise the same fact is
+ * spelled two ways and the persisted shape is the looser of the two.
+ */
+const logicalBudgetCounters = [
+  'maxIterations',
+  'llmCallBudget',
+  'iterationsUsed',
+  'llmCallsUsed',
+];
+
+for (const invalidCount of [
+  { label: 'a fractional', value: 0.5 },
+  { label: 'a negative', value: -1 },
+  { label: 'an infinite', value: Number.POSITIVE_INFINITY },
+  { label: 'a NaN', value: Number.NaN },
+]) {
+  test(`rejects ${invalidCount.label} value in every logical budget counter`, () => {
+    assert.equal(
+      domain.IncidentStateSchema.safeParse(state).success,
+      true,
+      'the fixture carrying whole counts must parse, or these rejections prove nothing',
+    );
+
+    for (const counter of logicalBudgetCounters) {
+      const candidate = structuredClone(state);
+      candidate.control[counter] = invalidCount.value;
+
+      assert.equal(
+        domain.IncidentStateSchema.safeParse(candidate).success,
+        false,
+        `${counter} must reject ${invalidCount.label} value at the schema boundary, not one node into the graph`,
+      );
+    }
+  });
+}
+
+test('keeps the baseline status-rules version at v0.1 across the state schema bump', () => {
+  assert.equal(domain.STATUS_RULES_VERSION, 'v0.1');
+  assert.equal(domain.BASELINE_STATUS_RULES.version, 'v0.1');
 });

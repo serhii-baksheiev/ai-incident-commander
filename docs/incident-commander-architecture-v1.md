@@ -213,6 +213,9 @@ type IncidentState = {
     llmCallBudget: number;
     reservedChallengeBudget: number;
 
+    iterationsUsed: number;
+    llmCallsUsed: number;
+
     challengeRounds: number;
     stopKind?: InvestigationStop;
 
@@ -222,6 +225,65 @@ type IncidentState = {
 ```
 
 Collections use reducers with upsert-by-id semantics. `schemaVersion` is mandatory because checkpoints persist the state shape.
+
+The three budgets and the two usage counters are **graph-owned**: a node update
+can neither raise a limit nor rewrite usage. A node reports LLM consumption only
+through a declaration channel the graph validates; no node writes `llmCallsUsed`
+itself. Each budget terminates through the same existing `budget-exhausted` stop
+kind — no new kind was introduced.
+
+**Where the iteration cap does and does not bite.** `iterationsUsed` is
+incremented by the graph on entry to `plan_investigation`, and `maxIterations`
+is read on the automatic `need-more-evidence` edge out of `termination_check`.
+That is one of three edges that re-enter the cycle, and the other two are bounded
+by something else:
+
+- `challenge_hypothesis → execute_investigation` re-enters without passing
+  `plan_investigation`, and is bounded by `MAX_CHALLENGE_ROUNDS` and
+  `reservedChallengeBudget`;
+- `review_conclusion → generate_hypotheses` / `derive_predictions` re-enters on a
+  human decision, and is bounded by the human. `iterationsUsed` keeps counting
+  across it, so the spend stays visible, but `maxIterations` does not stop it.
+
+So `maxIterations` bounds the automatic loop, not every path that does
+investigation work. Stating it the other way round would sell cover that is not
+there. see hitl-resume-contract.test.mjs › "maxIterations caps the automatic loop-back
+edge while a ${route.label} re-entry is bounded by the human, and iterationsUsed
+keeps counting across it"
+
+**Two nodes have no declaration channel.** `termination_check` and
+`challenge_hypothesis` return their own decision types rather than a state
+update, so they cannot declare consumption — and the LLM responsibilities list
+in §7 includes challenge alternative generation. `llmCallBudget` therefore cannot
+count those calls when a provider arrives. Recorded here because the budget
+design is read here.
+
+`llmCallBudget` is a versioned safety cap, not a calibrated one: no LLM
+execution path exists yet — nothing in `packages/` sets `declaredLlmCalls`, so
+`llmCallsUsed` stays `0` by construction rather than by estimate.
+see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
+declares an llm call"
+
+`schemaVersion` is `2` from this change. The counters are required fields, so
+state persisted under version 1 is refused rather than coerced to an invented
+usage of zero — on the `kind: 'start'` path by the schema's version literal, and
+on the resume path by the graph's own version guard, because a restored
+checkpoint is never parsed by the schema.
+
+⚠ The two refusals are not equally legible. The resume guard names the version
+it refused on; the start path does not, because `parseInvestigationExecutionInput`
+collapses every schema failure into a single `invalid investigation execution
+input`. Both refuse, one explains.
+
+⚠ **An unresolved tension with the durable-execution invariant below.** §6 states
+that naive `counter++` inside replayable nodes is forbidden for budget
+accounting, and that logical budget accounting reconciles with unique committed
+call/trial records. `iterationsUsed` is computed as a function of the entering
+state rather than mutated in place, so it is stable across a replay from the
+same checkpoint — but it is **not** reconciled against committed records, and
+that half of the invariant is unmet. Recovery instrumentation is AIC-63's scope.
+This is recorded, not resolved: the resolution belongs in this document, decided
+by its owner, not in one change's history.
 
 ## 6. Run identity and persistence
 

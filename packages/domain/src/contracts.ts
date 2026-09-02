@@ -129,15 +129,33 @@ export const InvestigationStopSchema = z.enum([
   'human-stop',
 ]);
 
+/**
+ * A budget or a usage count: a non-negative safe integer, and nothing else.
+ *
+ * Exported because the graph validates the same four fields at runtime and must
+ * not restate the rule — a schema that admits `-1` while the graph rejects it is
+ * one fact spelled two ways, and the copy nobody is looking at is the one that
+ * is wrong (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ */
+export const LogicalCountSchema = z.number().int().nonnegative();
+
 export const IncidentStateControlSchema = z.strictObject({
   runId: IdentifierSchema,
   schemaVersion: z.literal(INCIDENT_STATE_SCHEMA_VERSION),
   statusRulesVersion: z.literal(STATUS_RULES_VERSION),
   phase: InvestigationPhaseSchema,
-  maxIterations: z.number(),
-  llmCallBudget: z.number(),
+  maxIterations: LogicalCountSchema,
+  llmCallBudget: LogicalCountSchema,
   reservedChallengeBudget: z.number(),
   challengeRounds: z.number(),
+  // Usage against the two logical budgets above. Required, not optional: an
+  // absent counter would have to be read as zero, which is indistinguishable
+  // from a run that has spent nothing.
+  // The graph owns both; a node update can never write them —
+  // see investigation-graph.test.mjs › "does not let normal lifecycle nodes
+  // rewrite the graph-owned logical budgets".
+  iterationsUsed: LogicalCountSchema,
+  llmCallsUsed: LogicalCountSchema,
   stopKind: InvestigationStopSchema.optional(),
   humanReview: z.boolean(),
 });
