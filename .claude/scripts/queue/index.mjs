@@ -6,12 +6,13 @@
 //   node .claude/scripts/queue/index.mjs list            # every item, with skip reasons
 //   node .claude/scripts/queue/index.mjs hygiene         # stale labels, link anomalies, overtaken proposals
 //   node .claude/scripts/queue/index.mjs gate-round --branch <b>   # count a gate round
+//   node .claude/scripts/queue/index.mjs board [<name>]       # the active board; or switch this checkout to <name>
 //
 // The adapter comes from `.claude/queue.json` (`{"adapter": "plan-md"}`) and
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -19,7 +20,6 @@ import {
   citedPathsOf,
   hygieneOf,
   overtakenOf,
-  revalidationOf,
   selectNext,
   stopConditionOf,
 } from './core.mjs';
@@ -29,6 +29,7 @@ import { changedSinceOf, headShaOf } from './as-of.mjs';
 // apart from `state.mjs` so the read path does not drag the tier computation —
 // and `detect-missed-gate.mjs` behind it — into a CLI that never calls either.
 import { checkoutIsShippable, mainCheckoutRoot } from './checkout.mjs';
+import { revalidateClaim, targetShaOf } from '../lib/claim-records.mjs';
 
 const ADAPTERS = {
   'plan-md': './plan-md.mjs',
@@ -48,7 +49,7 @@ export const resolveAdapter = async (adapterName) => {
   return import(new URL(modulePath, import.meta.url).href);
 };
 
-export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round'];
+export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round', 'board'];
 
 /**
  * A missing config is the normal state of a fresh project. A config that exists
@@ -63,8 +64,9 @@ export const loadConfig = (configPath) => {
   } catch {
     return {};
   }
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
       `${configPath} exists but is not valid JSON, so the configured queue cannot be ` +
@@ -73,6 +75,83 @@ export const loadConfig = (configPath) => {
       { cause: error },
     );
   }
+  return resolveBoard(parsed, configPath);
+};
+
+/**
+ * The selector that travels with a config: `<name>.json` → `<name>.board`.
+ *
+ * A plain-text file holding one board name. Same class as the state file — a
+ * per-checkout runtime value that must never be committed, because the config it
+ * sits beside is composed and tracked. Derived from the config path for the same
+ * reason `statePathFor` is: a run pointed at a temp config must not switch on
+ * this checkout's real selector.
+ */
+export const boardPathFor = (configPath) => configPath.replace(/(\.json)?$/, '.board');
+
+const isTerminalControl = (char) => {
+  const code = char.codePointAt(0);
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+};
+
+const assertSafeBoardName = (name, source) => {
+  if (typeof name === 'string' && [...name].some(isTerminalControl)) {
+    throw new Error(`${source}: board names must not contain terminal control characters.`);
+  }
+};
+
+const boardNamesOf = (boards, configPath) => {
+  const names = Object.keys(boards);
+  for (const name of names) assertSafeBoardName(name, configPath);
+  return names;
+};
+
+/**
+ * A config may declare several boards and one default:
+ *
+ *   { "adapter": "jira", "board": "AR",
+ *     "boards": { "AR": { "project": "AR", "owner": "x" }, "RP": { … } },
+ *     "options": { "maxGateRounds": 3 } }
+ *
+ * The active board is the selector file if present, else `board`; its entry is
+ * laid over `options`, so a key every board shares stays in `options` and only
+ * what differs is per board. A config with no `boards` is returned exactly as it
+ * was. A name nobody declared — in the selector or as the default — is refused,
+ * never read as "no board": the loop would otherwise run on the shared options
+ * alone, and for `jira` that is a different (or no) project.
+ */
+export const resolveBoard = (config, configPath) => {
+  if (config?.boards === undefined) return config;
+  const boards = config.boards;
+  if (boards === null || typeof boards !== 'object' || Array.isArray(boards)) {
+    throw new Error(`${configPath}: "boards" must be an object of <name> → options.`);
+  }
+  const known = boardNamesOf(boards, configPath);
+  let selected = null;
+  let source = 'the "board" key';
+  try {
+    selected = readFileSync(boardPathFor(configPath), 'utf8').trim();
+    source = boardPathFor(configPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+  }
+  // A selector that exists but is empty is refused, not read as "no selector":
+  // a truncated write would otherwise switch the run to the default board while
+  // the file still looks like a choice somebody made.
+  const active = selected === null ? config.board : selected;
+  assertSafeBoardName(active, source);
+  if (!active || !known.includes(active)) {
+    throw new Error(
+      `${source} names board ${JSON.stringify(active ?? null)}, which ${configPath} does not ` +
+        `declare. Declared boards: ${known.join(', ')}. Refusing rather than running on the ` +
+        'shared options alone — that would be a different queue than the one configured.',
+    );
+  }
+  const entry = boards[active];
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new Error(`${configPath}: boards.${active} must be an object of adapter options.`);
+  }
+  return { ...config, board: active, options: { ...(config.options ?? {}), ...entry } };
 };
 
 /**
@@ -222,11 +301,12 @@ export const loadState = (statePath) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null };
+  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--config') args.config = argv[++i];
     else if (argv[i] === '--branch') args.branch = argv[++i];
+    else if (!argv[i].startsWith('--') && args.name === null) args.name = argv[i];
   }
   return args;
 };
@@ -237,12 +317,16 @@ const renderNext = (result, stop, revalidation = null) => {
     return `queue: ${label}${stop.success ? '' : ' (needs attention)'}\n  ${stop.why}\n`;
   }
   const lines = [`next: ${result.ticket.id} — ${result.ticket.title} [${result.ticket.tier}]`];
-  // Only a marker that MOVED earns a line: the unchanged case stays quiet and
-  // cheap, and the no-marker case is in the JSON and the event log, not here.
-  if (revalidation?.changed === true) {
+  // CURRENT and BASELINE_CREATED stay quiet. Every blocking claim result is
+  // visible in text mode too; an exit code with no reason is not operable.
+  if (revalidation?.action === 'hold' || revalidation?.action === 'unverifiable') {
+    const detail =
+      revalidation.source.length > 0
+        ? revalidation.source.join(', ')
+        : (revalidation.evidence?.error ?? revalidation.sourcePointer);
     lines.push(
-      `revalidate: ${revalidation.ticket} hold — ${revalidation.source.join(', ')} ` +
-        `(${revalidation.task.from} → ${revalidation.task.to}) — re-read the item before acting`,
+      `revalidate: ${revalidation.ticket} ${revalidation.action} — ${detail} — ` +
+        're-read the item before acting',
     );
   }
   if (result.skipped.length > 0) {
@@ -286,6 +370,66 @@ if (invokedDirectly()) {
         "the adapter's own API — import the adapter module rather than this CLI.\n",
     );
     process.exit(1);
+  }
+
+  // `board` is local too: it reads the config and writes the selector beside it,
+  // and never touches the tracker. Switching is refused on a config that declares
+  // no boards — the selector would then be a file nothing reads.
+  if (args.command === 'board') {
+    try {
+      // Resolve before deriving either the checkout root or the selector path.
+      // Otherwise a symlinked `.claude` lets the caller authorize one checkout
+      // while the write follows the link into another unattended checkout.
+      const configPath = realpathSync(args.config ?? join(projectRoot, '.claude', 'queue.json'));
+      const raw = JSON.parse(readFileSync(configPath, 'utf8'));
+      if (raw?.boards === undefined) {
+        throw new Error(`${configPath} declares no boards, so there is nothing to switch between.`);
+      }
+      if (raw.boards === null || typeof raw.boards !== 'object' || Array.isArray(raw.boards)) {
+        throw new Error(`${configPath}: "boards" must be an object of <name> → options. Nothing was written.`);
+      }
+      const boardNames = boardNamesOf(raw.boards, configPath);
+      if (args.name !== null) {
+        assertSafeBoardName(args.name, 'the requested board');
+        if (!boardNames.includes(args.name)) {
+          throw new Error(
+            `${JSON.stringify(args.name)} is not a declared board. Declared: ` +
+            `${boardNames.join(', ')}. Nothing was written.`,
+          );
+        }
+        // Loaded only on the mutation path. `next`, `list` and `hygiene` also
+        // run in partial-install diagnostics where this sibling is deliberately
+        // absent; a static import would replace their own actionable refusal
+        // with ERR_MODULE_NOT_FOUND before the command could start.
+        const { readUnattended } = await import('../unattended-flag.mjs');
+        const callerRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+        const targetRoot = projectRootOfConfig(configPath) ?? callerRoot;
+        const guardedRoots = [...new Set([callerRoot, targetRoot])];
+        const unattended = guardedRoots
+          .map((root) => ({ root, mode: readUnattended({ ...process.env, CLAUDE_PROJECT_DIR: root }) }))
+          .find(({ mode }) => mode.on);
+        if (unattended) {
+          throw new Error(
+            `board switching is refused while checkout ${unattended.root} is unattended. ` +
+              'The read-only `board` report remains available; disarm the loop before re-aiming its queue.',
+          );
+        }
+        writeFileSync(boardPathFor(configPath), `${args.name}\n`);
+      }
+      const config = loadConfig(configPath);
+      const report = { board: config.board, boards: boardNames, options: config.options };
+      process.stdout.write(
+        args.json
+          ? `${JSON.stringify(report)}\n`
+          : `board: ${report.board}${args.name !== null ? ' (switched)' : ''}\n` +
+              `  declared: ${report.boards.join(', ')}\n` +
+              `  selector: ${boardPathFor(configPath)}\n`,
+      );
+      process.exit(0);
+    } catch (error) {
+      process.stderr.write(`board could not run: ${error.message}\n`);
+      process.exit(1);
+    }
   }
 
   // 🔴 **`gate-round` returns before the tracker is ever touched, and that is
@@ -390,12 +534,21 @@ if (invokedDirectly()) {
   // pattern it matched on. The load lives here; the READ stays behind the
   // declaration, because a session with no run directory has no state to read
   // and must keep working exactly as before.
-  let readState;
+  let readStateForSelection;
   let stopInputsOf;
   let recordTakeUp;
+  let recordRevalidationHold;
   let previousTakeUp;
+  let previousRunEvidence;
   try {
-    ({ readState, stopInputsOf, recordTakeUp, previousTakeUp } = await import('../run-state.mjs'));
+    ({
+      readStateForSelection,
+      stopInputsOf,
+      recordTakeUp,
+      recordRevalidationHold,
+      previousTakeUp,
+      previousRunEvidence,
+    } = await import('../run-state.mjs'));
   } catch (error) {
     process.stderr.write(
       `run state: ${error.message}\n` +
@@ -446,7 +599,46 @@ if (invokedDirectly()) {
   // `invariants.md` forbids. Selection therefore does NOT stop on the brake, and
   // the `loop` skill tells the run to keep checking it between tasks.
   //
-  const runState = process.env.RIG_RUN_DIR ? readState(process.env.RIG_RUN_DIR) : {};
+  let runState;
+  try {
+    runState = process.env.RIG_RUN_DIR
+      ? readStateForSelection(process.env.RIG_RUN_DIR)
+      : {};
+  } catch (error) {
+    const stop = {
+      kind: 'run-state-unreadable',
+      success: false,
+      why: `${error.message}; the run may contain a stop condition, so selection is refused.`,
+    };
+    process.stdout.write(
+      args.json
+        ? `${JSON.stringify({ stop, revalidation: null }, null, 2)}\n`
+        : `queue: ${stop.kind}\n  ${stop.why}\n`,
+    );
+    process.exit(1);
+  }
+  // `state.json` is the fast stop input; the append-only journal is the durable
+  // run evidence that can reconstruct it after an absent or valid-but-empty
+  // state file. Reuse the shared temporal resolution rule rather than growing
+  // a second definition of "unresolved" in selection. A broken journal keeps
+  // its established lost-trace behaviour; a readable unresolved detection can
+  // never be erased merely by deleting the derived state cache.
+  if (process.env.RIG_RUN_DIR && !runState.revalidationHold) {
+    try {
+      const [{ readRun }, { unresolvedBlockingDetectionOf }] = await Promise.all([
+        import('../run-journal.mjs'),
+        import('../lib/revalidation-evidence.mjs'),
+      ]);
+      const recovered = unresolvedBlockingDetectionOf(
+        readRun({ runDir: process.env.RIG_RUN_DIR }).events,
+      );
+      if (recovered) runState = { ...runState, revalidationHold: recovered };
+    } catch {
+      // The journal's read/write failure contract is handled at its existing
+      // call site below. This reconciliation only restores evidence it can
+      // validate; it never guesses a detection from unreadable bytes.
+    }
+  }
   let stopInputs;
   try {
     // Read through the module that owns the vocabulary, never field by field
@@ -586,27 +778,107 @@ if (invokedDirectly()) {
   // a default derived from `projectRoot` would land the trace inside the very
   // template tree this repository publishes.
   const runDir = process.env.RIG_RUN_DIR;
-  // Revalidation at SELECT (AR-133): the selected item against the marker this
-  // run recorded at its last take-up. Computed only under a declared run —
-  // there is no snapshot to compare against anywhere else — and `null` in the
-  // output then, so a reader can tell "not compared" from "compared, unchanged".
+  // Revalidation at SELECT: the selected item against its durable claim
+  // fingerprints. It runs with or without a declared run; only the evidence
+  // log is run-scoped. Otherwise an attended first SELECT would bypass the
+  // cross-harness baseline the next unattended resume requires.
   //
-  // The baseline is this run's take-up when it has one; otherwise the newest
-  // earlier run's (AR-138) — an item taken up yesterday and re-offered today
-  // used to compare against nothing and report a first sight. `baseline` says
-  // which it was (`this-run` | `previous-run` | null), and `baselineRun` names
-  // the earlier run, so the report can tell the three apart. A rig whose
-  // run-state module predates `previousTakeUp` keeps the per-run behaviour.
+  // Take-up markers remain attached as compatibility evidence. `baseline`
+  // says where that evidence came from; neither it nor `updatedAt` contributes
+  // to the claim result or decides whether the first claim may be created.
   let revalidation = null;
-  if (runDir && result.ticket) {
-    const own = runState.takeUps?.[result.ticket.id];
+  const configuredProjectRoot = projectRootOfConfig(configPath);
+  const claimRoot = configuredProjectRoot ?? projectRoot;
+  if (result.ticket && configuredProjectRoot !== null) {
+    const own = runDir ? runState.takeUps?.[result.ticket.id] : undefined;
     const prior =
-      own === undefined && typeof previousTakeUp === 'function'
+      runDir && own === undefined && typeof previousTakeUp === 'function'
         ? previousTakeUp(runDir, result.ticket.id)
         : null;
     const snapshot = own ?? prior?.updatedAt ?? null;
+    // SELECT events are the sole authority for whether this is first sight or
+    // a resume. A take-up may still supply the compatibility snapshot above,
+    // but it never enters this decision. Every sibling journal comes from the
+    // same bounded resolver as the marker lookup so the evidence windows cannot
+    // drift apart.
+    let selectedBefore = false;
+    let resumeEvidenceError = null;
+    if (runDir) {
+      let journal = null;
+      try {
+        journal = await import('../run-journal.mjs');
+      } catch {
+        selectedBefore = true;
+        resumeEvidenceError = 'current run journal module is unreadable or missing';
+      }
+      const selectedIn = (candidateRunDir) =>
+        journal.readRun({ runDir: candidateRunDir }).events.some(
+          (event) =>
+            event.kind === 'revalidation' &&
+            event.data?.point === 'SELECT' &&
+            String(event.data?.ticket) === String(result.ticket.id) &&
+            typeof event.data?.result === 'string' &&
+            typeof event.data?.sourcePointer === 'string',
+        );
+      if (journal) {
+        try {
+          selectedBefore = selectedIn(runDir);
+        } catch {
+          selectedBefore = true;
+          resumeEvidenceError = 'current run journal is unreadable or invalid';
+        }
+      }
+      if (journal && !selectedBefore) {
+        let candidates = [];
+        let complete;
+        try {
+          const previous = previousRunEvidence(runDir);
+          candidates = previous.runDirs;
+          complete = previous.complete;
+        } catch {
+          complete = false;
+        }
+        let unreadablePrior = false;
+        for (const candidateRunDir of candidates) {
+          try {
+            if (selectedIn(candidateRunDir)) {
+              selectedBefore = true;
+              break;
+            }
+          } catch {
+            unreadablePrior = true;
+          }
+        }
+        if (!selectedBefore && (!complete || unreadablePrior)) {
+          selectedBefore = true;
+          resumeEvidenceError = !complete
+            ? 'prior run journal search is incomplete or truncated by its safety limit'
+            : 'prior run journal is unreadable or invalid';
+        }
+      }
+    }
+    let claim = revalidateClaim({
+      projectRoot: claimRoot,
+      ticket: result.ticket,
+      point: 'SELECT',
+      claimedState: adapter.claimedState,
+      targetSha: targetShaOf(claimRoot),
+      allowCreate: true,
+      isResume: selectedBefore,
+    });
+    if (resumeEvidenceError && claim.result === 'UNVERIFIABLE') {
+      claim = {
+        ...claim,
+        evidence: {
+          ...claim.evidence,
+          error: `${resumeEvidenceError}; ${claim.evidence?.error ?? 'claim cannot be verified'}`,
+        },
+      };
+    }
     revalidation = {
-      ...revalidationOf({ ticket: result.ticket, snapshot }),
+      ...claim,
+      observedAt: new Date().toISOString(),
+      task: { from: snapshot, to: result.ticket.updatedAt ?? null },
       baseline: own !== undefined ? 'this-run' : prior ? 'previous-run' : null,
       ...(prior ? { baselineRun: prior.runDir } : {}),
     };
@@ -681,6 +953,9 @@ if (invokedDirectly()) {
   }
 
   if (revalidation) {
+    if (revalidation.action === 'hold' || revalidation.action === 'unverifiable') {
+      recordRevalidationHold(runDir, revalidation);
+    }
     // Its own try, after the journal's: a state file that cannot be written is
     // not the journal failing, and the selection stands either way — the
     // comparison was made and recorded; only the next baseline is lost.
@@ -700,4 +975,5 @@ if (invokedDirectly()) {
       ? `${JSON.stringify({ ticket: result.ticket, skipped: result.skipped, stop, revalidation }, null, 2)}\n`
       : renderNext(result, stop, revalidation),
   );
+  process.exit(revalidation?.action === 'hold' || revalidation?.action === 'unverifiable' ? 2 : 0);
 }

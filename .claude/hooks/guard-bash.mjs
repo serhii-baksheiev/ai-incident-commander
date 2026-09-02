@@ -24,7 +24,8 @@
 //
 // ── The limits, stated exactly — and TESTED ──────────────────────────────────
 //
-// This block is a credibility claim, so `test/template/guard-hardening.test.ts`
+// This block is a credibility claim, so the generator's
+// `test/template/guard-hardening.test.ts` (absent in a generated rig)
 // asserts each line twice: that the limit is documented here, and that the
 // command really does pass. A limits comment nothing checks drifts into fiction,
 // which is what happened the first time — an earlier version of this list was
@@ -73,12 +74,48 @@
 // written without thinking — not an adversary, and circumventing it is itself a
 // Never-tier violation. The layers behind it are review and CI.
 //
+// ── Which SURFACES it sees, and what that does not promise (RP-65) ───────────
+//
+// This runs for every tool named in `.claude/scripts/lib/shell-tools.mjs`, not
+// for `Bash` alone. It used to be wired under `Bash` only, and the measurement
+// that changed it is in that file: the same `--no-verify` command was blocked
+// through one tool and ran through the other, in one session.
+//
+// ⚠ Widening the matcher makes the same RULES run on both surfaces. It does not
+// make the PARSING identical: the tokeniser above is POSIX, and PowerShell's
+// quoting, escaping and separators are its own, so a command whose danger is
+// visible only after PowerShell-specific parsing can read differently here.
+//
+// ⚠ And the coarse checks are narrower than "coarse" suggests. The rules
+// match a command NAME — `git`, `gh`, `rm` — so they refuse the operation
+// only when the operation is spelled that way.
+// Measured with the brake armed: `gh pr merge …` is refused on both surfaces,
+// while `gh.exe pr merge …`, `Start-Process gh -ArgumentList …` and
+// `Remove-Item -Recurse -Force C:\` are all allowed. The first of those is
+// allowed under `Bash` too, so this is a rule-set bound rather than anything
+// the widened matcher introduced — but it is a bound, and an earlier draft of
+// this block claimed the opposite. This gap is why the file keeps a name that
+// says `bash`: a rename would promise a parity the parser does not have.
+//
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
-// stderr is shown to the agent as the reason. Fails open on anything it cannot
-// parse — a crashed guard must never make the session unusable.
-import { readFileSync, realpathSync } from 'node:fs';
+// stderr is shown to the agent as the reason.
+//
+// Two different things happen to input this guard cannot act on, and collapsing
+// them into one sentence is the mistake `.claude/rules/invariants.md`
+// ("Refusing to inspect is a third outcome") says costs a credential either way:
+//   - NOTHING TO JUDGE -> allow. An unparseable payload, no `tool_input`, no
+//     `command`, an empty one, a tool this guard does not answer for, or a crash
+//     inside `inspect` — a guard that has nothing to look at, or that broke, must
+//     never make the session unusable.
+//   - HANDED SOMETHING IT CANNOT READ -> block. A `command` that is present in a
+//     shape this guard does not accept is refused, naming the shape expected,
+//     because allowing it would report a check that never ran.
+// The split is decided in one place for both shell guards, `lib/hook-input.mjs`.
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { brakeIsOn } from '../scripts/stop-flag.mjs';
+import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
+import { readHookInput, refusalText, shellCommandOf } from './lib/hook-input.mjs';
 
 /** Branches that are shared by definition. */
 const PROTECTED_BRANCH = /^(main|master|develop|development|trunk)$/;
@@ -803,16 +840,35 @@ export const inspect = (raw, brake, depth = 0) => {
 };
 
 function main() {
-  let input;
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8'));
-  } catch {
-    return 0;
+  const input = readHookInput();
+  if (input === null) return 0;
+  // The ONE list decides which surfaces this guard answers for. Comparing a
+  // literal here is what made the widened matcher in `settings.json` cosmetic:
+  // the hook was launched for every shell tool and then excused itself from all
+  // but one, so the Never tier and the kill switch stayed bypassable on the
+  // other. Two spellings of one fact, and the one that ran was the wrong one.
+  if (!SHELL_TOOLS.includes(input.tool_name)) return 0;
+  // Three outcomes, decided in one shared place (RP-80): absent → allow, a
+  // string → inspect, present-in-a-shape-this-cannot-read → REFUSE. The last
+  // one used to be an allow, and what that cost is measured rather than
+  // asserted: on `master` at `254b25c8`, with the kill switch armed, a
+  // `command` spelled as an array of argv words returned 0 here before
+  // `brakeIsOn()` was ever consulted. Pinned in hook-command-shape.test.ts
+  // (absent in a generated rig) › "refuses an unreadable command through %s
+  // while the kill switch is armed". A rule that can be stepped over by
+  // restating the same command in another container is not a rule.
+  const command = shellCommandOf(input);
+  if (command.kind === 'unreadable') {
+    process.stderr.write(`${refusalText(command)}\n`);
+    return 2;
   }
-  if (input.tool_name !== 'Bash') return 0;
-  const commandValue = input.tool_input?.command;
-  if (typeof commandValue !== 'string') return 0;
-  const raw = commandValue;
+  // Every member except `string` leaves nothing to inspect. Stated as one
+  // POSITIVE test rather than a list of the others, so a member added later
+  // cannot fall through to `raw.trim()` — which sits outside the try below,
+  // where a throw exits 1 and the harness reads that as allow. That is the
+  // fail-open this change removes, re-entering by another door.
+  if (command.kind !== 'string') return 0;
+  const raw = command.command;
   if (!raw.trim()) return 0;
 
   try {
