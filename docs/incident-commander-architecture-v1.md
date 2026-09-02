@@ -259,6 +259,12 @@ in §7 includes challenge alternative generation. `llmCallBudget` therefore cann
 count those calls when a provider arrives. Recorded here because the budget
 design is read here.
 
+**Token and currency cost are explicitly unsupported.** No axis carries either,
+and none is derived from a call count: with no LLM execution path there is no
+price to apply and no token to count, so any such figure would be invented. A
+zero LLM count is published as a real zero rather than converted into a zero
+cost.
+
 `llmCallBudget` is a versioned safety cap, not a calibrated one: no LLM
 execution path exists yet — nothing in `packages/` sets `declaredLlmCalls`, so
 `llmCallsUsed` stays `0` by construction rather than by estimate.

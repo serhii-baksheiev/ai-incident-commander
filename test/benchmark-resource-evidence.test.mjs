@@ -984,3 +984,68 @@ test('accepts a persisted v0.1 evaluation that carries no resource evidence at a
     'the quality feedback a v0.1 record has always produced is unaffected',
   );
 });
+
+/**
+ * The same write-side hazard, one function over.
+ *
+ * `requireBehaviorMetrics` builds its projection the same way the resource one
+ * did, so an inherited accessor named like a behavior metric swallows that
+ * write too — and a behavior metric is a QUALITY score, so what goes missing (or
+ * what an inherited getter supplies in its place) is a claim about how well the
+ * investigation did, not how much it spent.
+ *
+ * This exists because the resource fix was pinned by six tests while the
+ * identical fix beside it was pinned by none: reverting it left the suite green,
+ * which is a guard nobody would notice losing.
+ */
+test('publishes its own behavior metric while Object.prototype carries an accessor of that name', async () => {
+  const metricKey = 'challenge_effect';
+  const capture = capturingClient();
+  const swallowed = [];
+  const { experiment } = singleRecordExperiment((result) => ({
+    ...result,
+    behaviorMetrics: {
+      [metricKey]: {
+        evaluatorVersion: benchmarkVersions.evaluatorVersion,
+        key: metricKey,
+        score: 1,
+        reason: 'passed',
+      },
+    },
+  }));
+
+  await withAccessorPollutedObjectPrototype(
+    metricKey,
+    { key: metricKey, score: 0, reason: 'incorrect-outcome', evaluatorVersion: 'decoy' },
+    swallowed,
+    () => observability.persistBenchmarkExperiment({
+      client: capture.client,
+      datasetName: 'behavior-metric-accessor-v0.2',
+      experiment,
+    }),
+  );
+
+  assert.equal(
+    Object.hasOwn(Object.prototype, metricKey),
+    false,
+    'the planted accessor must not outlive the test that planted it',
+  );
+  assert.equal(capture.runs.length, 1);
+  const [run] = capture.runs;
+
+  assert.equal(
+    Object.hasOwn(run.outputs.behaviorMetrics, metricKey),
+    true,
+    `an inherited setter must not swallow ${metricKey}: a quality score missing from the published record reads as a metric the evaluator never produced (the prototype setter received ${JSON.stringify(swallowed)})`,
+  );
+  assert.equal(
+    run.outputs.behaviorMetrics[metricKey].score,
+    1,
+    'the published score must be the one this run produced, not the decoy the prototype supplies',
+  );
+  assert.equal(
+    run.outputs.behaviorMetrics[metricKey].reason,
+    'passed',
+    'the published reason must be the one this run produced',
+  );
+});

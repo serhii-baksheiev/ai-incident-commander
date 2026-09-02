@@ -10,7 +10,11 @@ sentence in an architecture document is not one.
 ## What was run, and under what authority
 
 The owner authorised a live write to a calibration project for exactly this
-purpose. Two experiments were written, both over the **calibration** partition
+purpose. That authorisation was given in the working session and is recorded in
+the PR that carries this change (#41), not in a tracker field — so a reader who
+was not there has the run's account of it and the PR's, and nothing stronger.
+Saying so is the point: the alternative is a decision record that reads as if
+consent were independently attested when it is not. Two experiments were written, both over the **calibration** partition
 only — the hold-out was not run, and neither experiment touched the existing
 `aic17-*` calibration history.
 

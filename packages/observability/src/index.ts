@@ -346,7 +346,8 @@ function requireBehaviorMetrics(
     if (!PERSISTED_BEHAVIOR_METRIC_REASONS.has(metric.reason)) {
       throw new Error(`behavior metric reason is not declared: ${key}`);
     }
-    // Same CreateDataProperty reasoning as the resource projection below: an
+    // Same CreateDataProperty reasoning as the resource projection further down
+    // this file: an
     // inherited accessor named like a behavior metric would otherwise swallow
     // this write.
     Object.defineProperty(projected, key, {
@@ -475,7 +476,7 @@ async function persistPreparedExperiment({
           runId: record.runId,
           sessionId: project.id,
           key,
-          score: resources[key] as number,
+          score: resources[key],
         });
       }
     }
