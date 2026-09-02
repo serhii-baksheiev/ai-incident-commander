@@ -170,7 +170,7 @@ test(
       assert.deepEqual(
         { exitCode: worker.child.exitCode, signalCode: worker.child.signalCode },
         { exitCode: null, signalCode: null },
-        `the start-mode worker was gone 200ms after it reported being inside executeInvestigation: a non-null exitCode or signalCode here means the process death the resume test asserts would be the child's own exit, not the kill, and that kill has only been racing it\n${worker.diagnostics()}`,
+        `the start-mode worker was gone 200ms after it reported being inside executeInvestigation: an exitCode here means the process death the resume test asserts would be the child's own exit rather than the kill, and that kill has only been racing it; a signalCode would mean something else signalled it first\n${worker.diagnostics()}`,
       );
     } finally {
       if (worker?.child.exitCode === null && worker.child.signalCode === null) {
