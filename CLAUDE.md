@@ -105,20 +105,25 @@ it a hook via the `new-invariant` skill.
   this repository once it has a remote. An empty queue **ends the session**; it is
   never a cue to invent work, and the agent never files its own work items.
 
-## Four things this install left for you to finish
+## What this install left for you to finish — and what is now done
 
-All four are one-liners, and all four are inert until you do them.
+`init` ships this section as four open items. Two of them are closed in this
+repository; they are kept below, marked, because a list that silently loses its
+finished entries cannot be checked against the repo.
 
-1. **The Definition-of-Done gate has nothing to run.** `gate-stop-dod` executes
-   the commands listed in `.claude/hooks/dod-checks.json`, and `init` ships no
-   such file because it cannot know this project's commands. Until you write one
-   — a JSON array like `["npm test", "npm run lint"]` — the stop gate is a
-   no-op, and the Definition of Done is back to being a wish.
-2. **The elevated-path list below is a seed, not a survey.** It names only what
-   every repo has. Everything else is yours to add.
-3. **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
+1. ✅ **The Definition-of-Done gate runs.** `gate-stop-dod` executes the commands
+   in `.claude/hooks/dod-checks.json`, which `init` cannot ship because it cannot
+   know this project's commands. This repository's is `["npm run check"]` — lint,
+   build and the full suite, the same three steps `.github/workflows/ci.yml`
+   runs. **Do not "finish" this item by writing the example array**: `npm test`
+   alone drops the build and the boundary lint, which is a weaker gate than the
+   one now installed.
+2. ⬜ **The elevated-path list below is a seed, not a survey.** It names only what
+   every repo has. Everything else is yours to add — this one never closes.
+3. ✅ **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
    them — it installs into your repository and does not edit files it did not
-   bring. If any are missing, add only the missing entries:
+   bring. All five are present here. If you are reading this in a fresh rig, add
+   the missing entries:
 
    ```
    # the tier the last close recorded
@@ -146,14 +151,14 @@ All four are one-liners, and all four are inert until you do them.
    edited on purpose. `.claude/queue.json` is the opposite: that one is
    configuration and belongs in the repository.
 
-4. **`doctor` reads two files this install does not ship.**
+4. ⬜ **`doctor` reads two files `init` does not ship.**
    `node .claude/scripts/doctor.mjs` decides who owns each hook from
    `.claude/.rig-manifest.json` — which `init` wrote next to the files it
-   installed, so commit it — and reads exemptions from
-   `.claude/doctor-exemptions.json`, a file you author (`{ "<path>": "<reason>" }`)
-   only when a hook you own is deliberately left without a test neighbour.
-   Without the manifest every hook that has no test neighbour reports `unknown`,
-   which is not a pass.
+   installed. **That one is present and committed here**, which is why `doctor`
+   reports GO rather than `unknown`. The second, `.claude/doctor-exemptions.json`
+   (`{ "<path>": "<reason>" }`), is absent **by design**: you author it only when
+   a hook you own is deliberately left without a test neighbour, and this project
+   owns no such hook. Its absence is not an omission to close.
 
 ## The elevated paths of this project
 
@@ -166,6 +171,7 @@ is a path the gate sweep cannot see.
 .claude/
 .agents/
 .codex/
+.rig/
 AGENTS.md
 .github/workflows/
 ```
@@ -173,6 +179,19 @@ AGENTS.md
 They are there because they are what *disarms* the rest: a merge that rewrites
 the Never tier, unwires a hook or edits what CI runs should never pass
 unreviewed.
+
+`.rig/` is declared for that same reason, and the whole directory rather than
+just its contract file. `.rig/revalidation.json` is the detection contract
+`preflight` refuses on; `.rig/claims/*.json` are the records that decide
+`CURRENT` against `HOLD` at every revalidation point. A run that edits its own
+claim disarms its own revalidation, and the mechanism refuses that on **one**
+path only — `revalidate.mjs` refuses a branch touching a tracked claim record
+when it is called `--owner-directed`, and not when it is called `--ticket`,
+which is the call under which a claim is normally written. So the ticketed path
+is exactly the one with no mechanical check, and it is the one this declaration
+covers. The cost is real and accepted: a ticketed change carries its claim
+record, so declaring `.rig/` escalates even a documentation-only PR to the
+`model` lane. One extra cold reader is the cheaper side of that trade.
 
 **Extend this list the same day you write the code it covers** — a real project
 accumulates more (auth handlers, billing, a credentials module, a migration
