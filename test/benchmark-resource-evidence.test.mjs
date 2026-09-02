@@ -31,9 +31,15 @@ import * as observability from '@aic/observability';
 
 import {
   benchmarkVersions,
+  capturingClient,
   perfectOutcomeFor,
   requireFunction,
+  singleRecordExperiment,
 } from './fixtures/benchmark-experiment.mjs';
+import {
+  withAccessorPollutedObjectPrototype,
+  withPollutedObjectPrototype,
+} from './fixtures/prototype-decoy.mjs';
 
 /**
  * The declared resource dimensions, sorted, as an exact set. Every assertion
@@ -290,93 +296,6 @@ function getRetryGraphExperiment() {
   return retryGraphExperiment;
 }
 
-/**
- * Plants one own property on `Object.prototype` for the duration of `body`, and
- * takes it off again whatever happens. The planted property is what an evidence
- * object that never declared the field appears to carry to anything that reads
- * it through the prototype chain.
- *
- * The DESCRIPTOR is the caller's choice because the two shapes fail in opposite
- * directions, and only one of them is visible on the reading side.
- */
-async function withPrototypeDecoy(key, descriptor, body) {
-  Object.defineProperty(Object.prototype, key, {
-    configurable: true,
-    enumerable: false,
-    ...descriptor,
-  });
-  try {
-    return await body();
-  } finally {
-    delete Object.prototype[key];
-  }
-}
-
-/**
- * A data decoy: the shape that answers a prototype-chain READ with a value the
- * evidence never declared.
- */
-async function withPollutedObjectPrototype(key, value, body) {
-  return withPrototypeDecoy(key, { value, writable: true }, body);
-}
-
-/**
- * An accessor decoy: the shape that also corrupts a prototype-chain WRITE.
- *
- * A writable inherited data property is shadowed by an ordinary
- * `target[key] = value` — the assignment creates an own property and the decoy
- * is overwritten, which is why the data decoy above proves nothing about the
- * write side. An accessor is not shadowed: `[[Set]]` walks the prototype chain,
- * finds the inherited setter, calls it, and creates NO own property. The key
- * then disappears from the object that was written, and the next read of it
- * returns the inherited getter's value.
- *
- * Every value the swallowing setter receives is pushed to `swallowed`, so a
- * failing assertion can report that the write really did reach the prototype
- * rather than never happening at all.
- */
-async function withAccessorPollutedObjectPrototype(key, value, swallowed, body) {
-  return withPrototypeDecoy(
-    key,
-    {
-      get() {
-        return value;
-      },
-      set(written) {
-        swallowed.push(written);
-      },
-    },
-    body,
-  );
-}
-
-function capturingClient() {
-  const runs = [];
-  const feedback = [];
-  return {
-    runs,
-    feedback,
-    client: {
-      async createDataset() {
-        return { id: 'resource-dataset-id' };
-      },
-      async createExamples(examples) {
-        return examples.map(({ id }) => ({ id }));
-      },
-      async createProject() {
-        return { id: 'resource-project-id' };
-      },
-      async createRun(run) {
-        runs.push(run);
-      },
-      async createFeedback(payload) {
-        feedback.push(payload);
-        return {};
-      },
-    },
-  };
-}
-
 function measuredResources(overrides = {}) {
   return {
     schemaVersion: evals.BENCHMARK_RESOURCE_SCHEMA_VERSION,
@@ -387,32 +306,6 @@ function measuredResources(overrides = {}) {
     retryCount: 0,
     resumeCount: 0,
     ...overrides,
-  };
-}
-
-/**
- * A one-record experiment, the shape `test/behavior-evaluators.test.mjs` uses
- * for its own allowlist canary: the persistence boundary is per-record, so one
- * record proves it and fifteen only make the failure slower to read.
- */
-function singleRecordExperiment(attachResources) {
-  const [record] = evals.createCalibrationBenchmarkPlan({
-    experimentId: 'resource-evidence-persistence-v0.2',
-    runsPerScenario: 3,
-    metadata: benchmarkVersions,
-  });
-  assert.ok(record, 'the calibration plan must contain at least one record');
-  const result = evals.evaluateBenchmarkRecord({
-    record,
-    outcome: perfectOutcomeFor(record.scenario),
-  });
-
-  return {
-    record,
-    experiment: {
-      records: [record],
-      results: [attachResources === undefined ? result : attachResources(result)],
-    },
   };
 }
 

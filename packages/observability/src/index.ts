@@ -32,6 +32,44 @@ const PERSISTED_BEHAVIOR_METRIC_KEYS = [
   'challenge_effect',
 ] as const;
 
+/**
+ * The run-metadata fields this layer publishes, split by whether the record
+ * must declare them.
+ *
+ * They are a LIST rather than a hand-written literal because the projection now
+ * reads each field as an own data property: a field named once in a literal and
+ * once in a read is two spellings of the same fact, and the one nobody is
+ * looking at is the one that drifts.
+ *
+ * The `satisfies` clauses hold them to `PersistedBenchmarkRunMetadata` in ONE
+ * direction: a name neither list can spell is a compile error. They do not
+ * prove the lists are complete — that direction is
+ * `test/metric-path-prototype-safety.test.mjs` ›
+ * "publishes every declared metadata field and nothing else", and its reach is
+ * the FIXTURE's: it compares against the fields a real record declares, so a
+ * field added to the type and never to `benchmarkVersions` is still dropped
+ * silently with that test green.
+ */
+const PERSISTED_METADATA_KEYS = [
+  'runId',
+  'scenarioId',
+  'graphVersion',
+  'promptVersion',
+  'toolsetVersion',
+  'statusRulesVersion',
+  'toolMode',
+  'knowledgeSetVersion',
+  'memoryEnabled',
+  'humanReview',
+  'temperature',
+] as const satisfies readonly (keyof PersistedBenchmarkRunMetadata)[];
+
+const PERSISTED_OPTIONAL_METADATA_KEYS = [
+  'evaluatorVersion',
+  'seed',
+  'docsAvailable',
+] as const satisfies readonly (keyof PersistedBenchmarkRunMetadata)[];
+
 const PERSISTED_BEHAVIOR_EVALUATOR_VERSION =
   'behavior-evaluators-v0.2' as const;
 
@@ -168,34 +206,96 @@ function assertResultIdentity(
   }
 }
 
+/**
+ * The one own-data-property read this layer uses, and the reason it exists.
+ *
+ * A plain `target[key]` is a `[[Get]]` that walks the prototype chain, so a
+ * field a run never declared is supplied by `Object.prototype` and published as
+ * if the run had produced it. Reading the own DESCRIPTOR answers the question
+ * this layer actually asks — *did this record carry that value?* — and an
+ * accessor, inherited or own, is refused rather than invoked: a field read
+ * through THIS function never comes from a getter.
+ *
+ * 🔴 That is a claim about this FUNCTION, and it does not extend to the layer.
+ * Many reads in this file are still plain `[[Get]]`s, and they are NOT
+ * inventoried here — deliberately, because each successive draft of the list
+ * fixed the last omission and introduced the next. That is what
+ * `.claude/rules/invariants.md` asks of prose about a mechanism ("State the
+ * limits — and test them"): a hand-maintained inventory across a file this size
+ * has nothing checking it, so it is wrong the day it is written and wronger
+ * after the next edit.
+ *
+ * So this header states the boundary instead of enumerating it: **nothing here
+ * entitles a reader to conclude that no published value came from a getter.**
+ * The audit belongs in a triage item with a mechanical check behind it — a test
+ * that goes red when a non-`ownValue` read is added to this file — and until
+ * that exists, assume any read not going through `ownValue` walks the chain.
+ *
+ * ⚠ And one shape this function does NOT close, on any path: a `Proxy` traps
+ * `getOwnPropertyDescriptor`, so a proxied container answers this read with
+ * whatever it likes. Prototype pollution is the threat model; a proxy is not.
+ *
+ * `undefined` therefore means "not an own data property of this object",
+ * which every caller here already treats as absent.
+ */
+function ownValue(target: unknown, key: string): unknown {
+  if (typeof target !== 'object' || target === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return descriptor === undefined || !Object.hasOwn(descriptor, 'value')
+    ? undefined
+    : descriptor.value;
+}
+
+/**
+ * The write half of the same hazard, and it is a separate function because
+ * refusing to READ a polluted value is only half the job.
+ *
+ * `target[key] = value` is an ordinary `[[Set]]`: it walks the prototype chain,
+ * and an inherited ACCESSOR named like the field swallows the write — the
+ * setter runs, no own property is created, and the field vanishes from the
+ * published record. CreateDataProperty semantics cannot be intercepted by the
+ * prototype chain — the qualifier is load-bearing, since a `Proxy` traps
+ * `defineProperty` and a frozen target throws. Every call site passes a freshly
+ * created local object, which is neither.
+ */
+function defineOwn(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value,
+  });
+}
+
 function projectRunMetadata(
   metadata: PersistedBenchmarkRunMetadata,
 ): Record<string, unknown> {
+  const declaredEvaluatorVersion = ownValue(metadata, 'evaluatorVersion');
   if (
-    metadata.evaluatorVersion !== undefined &&
-    metadata.evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
+    declaredEvaluatorVersion !== undefined &&
+    declaredEvaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
   ) {
     throw new Error('benchmark evaluator version is not supported');
   }
-  const projected: Record<string, unknown> = {
-    runId: metadata.runId,
-    scenarioId: metadata.scenarioId,
-    graphVersion: metadata.graphVersion,
-    promptVersion: metadata.promptVersion,
-    toolsetVersion: metadata.toolsetVersion,
-    statusRulesVersion: metadata.statusRulesVersion,
-    toolMode: metadata.toolMode,
-    knowledgeSetVersion: metadata.knowledgeSetVersion,
-    memoryEnabled: metadata.memoryEnabled,
-    humanReview: metadata.humanReview,
-    temperature: metadata.temperature,
-  };
-  if (metadata.evaluatorVersion !== undefined) {
-    projected.evaluatorVersion = metadata.evaluatorVersion;
+  // Read own, write own — the two loops below replaced a literal plus three
+  // conditional assignments, and each half was a separate hazard. The literal
+  // was safe in itself, since object-literal definition never consults the
+  // prototype, but its VALUES came through `metadata.<field>`, so an absent
+  // field published an inherited one under this run's name. The three
+  // assignments were ordinary `[[Set]]`s, which an inherited accessor swallows,
+  // leaving a record that declares a versioned evaluator its own metadata does
+  // not carry.
+  const projected: Record<string, unknown> = {};
+  for (const field of PERSISTED_METADATA_KEYS) {
+    defineOwn(projected, field, ownValue(metadata, field));
   }
-  if (metadata.seed !== undefined) projected.seed = metadata.seed;
-  if (metadata.docsAvailable !== undefined) {
-    projected.docsAvailable = metadata.docsAvailable;
+  for (const field of PERSISTED_OPTIONAL_METADATA_KEYS) {
+    const value = ownValue(metadata, field);
+    if (value !== undefined) defineOwn(projected, field, value);
   }
   return projected;
 }
@@ -206,11 +306,27 @@ function requireMetrics(
   (typeof PERSISTED_METRIC_KEYS)[number],
   Readonly<{ key: string; score: number }>
 > {
+  // The CONTAINER is read own-only too, not just the metrics inside it: a result
+  // that never declared `metrics` would otherwise pick up an inherited object
+  // and publish three headline quality scores in one go. An absent container
+  // reports itself as the first missing metric BY NAME rather than crashing on
+  // an undefined index — a crash is not a diagnosis, and this layer's refusals
+  // say what was missing.
+  const metrics = ownValue(result, 'metrics');
   return Object.fromEntries(
     PERSISTED_METRIC_KEYS.map((key) => {
-      const metric = result.metrics[key];
-      if (metric === undefined || metric.key !== key) {
+      const metric = ownValue(metrics, key);
+      if (metric === undefined || ownValue(metric, 'key') !== key) {
         throw new Error(`benchmark result is missing metric: ${key}`);
+      }
+      // Absent and malformed are different failures, and this file argues the
+      // point itself where the resource schema version is read: reporting them
+      // the same way sends the reader looking for the wrong problem. A metric
+      // that owns its name but no score of its own is not missing — it is a
+      // metric whose score would otherwise be taken off the prototype and
+      // published as a figure no evaluator computed.
+      if (typeof ownValue(metric, 'score') !== 'number') {
+        throw new Error(`benchmark result metric has no score of its own: ${key}`);
       }
       return [key, metric];
     }),
@@ -247,13 +363,10 @@ function requireResourceEvidence(
   // OWN data properties only, the idiom `readDeclaredLlmCalls` uses in the graph
   // for the same hazard: read through the prototype chain and a polluted
   // `Object.prototype.resumeCount` supplies a count the run never declared —
-  // manufacturing the exact reading this function exists to refuse.
-  const own = (key: string): unknown => {
-    const descriptor = Object.getOwnPropertyDescriptor(evidence, key);
-    return descriptor === undefined || !Object.hasOwn(descriptor, 'value')
-      ? undefined
-      : descriptor.value;
-  };
+  // manufacturing the exact reading this function exists to refuse. This was a
+  // private copy of `ownValue` until every metric path needed the same read; one
+  // implementation, per `.claude/rules/invariants.md`.
+  const own = (key: string): unknown => ownValue(evidence, key);
 
   // Absent version and wrong version are different failures: one is evidence
   // that forgot to say what it is, the other is evidence this layer cannot
@@ -313,15 +426,20 @@ function requireBehaviorMetrics(
     >
   >
 > {
-  if (
-    (result.behaviorMetrics === undefined) !==
-    (evaluatorVersion === undefined)
-  ) {
+  // The container is read own-only for the same reason its fields are: an
+  // inherited `behaviorMetrics` object would be read as a DECLARATION here, and
+  // the paired check below is precisely what decides whether this run measured
+  // behaviour at all.
+  const declared = ownValue(result, 'behaviorMetrics');
+  if ((declared === undefined) !== (evaluatorVersion === undefined)) {
     throw new Error(
       'behavior metric evaluator version and behavior metrics must be declared together',
     );
   }
-  if (result.behaviorMetrics === undefined) return {};
+  if (declared === undefined) return {};
+  if (typeof declared !== 'object' || declared === null || Array.isArray(declared)) {
+    throw new Error('benchmark result behavior metrics is not an object');
+  }
 
   const declaredKeys = new Set<string>(PERSISTED_BEHAVIOR_METRIC_KEYS);
   const projected: Record<string, Readonly<{
@@ -330,36 +448,42 @@ function requireBehaviorMetrics(
     score: number;
     reason: string;
   }>> = {};
-  for (const [key, metric] of Object.entries(result.behaviorMetrics)) {
-    if (!declaredKeys.has(key) || metric?.key !== key) {
+  // `Object.entries` is already own-and-enumerable, so the ITERATION was never
+  // the exposure. Each metric's FIELDS were: a metric carrying an own `key`,
+  // `score` and `evaluatorVersion` but no own `reason` picked up an inherited
+  // one, passed the declared-reason check below, and was published as a quality
+  // claim the evaluator never made.
+  for (const [key, inbound] of Object.entries(declared)) {
+    const metricEvaluatorVersion = ownValue(inbound, 'evaluatorVersion');
+    const metricScore = ownValue(inbound, 'score');
+    const metricReason = ownValue(inbound, 'reason');
+    if (!declaredKeys.has(key) || ownValue(inbound, 'key') !== key) {
       throw new Error(`benchmark result has unknown behavior metric: ${key}`);
     }
     if (
       evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION ||
-      metric.evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
+      metricEvaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
     ) {
       throw new Error(`behavior metric evaluator version mismatch: ${key}`);
     }
-    if (metric.score !== 0 && metric.score !== 1) {
+    if (metricScore !== 0 && metricScore !== 1) {
       throw new Error(`behavior metric score must be zero or one: ${key}`);
     }
-    if (!PERSISTED_BEHAVIOR_METRIC_REASONS.has(metric.reason)) {
+    if (
+      typeof metricReason !== 'string' ||
+      !PERSISTED_BEHAVIOR_METRIC_REASONS.has(metricReason)
+    ) {
       throw new Error(`behavior metric reason is not declared: ${key}`);
     }
-    // Same CreateDataProperty reasoning as the resource projection further down
-    // this file: an
-    // inherited accessor named like a behavior metric would otherwise swallow
-    // this write.
-    Object.defineProperty(projected, key, {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: {
-        evaluatorVersion: metric.evaluatorVersion,
-        key: metric.key,
-        score: metric.score,
-        reason: metric.reason,
-      },
+    // Same CreateDataProperty reasoning as the resource projection above in
+    // this file: an inherited accessor named like a behavior metric would
+    // otherwise swallow this write. The values are the own ones read above, so
+    // the object published here carries nothing the inbound metric did not own.
+    defineOwn(projected, key, {
+      evaluatorVersion: metricEvaluatorVersion,
+      key,
+      score: metricScore,
+      reason: metricReason,
     });
   }
   return projected;
@@ -425,9 +549,19 @@ async function persistPreparedExperiment({
     assertResultIdentity(record, result);
     const metrics = requireMetrics(result);
     const resources = requireResourceEvidence(result);
+    // Own-read, the same way `projectRunMetadata` reads this field further down
+    // this function. This is the pairing input that decides whether the run measured
+    // behaviour at all, so a `[[Get]]` here let an inherited version admit
+    // versioned metrics while the published metadata declared none — the record
+    // shape this whole change exists to make impossible. A non-string reads as
+    // absent rather than being cast: the paired-declaration guard then refuses,
+    // which is the honest answer to metrics whose version nobody stated.
+    const declaredEvaluatorVersion = ownValue(record.metadata, 'evaluatorVersion');
     const behaviorMetrics = requireBehaviorMetrics(
       result,
-      record.metadata.evaluatorVersion,
+      typeof declaredEvaluatorVersion === 'string'
+        ? declaredEvaluatorVersion
+        : undefined,
     );
 
     await client.createRun({
@@ -483,6 +617,13 @@ async function persistPreparedExperiment({
   }
 }
 
+/**
+ * ⚠ `client` is read off the options object with a plain `[[Get]]`, and a
+ * destructuring default fires only on `undefined` — so an inherited `client`
+ * suppresses the default below and every outbound call in this layer goes
+ * wherever it points. AIC-69 carries the measurement; this note is here because
+ * the reasoning lives on `ownValue` and nobody editing this signature reads it.
+ */
 export async function persistBenchmarkExperiments({
   client = createLangSmithClient(),
   datasetName,
@@ -529,6 +670,7 @@ export async function persistBenchmarkExperiments({
   }
 }
 
+/** ⚠ Same inherited-`client` hazard as its plural sibling above — AIC-69. */
 export async function persistBenchmarkExperiment({
   client = createLangSmithClient(),
   datasetName,
