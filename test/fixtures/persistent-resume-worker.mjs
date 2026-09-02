@@ -28,8 +28,8 @@ async function main() {
         // what the test does for its whole duration. It is not a claim that
         // this process cannot exit at all: with the channel as its one live
         // handle, closing it ends the process with no signal.
-        // see persistent-resume.test.mjs › "the start-mode worker stays alive
-        // until it is killed, so the kill is what ends it"
+        // see persistent-resume.test.mjs ›
+        // "the start-mode worker stays alive until it is killed, so the kill is what ends it"
         process.channel.ref();
         await new Promise(() => {});
       }
