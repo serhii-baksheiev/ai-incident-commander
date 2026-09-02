@@ -216,47 +216,20 @@ function assertResultIdentity(
  * accessor, inherited or own, is refused rather than invoked: a field read
  * through THIS function never comes from a getter.
  *
- * 🔴 That is a claim about this function, not about the layer, and the
- * difference is measured rather than assumed. EIGHT surfaces carrying INBOUND
- * run data still walk the prototype chain here — some of them more than one
- * field — enumerated because a partial list reads as a complete one, and this
- * header is what a later reader will trust. Two earlier drafts of this very
- * paragraph were subsets, which is why the count is stated and the omission it
- * hid is now first:
+ * 🔴 That is a claim about this FUNCTION, and it does not extend to the layer.
+ * Many reads in this file are still plain `[[Get]]`s, and they are NOT
+ * inventoried here — deliberately, after four attempts to list them produced
+ * four different subsets. Each draft fixed the last omission and introduced the
+ * next, which is what `.claude/rules/invariants.md` predicts of prose about a
+ * mechanism ("prefer deleting a rule to adding one"): a hand-maintained
+ * inventory across a file this size has nothing checking it, so it is wrong the
+ * day it is written and wronger after the next edit.
  *
- *   1. `experiment.records` / `experiment.results` — the containers
- *      `requireExperiment` and the persist loop are handed, and the largest of
- *      the eight: an experiment owning NEITHER field publishes an inherited run
- *      whole — examples, project, run and every feedback score;
- *   2. `result.resources` — the CONTAINER `requireResourceEvidence` validates
- *      field by field. An accessor of that name is invoked and its six axes
- *      reach `outputs.resources` AND the per-axis feedback keys;
- *   3. `record.metadata` — the container `projectRunMetadata` is handed, so a
- *      record owning no metadata publishes an inherited 11-field block;
- *   4. `record.runId` / `exampleId` / `experimentId` — `assertResultIdentity`
- *      compares two `[[Get]]`s, so when BOTH sides are absent they read the
- *      same inherited value and the identity check passes. The comparison is
- *      not where it ends: those same values are PUBLISHED, as `createRun.id`,
- *      `project_name`, `reference_example_id` and every feedback `runId`;
- *   5. `record.scenario` and its `id` / `groundTruth` — reaching
- *      `createExamples`, where `groundTruth` is published verbatim;
- *   6. `record.metadata.scenarioId` — becoming the run's name and
- *      `inputs.scenarioId`;
- *   7. `record.threadId` — becoming `inputs.threadId`;
- *   8. `result.actualStopKind` — becoming `outputs.actualStopKind`.
- *
- * ⚠ That count is over inbound RUN DATA, and two other kinds of read in this
- * file walk the chain without being in it. Values the SDK hands back —
- * `dataset.id` and `project.id`, the latter becoming every feedback
- * `sessionId` — come from the client rather than from a record. The tracing
- * config reads its variables off the injected `env` object the same way. Both
- * are excluded on the same ground: the eight are what a CALLER supplies.
- *
- * All eight are pre-existing, and that is checkable from the diff rather than
- * asserted: this change touches none of those reads. They are outside what
- * AIC-67 was scoped to and are filed as a triage proposal rather than fixed
- * here; until one lands, nothing in this header entitles a reader to conclude
- * that no published value came from a getter.
+ * So this header states the boundary instead of enumerating it: **nothing here
+ * entitles a reader to conclude that no published value came from a getter.**
+ * The audit belongs in a triage item with a mechanical check behind it — a test
+ * that goes red when a non-`ownValue` read is added to this file — and until
+ * that exists, assume any read not going through `ownValue` walks the chain.
  *
  * ⚠ And one shape this function does NOT close, on any path: a `Proxy` traps
  * `getOwnPropertyDescriptor`, so a proxied container answers this read with
@@ -282,7 +255,7 @@ function ownValue(target: unknown, key: string): unknown {
  * setter runs, no own property is created, and the field vanishes from the
  * published record. CreateDataProperty semantics cannot be intercepted by the
  * prototype chain — the qualifier is load-bearing, since a `Proxy` traps
- * `defineProperty` and a frozen target throws. Both call sites pass a freshly
+ * `defineProperty` and a frozen target throws. Every call site passes a freshly
  * created local object, which is neither.
  */
 function defineOwn(
