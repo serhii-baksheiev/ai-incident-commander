@@ -671,11 +671,20 @@ export function createInvestigationGraph({
   const reviewConclusion = (state: InvestigationGraphState) => {
     assertInteractiveRunIdentity(state);
     // This node is where a resumed checkpoint re-enters the graph, and it was
-    // the one node asserting neither. The version check runs FIRST so stale
-    // state is refused for the reason it is stale, rather than surfacing as a
-    // counter error that reads like a bug.
+    // the one node asserting none of the three. The version check runs FIRST so
+    // stale state is refused for the reason it is stale, rather than surfacing
+    // as a counter error that reads like a bug.
+    //
+    // The challenge counters belong here for the same reason as the logical
+    // ones, and it is not the same reason as at the other entry points: the
+    // other three read them to DECIDE something, while a confirm reaches END
+    // without consulting them, so the value would only be read by whoever
+    // receives the finished control.
+    // see hitl-resume-contract.test.mjs › "refuses a current-version checkpoint
+    // carrying a negative challenge round counter, and names the counter"
     assertPersistedStateVersion(state.control);
     assertLogicalBudgetCounters(state.control);
+    assertChallengeCounters(state.control);
     const decision = ConclusionReviewDecisionSchema.parse(
       interrupt({
         kind: 'conclusion-review',
