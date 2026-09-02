@@ -845,6 +845,21 @@ test('does not let normal lifecycle nodes rewrite the graph-owned logical budget
   assert.equal(result.control.llmCallsUsed, 0);
 });
 
+/**
+ * The node here mutates the control it was handed and returns that same object,
+ * because mutating it and returning nothing proves nothing: the graph hands a
+ * node a shallow copy of control, so an unreturned mutation never reaches the
+ * channel whether the budgets are protected or not.
+ *
+ * Returning it buys discrimination, not coverage. This test is
+ * mutation-equivalent to the one above that spreads and returns: removing the
+ * graph-owned restoration of these budget fields reddens both together, and no
+ * mutation separates them. Keep it as the in-place phrasing of a claim the
+ * sibling already proves, not as cover for anything extra.
+ *
+ * In particular it does not pin the shallow copy that made the unreturned form
+ * vacuous; nothing here covers that copy.
+ */
 test('restores graph-owned logical budgets after in-place mutation by a lifecycle node', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
@@ -857,7 +872,7 @@ test('restores graph-owned logical budgets after in-place mutation by a lifecycl
         state.control.llmCallBudget = 99;
         state.control.iterationsUsed = 0;
         state.control.llmCallsUsed = 42;
-        return {};
+        return { control: state.control };
       },
     ),
   });
