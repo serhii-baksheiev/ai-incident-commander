@@ -622,7 +622,13 @@ Outbound, resource evidence reaches LangSmith on **two** surfaces: the run's
 `outputs.resources`, which is authoritative and complete, and one `createFeedback`
 entry per axis beside the quality scores, which is a convenience projection for
 reading and charting. `schemaVersion` stays out of the score stream — it
-describes the shape, not a spend. Both are projected through the same
+describes the shape, not a spend.
+
+⚠ Measured on a live read-back: LangSmith **lower-cases feedback keys**, so
+`declaredLlmCallsUsed` is read back as `declaredllmcallsused`. The axes stay
+separate and the mapping is unambiguous, but a reader searching the feedback
+stream for the camelCase name will not find it. `outputs.resources` keeps the
+names as written. Both are projected through the same
 exact-allowlist *discipline* as run metadata — not the same allowlist, and not the same failure
 mode: `projectRunMetadata` rebuilds from its own key list and leaves a missing
 optional field undefined, while resource evidence has its own list and
