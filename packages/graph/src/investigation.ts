@@ -333,8 +333,13 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 
 /**
  * Wraps a lifecycle node so the graph keeps ownership of every control field a
- * node must not decide: the stop kind, the challenge counters, and — since
- * AIC-62 — the two logical budgets and their usage counters.
+ * node must not decide: the stop kind, the challenge counters, since AIC-62 the
+ * two logical budgets and their usage counters, and since AIC-65 the run
+ * identity and the review flag. `humanReview` is what the `propose_conclusion`
+ * edge routes on and `runId` is what the interactive identity check compares
+ * against the thread, so a node writing either could route a conclusion past
+ * its human review — pinned in hitl-conclusion-review.test.mjs › "does not let
+ * a lifecycle node disarm both the review gate and the run identity at once".
  *
  * `countsLogicalIteration` is what makes `iterationsUsed` graph-owned rather
  * than node-reported: the increment happens HERE, on entry to the wrapped node,
