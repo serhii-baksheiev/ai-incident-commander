@@ -402,12 +402,13 @@ for (const counter of corruptPersistedCounters) {
  * `LogicalCountSchema` is not what guards these two: `IncidentStateControlSchema`
  * declares `reservedChallengeBudget` and `challengeRounds` as bare `z.number()`,
  * which accepts -1 on the `kind: 'start'` path as readily as a checkpoint does
- * on the resume path. The only thing that refuses such a value anywhere is the
- * graph's own `assertChallengeCounters`, and it is called from `routeChallenge`,
- * `terminationCheck` and `challengeHypothesis` — every entry point that reads a
- * control except the one a resumed checkpoint re-enters through. A `confirm`
- * reaches END without touching any of the three, which is why the corruption
- * has to be planted on a checkpoint and resumed rather than passed at start.
+ * on the resume path. What refuses such a value is the graph's own
+ * `assertChallengeCounters`, called from `routeChallenge`, `terminationCheck`,
+ * `challengeHypothesis` and — since these rows went green — `reviewConclusion`.
+ * The first three read the counters to decide something; a `confirm` decides
+ * nothing from them and reaches END without visiting any of the three, which is
+ * why the corruption has to be planted on a checkpoint and resumed rather than
+ * passed at start, and why `reviewConclusion` had to assert them itself.
  *
  * Like the rows above, these hold the schema version at the CURRENT one: the
  * refusal has to name the counter rather than the version.
