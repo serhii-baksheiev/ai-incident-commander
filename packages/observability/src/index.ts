@@ -8,6 +8,24 @@ const PERSISTED_METRIC_KEYS = [
   'termination_correctness',
 ] as const;
 
+/**
+ * The resource axes this layer will persist, and the ONLY ones.
+ *
+ * `PERSISTED_RESOURCE_SCHEMA_VERSION` is the shape this layer can read. An
+ * evidence object at any other version is refused rather than projected: the
+ * fields it declares may mean something else, and publishing them under the
+ * names below would be a measurement claim nobody made.
+ */
+const PERSISTED_RESOURCE_SCHEMA_VERSION = 1;
+const PERSISTED_RESOURCE_KEYS = [
+  'logicalIterationsUsed',
+  'declaredLlmCallsUsed',
+  'toolCallsUsed',
+  'wallClockDurationMs',
+  'retryCount',
+  'resumeCount',
+] as const;
+
 const PERSISTED_BEHAVIOR_METRIC_KEYS = [
   'misleading_evidence_handling',
   'false_alert_correctness',
@@ -112,6 +130,7 @@ export interface PersistedBenchmarkEvaluation {
   readonly metrics: Readonly<
     Record<string, Readonly<{ key: string; score: number }>>
   >;
+  readonly resources?: Readonly<Record<string, unknown>>;
   readonly behaviorMetrics?: Readonly<
     Partial<
       Record<
@@ -199,6 +218,54 @@ function requireMetrics(
     (typeof PERSISTED_METRIC_KEYS)[number],
     Readonly<{ key: string; score: number }>
   >;
+}
+
+/**
+ * Projects resource evidence, or refuses it.
+ *
+ * Absent is not an error: every record written before this evidence existed
+ * carries none, and the generic benchmark path publishes none by design.
+ *
+ * PRESENT is held to the throwing standard `requireBehaviorMetrics` uses rather
+ * than the dropping one `requireMetrics` uses, and the difference matters: a
+ * silently dropped resource axis reads downstream as "this run spent nothing on
+ * that axis", which is the one reading that must never be manufactured. An
+ * unknown schema version or a missing declared field is therefore refused
+ * before the run is created. An UNDECLARED extra property is dropped by the
+ * projection — it is not a claim this layer is being asked to publish.
+ */
+function requireResourceEvidence(
+  result: PersistedBenchmarkEvaluation,
+): Readonly<Record<string, number>> | undefined {
+  if (result.resources === undefined) return undefined;
+
+  const evidence = result.resources;
+  // Absent version and wrong version are different failures: one is evidence
+  // that forgot to say what it is, the other is evidence this layer cannot
+  // read. Reporting them the same way sends the reader looking for the wrong
+  // problem.
+  if (evidence.schemaVersion === undefined) {
+    throw new Error('benchmark resource evidence missing schemaVersion');
+  }
+  if (evidence.schemaVersion !== PERSISTED_RESOURCE_SCHEMA_VERSION) {
+    throw new Error(
+      `benchmark resource schema version is not supported: ${String(
+        evidence.schemaVersion,
+      )}`,
+    );
+  }
+
+  const projected: Record<string, number> = {
+    schemaVersion: PERSISTED_RESOURCE_SCHEMA_VERSION,
+  };
+  for (const key of PERSISTED_RESOURCE_KEYS) {
+    const value = evidence[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`benchmark resource evidence missing ${key}`);
+    }
+    projected[key] = value;
+  }
+  return projected;
 }
 
 function requireBehaviorMetrics(
@@ -319,6 +386,7 @@ async function persistPreparedExperiment({
     }
     assertResultIdentity(record, result);
     const metrics = requireMetrics(result);
+    const resources = requireResourceEvidence(result);
     const behaviorMetrics = requireBehaviorMetrics(
       result,
       record.metadata.evaluatorVersion,
@@ -338,6 +406,9 @@ async function persistPreparedExperiment({
         actualStopKind: result.actualStopKind,
         metrics,
         behaviorMetrics,
+        // One key per dimension, never merged into a score, and absent when the
+        // run was not measured.
+        ...(resources === undefined ? {} : { resources }),
       },
       extra: { metadata: projectRunMetadata(record.metadata) },
       reference_example_id: record.exampleId,

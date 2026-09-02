@@ -300,6 +300,102 @@ for (const persisted of outdatedPersistedControls) {
 }
 
 /**
+ * The counter guard's remaining job is the RESUME path.
+ *
+ * On `kind: 'start'` the domain schema parses the input first, so a fractional,
+ * negative or non-safe-integer counter is refused by `LogicalCountSchema`
+ * before the graph's own guard is ever consulted — a start-path table proves
+ * the schema, not the guard. A checkpoint is never parsed, so the resume path
+ * is the one place where neutering `assertLogicalBudgetCounters` would let a
+ * corrupt counter through.
+ *
+ * These rows hold the schema version at the CURRENT one on purpose: the
+ * refusal has to name the counter rather than the version, or a corrupt
+ * counter would be indistinguishable from stale state.
+ */
+const corruptPersistedCounters = [
+  {
+    field: 'iterationsUsed',
+    label: 'logical iteration counter',
+    namesTheCounter: /invalid logical iteration counter/,
+  },
+  {
+    field: 'llmCallsUsed',
+    label: 'llm call counter',
+    namesTheCounter: /invalid llm call counter/,
+  },
+  {
+    field: 'resumeCount',
+    label: 'resume counter',
+    namesTheCounter: /invalid resume counter/,
+  },
+];
+
+const corruptCounterValues = [
+  { label: 'fractional', slug: 'fractional', value: 0.5 },
+  { label: 'negative', slug: 'negative', value: -1 },
+  {
+    label: 'non-safe-integer',
+    slug: 'non-safe-integer',
+    value: Number.MAX_SAFE_INTEGER + 1,
+  },
+];
+
+for (const counter of corruptPersistedCounters) {
+  for (const corruption of corruptCounterValues) {
+    test(`refuses a current-version checkpoint carrying a ${corruption.label} ${counter.label}, and names the counter`, async () => {
+      const slug = `${counter.field}-${corruption.slug}`;
+      await assertCurrentVersionResumeResolves(
+        `run-current-version-counter-${slug}`,
+        { action: 'confirm' },
+      );
+
+      const harness = createHarness({ runId: `run-corrupt-counter-${slug}` });
+
+      try {
+        const interrupted = await harness.start();
+        const traceBeforeResume = [...harness.trace];
+        harness.rewriteEveryPersistedControl((control) => ({
+          ...control,
+          schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
+          [counter.field]: corruption.value,
+        }));
+
+        const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+        assert.equal(
+          'error' in outcome,
+          true,
+          'a checkpoint whose counter is not a count must be refused, not resumed to completion',
+        );
+        assert.match(
+          outcome.error.message,
+          counter.namesTheCounter,
+          'the refusal must name the counter it refused on',
+        );
+        assert.doesNotMatch(
+          outcome.error.message,
+          namesTheVersionBoundary,
+          'a corrupt counter at the current version must not surface as a version complaint',
+        );
+        assert.notEqual(
+          outcome.error.message,
+          'invalid investigation execution input',
+          'a corrupt counter must not surface as the opaque input refusal',
+        );
+        assert.deepEqual(
+          harness.trace,
+          traceBeforeResume,
+          'the refusal must land before the resumed run executes another lifecycle node',
+        );
+      } finally {
+        harness.cleanup();
+      }
+    });
+  }
+}
+
+/**
  * The graph owns `resumeCount`, and a resume is the only thing that moves it:
  * pausing at the interrupt is not one, and neither is a lifecycle node replayed
  * by the resume — a reject re-enters the graph and runs a whole cycle again, so

@@ -107,6 +107,47 @@ export type BehaviorMetrics = Partial<{
   challenge_effect: BehaviorMetric<'challenge_effect'>;
 }>;
 
+/**
+ * The version of the resource-evidence shape below. Separate from the state
+ * schema version on purpose: this one describes what a BENCHMARK publishes,
+ * which moves for different reasons than what the graph persists.
+ */
+export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 1 as const;
+
+/**
+ * What a run SPENT, one axis per field and nothing derived.
+ *
+ * There is deliberately no composite and no "recovery overhead" figure: a
+ * single number that blends logical investigation work with recovery work can
+ * fall while quality falls with it, which is the comparison this evidence
+ * exists to make impossible to fake.
+ *
+ * `retryCount` is a structural zero, not a measurement: `Trial.attempt` is
+ * written as `1` by every producer in this repository and no retry path exists,
+ * so counting retries truthfully counts none. It is published anyway, as an
+ * axis that reads zero, rather than omitted — the same treatment
+ * `declaredLlmCallsUsed` gets while no LLM executes.
+ */
+export interface BenchmarkResourceEvidence {
+  readonly schemaVersion: number;
+  readonly logicalIterationsUsed: number;
+  readonly declaredLlmCallsUsed: number;
+  readonly toolCallsUsed: number;
+  readonly wallClockDurationMs: number;
+  readonly retryCount: number;
+  readonly resumeCount: number;
+}
+
+/**
+ * What a caller that actually EXECUTED the graph can attest to. The runner
+ * supplies `schemaVersion` and times `wallClockDurationMs` itself, so neither
+ * can be reported by whoever ran the investigation.
+ */
+export type MeasuredBenchmarkResources = Omit<
+  BenchmarkResourceEvidence,
+  'schemaVersion' | 'wallClockDurationMs'
+>;
+
 export interface BenchmarkEvaluation {
   readonly experimentId: string;
   readonly exampleId: string;
@@ -114,6 +155,9 @@ export interface BenchmarkEvaluation {
   readonly actualStopKind: InvestigationStop;
   readonly metrics: BenchmarkMetrics;
   readonly behaviorMetrics: BehaviorMetrics;
+  // Absent unless a caller MEASURED the run. An opaque `investigate` callback
+  // cannot put anything here — see `runBenchmarkExperiment`.
+  readonly resources?: BenchmarkResourceEvidence;
 }
 
 export interface BenchmarkExperiment {
@@ -344,9 +388,11 @@ export function evaluateTerminationCorrectness({
 export function evaluateBenchmarkRecord({
   record,
   outcome,
+  resources,
 }: Readonly<{
   record: BenchmarkRecord;
   outcome: BenchmarkOutcome;
+  resources?: BenchmarkResourceEvidence;
 }>): BenchmarkEvaluation {
   const unsupportedClaimRate = evaluateUnsupportedClaimRate(outcome);
   const evidenceCoverage = evaluateEvidenceCoverage({
@@ -416,6 +462,9 @@ export function evaluateBenchmarkRecord({
       [terminationCorrectness.key]: terminationCorrectness,
     },
     behaviorMetrics,
+    // Omitted entirely when nothing measured this run — which is what every
+    // v0.1 record looks like, and what the generic path must keep looking like.
+    ...(resources === undefined ? {} : { resources }),
   };
 }
 
@@ -423,6 +472,15 @@ type BenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
     investigate(input: BenchmarkExecutionInput): Promise<BenchmarkOutcome>;
+    /**
+     * The ONE way resource evidence enters an evaluation, and it is separate
+     * from `investigate` on purpose: `investigate` is an opaque callback, so
+     * anything it returns about its own spend is self-reported. Only a caller
+     * that executed and observed the graph implements this.
+     */
+    collectResources?(
+      input: BenchmarkExecutionInput,
+    ): MeasuredBenchmarkResources | undefined;
     recordEvaluation(payload: Readonly<{
       record: BenchmarkRecord;
       result: BenchmarkEvaluation;
@@ -445,9 +503,25 @@ export async function runBenchmarkExperiment(
       threadId: record.threadId,
       metadata: record.metadata,
     };
+    // Timed by the runner, never by the investigation: a callback reporting its
+    // own duration is reporting a number nobody checked.
+    const startedAt = Date.now();
+    const outcome = await options.investigate(executionInput);
+    const wallClockDurationMs = Date.now() - startedAt;
+    const measured = options.collectResources?.(executionInput);
     const result = evaluateBenchmarkRecord({
       record,
-      outcome: await options.investigate(executionInput),
+      // `outcome.resources`, if the callback invented one, is not read here and
+      // is not forwarded — see the `collectResources` note above.
+      outcome,
+      resources:
+        measured === undefined
+          ? undefined
+          : {
+              schemaVersion: BENCHMARK_RESOURCE_SCHEMA_VERSION,
+              ...measured,
+              wallClockDurationMs,
+            },
     });
     await options.recordEvaluation({ record, result });
     results.push(result);
@@ -563,8 +637,13 @@ type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
 export async function runGraphBenchmarkExperiment(
   options: GraphBenchmarkExperimentOptions,
 ): Promise<BenchmarkExperiment> {
+  // Keyed by runId rather than returned through `investigate`, so the evidence
+  // travels a path the opaque callback contract cannot reach.
+  const measuredByRunId = new Map<string, MeasuredBenchmarkResources>();
+
   return runBenchmarkExperiment({
     ...options,
+    collectResources: (input) => measuredByRunId.get(input.runId),
     async investigate(input) {
       const nodes = options.createNodes(input);
       let challengeInvocationCount = 0;
@@ -616,6 +695,16 @@ export async function runGraphBenchmarkExperiment(
       const finalState = await graph.execute({
         kind: 'start',
         state: initialBenchmarkState(input),
+      });
+      measuredByRunId.set(input.runId, {
+        // Read off the executed control block, which the graph owns and a node
+        // cannot write — so these are observations, not self-reports.
+        logicalIterationsUsed: finalState.control.iterationsUsed,
+        declaredLlmCallsUsed: finalState.control.llmCallsUsed,
+        toolCallsUsed: finalState.trials.length,
+        // Structural zero — see BenchmarkResourceEvidence.
+        retryCount: 0,
+        resumeCount: finalState.control.resumeCount,
       });
       return outcomeFromGraphState(finalState, {
         challengeNodeExecuted: challengeInvocationCount > 0,
