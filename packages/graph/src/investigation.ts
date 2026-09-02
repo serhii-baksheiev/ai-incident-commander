@@ -333,9 +333,11 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 
 /**
  * Wraps a lifecycle node so the graph keeps ownership of every control field a
- * node must not decide: the stop kind, the challenge counters, since AIC-62 the
- * two logical budgets and their usage counters, and since AIC-65 the run
- * identity and the review flag. `humanReview` is what the `propose_conclusion`
+ * node must not decide. The `protectedControl` object below is the one list of
+ * those fields; this comment deliberately does not repeat it, because the copy
+ * that used to be here fell behind the code — AIC-63 added `resumeCount` and
+ * the sentence never named it, not even when AIC-65 rewrote it to add `runId`
+ * and `humanReview`. `humanReview` is what the `propose_conclusion`
  * edge routes on and `runId` is what the interactive identity check compares
  * against the thread, so a node writing either could route a conclusion past
  * its human review — pinned in hitl-conclusion-review.test.mjs › "does not let
