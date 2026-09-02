@@ -101,9 +101,11 @@ it a hook via the `new-invariant` skill.
   Stopping cleanly never means losing the work.
 - **Work comes from the queue, through an adapter.** The `loop` skill selects via
   `.claude/scripts/queue/index.mjs`, which reads whichever queue
-  `.claude/queue.json` names — the Agent queue in `PLAN.md` by default, issues in
-  this repository once it has a remote. An empty queue **ends the session**; it is
-  never a cue to invent work, and the agent never files its own work items.
+  `.claude/queue.json` names. Here that is the `jira` adapter, narrowed to AIC
+  issues labelled `agent-queue`; `plan-md` (the Agent queue in `PLAN.md`) is the
+  resolver's default and the shape this repo used before, and `github-issues` is
+  the third. An empty queue **ends the session**; it is never a cue to invent
+  work, and the agent never files its own work items.
 
 ## What this install left for you to finish — and what is now done
 

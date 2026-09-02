@@ -1,6 +1,7 @@
 {
   "adapter": "jira",
   "options": {
-    "project": "AIC"
+    "project": "AIC",
+    "jql": "project = AIC AND statusCategory != Done AND labels = \"agent-queue\""
   }
 }

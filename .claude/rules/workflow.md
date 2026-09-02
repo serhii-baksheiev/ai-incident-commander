@@ -117,9 +117,11 @@ travels one path to merge, in this order:
    stack-specific and lives in `stack/*`; the criterion here does not name one.
 
 **Post-merge tail:** verify the deployed surface is healthy (the target's
-post-deploy verdict — `autonomy.md`), then update `PLAN.md` (close the task,
-record any follow-up in a queue). Merge is not the finish line; a healthy
-runtime and an honest plan are.
+post-deploy verdict — `autonomy.md`), then close the task **through the queue
+adapter** — `close(ticket, …)`, whose answer the `loop` skill says how to read —
+and record any follow-up as a new item on whichever queue `.claude/queue.json`
+names. Hand-editing `PLAN.md` closes nothing while the config names a tracker.
+Merge is not the finish line; a healthy runtime and an honest plan are.
 
 ## PR policy
 
