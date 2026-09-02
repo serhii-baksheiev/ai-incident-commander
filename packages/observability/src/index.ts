@@ -217,31 +217,46 @@ function assertResultIdentity(
  * through THIS function never comes from a getter.
  *
  * 🔴 That is a claim about this function, not about the layer, and the
- * difference is measured rather than assumed. SEVEN surfaces in this file still
- * walk the prototype chain — some of them more than one field — enumerated in
- * full because a partial list reads as a complete one, and this header is what
- * a later reader will trust:
+ * difference is measured rather than assumed. EIGHT surfaces carrying INBOUND
+ * run data still walk the prototype chain here — some of them more than one
+ * field — enumerated because a partial list reads as a complete one, and this
+ * header is what a later reader will trust. Two earlier drafts of this very
+ * paragraph were subsets, which is why the count is stated and the omission it
+ * hid is now first:
  *
- *   1. `result.resources` — the CONTAINER `requireResourceEvidence` validates
+ *   1. `experiment.records` / `experiment.results` — the containers
+ *      `requireExperiment` and the persist loop are handed, and the largest of
+ *      the eight: an experiment owning NEITHER field publishes an inherited run
+ *      whole — examples, project, run and every feedback score;
+ *   2. `result.resources` — the CONTAINER `requireResourceEvidence` validates
  *      field by field. An accessor of that name is invoked and its six axes
  *      reach `outputs.resources` AND the per-axis feedback keys;
- *   2. `record.metadata` — the container `projectRunMetadata` is handed, so a
+ *   3. `record.metadata` — the container `projectRunMetadata` is handed, so a
  *      record owning no metadata publishes an inherited 11-field block;
- *   3. `record.runId` / `exampleId` / `experimentId` — `assertResultIdentity`
+ *   4. `record.runId` / `exampleId` / `experimentId` — `assertResultIdentity`
  *      compares two `[[Get]]`s, so when BOTH sides are absent they read the
- *      same inherited value and the identity check passes;
- *   4. `record.scenario` and its `id` / `groundTruth` — reaching
+ *      same inherited value and the identity check passes. The comparison is
+ *      not where it ends: those same values are PUBLISHED, as `createRun.id`,
+ *      `project_name`, `reference_example_id` and every feedback `runId`;
+ *   5. `record.scenario` and its `id` / `groundTruth` — reaching
  *      `createExamples`, where `groundTruth` is published verbatim;
- *   5. `record.metadata.scenarioId` — becoming the run's name and
+ *   6. `record.metadata.scenarioId` — becoming the run's name and
  *      `inputs.scenarioId`;
- *   6. `record.threadId` — becoming `inputs.threadId`;
- *   7. `result.actualStopKind` — becoming `outputs.actualStopKind`.
+ *   7. `record.threadId` — becoming `inputs.threadId`;
+ *   8. `result.actualStopKind` — becoming `outputs.actualStopKind`.
  *
- * All seven are pre-existing: a differential probe against the default branch
- * found no value crossing the SDK boundary here that did not cross there. They
- * are outside what AIC-67 was scoped to and are filed as a triage proposal
- * rather than fixed here; until one lands, nothing in this header entitles a
- * reader to conclude that no published value came from a getter.
+ * ⚠ That count is over inbound RUN DATA, and two other kinds of read in this
+ * file walk the chain without being in it. Values the SDK hands back —
+ * `dataset.id` and `project.id`, the latter becoming every feedback
+ * `sessionId` — come from the client rather than from a record. The tracing
+ * config reads its variables off the injected `env` object the same way. Both
+ * are excluded on the same ground: the eight are what a CALLER supplies.
+ *
+ * All eight are pre-existing, and that is checkable from the diff rather than
+ * asserted: this change touches none of those reads. They are outside what
+ * AIC-67 was scoped to and are filed as a triage proposal rather than fixed
+ * here; until one lands, nothing in this header entitles a reader to conclude
+ * that no published value came from a getter.
  *
  * ⚠ And one shape this function does NOT close, on any path: a `Proxy` traps
  * `getOwnPropertyDescriptor`, so a proxied container answers this read with
@@ -561,8 +576,8 @@ async function persistPreparedExperiment({
     assertResultIdentity(record, result);
     const metrics = requireMetrics(result);
     const resources = requireResourceEvidence(result);
-    // Own-read, like `projectRunMetadata` three lines below reads the same
-    // field. This is the pairing input that decides whether the run measured
+    // Own-read, the same way `projectRunMetadata` reads this field further down
+    // this function. This is the pairing input that decides whether the run measured
     // behaviour at all, so a `[[Get]]` here let an inherited version admit
     // versioned metrics while the published metadata declared none — the record
     // shape this whole change exists to make impossible. A non-string reads as
