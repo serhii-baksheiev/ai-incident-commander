@@ -230,3 +230,61 @@ export function replayBackedNodes(record, traces, replayCounts) {
     }),
   };
 }
+
+/**
+ * A LangSmith persistence client that records what crossed the boundary instead
+ * of sending it, so a test can assert on the PUBLISHED record — the runs and the
+ * feedback — rather than on the projection's internals.
+ */
+export function capturingClient() {
+  const runs = [];
+  const feedback = [];
+  return {
+    runs,
+    feedback,
+    client: {
+      async createDataset() {
+        return { id: 'resource-dataset-id' };
+      },
+      async createExamples(examples) {
+        return examples.map(({ id }) => ({ id }));
+      },
+      async createProject() {
+        return { id: 'resource-project-id' };
+      },
+      async createRun(run) {
+        runs.push(run);
+      },
+      async createFeedback(payload) {
+        feedback.push(payload);
+        return {};
+      },
+    },
+  };
+}
+
+/**
+ * A one-record experiment, the shape `test/behavior-evaluators.test.mjs` uses
+ * for its own allowlist canary: the persistence boundary is per-record, so one
+ * record proves it and fifteen only make the failure slower to read.
+ */
+export function singleRecordExperiment(attachResources) {
+  const [record] = evals.createCalibrationBenchmarkPlan({
+    experimentId: 'resource-evidence-persistence-v0.2',
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+  });
+  assert.ok(record, 'the calibration plan must contain at least one record');
+  const result = evals.evaluateBenchmarkRecord({
+    record,
+    outcome: perfectOutcomeFor(record.scenario),
+  });
+
+  return {
+    record,
+    experiment: {
+      records: [record],
+      results: [attachResources === undefined ? result : attachResources(result)],
+    },
+  };
+}
