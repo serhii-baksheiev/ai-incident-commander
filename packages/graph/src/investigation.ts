@@ -1,8 +1,11 @@
 import {
   ConclusionReviewDecisionSchema,
   HypothesisSchema,
+  INCIDENT_STATE_SCHEMA_VERSION,
   IncidentStateSchema,
   InvestigationTestSchema,
+  LogicalCountSchema,
+  STATUS_RULES_VERSION,
   upsertById,
   type ConclusionReviewDecision,
   type Evidence,
@@ -101,10 +104,17 @@ export type InvestigationExecutionConfig = Readonly<{
  * `preserveGraphOwnedControl`.
  *
  * Nothing in this repository declares anything today, because no LLM execution
- * path exists. That is why `llmCallsUsed` is observed to be exactly 0 rather
- * than estimated: an unused channel reports nothing, where a synthesised count
- * would be cost evidence nobody measured. The boundary is here so a real
- * provider, when one arrives, reports through it instead of inventing its own.
+ * path exists — no `declaredLlmCalls` is set anywhere in `packages/`. That is
+ * why `llmCallsUsed` stays 0 by construction rather than by estimate: an unused
+ * channel reports nothing, where a synthesised count would be cost evidence
+ * nobody measured. The boundary is here so a real provider, when one arrives,
+ * reports through it instead of inventing its own.
+ *
+ * ⚠ A second limit, and it is not the same one: consumption is folded in AFTER
+ * the node ran, so a single declaration larger than the remaining budget is
+ * recorded in full and caught at the next check. That is detection, not
+ * pre-authorisation. Unreachable while nothing declares; it is what a provider
+ * node has to fix.
  *
  * ⚠ Limit, by construction: `termination_check` and `challenge_hypothesis`
  * return their own decision types and so have no channel of their own. Their
@@ -304,10 +314,17 @@ function assertHumanHypothesisIdIsAvailable(
  * decided from.
  */
 function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
-  const declared = result.declaredLlmCalls;
+  // An OWN data property only, the idiom `readExactOwnDataProperties` already
+  // uses here. Reading `result.declaredLlmCalls` directly would walk the
+  // prototype chain, and a polluted `Object.prototype.declaredLlmCalls` then
+  // spends budget once per wrapped node with no node having declared anything.
+  const descriptor = Object.getOwnPropertyDescriptor(result, 'declaredLlmCalls');
+  if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return 0;
+
+  const declared = descriptor.value;
   if (declared === undefined) return 0;
 
-  if (typeof declared !== 'number' || !Number.isSafeInteger(declared) || declared < 0) {
+  if (!isLogicalCount(declared)) {
     throw new Error('invalid declared llm call count');
   }
 
@@ -329,6 +346,7 @@ function preserveGraphOwnedControl(
 ): InvestigationNode {
   return async (state) => {
     const current = (state as InvestigationGraphState).control;
+    assertPersistedStateVersion(current);
     assertLogicalBudgetCounters(current);
 
     const protectedControl = {
@@ -384,6 +402,14 @@ function preserveGraphOwnedControl(
  * fractional or negative counter silently changes what "exhausted" means, and a
  * run that continued on one would report usage nobody can reconcile.
  */
+/**
+ * One definition of "a count", derived from the domain schema rather than
+ * restated here — see `LogicalCountSchema`.
+ */
+function isLogicalCount(value: unknown): value is number {
+  return LogicalCountSchema.safeParse(value).success;
+}
+
 function assertLogicalBudgetCounters(control: IncidentStateControl): void {
   for (const [field, value] of [
     ['iteration budget', control.maxIterations],
@@ -391,9 +417,39 @@ function assertLogicalBudgetCounters(control: IncidentStateControl): void {
     ['logical iteration counter', control.iterationsUsed],
     ['llm call counter', control.llmCallsUsed],
   ] as const) {
-    if (!Number.isSafeInteger(value) || value < 0) {
+    if (!isLogicalCount(value)) {
       throw new Error(`invalid ${field}`);
     }
+  }
+}
+
+/**
+ * Refuses persisted state this graph cannot read, naming the version it refused
+ * on.
+ *
+ * `IncidentStateSchema` guards the `kind: 'start'` input, and nothing else: a
+ * `kind: 'resume'` takes its state from the checkpointer, so the schema's
+ * version literal never sees a restored checkpoint. Without this, state written
+ * before the usage counters existed resumed to COMPLETION on the confirm route
+ * and returned a control object the domain schema rejects — a run reported
+ * complete with its spend absent.
+ *
+ * see hitl-resume-contract.test.mjs › "resuming ${persisted.label} with
+ * ${label} fails loudly at the schema version boundary"
+ */
+function assertPersistedStateVersion(control: IncidentStateControl): void {
+  if (control.schemaVersion !== INCIDENT_STATE_SCHEMA_VERSION) {
+    throw new Error(
+      `incompatible persisted state: schema version ${String(control.schemaVersion)}, ` +
+        `this graph reads schema version ${String(INCIDENT_STATE_SCHEMA_VERSION)}`,
+    );
+  }
+
+  if (control.statusRulesVersion !== STATUS_RULES_VERSION) {
+    throw new Error(
+      `incompatible persisted state: status-rules version ${String(control.statusRulesVersion)}, ` +
+        `this graph reads status-rules version ${String(STATUS_RULES_VERSION)}`,
+    );
   }
 }
 
@@ -515,6 +571,7 @@ export function createInvestigationGraph({
     state: InvestigationGraphState,
   ) => {
     assertChallengeCounters(state.control);
+    assertPersistedStateVersion(state.control);
     assertLogicalBudgetCounters(state.control);
 
     const decision = await nodes.termination_check(incidentStateOf(state));
@@ -528,17 +585,22 @@ export function createInvestigationGraph({
     }
 
     if (decision.route === 'need-more-evidence') {
-      // A logical budget bounds what the graph may still SPEND, so it is read
-      // on the continue path and not against a decision that has already
+      // A logical budget bounds what the graph may still SPEND on its own, so
+      // it is read here rather than against a decision that has already
       // concluded: a run that reached a terminal stop kind keeps it, rather
       // than having an exhausted budget overwrite the finding.
       //
+      // ⚠ This gates the AUTOMATIC edge only. The challenge route and the
+      // human-review re-entry reach the cycle without passing here, bounded by
+      // the challenge reserve and by the human respectively — so this is not
+      // "an exhausted budget stops all further work", and the architecture
+      // document says so in the same words.
+      //
       // `budget-exhausted` is the existing stop kind for a spent budget — the
-      // reserved challenge reserve already terminates through it — so an
-      // exhausted logical budget reads the same way rather than inventing one.
-      // Like that reserve, the check runs after `termination_check` has been
-      // consulted, which keeps this node the sole owner of the stop kind and
-      // keeps one trace shape across all three budgets.
+      // challenge reserve already terminates through it — so an exhausted
+      // logical budget reads the same way rather than inventing one. Like that
+      // reserve, the check runs after `termination_check` has been consulted,
+      // which keeps this node the sole owner of the stop kind.
       if (
         state.control.iterationsUsed >= state.control.maxIterations ||
         state.control.llmCallsUsed >= state.control.llmCallBudget
@@ -588,6 +650,12 @@ export function createInvestigationGraph({
 
   const reviewConclusion = (state: InvestigationGraphState) => {
     assertInteractiveRunIdentity(state);
+    // This node is where a resumed checkpoint re-enters the graph, and it was
+    // the one node asserting neither. The version check runs FIRST so stale
+    // state is refused for the reason it is stale, rather than surfacing as a
+    // counter error that reads like a bug.
+    assertPersistedStateVersion(state.control);
+    assertLogicalBudgetCounters(state.control);
     const decision = ConclusionReviewDecisionSchema.parse(
       interrupt({
         kind: 'conclusion-review',
@@ -645,9 +713,14 @@ export function createInvestigationGraph({
     )
     .addNode(
       'plan_investigation',
-      // Entering this node IS a logical investigation iteration — it is the
-      // node the loop-back edge returns to, so counting here counts exactly the
-      // iterations `maxIterations` is meant to bound.
+      // Entering this node IS a logical investigation iteration, so counting
+      // here counts every entry — including the two re-entries `maxIterations`
+      // does NOT gate: the challenge cycle (bounded by the challenge reserve)
+      // and a human reject (bounded by the human). The counter therefore stays
+      // honest on all three edges while the cap governs only the automatic one.
+      // see hitl-resume-contract.test.mjs › "maxIterations caps the automatic
+      // loop-back edge while a ${route.label} re-entry is bounded by the human,
+      // and iterationsUsed keeps counting across it"
       preserveGraphOwnedControl(nodes.plan_investigation, {
         countsLogicalIteration: true,
       }),

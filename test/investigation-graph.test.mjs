@@ -982,3 +982,61 @@ for (const invalidDeclaration of [
     );
   });
 }
+
+/**
+ * The declaration channel is a node's own report of what it spent. Reading it
+ * off the prototype chain lets an inherited property spend a budget no node
+ * declared, so the two halves are pinned together under the same poisoned
+ * prototype: inherited is absent, own is still honoured.
+ */
+test('ignores an inherited declaredLlmCalls while still honouring an own one', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  Object.defineProperty(Object.prototype, 'declaredLlmCalls', {
+    value: 7,
+    configurable: true,
+    writable: true,
+  });
+
+  try {
+    const inheritedOnly = createInvestigationGraph({
+      nodes: budgetedNodes(
+        [],
+        async () => ({ route: 'terminal', stopKind: 'stalled' }),
+        async () => ({}),
+      ),
+    });
+    const declaredNothing = assertResolved(
+      await runToCompletion(inheritedOnly, initialState()),
+      'a run whose nodes declare nothing must resolve',
+    );
+
+    const ownDeclaration = createInvestigationGraph({
+      nodes: budgetedNodes(
+        [],
+        async () => ({ route: 'terminal', stopKind: 'stalled' }),
+        async () => ({ declaredLlmCalls: 3 }),
+      ),
+    });
+    const declaredThree = assertResolved(
+      await runToCompletion(ownDeclaration, initialState()),
+      'a run declaring its own llm calls must resolve',
+    );
+
+    assert.deepEqual(
+      {
+        inherited: declaredNothing.control.llmCallsUsed,
+        own: declaredThree.control.llmCallsUsed,
+      },
+      { inherited: 0, own: 3 },
+      'only an own declaredLlmCalls may spend the llm call budget',
+    );
+  } finally {
+    delete Object.prototype.declaredLlmCalls;
+  }
+
+  assert.equal(
+    Object.hasOwn(Object.prototype, 'declaredLlmCalls'),
+    false,
+    'the poisoned prototype must not outlive this test',
+  );
+});

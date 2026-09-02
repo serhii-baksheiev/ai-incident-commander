@@ -257,6 +257,45 @@ test('requires the graph-owned usage counters on every control record', () => {
   }
 });
 
+/**
+ * The graph refuses a budget or usage counter that is not a whole non-negative
+ * count, one node into the run. The schema is the boundary that decides what a
+ * counter IS, so it has to refuse the same values — otherwise the same fact is
+ * spelled two ways and the persisted shape is the looser of the two.
+ */
+const logicalBudgetCounters = [
+  'maxIterations',
+  'llmCallBudget',
+  'iterationsUsed',
+  'llmCallsUsed',
+];
+
+for (const invalidCount of [
+  { label: 'a fractional', value: 0.5 },
+  { label: 'a negative', value: -1 },
+  { label: 'an infinite', value: Number.POSITIVE_INFINITY },
+  { label: 'a NaN', value: Number.NaN },
+]) {
+  test(`rejects ${invalidCount.label} value in every logical budget counter`, () => {
+    assert.equal(
+      domain.IncidentStateSchema.safeParse(state).success,
+      true,
+      'the fixture carrying whole counts must parse, or these rejections prove nothing',
+    );
+
+    for (const counter of logicalBudgetCounters) {
+      const candidate = structuredClone(state);
+      candidate.control[counter] = invalidCount.value;
+
+      assert.equal(
+        domain.IncidentStateSchema.safeParse(candidate).success,
+        false,
+        `${counter} must reject ${invalidCount.label} value at the schema boundary, not one node into the graph`,
+      );
+    }
+  });
+}
+
 test('keeps the baseline status-rules version at v0.1 across the state schema bump', () => {
   assert.equal(domain.STATUS_RULES_VERSION, 'v0.1');
   assert.equal(domain.BASELINE_STATUS_RULES.version, 'v0.1');
