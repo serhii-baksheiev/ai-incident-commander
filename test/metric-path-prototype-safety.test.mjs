@@ -134,6 +134,37 @@ function calibrationRecordFor(scenarioId) {
   return record;
 }
 
+/**
+ * A one-record experiment that PUBLISHES a versioned behavior metric, with its
+ * own `evaluatorVersion` taken away.
+ *
+ * `experimentWithoutOwnMetadata('evaluatorVersion')` cannot serve this: its
+ * record evaluates to an empty `behaviorMetrics`, so no versioned quality claim
+ * would be published and the disagreement under test could not appear. The
+ * record and its evaluation are built here rather than by mutating the shared
+ * fixture, which every other test in this file also reads.
+ */
+function behaviorExperimentWithoutOwnEvaluatorVersion() {
+  const record = calibrationRecordFor('challenge-keeps-leader');
+  const result = evals.evaluateBenchmarkRecord({
+    record,
+    outcome: perfectOutcomeFor(record.scenario),
+  });
+  const { evaluatorVersion: omitted, ...metadata } = record.metadata;
+
+  assert.equal(
+    omitted,
+    benchmarkVersions.evaluatorVersion,
+    'the record must declare its own evaluatorVersion, or removing it proves nothing',
+  );
+  assert.equal(
+    Object.hasOwn(result.behaviorMetrics, BEHAVIOR_METRIC_KEY),
+    true,
+    `the evaluation must produce ${BEHAVIOR_METRIC_KEY}, or no versioned claim is at stake`,
+  );
+  return { records: [{ ...record, metadata }], results: [result] };
+}
+
 /* -------------------------------------------------------------------------- */
 /* requireMetrics — the READ side                                             */
 /* -------------------------------------------------------------------------- */
@@ -167,6 +198,64 @@ for (const key of QUALITY_METRIC_KEYS) {
     assert.equal(capture.runs.length, 0);
   });
 }
+
+/**
+ * The loop above never reaches the gate's third clause — an inherited
+ * `{ key, score }` fails on `key` first — and that clause is the whole defence
+ * for a metric this run really does own, minus its score.
+ *
+ * It is not a hypothetical shape: `requireMetrics` hands the inbound metric
+ * object back BY REFERENCE, and the feedback projection then reads
+ * `metric.score` with a plain `[[Get]]`. Drop the clause and the number
+ * published as this run's evidence coverage — in `outputs.metrics` and as its
+ * own feedback score — is whatever `Object.prototype` happens to carry.
+ *
+ * One key rather than all three: the clause is a single expression shared by
+ * every key in `PERSISTED_METRIC_KEYS`, and `evidence_coverage` is the one the
+ * finding names.
+ */
+const SCORELESS_METRIC_KEY = 'evidence_coverage';
+const INHERITED_SCORE_DECOY = 0.5;
+
+test(`refuses a quality metric whose score exists only on Object.prototype: ${SCORELESS_METRIC_KEY}`, async () => {
+  const capture = capturingClient();
+  const { experiment } = singleRecordExperiment((result) => {
+    const { score: omitted, ...metric } = result.metrics[SCORELESS_METRIC_KEY];
+    assert.notEqual(
+      omitted,
+      undefined,
+      `the evaluation must produce a ${SCORELESS_METRIC_KEY} score`,
+    );
+    assert.notEqual(
+      omitted,
+      INHERITED_SCORE_DECOY,
+      'the decoy only discriminates while it differs from the score this run measured',
+    );
+    return {
+      ...result,
+      metrics: { ...result.metrics, [SCORELESS_METRIC_KEY]: metric },
+    };
+  });
+
+  await withPollutedObjectPrototype('score', INHERITED_SCORE_DECOY, () =>
+    assert.rejects(
+      () => observability.persistBenchmarkExperiment({
+        client: capture.client,
+        datasetName: `metric-path-inherited-score-${SCORELESS_METRIC_KEY}-v0.2`,
+        experiment,
+      }),
+      new RegExp(`no score of its own: ${SCORELESS_METRIC_KEY}`),
+      `a metric that owns its name and no score of its own must be refused by name: the run is otherwise published carrying a ${SCORELESS_METRIC_KEY} of ${INHERITED_SCORE_DECOY}, a coverage figure no evaluator computed and nothing downstream can tell from one that was`,
+    ));
+
+  assert.equal(Object.hasOwn(Object.prototype, 'score'), false, DECOY_MUST_NOT_OUTLIVE);
+  assert.equal(capture.runs.length, 0);
+  assert.equal(
+    capture.feedback.length,
+    0,
+    `an inherited score must not reach the feedback stream either: ${SCORELESS_METRIC_KEY} is scored per run there, so a fabricated ${INHERITED_SCORE_DECOY} enters every aggregate read off this benchmark`,
+  );
+});
 
 test('refuses a result whose metrics container exists only on Object.prototype', async () => {
   const capture = capturingClient();
@@ -244,6 +333,13 @@ test('publishes every declared metadata field and nothing else', async () => {
  *
  * `evaluatorVersion` is planted at the version this layer accepts on purpose:
  * an unsupported one would be refused for the wrong reason and prove nothing.
+ *
+ * ⚠ These assert on `extra.metadata` only. The OUTPUTS half of the same field —
+ * an inherited `evaluatorVersion` admitting versioned behavior metrics while the
+ * metadata declares none — is a different path and a different test:
+ * › "refuses versioned behavior metrics whose evaluatorVersion exists only on
+ * Object.prototype". Reading this loop as covering that one is how the gap it
+ * closes survived a full review round.
  */
 const INHERITED_METADATA_DECOYS = [
   ['runId', 'inherited-run-id'],
@@ -415,6 +511,68 @@ test('refuses a result whose behavior metrics container exists only on Object.pr
     DECOY_MUST_NOT_OUTLIVE,
   );
   assert.equal(capture.runs.length, 0);
+});
+
+/**
+ * The two halves of one record must agree about which evaluator ran.
+ *
+ * `projectRunMetadata` reads `evaluatorVersion` as an own data property, so a
+ * record that does not declare one publishes metadata naming no evaluator. The
+ * pairing argument beside it is still a plain `[[Get]]`, which the prototype
+ * answers with the accepted version — so the same record's `outputs` carry a
+ * versioned behavior metric, and its `createFeedback` score carries it again.
+ * The published record then asserts a quality claim on behalf of an evaluator
+ * its own metadata never names, which is the one reading nothing downstream can
+ * correct: the metrics look measured and the provenance looks merely absent.
+ *
+ * The assertion is a REFUSAL rather than a consistent publication, because the
+ * pairing rule already decides this case and is already pinned from the other
+ * side by "refuses a result whose behavior metrics container exists only on
+ * Object.prototype". Reading own-only makes the version absent while the
+ * metrics are present — the exact state `requireBehaviorMetrics` refuses by
+ * name. Asserting "publishes without the metrics" instead would ask this layer
+ * to invent a third answer that no code path here offers, and would go green on
+ * a record silently stripped of the behaviour it measured.
+ */
+test('refuses versioned behavior metrics whose evaluatorVersion exists only on Object.prototype', async () => {
+  const capture = capturingClient();
+  const experiment = behaviorExperimentWithoutOwnEvaluatorVersion();
+
+  const error = await withPollutedObjectPrototype(
+    'evaluatorVersion',
+    benchmarkVersions.evaluatorVersion,
+    () => persistTolerantOfRefusal(
+      capture.client,
+      'metric-path-inherited-behavior-pairing-v0.2',
+      experiment,
+    ),
+  );
+
+  assert.equal(
+    Object.hasOwn(Object.prototype, 'evaluatorVersion'),
+    false,
+    DECOY_MUST_NOT_OUTLIVE,
+  );
+
+  const published = capture.runs.map((run) => ({
+    metadataDeclaresEvaluatorVersion: Object.hasOwn(
+      run.extra.metadata,
+      'evaluatorVersion',
+    ),
+    publishedBehaviorMetrics: Object.keys(run.outputs.behaviorMetrics),
+    publishedFeedbackKeys: capture.feedback.map(({ key }) => key),
+  }));
+
+  assert.equal(
+    capture.runs.length,
+    0,
+    `a record whose own metadata declares no evaluator version must not publish behavior metrics: the published run then states a quality claim for a versioned evaluator it does not name, and the version it was scored against exists nowhere but Object.prototype (published: ${JSON.stringify(published)})`,
+  );
+  assert.equal(
+    error?.message,
+    'behavior metric evaluator version and behavior metrics must be declared together',
+    'and the refusal must name the pairing rule: an inherited version is not a declaration, so a record carrying behavior metrics without one is exactly the unpaired state this layer already refuses',
+  );
 });
 
 /* -------------------------------------------------------------------------- */

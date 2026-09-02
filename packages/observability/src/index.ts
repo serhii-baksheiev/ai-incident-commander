@@ -217,14 +217,35 @@ function assertResultIdentity(
  * through THIS function never comes from a getter.
  *
  * 🔴 That is a claim about this function, not about the layer, and the
- * difference is measured rather than assumed. `requireResourceEvidence` still
- * reads its CONTAINER — `result.resources` — through the prototype chain, so an
- * accessor of that name on `Object.prototype` is invoked and its six axes reach
- * both `outputs.resources` and the per-axis feedback keys. The same holds for
- * `result.actualStopKind`, `record.threadId` and `record.metadata.scenarioId`.
- * Those paths are outside what AIC-67 was scoped to and are filed as a triage
- * proposal rather than fixed here; until one lands, nothing in this header
- * entitles a reader to conclude that no published value came from a getter.
+ * difference is measured rather than assumed. SEVEN surfaces in this file still
+ * walk the prototype chain — some of them more than one field — enumerated in
+ * full because a partial list reads as a complete one, and this header is what
+ * a later reader will trust:
+ *
+ *   1. `result.resources` — the CONTAINER `requireResourceEvidence` validates
+ *      field by field. An accessor of that name is invoked and its six axes
+ *      reach `outputs.resources` AND the per-axis feedback keys;
+ *   2. `record.metadata` — the container `projectRunMetadata` is handed, so a
+ *      record owning no metadata publishes an inherited 11-field block;
+ *   3. `record.runId` / `exampleId` / `experimentId` — `assertResultIdentity`
+ *      compares two `[[Get]]`s, so when BOTH sides are absent they read the
+ *      same inherited value and the identity check passes;
+ *   4. `record.scenario` and its `id` / `groundTruth` — reaching
+ *      `createExamples`, where `groundTruth` is published verbatim;
+ *   5. `record.metadata.scenarioId` — becoming the run's name and
+ *      `inputs.scenarioId`;
+ *   6. `record.threadId` — becoming `inputs.threadId`;
+ *   7. `result.actualStopKind` — becoming `outputs.actualStopKind`.
+ *
+ * All seven are pre-existing: a differential probe against the default branch
+ * found no value crossing the SDK boundary here that did not cross there. They
+ * are outside what AIC-67 was scoped to and are filed as a triage proposal
+ * rather than fixed here; until one lands, nothing in this header entitles a
+ * reader to conclude that no published value came from a getter.
+ *
+ * ⚠ And one shape this function does NOT close, on any path: a `Proxy` traps
+ * `getOwnPropertyDescriptor`, so a proxied container answers this read with
+ * whatever it likes. Prototype pollution is the threat model; a proxy is not.
  *
  * `undefined` therefore means "not an own data property of this object",
  * which every caller here already treats as absent.
@@ -272,13 +293,14 @@ function projectRunMetadata(
   ) {
     throw new Error('benchmark evaluator version is not supported');
   }
-  // Read own, write own. The literal below would be safe on its own — an object
-  // literal defines properties and never consults the prototype — but its VALUES
-  // came through `metadata.<field>`, so an absent field would have published an
-  // inherited one under this run's name. The conditional writes after it are the
-  // other half: those are ordinary `[[Set]]`s, and an inherited accessor swallows
-  // them, leaving a record that declares a versioned evaluator its own metadata
-  // does not carry.
+  // Read own, write own — the two loops below replaced a literal plus three
+  // conditional assignments, and each half was a separate hazard. The literal
+  // was safe in itself, since object-literal definition never consults the
+  // prototype, but its VALUES came through `metadata.<field>`, so an absent
+  // field published an inherited one under this run's name. The three
+  // assignments were ordinary `[[Set]]`s, which an inherited accessor swallows,
+  // leaving a record that declares a versioned evaluator its own metadata does
+  // not carry.
   const projected: Record<string, unknown> = {};
   for (const field of PERSISTED_METADATA_KEYS) {
     defineOwn(projected, field, ownValue(metadata, field));
@@ -306,12 +328,17 @@ function requireMetrics(
   return Object.fromEntries(
     PERSISTED_METRIC_KEYS.map((key) => {
       const metric = ownValue(metrics, key);
-      if (
-        metric === undefined ||
-        ownValue(metric, 'key') !== key ||
-        typeof ownValue(metric, 'score') !== 'number'
-      ) {
+      if (metric === undefined || ownValue(metric, 'key') !== key) {
         throw new Error(`benchmark result is missing metric: ${key}`);
+      }
+      // Absent and malformed are different failures, and this file argues the
+      // point itself where the resource schema version is read: reporting them
+      // the same way sends the reader looking for the wrong problem. A metric
+      // that owns its name but no score of its own is not missing — it is a
+      // metric whose score would otherwise be taken off the prototype and
+      // published as a figure no evaluator computed.
+      if (typeof ownValue(metric, 'score') !== 'number') {
+        throw new Error(`benchmark result metric has no score of its own: ${key}`);
       }
       return [key, metric];
     }),
@@ -460,7 +487,7 @@ function requireBehaviorMetrics(
     ) {
       throw new Error(`behavior metric reason is not declared: ${key}`);
     }
-    // Same CreateDataProperty reasoning as the resource projection further down
+    // Same CreateDataProperty reasoning as the resource projection above in
     // this file: an inherited accessor named like a behavior metric would
     // otherwise swallow this write. The values are the own ones read above, so
     // the object published here carries nothing the inbound metric did not own.
@@ -534,9 +561,19 @@ async function persistPreparedExperiment({
     assertResultIdentity(record, result);
     const metrics = requireMetrics(result);
     const resources = requireResourceEvidence(result);
+    // Own-read, like `projectRunMetadata` three lines below reads the same
+    // field. This is the pairing input that decides whether the run measured
+    // behaviour at all, so a `[[Get]]` here let an inherited version admit
+    // versioned metrics while the published metadata declared none — the record
+    // shape this whole change exists to make impossible. A non-string reads as
+    // absent rather than being cast: the paired-declaration guard then refuses,
+    // which is the honest answer to metrics whose version nobody stated.
+    const declaredEvaluatorVersion = ownValue(record.metadata, 'evaluatorVersion');
     const behaviorMetrics = requireBehaviorMetrics(
       result,
-      record.metadata.evaluatorVersion,
+      typeof declaredEvaluatorVersion === 'string'
+        ? declaredEvaluatorVersion
+        : undefined,
     );
 
     await client.createRun({
