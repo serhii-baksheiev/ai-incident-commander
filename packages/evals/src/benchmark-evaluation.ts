@@ -115,7 +115,12 @@ export type BehaviorMetrics = Partial<{
 export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 1 as const;
 
 /**
- * What a run SPENT, one axis per field and nothing derived.
+ * What a run SPENT, one axis per field and no axis computed FROM ANOTHER AXIS.
+ *
+ * "Nothing derived" means exactly that and no more: an axis may perfectly well
+ * be derived from executed state — `retryCount` below is — but no axis may be a
+ * function of other axes, because that is the composite this evidence exists to
+ * refuse.
  *
  * There is deliberately no composite and no "recovery overhead" figure: a
  * single number that blends logical investigation work with recovery work can
@@ -514,9 +519,15 @@ export async function runBenchmarkExperiment(
     };
     // Timed by the runner, never by the investigation: a callback reporting its
     // own duration is reporting a number nobody checked.
-    const startedAt = Date.now();
+    //
+    // `performance.now()` rather than `Date.now()` because the outbound boundary
+    // refuses a negative count: a backwards clock step mid-run would otherwise
+    // turn a clock anomaly into a failed persist that loses every later record
+    // of a finished experiment. A monotonic clock makes the delta non-negative
+    // by construction, so the strict check can never fire on an honest run.
+    const startedAt = performance.now();
     const outcome = await options.investigate(executionInput);
-    const wallClockDurationMs = Date.now() - startedAt;
+    const wallClockDurationMs = Math.round(performance.now() - startedAt);
     const measured = options.collectResources?.(executionInput);
     const result = evaluateBenchmarkRecord({
       record,
@@ -706,19 +717,32 @@ export async function runGraphBenchmarkExperiment(
         state: initialBenchmarkState(input),
       });
       measuredByRunId.set(input.runId, {
-        // These two, and `resumeCount` below, are read off the executed control
-        // block: the graph owns it and a node's update cannot write it, so they
-        // are observations rather than self-reports.
+        // The line that matters is WHO ORIGINATED THE NUMBER, not which channel
+        // the graph owns — the graph owns the control block either way.
+        //
+        // Originated by the graph, and therefore an observation: this one and
+        // `resumeCount` below. The graph increments both itself and a node's
+        // update cannot write either.
         logicalIterationsUsed: finalState.control.iterationsUsed,
+        // ⚠ Originated by the NODE. The graph owns the accumulation and
+        // validates each addition, but the number added is whatever the node
+        // declared — `declaredLlmCalls` is a declaration, not a write. In a
+        // benchmark the node is the system under test, so this axis is as
+        // trustworthy as the fixture, exactly like `toolCallsUsed` below. It is
+        // recorded because a declared count is the only honest thing to record
+        // while no provider exists to observe instead.
         declaredLlmCallsUsed: finalState.control.llmCallsUsed,
-        // ⚠ NOT covered by the sentence above, and the difference is the whole
-        // point of it. `trials` is a node-written channel — `execute_investigation`
-        // puts them there and the reducer upserts them unparsed — and in a
-        // benchmark that node IS the system under test. So this axis is as
-        // trustworthy as the fixture that produced it, which is exactly the
-        // provenance the generic path refuses to publish at all. It is measured
-        // here because the item asks for "tool calls/trials used" and this graph
-        // has no independent tool-call channel to read instead.
+        // ⚠ Also node-originated, and more directly: `trials` is a node-written
+        // channel — `execute_investigation` puts them there and the reducer
+        // upserts them unparsed. Measured here because the item asks for "tool
+        // calls/trials used" and this graph has no independent tool-call channel
+        // to read instead.
+        //
+        // What this counts is trials, so its meaning depends on the producer's
+        // trial-id convention: a trial retried under one id upserts in place and
+        // counts once, while a fresh id per attempt counts each. Stated because
+        // the number this axis reports once a retry path lands is decided by
+        // that convention, not by this code.
         toolCallsUsed: finalState.trials.length,
         // Derived from the executed state, not asserted: a literal zero would
         // keep reading zero on the day a retry path lands, which is the

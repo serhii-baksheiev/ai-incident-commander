@@ -292,22 +292,62 @@ function getRetryGraphExperiment() {
 
 /**
  * Plants one own property on `Object.prototype` for the duration of `body`, and
- * takes it off again whatever happens. The planted value is what an evidence
+ * takes it off again whatever happens. The planted property is what an evidence
  * object that never declared the field appears to carry to anything that reads
  * it through the prototype chain.
+ *
+ * The DESCRIPTOR is the caller's choice because the two shapes fail in opposite
+ * directions, and only one of them is visible on the reading side.
  */
-async function withPollutedObjectPrototype(key, value, body) {
+async function withPrototypeDecoy(key, descriptor, body) {
   Object.defineProperty(Object.prototype, key, {
     configurable: true,
     enumerable: false,
-    value,
-    writable: true,
+    ...descriptor,
   });
   try {
     return await body();
   } finally {
     delete Object.prototype[key];
   }
+}
+
+/**
+ * A data decoy: the shape that answers a prototype-chain READ with a value the
+ * evidence never declared.
+ */
+async function withPollutedObjectPrototype(key, value, body) {
+  return withPrototypeDecoy(key, { value, writable: true }, body);
+}
+
+/**
+ * An accessor decoy: the shape that also corrupts a prototype-chain WRITE.
+ *
+ * A writable inherited data property is shadowed by an ordinary
+ * `target[key] = value` — the assignment creates an own property and the decoy
+ * is overwritten, which is why the data decoy above proves nothing about the
+ * write side. An accessor is not shadowed: `[[Set]]` walks the prototype chain,
+ * finds the inherited setter, calls it, and creates NO own property. The key
+ * then disappears from the object that was written, and the next read of it
+ * returns the inherited getter's value.
+ *
+ * Every value the swallowing setter receives is pushed to `swallowed`, so a
+ * failing assertion can report that the write really did reach the prototype
+ * rather than never happening at all.
+ */
+async function withAccessorPollutedObjectPrototype(key, value, swallowed, body) {
+  return withPrototypeDecoy(
+    key,
+    {
+      get() {
+        return value;
+      },
+      set(written) {
+        swallowed.push(written);
+      },
+    },
+    body,
+  );
 }
 
 function capturingClient() {
@@ -661,6 +701,79 @@ test('publishes its own resource values while Object.prototype carries decoys', 
     'refusing an inherited field must not stop a run from publishing the fields it does own',
   );
 });
+
+/**
+ * The write side of the same hazard, which the data decoy above cannot reach.
+ *
+ * The projection this layer publishes is built key by key onto a plain object.
+ * Every such write is an ordinary `[[Set]]`, so an inherited ACCESSOR named
+ * like an axis swallows it: the setter runs, no own property is created, and
+ * the axis is simply gone from `outputs.resources` — which downstream reads as
+ * "this run spent nothing on that axis", the one reading the module's own
+ * header says must never be manufactured. The feedback stream then reads the
+ * same key back out and publishes the inherited GETTER's number, so a figure no
+ * run measured crosses the SDK boundary as evidence.
+ *
+ * One test per axis, so a fix that special-cases a single field does not pass.
+ */
+const ACCESSOR_DECOY_VALUE = 999;
+
+for (const axis of measuredResourceAxisNames) {
+  test(`publishes its own measured ${axis} while Object.prototype carries an accessor of that name`, async () => {
+    const version = requireResourceSchemaVersion();
+    const capture = capturingClient();
+    const resources = measuredResources();
+    const swallowed = [];
+    const { experiment } = singleRecordExperiment((result) => ({
+      ...result,
+      resources,
+    }));
+
+    assert.notEqual(
+      resources[axis],
+      ACCESSOR_DECOY_VALUE,
+      `the decoy only discriminates while it differs from the measured value: ${axis}`,
+    );
+
+    await withAccessorPollutedObjectPrototype(
+      axis,
+      ACCESSOR_DECOY_VALUE,
+      swallowed,
+      () => observability.persistBenchmarkExperiment({
+        client: capture.client,
+        datasetName: `resource-evidence-accessor-${axis}-v0.2`,
+        experiment,
+      }),
+    );
+
+    assert.equal(
+      Object.hasOwn(Object.prototype, axis),
+      false,
+      'the planted accessor must not outlive the test that planted it',
+    );
+    assert.equal(capture.runs.length, 1);
+    const [run] = capture.runs;
+
+    assert.equal(
+      Object.hasOwn(run.outputs.resources, axis),
+      true,
+      `an inherited setter must not swallow ${axis}: an axis missing from outputs.resources reads as a run that spent nothing on it (the prototype setter received ${JSON.stringify(swallowed)})`,
+    );
+    assert.deepEqual(
+      run.outputs.resources,
+      { ...resources, schemaVersion: version },
+      `every declared axis must cross with the value this run measured, whatever Object.prototype carries: ${axis}`,
+    );
+
+    const entry = capture.feedback.find(({ key }) => key === axis);
+    assert.ok(entry, `${axis} must still be published as its own feedback key`);
+    assert.equal(
+      entry.score,
+      resources[axis],
+      `${axis} feedback must carry the measured value, never a number read back off an inherited getter`,
+    );
+  });
+}
 
 /**
  * The graph refuses these values where the counters are produced; the outbound

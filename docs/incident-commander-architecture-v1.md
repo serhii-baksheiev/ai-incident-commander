@@ -579,16 +579,23 @@ Three properties are load-bearing, and each is a rule rather than a preference:
   the dashboard-only composite named at the top of this section, which blends
   quality metrics and is never published as resource evidence.
   see `test/benchmark-resource-evidence.test.mjs` › "projects resource evidence
-  through an exact outbound allowlist, one key per dimension" Recovery is visible as its own raw
-  axes (`resumeCount`, duration), not as a number computed from them.
-- **Provenance decides what may be published.** Iterations, declared LLM calls
-  and resumes are read off the executed control block the graph owns and a node
-  cannot write; duration is timed by the runner, never reported by the
-  investigation. ⚠ **Tool calls are the exception, stated rather than glossed:**
-  they are counted from `trials`, a node-written channel, and in a benchmark
-  that node is the system under test — so that axis is as trustworthy as the
-  fixture that produced it. It is measured anyway because this graph has no
-  independent tool-call channel to read instead. Evidence reaches an
+  through an exact outbound allowlist, one key per dimension"
+
+  Recovery is visible as its own raw axes (`resumeCount`, duration), not as a
+  number computed from them.
+- **Provenance decides what may be published, and the line is who originated the
+  number** — not which channel the graph owns, because the graph owns the
+  control block either way. Three axes are **graph-originated**: logical
+  iterations and resumes, which the graph increments itself and no node update
+  can write, and wall-clock duration, which the runner times and the
+  investigation never reports. Two are **node-originated** and say so:
+  `declaredLlmCallsUsed` is the sum of what nodes *declared* — the graph
+  validates and accumulates, but does not observe the calls — and `toolCallsUsed`
+  counts `trials`, a node-written channel. In a benchmark the node is the system
+  under test, so those two are as trustworthy as the fixture that produced them.
+  They are recorded anyway: a declared count is the only honest thing to record
+  while no provider exists to observe instead, and this graph has no independent
+  tool-call channel. Evidence reaches an
   evaluation through a channel separate from the opaque `investigate` callback,
   so a callback reporting its own spend is ignored and the generic path
   publishes none rather than an unverified number. see
@@ -602,13 +609,21 @@ Three properties are load-bearing, and each is a rule rather than a preference:
   resume-counting node is unreachable there. Publishing all three as visible
   axes reading zero is deliberate; conflating a derived zero with a structural
   one is what would mislead.
+
+  `retryCount` inherits `toolCallsUsed`'s dependence on the producer's trial-id
+  convention: a trial retried under one id upserts in place and counts once,
+  while a fresh id per attempt counts each.
   see `test/benchmark-resource-evidence.test.mjs` › "counts the trials past
   their first attempt rather than publishing a constant retry count" and ›
   "pins resumeCount at zero for every benchmark run, because the benchmark never
   enables human review"
 
-Outbound, resource evidence is projected through the same exact-allowlist
-*discipline* as run metadata — not the same allowlist, and not the same failure
+Outbound, resource evidence reaches LangSmith on **two** surfaces: the run's
+`outputs.resources`, which is authoritative and complete, and one `createFeedback`
+entry per axis beside the quality scores, which is a convenience projection for
+reading and charting. `schemaVersion` stays out of the score stream — it
+describes the shape, not a spend. Both are projected through the same
+exact-allowlist *discipline* as run metadata — not the same allowlist, and not the same failure
 mode: `projectRunMetadata` rebuilds from its own key list and leaves a missing
 optional field undefined, while resource evidence has its own list and
 **refuses**. Absent evidence is accepted — that is what every v0.1 record looks

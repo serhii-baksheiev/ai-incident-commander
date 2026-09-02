@@ -269,9 +269,17 @@ function requireResourceEvidence(
     );
   }
 
-  const projected: Record<string, number> = {
-    schemaVersion: PERSISTED_RESOURCE_SCHEMA_VERSION,
-  };
+  // Built with CreateDataProperty semantics, NOT assignment. `projected[key] =`
+  // is an ordinary [[Set]] that walks the prototype chain, so an inherited
+  // ACCESSOR named like an axis swallows the write: no own property is created,
+  // the axis vanishes from the published outputs — reading downstream as "spent
+  // nothing on that axis" — and the feedback projection then reads the
+  // inherited getter back out and publishes a number no run declared. Refusing
+  // to READ a polluted value is only half the job if the WRITE can still be
+  // intercepted. `requireMetrics` above already builds this way.
+  const entries: [string, number][] = [
+    ['schemaVersion', PERSISTED_RESOURCE_SCHEMA_VERSION],
+  ];
   for (const key of PERSISTED_RESOURCE_KEYS) {
     const value = own(key);
     if (value === undefined) {
@@ -284,9 +292,9 @@ function requireResourceEvidence(
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
       throw new Error(`benchmark resource evidence ${key} is not a count`);
     }
-    projected[key] = value;
+    entries.push([key, value]);
   }
-  return projected;
+  return Object.fromEntries(entries);
 }
 
 function requireBehaviorMetrics(
@@ -338,12 +346,20 @@ function requireBehaviorMetrics(
     if (!PERSISTED_BEHAVIOR_METRIC_REASONS.has(metric.reason)) {
       throw new Error(`behavior metric reason is not declared: ${key}`);
     }
-    projected[key] = {
-      evaluatorVersion: metric.evaluatorVersion,
-      key: metric.key,
-      score: metric.score,
-      reason: metric.reason,
-    };
+    // Same CreateDataProperty reasoning as the resource projection below: an
+    // inherited accessor named like a behavior metric would otherwise swallow
+    // this write.
+    Object.defineProperty(projected, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: {
+        evaluatorVersion: metric.evaluatorVersion,
+        key: metric.key,
+        score: metric.score,
+        reason: metric.reason,
+      },
+    });
   }
   return projected;
 }

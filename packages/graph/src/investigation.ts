@@ -679,6 +679,15 @@ export function createInvestigationGraph({
     // The increment rides on all three decision paths, `confirm` included:
     // that path used to carry no update at all, so a confirmed run would have
     // reported one resume fewer than it spent.
+    //
+    // Both halves rest on LangGraph's replay behaviour, which is a third party's
+    // and can change under an upgrade, so neither is asserted here on faith:
+    // see hitl-resume-contract.test.mjs › "counts one resume for a human
+    // ${label} decision, however many nodes replay after it" and ›
+    // "counts the resumes a human spends re-entering the graph without counting
+    // the replayed nodes", and for the never-on-the-initial-visit half,
+    // investigation-graph.test.mjs › "leaves resumeCount at zero on a run that
+    // never pauses for a human"
     const resumedControl = {
       ...state.control,
       resumeCount: state.control.resumeCount + 1,
