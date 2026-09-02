@@ -45,7 +45,10 @@ const PERSISTED_BEHAVIOR_METRIC_KEYS = [
  * direction: a name neither list can spell is a compile error. They do not
  * prove the lists are complete — that direction is
  * `test/metric-path-prototype-safety.test.mjs` ›
- * "publishes every declared metadata field and nothing else".
+ * "publishes every declared metadata field and nothing else", and its reach is
+ * the FIXTURE's: it compares against the fields a real record declares, so a
+ * field added to the type and never to `benchmarkVersions` is still dropped
+ * silently with that test green.
  */
 const PERSISTED_METADATA_KEYS = [
   'runId',
@@ -210,8 +213,18 @@ function assertResultIdentity(
  * field a run never declared is supplied by `Object.prototype` and published as
  * if the run had produced it. Reading the own DESCRIPTOR answers the question
  * this layer actually asks — *did this record carry that value?* — and an
- * inherited accessor is refused rather than invoked, so nothing this layer
- * publishes can come from a getter.
+ * accessor, inherited or own, is refused rather than invoked: a field read
+ * through THIS function never comes from a getter.
+ *
+ * 🔴 That is a claim about this function, not about the layer, and the
+ * difference is measured rather than assumed. `requireResourceEvidence` still
+ * reads its CONTAINER — `result.resources` — through the prototype chain, so an
+ * accessor of that name on `Object.prototype` is invoked and its six axes reach
+ * both `outputs.resources` and the per-axis feedback keys. The same holds for
+ * `result.actualStopKind`, `record.threadId` and `record.metadata.scenarioId`.
+ * Those paths are outside what AIC-67 was scoped to and are filed as a triage
+ * proposal rather than fixed here; until one lands, nothing in this header
+ * entitles a reader to conclude that no published value came from a getter.
  *
  * `undefined` therefore means "not an own data property of this object",
  * which every caller here already treats as absent.
@@ -231,7 +244,10 @@ function ownValue(target: unknown, key: string): unknown {
  * `target[key] = value` is an ordinary `[[Set]]`: it walks the prototype chain,
  * and an inherited ACCESSOR named like the field swallows the write — the
  * setter runs, no own property is created, and the field vanishes from the
- * published record. CreateDataProperty semantics cannot be intercepted.
+ * published record. CreateDataProperty semantics cannot be intercepted by the
+ * prototype chain — the qualifier is load-bearing, since a `Proxy` traps
+ * `defineProperty` and a frozen target throws. Both call sites pass a freshly
+ * created local object, which is neither.
  */
 function defineOwn(
   target: Record<string, unknown>,

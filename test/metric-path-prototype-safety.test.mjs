@@ -28,10 +28,12 @@
  *     `requireBehaviorMetrics` with `Object.defineProperty` (the latter already
  *     pinned by `test/benchmark-resource-evidence.test.mjs` › "publishes its own
  *     behavior metric while Object.prototype carries an accessor of that name");
- *   - object-literal property definition — `projectRunMetadata`'s literal and
- *     the `metrics:` literal in `evaluateBenchmarkRecord`, including its
- *     computed keys — is CreateDataProperty, which never consults the prototype
- *     chain.
+ *   - object-literal property definition — the `metrics:` literal in
+ *     `evaluateBenchmarkRecord`, including its computed keys — is
+ *     CreateDataProperty, which never consults the prototype chain.
+ *     `projectRunMetadata` had such a literal too; at HEAD it builds its
+ *     projection field by field instead, because the literal was safe while the
+ *     VALUES it was built from were read through the chain.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';

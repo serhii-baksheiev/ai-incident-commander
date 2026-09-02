@@ -22,8 +22,12 @@
  * object that never declared the field appears to carry to anything that reads
  * it through the prototype chain.
  *
- * The DESCRIPTOR is the caller's choice because the two shapes fail in opposite
- * directions, and only one of them is visible on the reading side.
+ * The DESCRIPTOR is the caller's choice because the asymmetry is on the WRITE
+ * side, not the read side. Both shapes answer a prototype-chain read — the data
+ * decoy with its value, the accessor decoy with its getter's return. Only the
+ * accessor survives a write: an ordinary assignment shadows a writable
+ * inherited data property, creating an own property and overwriting the decoy,
+ * while `[[Set]]` finds an inherited setter and creates no own property at all.
  */
 export async function withPrototypeDecoy(key, descriptor, body) {
   Object.defineProperty(Object.prototype, key, {
