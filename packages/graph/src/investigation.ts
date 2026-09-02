@@ -395,14 +395,6 @@ function preserveGraphOwnedControl(
 }
 
 /**
- * Fails closed on a logical budget or usage counter that is not a count.
- *
- * Runs before any budget is spent, and before a node runs, because the whole
- * point of a budget is that the number it is decided from is trustworthy: a
- * fractional or negative counter silently changes what "exhausted" means, and a
- * run that continued on one would report usage nobody can reconcile.
- */
-/**
  * One definition of "a count", derived from the domain schema rather than
  * restated here — see `LogicalCountSchema`.
  */
@@ -410,6 +402,14 @@ function isLogicalCount(value: unknown): value is number {
   return LogicalCountSchema.safeParse(value).success;
 }
 
+/**
+ * Fails closed on a logical budget or usage counter that is not a count.
+ *
+ * Runs before any budget is spent, and before a node runs, because the whole
+ * point of a budget is that the number it is decided from is trustworthy: a
+ * fractional or negative counter silently changes what "exhausted" means, and a
+ * run that continued on one would report usage nobody can reconcile.
+ */
 function assertLogicalBudgetCounters(control: IncidentStateControl): void {
   for (const [field, value] of [
     ['iteration budget', control.maxIterations],
@@ -570,8 +570,11 @@ export function createInvestigationGraph({
   const terminationCheck = async (
     state: InvestigationGraphState,
   ) => {
-    assertChallengeCounters(state.control);
+    // Version first, for the reason `reviewConclusion` states: stale state is
+    // refused for being stale, not for a counter that is only missing because
+    // the state is stale.
     assertPersistedStateVersion(state.control);
+    assertChallengeCounters(state.control);
     assertLogicalBudgetCounters(state.control);
 
     const decision = await nodes.termination_check(incidentStateOf(state));
@@ -713,11 +716,15 @@ export function createInvestigationGraph({
     )
     .addNode(
       'plan_investigation',
-      // Entering this node IS a logical investigation iteration, so counting
-      // here counts every entry — including the two re-entries `maxIterations`
-      // does NOT gate: the challenge cycle (bounded by the challenge reserve)
-      // and a human reject (bounded by the human). The counter therefore stays
-      // honest on all three edges while the cap governs only the automatic one.
+      // Entering this node IS a logical investigation iteration, so this counts
+      // every entry — but "every entry" is not "every way back into the cycle",
+      // and the two re-entries differ from each other:
+      //   - a human re-entry DOES pass through here, so it is counted, even
+      //     though `maxIterations` does not gate it;
+      //   - the challenge cycle re-enters at `execute_investigation` instead
+      //     (see the edge near the bottom of this file), so it is neither
+      //     counted here nor gated here — `MAX_CHALLENGE_ROUNDS` and the
+      //     challenge reserve are what bound it.
       // see hitl-resume-contract.test.mjs › "maxIterations caps the automatic
       // loop-back edge while a ${route.label} re-entry is bounded by the human,
       // and iterationsUsed keeps counting across it"

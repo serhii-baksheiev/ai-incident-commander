@@ -253,8 +253,8 @@ keeps counting across it"
 
 **Two nodes have no declaration channel.** `termination_check` and
 `challenge_hypothesis` return their own decision types rather than a state
-update, so they cannot declare consumption — and §5's LLM responsibilities list
-includes challenge alternative generation. `llmCallBudget` therefore cannot
+update, so they cannot declare consumption — and the LLM responsibilities list
+in §7 includes challenge alternative generation. `llmCallBudget` therefore cannot
 count those calls when a provider arrives. Recorded here because the budget
 design is read here.
 
@@ -268,7 +268,12 @@ declares an llm call"
 state persisted under version 1 is refused rather than coerced to an invented
 usage of zero — on the `kind: 'start'` path by the schema's version literal, and
 on the resume path by the graph's own version guard, because a restored
-checkpoint is never parsed by the schema. Both name the version they refused on.
+checkpoint is never parsed by the schema.
+
+⚠ The two refusals are not equally legible. The resume guard names the version
+it refused on; the start path does not, because `parseInvestigationExecutionInput`
+collapses every schema failure into a single `invalid investigation execution
+input`. Both refuse, one explains.
 
 ⚠ **An unresolved tension with the durable-execution invariant below.** §6 states
 that naive `counter++` inside replayable nodes is forbidden for budget

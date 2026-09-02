@@ -10,8 +10,14 @@
  * `IncidentStateSchema`, which the graph applies to a `kind: 'start'` input and
  * to nothing else; a `kind: 'resume'` takes its state from the checkpointer,
  * which parses nothing. The resume path is guarded separately, by the graph's
- * own `assertPersistedStateVersion`. Both refusals name the version. Before
- * that guard existed, a version-1 checkpoint resumed to completion.
+ * own `assertPersistedStateVersion`. Before that guard existed, a version-1
+ * checkpoint resumed to completion.
+ *
+ * ⚠ **Only the resume guard names the version in what a caller sees.** This
+ * literal produces a zod issue that does name it, but the graph collapses every
+ * schema failure into one `invalid investigation execution input`, so a
+ * version-1 START input is refused without saying why. Refused either way; only
+ * one of the two is diagnosable from the message.
  *
  * see hitl-resume-contract.test.mjs › "resuming ${persisted.label} with
  * ${label} fails loudly at the schema version boundary" and
