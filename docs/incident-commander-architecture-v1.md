@@ -213,6 +213,9 @@ type IncidentState = {
     llmCallBudget: number;
     reservedChallengeBudget: number;
 
+    iterationsUsed: number;
+    llmCallsUsed: number;
+
     challengeRounds: number;
     stopKind?: InvestigationStop;
 
@@ -222,6 +225,20 @@ type IncidentState = {
 ```
 
 Collections use reducers with upsert-by-id semantics. `schemaVersion` is mandatory because checkpoints persist the state shape.
+
+The three budgets and the two usage counters are **graph-owned**: a node update
+can neither raise a limit nor rewrite usage. `iterationsUsed` is incremented by
+the graph on entry to `plan_investigation`, and a node reports LLM consumption
+only through the declaration channel the graph validates — no node writes
+`llmCallsUsed` itself. Each budget terminates through the same existing
+`budget-exhausted` stop kind, read on the continue path so an exhausted budget
+stops further spending without overwriting a decision that already concluded.
+
+`llmCallBudget` is a versioned safety cap, not a calibrated one: no LLM
+execution path exists yet, so observed `llmCallsUsed` is exactly `0` rather
+than estimated. `schemaVersion` is `2` from this change — the counters are
+required fields, so state persisted under version 1 is refused at the version
+boundary instead of being coerced to an invented usage of zero.
 
 ## 6. Run identity and persistence
 
