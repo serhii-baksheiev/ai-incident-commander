@@ -845,6 +845,27 @@ test('does not let normal lifecycle nodes rewrite the graph-owned logical budget
   assert.equal(result.control.llmCallsUsed, 0);
 });
 
+/**
+ * The node here mutates the control it was handed and returns that same object,
+ * because mutating it and returning nothing proves nothing: the graph hands a
+ * node a shallow copy of control, so an unreturned mutation never reaches the
+ * channel whether the budgets are protected or not.
+ *
+ * Under the mutation this test exists for — removing the graph-owned
+ * restoration of these budget fields — it now reddens together with the test
+ * above that spreads and returns. That is the discrimination the unreturned
+ * form did not have, and it is most of what this shape buys: expect the two to
+ * fail together, and do not read a green here as cover the sibling lacks.
+ *
+ * They are not interchangeable, though. Freeze the copy — `Object.freeze({
+ * ...state.control })` in `incidentStateOf` — and this test fails on the write
+ * while the sibling passes, so the in-place shape also pins that the control a
+ * node is handed is writable at all.
+ *
+ * What neither pins is the copy's EXISTENCE: with `control: state.control` in
+ * its place the whole suite stays green, which is what made the unreturned form
+ * vacuous. Covering that needs its own change.
+ */
 test('restores graph-owned logical budgets after in-place mutation by a lifecycle node', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
@@ -857,7 +878,7 @@ test('restores graph-owned logical budgets after in-place mutation by a lifecycl
         state.control.llmCallBudget = 99;
         state.control.iterationsUsed = 0;
         state.control.llmCallsUsed = 42;
-        return {};
+        return { control: state.control };
       },
     ),
   });
