@@ -351,6 +351,8 @@ function preserveGraphOwnedControl(
 
     const protectedControl = {
       stopKind: current.stopKind,
+      runId: current.runId,
+      humanReview: current.humanReview,
       challengeRounds: current.challengeRounds,
       reservedChallengeBudget: current.reservedChallengeBudget,
       maxIterations: current.maxIterations,
@@ -363,6 +365,8 @@ function preserveGraphOwnedControl(
     const result = await node(incidentStateOf(state as InvestigationGraphState));
     const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
     const graphOwned = {
+      runId: protectedControl.runId,
+      humanReview: protectedControl.humanReview,
       challengeRounds: protectedControl.challengeRounds,
       reservedChallengeBudget: protectedControl.reservedChallengeBudget,
       maxIterations: protectedControl.maxIterations,
@@ -376,6 +380,8 @@ function preserveGraphOwnedControl(
     // update the current control is, so a graph-owned increment still lands.
     const {
       stopKind: _ignoredStopKind,
+      runId: _ignoredRunId,
+      humanReview: _ignoredHumanReview,
       challengeRounds: _ignoredChallengeRounds,
       reservedChallengeBudget: _ignoredReservedChallengeBudget,
       maxIterations: _ignoredMaxIterations,
