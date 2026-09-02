@@ -554,6 +554,42 @@ scenario ground truth outside the investigation execution callback" and ›
 "graph benchmark keeps ground truth outside createNodes and records a challenge
 with no investigation change".
 
+### v0.2 resource evidence
+
+Quality alone cannot tell an improvement from a change that bought the same
+answer more expensively, so a benchmark evaluation may also carry **resource
+evidence**: a versioned object with one field per axis — logical iterations,
+declared LLM calls, tool calls, wall-clock duration, retry count, resume count.
+
+Three properties are load-bearing, and each is a rule rather than a preference:
+
+- **No composite, and no derived "recovery overhead".** A blended figure can
+  fall while quality falls with it, which is exactly the comparison this
+  evidence exists to make impossible to fake. Recovery is visible as its own raw
+  axes (`resumeCount`, duration), not as a number computed from them.
+- **Provenance decides what may be published.** The counters are read off the
+  executed control block the graph owns and a node cannot write; duration is
+  timed by the runner, never reported by the investigation. Evidence reaches an
+  evaluation through a channel separate from the opaque `investigate` callback,
+  so a callback reporting its own spend is ignored and the generic path
+  publishes none rather than an unverified number. see
+  `test/benchmark-resource-evidence.test.mjs` › "publishes no resource evidence
+  for an opaque investigate callback, even when the callback reports some"
+- **`retryCount` is a structural zero, not a measurement.** `Trial.attempt` is
+  written as `1` by every producer and no retry path exists, so counting
+  truthfully counts none. It is published as an axis reading zero rather than
+  omitted — the same treatment `declaredLlmCallsUsed` gets while no LLM
+  executes. see `test/benchmark-resource-evidence.test.mjs` › "reports
+  retryCount as a structural zero because no producer raises a trial attempt"
+
+Outbound, resource evidence is projected through the same exact allowlist as run
+metadata and reaches LangSmith as `outputs.resources`, one key per dimension.
+Absent evidence is accepted — that is what every v0.1 record looks like — while a
+**present** object at an unknown schema version, or missing a declared
+dimension, is refused before the run is created. A silently dropped axis would
+read downstream as "spent nothing on that axis", which is the one reading that
+must never be manufactured.
+
 Persisted v0.1 records remain readable without behavior-evaluator fields. A
 v0.2 behavior-evaluator payload declares `evaluatorVersion` and
 `behaviorMetrics` together; partial or unknown-version payloads fail loudly.
