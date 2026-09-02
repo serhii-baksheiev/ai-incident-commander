@@ -10,8 +10,15 @@ journal records history; the queues state only what is next.
 
 ## Agent queue
 
-<!-- Tasks an agent may pick up autonomously (Tier 0/1 — see
-     .claude/rules/autonomy.md). One line each, e.g.:
+**This queue is no longer the agent's source of work.** `.claude/queue.json`
+names the `jira` adapter on project `AIC`, so the `loop` skill selects from Jira
+issues and never reads the list below. Two things follow: a line added here is
+picked up by nothing, and a Jira ticket is what an agent can actually claim —
+only the Jira adapter writes the durable `workflowClaim` that the revalidation
+chain needs, which `plan-md` cannot do at all.
+
+<!-- Kept as the fallback the adapter would read if queue.json named plan-md
+     again. One line each, e.g.:
 - add a GET /notes/:id route through every layer (TDD)
 -->
 
