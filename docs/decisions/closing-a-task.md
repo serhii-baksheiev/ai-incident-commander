@@ -94,15 +94,20 @@ copy inside the rulebook's fenced code blocks is covered by a second sweep over
 those blocks. Both live in the generator that produced this project, not here —
 if you change the command above, that is the pair to re-check.
 
-## The shape the dangerous one has
+## The shape the dangerous ones have
 
 `-z` was the first one that never announced itself: it returned a plausible answer — a
 tier of `normal` — and a plausible answer is what a run acts on, with nothing
 left behind to say it was never measured.
 
+`ticket` is the second, and it is silent in a narrower way: an id that is
+well-formed but belongs to another item excludes THAT item's record, and nothing
+in the call can tell. An id the module cannot recognise is reported back, so only
+the well-formed wrong id is quiet.
+
 The others are pinned because they are cheap to keep and expensive to
-rediscover, not because they all failed the same way. Reading the list as five
-silent bypasses is how the one that really is silent stops standing out.
+rediscover, not because they all failed the same way. Reading the list as six
+silent bypasses is how the two that really are silent stop standing out.
 
 The empty-file-list case is the deliberate counter-example: `recordCompletedTier`
 **throws** rather than guessing `normal`, because an absence and a zero look

@@ -151,7 +151,12 @@ test('records a conservative tier for an id it cannot recognise, and never leave
   // value as "go ahead", so the guard failed open on exactly the elevated closes
   // it exists to ration. Refusing by discarding the tier is more permissive than
   // not refusing at all.
-  for (const bad of ['../../etc', '.rig/claims/x', 'AIC 70', '', 'a/b']) {
+  // The object is not decoration: without the `typeof ticket === 'string'` guard
+  // it passes the regex through coercion and could be re-read differently when
+  // the path is built. Nothing exploitable follows from that here — the string
+  // always begins `.rig/claims/` and is only compared — but an untested guard is
+  // a guess, and this is the case that holds it.
+  for (const bad of ['../../etc', '.rig/claims/x', 'AIC 70', '', 'a/b', { toString: () => 'AIC-70' }]) {
     const { tier, written, ticketIgnored } = close(
       [...ORDINARY_WORK, '.claude/hooks/guard-bash.mjs', '.rig/claims/AIC-70.json'],
       bad,

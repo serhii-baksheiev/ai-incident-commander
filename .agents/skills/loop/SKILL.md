@@ -1001,7 +1001,9 @@ three poisons the only channel by which this project learns.
     nothing here can catch it — the caller owns which item it is closing. An id
     the module cannot recognise applies no exclusion at all, records the tier it
     would have recorded before AIC-70, and names the id back to you as
-    `ticketIgnored`; omitting `ticket` does the same without the report.
+    `ticketIgnored`; omitting `ticket` does the same without the report. Read
+    that field with `'ticketIgnored' in result` — an empty string and `0` are
+    ids it reports, and both are falsy.
 
   🔴 Two of them fail **silently and permissively**. `-z`: a quoted path records
   `normal` for an elevated change rather than refusing. `ticket`: an id that is

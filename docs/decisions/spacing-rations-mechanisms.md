@@ -65,7 +65,20 @@ value keeps naming the claim record, because that answers the gate sweep's
 question — what did this change cross — and a close that stopped listing it
 would look clean to the check built to catch merges across elevated paths. The
 two answers differ on purpose, and `test/queue-tier-spacing.test.mjs` pins both
-sides, plus the refusal of a ticket id that is not one (the id builds a path).
+sides, plus what an unrecognised ticket id does: no exclusion, the tier this
+close would have recorded before AIC-70, and the id named back as
+`ticketIgnored`. It does **not** throw — the id builds a path, so it is checked,
+but a refusal that discarded the tier would leave the ration unwritten and so be
+more permissive than not checking at all.
+
+**A second effect, measured and easy to miss.** Dropping the claim record does
+not only move closes from `elevated-mechanism` to `normal`. It also revives
+`elevated-prose`, which was unreachable while every diff carried a `.json`
+record: `['pkg/a.ts', '.rig/claims/<ticket>.json', '.claude/rules/x.md']` records
+`elevated-prose` here where `origin/main` records `elevated-mechanism`. Both
+clear the ration, so the ration's answer is unchanged — but the recorded tier is
+different, and a reader of the journal should know why the word appears now and
+did not before.
 
 ⚠ **"Elevated path" is the sweep's answer, not the diff's.** `elevatedPathsIn`
 drops inert paths *before* this classification runs, and a non-rulebook `.md` is
