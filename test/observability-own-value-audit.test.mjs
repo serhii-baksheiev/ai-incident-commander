@@ -1116,148 +1116,74 @@ function layerSources(directory = auditedLayer) {
 }
 
 /**
- * The layer's export surface, found by a walk that knows almost nothing.
+ * Every callable a caller can reach from this layer, taken from the BUILT
+ * module rather than from its text.
  *
- * 🔴 **This is the check that makes the seeding answerable to the file.** The
- * seeding above knows a LIST of spellings — `export function`, an export clause,
- * a method written inline in an exported object. A list is a guess, and AIC-82
- * spent three review rounds proving it: each round closed the spellings it knew
- * and the next round found another one that reached a caller with the suite
- * green. The lesson was not "write a longer list". It was that nothing tied the
- * walker's idea of an entry point to what the file actually exports.
+ * 🔴 **Why this is a runtime list and not another AST walk.** AIC-82 spent five
+ * review rounds trying to decide, from the source text, which callables a caller
+ * can reach. Each attempt closed the export spellings it knew and the next round
+ * measured another one reaching a caller with the suite green; the last attempt
+ * added a walk that resolved names with a flat, unscoped map, so an unrelated
+ * local sharing a name silently redirected it, and reading the callee of a call
+ * made it report module-local helpers as exported. Deciding this from syntax
+ * needs scope-aware name resolution — a type checker — which is the wrong price
+ * for a test.
  *
- * So this walk deliberately does NOT share the seeding's vocabulary. It knows
- * three things:
+ * The built module already knows the answer exactly. `export { f }`, a barrel, a
+ * spread, a frozen object, a factory's return, `export default` — every spelling
+ * collapses to the same thing once the module has run: a value on the namespace
+ * object. So this asks the module.
  *
- *   - a function is an ANSWER, never a container — it is recorded and not
- *     descended into, so a callback written inside an exported function is not
- *     claimed here (that is propagation, which the probe covers);
- *   - a name resolves to whatever it was declared with, callable or not, and if
- *     it resolves to nothing the walk keeps going through the node's children;
- *   - everything else is just children to walk.
+ * What it buys is narrow and worth stating exactly: it does NOT prove a callable
+ * is seeded. It proves the SET has not changed. A new export in any spelling
+ * turns this red, and the person who added it then has to decide, deliberately,
+ * whether the seeding above reaches it — which is the decision that was being
+ * made silently and wrongly.
  *
- * That last clause is the whole point, and it is where the previous attempt
- * failed: it returned when a name did not resolve to a *function*, so a barrel
- * behind one indirection was invisible to the check meant to catch exactly that.
- * Falling through means a spelling nobody anticipated still surfaces the
- * callable inside it.
- *
- * ⚠ **What it does not find, stated because a check like this invites more
- * confidence than it earns:** a callable this file produces by RUNNING rather
- * than writes down — returned by a call or installed onto an object after the
- * declaration. Those are in the blind-spot list at the top of this file, with
- * the measurements behind them.
- *
- * ⚠ **A red here is not necessarily a bug in the layer.** It says the file
- * exports a callable the seeding does not hand caller data to, so the audit is
- * blind to every read inside it. The fix is to seed that form — or, if the form
- * genuinely cannot be seeded, to say so in the blind-spot list above and exempt
- * it here, with the reason.
- *
- * It runs on the audited file ALONE, without the probe: the probe deliberately
- * contains forms this walker is not asked to seed, and the question here is
- * about the layer, not about the fixture.
+ * ⚠ It reads `dist`, so it is only as fresh as the last build. `npm run check`
+ * builds before it tests; a bare `node --test` after an unbuilt edit measures
+ * the previous build. The same is already true of this layer's other suites.
  */
-const exportedCallables = (sourceFile) => {
-  const found = new Set();
-  const values = new Map();
-  const clauseNames = new Set();
-  eachNode(sourceFile, (node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined
-    ) {
-      values.set(node.name.text, node.initializer);
-    }
-    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
-      values.set(node.name.text, node);
-    }
-    if (ts.isClassDeclaration(node) && node.name !== undefined) {
-      values.set(node.name.text, node);
-    }
-    if (!ts.isExportDeclaration(node) || node.moduleSpecifier !== undefined) return;
-    if (node.isTypeOnly) return;
-    const clause = node.exportClause;
-    if (clause === undefined || !ts.isNamedExports(clause)) return;
-    for (const specifier of clause.elements) {
-      if (specifier.isTypeOnly) continue;
-      clauseNames.add((specifier.propertyName ?? specifier.name).text);
-    }
-  });
+const EXPECTED_REACHABLE_CALLABLES = [
+  'createLangSmithClient',
+  'persistBenchmarkExperiment',
+  'persistBenchmarkExperiments',
+  'resolveTracingConfig',
+];
 
-  // Bounded: `seen` is node identity over an acyclic tree, and the visit cap
-  // stops a pathological file rather than this walk running long. Both bounds
-  // err toward finding FEWER callables, which can only make this check quieter —
-  // never louder — so neither can turn an honest file red.
-  const VISIT_CAP = 4000;
-  const collect = (value, seen) => {
-    if (value === undefined || seen.has(value) || seen.size > VISIT_CAP) return;
+const reachableCallables = async () => {
+  const layer = await import('../packages/observability/dist/index.js');
+  const found = [];
+  const seen = new Set();
+  // Bounded: depth-capped and cycle-guarded. Both bounds find FEWER callables,
+  // so neither can turn an honest layer red.
+  const visit = (value, path, depth) => {
+    if (depth > 4 || value === null) return;
+    const kind = typeof value;
+    if (kind === 'function') {
+      found.push(path);
+      return;
+    }
+    if (kind !== 'object' || seen.has(value)) return;
     seen.add(value);
-    if (
-      isFunctionLike(value) ||
-      ts.isConstructorDeclaration(value) ||
-      ts.isFunctionDeclaration(value)
-    ) {
-      found.add(value);
-      return;
+    for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`, depth + 1);
+    if (value instanceof Map) {
+      for (const [key, child] of value) visit(child, `${path}[${String(key)}]`, depth + 1);
     }
-    if (ts.isIdentifier(value)) {
-      const resolved = values.get(value.text);
-      if (resolved !== undefined) collect(resolved, seen);
-      return;
+    if (value instanceof Set) {
+      let index = 0;
+      for (const child of value) visit(child, `${path}[${index++}]`, depth + 1);
     }
-    // A function passed AS an argument is a callback, not an entry point:
-    // `rows.map((row) => row.name)` puts nothing within a caller's reach, and
-    // claiming it here would make this check fire on ordinary module-local
-    // code — which is how the previous attempt at this became noise. Every
-    // OTHER argument is still walked, because a container can carry callables:
-    // that is what keeps `Object.freeze({ … })` and `new Map([[k, fn]])`
-    // visible.
-    if (ts.isCallExpression(value) || ts.isNewExpression(value)) {
-      collect(value.expression, seen);
-      for (const argument of value.arguments ?? []) {
-        if (isFunctionLike(argument)) continue;
-        collect(argument, seen);
-      }
-      return;
-    }
-    value.forEachChild((child) => collect(child, seen));
   };
-
-  const named = (node) =>
-    node.name !== undefined && ts.isIdentifier(node.name) && clauseNames.has(node.name.text);
-
-  eachNode(sourceFile, (node) => {
-    if (ts.isFunctionDeclaration(node) && (isExported(node) || named(node))) {
-      found.add(node);
-      return;
-    }
-    if (
-      (ts.isVariableDeclaration(node) || ts.isClassDeclaration(node)) &&
-      (isExported(node) || named(node))
-    ) {
-      collect(ts.isVariableDeclaration(node) ? node.initializer : node, new Set());
-      return;
-    }
-    if (ts.isExportAssignment(node) && node.isExportEquals !== true) {
-      collect(node.expression, new Set());
-    }
-  });
-  return found;
+  for (const [name, value] of Object.entries(layer)) visit(value, name, 0);
+  return found.sort();
 };
 
-test('hands caller data to every callable the layer exports', () => {
-  const sourceFile = parse(auditedSource);
-  const { seededFunctions } = analyse(sourceFile);
-  const blind = [...exportedCallables(sourceFile)]
-    .filter((fn) => fn.parameters.length > 0 && !seededFunctions.has(fn))
-    .map((fn) => `${position(sourceFile, fn).line}: ${oneLine(fn.getText(sourceFile).slice(0, 70))}`);
-
+test('reaches no callable this audit was not told about', async () => {
   assert.deepEqual(
-    blind,
-    [],
-    `this layer exports a callable the seeding hands no caller data to, so every read inside it is judged clean and this audit is blind to it.\nThe seeding knows a list of spellings; this check knows the file. Three review rounds of AIC-82 were spent on the gap between the two.\nSeed the form, or declare it in the blind-spot list at the top of this file and exempt it here with the reason. Do not delete the assertion.\n\n${blind.join('\n')}`,
+    await reachableCallables(),
+    EXPECTED_REACHABLE_CALLABLES,
+    'the set of callables a caller can reach from this layer changed.\nThat is not a failure by itself — it is the moment to decide something that used to be decided silently: does the seeding above hand caller data to the new one?\nIf it does, add the name here. If it does not, seed the form it is written in, or declare it in the blind-spot list at the top of this file with the reason.\nAIC-82 exists because a callable arrived through a spelling the seeding did not know, and every read inside it was judged clean.',
   );
 });
 
