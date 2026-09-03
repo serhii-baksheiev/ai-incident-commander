@@ -164,6 +164,11 @@ const DECLARED_EXEMPTIONS = [
     why: 'the descriptor is freshly built by Object.getOwnPropertyDescriptor, so `value` is its own property and the chain was already refused one line up',
   },
   {
+    fn: 'ownClient',
+    expression: 'descriptor.value',
+    why: 'the same freshly built descriptor as in ownValue above, and for the same reason — this one reads it after Object.hasOwn has refused an accessor, which is the distinction the caller needs',
+  },
+  {
     fn: 'persistBenchmarkExperiments',
     expression: 'datasetName.length',
     why: 'a string primitive: `length` resolves on String.prototype, which is not the polluted surface',

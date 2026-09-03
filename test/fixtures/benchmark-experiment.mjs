@@ -235,27 +235,42 @@ export function replayBackedNodes(record, traces, replayCounts) {
  * A LangSmith persistence client that records what crossed the boundary instead
  * of sending it, so a test can assert on the PUBLISHED record — the runs and the
  * feedback — rather than on the projection's internals.
+ *
+ * `calls` is the whole boundary in order, one entry per method invocation, and
+ * it exists for the assertion `runs` and `feedback` cannot make: that NOTHING
+ * was sent. A refusal that happens after `createDataset` and `createProject`
+ * have already fired is not a refusal — the dataset and the project are created
+ * under the attacker's names either way — so a test about a record that must
+ * never reach the boundary asserts on `calls`, and a test about what a published
+ * record CARRIES asserts on `runs` and `feedback`.
  */
 export function capturingClient() {
   const runs = [];
   const feedback = [];
+  const calls = [];
   return {
     runs,
     feedback,
+    calls,
     client: {
-      async createDataset() {
+      async createDataset(datasetName) {
+        calls.push({ method: 'createDataset', payload: datasetName });
         return { id: 'resource-dataset-id' };
       },
       async createExamples(examples) {
+        calls.push({ method: 'createExamples', payload: examples });
         return examples.map(({ id }) => ({ id }));
       },
-      async createProject() {
+      async createProject(project) {
+        calls.push({ method: 'createProject', payload: project });
         return { id: 'resource-project-id' };
       },
       async createRun(run) {
+        calls.push({ method: 'createRun', payload: run });
         runs.push(run);
       },
       async createFeedback(payload) {
+        calls.push({ method: 'createFeedback', payload });
         feedback.push(payload);
         return {};
       },

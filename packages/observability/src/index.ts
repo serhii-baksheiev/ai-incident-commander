@@ -806,6 +806,38 @@ async function persistPreparedExperiment({
  * in this layer wherever it pointed. Keep the reads own if you change this
  * signature; the audit will tell you if you do not.
  */
+/**
+ * The caller's client, or `undefined` when they supplied none.
+ *
+ * Three answers, not two, and collapsing them is how this got wrong twice:
+ *
+ *   - **absent** — no own `client` at all: fall back to the real one.
+ *   - **present and `undefined`** — `{ client: undefined }`, which is what
+ *     forwarding an optional (`client: options.client`) spells under this
+ *     repository's compiler settings. An own data property, and a caller who
+ *     wrote it meant "use the default", so it falls back too.
+ *   - **present and unreadable** — an accessor. `ownValue` refuses accessors,
+ *     so reading it alone would send a caller who passed a lazily-built client
+ *     to the LIVE workspace instead of to theirs. It is refused, because this
+ *     file's rule is that a present field which cannot be read is refused
+ *     rather than defaulted.
+ *
+ * 🔴 It is shared by both entry points deliberately. The first version guarded
+ * only the plural one, and every caller in this repository uses the singular —
+ * so the refusal sat on the path nobody takes while the path everybody takes
+ * kept the behaviour it was meant to close. A `security-scanner` probe found it
+ * by making a real outbound call to the live workspace.
+ */
+function ownClient(options: unknown): LangSmithPersistenceClient | undefined {
+  if (typeof options !== 'object' || options === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(options, 'client');
+  if (descriptor === undefined) return undefined;
+  if (!Object.hasOwn(descriptor, 'value')) {
+    throw new Error('persist options carry a client that is not an own data property');
+  }
+  return descriptor.value as LangSmithPersistenceClient | undefined;
+}
+
 export async function persistBenchmarkExperiments(
   options: Readonly<{
     client?: LangSmithPersistenceClient;
@@ -819,21 +851,7 @@ export async function persistBenchmarkExperiments(
   // suppressed the default and sent every outbound call in this layer wherever
   // it pointed — dataset, examples, runs and every feedback, ground truth
   // included, with no own `client` key anywhere on the object.
-  // Absent and present-but-unreadable are different answers. `ownValue` refuses
-  // an accessor as well as an inherited value, so reading it alone would send a
-  // caller who passed a getter to the LIVE workspace instead of to their client
-  // — silently, and against this file's own rule that a present field which
-  // cannot be read is refused rather than defaulted.
-  const suppliedClient = Object.hasOwn(options, 'client')
-    ? ownValue(options, 'client')
-    : undefined;
-  if (Object.hasOwn(options, 'client') && suppliedClient === undefined) {
-    throw new Error('persist options carry a client that is not an own data property');
-  }
-  const client =
-    suppliedClient === undefined
-      ? createLangSmithClient()
-      : (suppliedClient as LangSmithPersistenceClient);
+  const client = ownClient(options) ?? createLangSmithClient();
   const datasetName = requireOwnString(options, 'datasetName', 'persist options');
   const rawExperiments = requireOwnArray(options, 'experiments', 'persist options');
 
@@ -890,7 +908,7 @@ export async function persistBenchmarkExperiment(
     experiment: PersistedBenchmarkExperiment;
   }>,
 ): Promise<void> {
-  const suppliedClient = ownValue(options, 'client');
+  const suppliedClient = ownClient(options);
   const experiment = ownValue(options, 'experiment');
   if (experiment === undefined) {
     throw new Error('persist options must carry its own experiment');
