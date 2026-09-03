@@ -487,14 +487,6 @@ function analyse(sourceFile) {
   const returns = new Map();
   /** parameter/variable node → descriptor of the OBJECT it destructures */
   const patternSources = new Map();
-  /**
-   * Every function node the seeding handed caller data to.
-   *
-   * Read by › "hands caller data to every callable the layer exports", which is
-   * the check that makes the seeding answerable to the file instead of to a
-   * list of spellings. See that test for why it exists.
-   */
-  const seededFunctions = new Set();
   let changed = true;
 
   const scopeOf = (node) => {
@@ -786,7 +778,6 @@ function analyse(sourceFile) {
     // only the first meant a style refactor silently emptied this audit.
     eachNode(sourceFile, (node) => {
       const seed = (fn) => {
-        seededFunctions.add(fn);
         for (const parameter of fn.parameters) {
           handToParameter(parameter, fn, callerData());
         }
@@ -1005,7 +996,7 @@ function analyse(sourceFile) {
     );
   }
 
-  return { taintOf, patternSources, seededFunctions };
+  return { taintOf, patternSources };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1152,9 +1143,22 @@ function layerSources(directory = auditedLayer) {
  * made silently and wrongly.
  *
  * ⚠ It reads `dist`, so it is only as fresh as the last build. `npm run check`
- * builds before it tests; a bare `node --test` after an unbuilt edit measures
- * the previous build. The same is already true of this layer's other suites.
+ * builds before it tests, and CI builds before it tests, so the stale window
+ * belongs to someone running this file directly. ⚠ This is the FIRST in-process
+ * import of the observability layer into the test runner — the suites that
+ * depend on a build spawn `apps/cli/dist` as a child process instead — so it is
+ * also the first time `langsmith` is loaded here. Measured at import: no network
+ * call and no credential-shaped environment read, because the client is
+ * referenced and never constructed.
  */
+const EXPECTED_EXPORT_NAMES = [
+  'OBSERVABILITY_LAYER',
+  'createLangSmithClient',
+  'persistBenchmarkExperiment',
+  'persistBenchmarkExperiments',
+  'resolveTracingConfig',
+];
+
 const EXPECTED_REACHABLE_CALLABLES = [
   'createLangSmithClient',
   'persistBenchmarkExperiment',
@@ -1166,8 +1170,11 @@ const reachableCallables = async () => {
   const layer = await import('../packages/observability/dist/index.js');
   const found = [];
   const seen = new Set();
-  // Bounded: depth-capped and cycle-guarded. Both bounds find FEWER callables,
-  // so neither can turn an honest layer red.
+  // Bounded: depth-capped and cycle-guarded. ⚠ Both bounds find FEWER callables
+  // than the layer really holds, and against the exact-set comparison below that
+  // is not harmless in either direction — it is why the export NAMES are
+  // asserted separately above, and why the depth cap is named in the blind-spot
+  // list rather than treated as a detail.
   const visit = (value, path, depth) => {
     if (depth > 4 || value === null) return;
     const kind = typeof value;
@@ -1191,6 +1198,21 @@ const reachableCallables = async () => {
 };
 
 test('reaches no callable this audit was not told about', async () => {
+  // 🔴 The NAMES are asserted as well as the callables, and that is not
+  // belt-and-braces. The callable walk records only functions, so an export
+  // whose callables sit deeper than the depth cap, or behind a
+  // non-enumerable property, contributes NO entry — and an exact-set
+  // comparison of callables alone stays green while a caller reaches
+  // `deep.a.b.c.d.persist`. Measured, on this layer, before this line existed.
+  // Comparing the names closes both: a new export is red whatever it holds,
+  // which is the property the header claims.
+  const layer = await import('../packages/observability/dist/index.js');
+  assert.deepEqual(
+    Object.keys(layer).sort(),
+    EXPECTED_EXPORT_NAMES,
+    'this layer exports a name this audit was not told about.\nAdd it here only once you have decided the question this test exists to force: does the seeding hand caller data to whatever callable it puts within a caller\'s reach?\nA callable can hide from the reachability walk below — too deep, or non-enumerable — so the name list is the half that cannot be slipped past.',
+  );
+
   assert.deepEqual(
     await reachableCallables(),
     EXPECTED_REACHABLE_CALLABLES,
