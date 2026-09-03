@@ -159,15 +159,16 @@
  *     caller data from nothing and reads nothing. Methods of an exported class,
  *     and of an exported object literal, are covered — they are seeded directly
  *     rather than reached.
- *   - a callable this file PRODUCES by running rather than writes down. Both
- *     halves of that are measured and both are silent in the export-surface
- *     check as well as in the seeding: a callable handed back by a call
- *     (`export const api = makeApi()`, a curried arrow, a getter returning one),
- *     and a callable installed after the declaration (`Object.assign(api, …)`,
- *     `api.m = …`). The walk reads a value; it does not execute one. A callable
- *     WRITTEN into an exported value is found however deep or indirect it sits —
- *     that is what › "hands caller data to every callable the layer exports"
- *     covers.
+ *   - an exported callable the SEEDING does not reach. The seeding knows the
+ *     forms named `exported-*` in `WALKER_CAPABILITIES` and no others, so a
+ *     barrel, a spread, a frozen object, a factory's return or a getter puts a
+ *     callable within a caller's reach whose body this audit does not judge.
+ *     ⚠ This is a gap in what is AUDITED, and it is no longer a SILENT one:
+ *     › "reaches no callable this audit was not told about" turns red the moment
+ *     such a callable appears, so the choice — seed the form, or accept and
+ *     record that its body is unaudited — has to be made out loud. That test is
+ *     the reason this bullet is a stated limit rather than the defect AIC-82 was
+ *     filed about.
  *   - a read performed BY a helper rather than by this file. `Reflect.get(o, k)`
  *     walks the prototype chain inside the call, and there is no property access
  *     here to report. What the walker does instead is refuse to launder: the
@@ -1446,6 +1447,8 @@ export const auditTeethExportedObject = {
   auditTeethObjectMethod(opts: Readonly<Record<string, unknown>>): unknown {
     return opts.plantedOnAnExportedObjectMethod;
   },
+  auditTeethObjectArrow: (opts: Readonly<Record<string, unknown>>): unknown =>
+    opts.plantedOnAnExportedObjectArrow,
 };
 
 export function auditTeethInlineCalleeProbe(
@@ -1481,6 +1484,7 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethExportListProbe',
   'auditTeethAliasedArrow',
   'auditTeethObjectMethod',
+  'auditTeethObjectArrow',
   'auditTeethInlineCalleeProbe',
 ]);
 
@@ -1509,6 +1513,7 @@ const WALKER_CAPABILITIES = [
   'exported-via-export-list',
   'exported-via-aliased-export-list',
   'exported-object-literal-method',
+  'exported-object-literal-arrow',
   'inline-callee-parameters',
   'destructured-parameter',
   'argument-to-parameter',
@@ -1605,6 +1610,10 @@ const EXPECTED_PROBE_REPORTS = [
   {
     expression: 'opts.plantedOnAnExportedObjectMethod',
     pins: ['exported-object-literal-method'],
+  },
+  {
+    expression: 'opts.plantedOnAnExportedObjectArrow',
+    pins: ['exported-object-literal-arrow'],
   },
   {
     expression: 'inner.plantedInAnInlineCallee',
