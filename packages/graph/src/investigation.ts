@@ -500,6 +500,24 @@ function preserveGraphOwnedControl(
     const current = (state as InvestigationGraphState).control;
     assertPersistedStateVersion(current);
     assertLogicalBudgetCounters(current);
+    // The third assertion earns its place on ONE input shape, and it is worth
+    // naming precisely because AIC-76 removed the other one: a malformed count
+    // now dies at the `kind: 'start'` boundary, so what still reaches here is a
+    // well-formed `challengeRounds` above `MAX_CHALLENGE_ROUNDS` — a cap no
+    // domain schema expresses, because the graph is what spends the rounds.
+    // Without this call such a state runs nine lifecycle nodes before
+    // `termination_check` refuses it. see investigation-graph.test.mjs ›
+    // "refuses a round count past the cap on entry to the first node, not nine
+    // nodes in"
+    //
+    // ⚠ It moved coverage rather than only adding it, and that is stated
+    // because nothing else would say so. `terminationCheck` makes the same call
+    // and, with this one in front of it, no test in the suite fails when that
+    // one is deleted — measured. It is kept as defence for a node added to this
+    // graph WITHOUT the wrapper, which is the case it was written for and the
+    // case this call cannot cover; it is no longer a checked guard, and a reader
+    // should not count it as one.
+    assertChallengeCounters(current);
 
     const protectedControl = {
       ...pickGraphOwnedControl(current),
