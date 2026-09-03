@@ -13,16 +13,21 @@
  * or supply an identity field the run never declared.
  *
  * The alternative — a hand-written prose inventory of the reads — was attempted
- * four times in AIC-67 and produced four different wrong subsets. So the
- * inventory is COMPUTED here, from the file's AST, every run.
+ * repeatedly in AIC-67, and each draft was a different wrong subset until the
+ * enumeration was deleted rather than repaired again (see `journal/2026-09.md`,
+ * the AIC-67 entry). So the inventory is COMPUTED here, from the file's AST,
+ * every run.
  *
  * ## Why an AST and not a regex
  *
- * Two functions in that file open with syntactically identical
- * object-binding-pattern parameters. One is honest — the file itself builds the
- * object passed to it — and one was the hazard, because an exported function's
- * options object comes from the caller and destructuring it is three `[[Get]]`s.
- * Only *who supplies the object* separates them, and no regex can see that.
+ * At the commit this audit was written against, two functions in that file
+ * opened with syntactically identical object-binding-pattern parameters. One
+ * was honest — the file itself builds the object passed to it — and one was the
+ * hazard, because an exported function's options object comes from the caller
+ * and destructuring it is three `[[Get]]`s. Only *who supplies the object*
+ * separated them, and no regex can see that. The hardening removed the hazardous
+ * one, so only the honest shape survives today; the argument for an AST is
+ * unchanged, because the next such pair would be written the same way.
  * `typescript` is already a devDependency; this test parses with it and adds no
  * dependency.
  *
@@ -61,8 +66,11 @@
  *
  * ## The coarsenings, stated rather than implied
  *
- * Each errs toward reporting MORE, and the cost of a false positive is one
- * exemption entry with a reason:
+ * They do not all err the same way, and pretending otherwise would be the exact
+ * defect this file exists to end. 1 and 4 err toward reporting MORE, where the
+ * cost is one exemption entry with a reason. 2, 3 and 5 SUPPRESS reports: they
+ * are places this audit is silent, not places it is noisy, and a green run says
+ * nothing about them:
  *
  *   1. **Scopes are per function, not per block.** A name declared twice in one
  *      function is one binding here.
@@ -71,7 +79,10 @@
  *      demanding an own read there would break the honest client. Data reads
  *      are the hazard; method resolution is not.
  *   3. **Array destructuring is not audited.** `for (const [i, r] of …)` goes
- *      through the iterator protocol, which `Object.prototype` cannot supply.
+ *      through the iterator protocol. That is not itself a defence — a polluted
+ *      `Object.prototype[Symbol.iterator]` makes any plain object iterable — but
+ *      the destructured values in this file come from `Array.prototype.entries`,
+ *      which yields real arrays. Audit it if that stops being true.
  *   4. **Array elements are one descriptor, not one per index.** Everything an
  *      array is known to hold is joined, so a single caller value in it makes
  *      every read of every element a read of caller data. `push` and `unshift`
@@ -83,12 +94,14 @@
  * ⚠ Two blind spots no audit of this file's text can close, stated here so no
  * reader infers cover that is not there:
  *
- *   - `experiments.slice(1)` performs a per-index `[[Get]]` on the caller's
- *     array INSIDE `Array.prototype.slice`. That read is not in this file, so
- *     nothing below sees it.
- *   - a function reached only through a value — a callback stored in a variable,
- *     a method table — is not resolved to its declaration, so caller data does
- *     not follow it.
+ *   - a built-in that reads a caller array element for you — `slice`, `at`,
+ *     `flat` — performs the `[[Get]]` INSIDE `Array.prototype`, where nothing
+ *     below can see it. No instance of that survives in the file today: the one
+ *     `slice` left runs on a freshly built local array.
+ *   - a function reached through a PARAMETER, an object property or a reassigned
+ *     binding is not resolved to its declaration, so caller data does not follow
+ *     it. A `const`-bound arrow IS resolved — that is what makes the `own` alias
+ *     in `requireResourceEvidence` a non-event rather than a false positive.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -539,7 +552,14 @@ function analyse(sourceFile) {
     }
   };
 
-  for (let round = 0; round < 24 && changed; round += 1) {
+  // The round cap is a safety net, not the termination argument — the finite
+  // lattice is (see coarsening 5). It is asserted rather than trusted: a file
+  // that has not converged when the cap is reached has UNDER-propagated taint,
+  // so the audit would report fewer violations and go quietly green. That is the
+  // one way this check dies without anything turning red.
+  const MAX_ROUNDS = 24;
+  let round = 0;
+  for (; round < MAX_ROUNDS && changed; round += 1) {
     changed = false;
 
     // Caller data enters here, and only here.
@@ -652,6 +672,12 @@ function analyse(sourceFile) {
       );
       record(returns, name, descriptor);
     }
+  }
+
+  if (changed) {
+    throw new Error(
+      `the taint fixpoint did not converge in ${MAX_ROUNDS} rounds. It is stopping short, which means it has propagated LESS than the file demands and this audit would report fewer violations than exist. Raise the cap only after establishing why the lattice grew.`,
+    );
   }
 
   return { taintOf, patternSources };
@@ -796,7 +822,7 @@ test('states a reason for every exemption it declares', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Four hazards and three honest twins, appended to the parsed TEXT only — the
+ * Five hazardous reads and three honest ones, appended to the parsed TEXT only — the
  * file on disk is never touched.
  *
  * Every precision rule the walker gained to stop reporting projections is a rule

@@ -442,10 +442,11 @@ function requireMetrics(
         throw new Error(`benchmark result metric has no score of its own: ${key}`);
       }
       // A FRESH pair, not the caller's object. Returning `metric` published
-      // whatever else the caller had hung on it, plus its prototype, straight
-      // into `outputs.metrics`; and the two reads below that used to take `key`
-      // and `score` off it again were plain `[[Get]]`s on caller data, checked
-      // here and read there.
+      // whatever OWN properties the caller had hung on it straight into
+      // `outputs.metrics` — inherited ones do not serialise, so the prototype
+      // itself never crossed the wire — and the two reads below that used to
+      // take `key` and `score` off it again were plain `[[Get]]`s on caller
+      // data, checked here and read there.
       return [key, { key, score }];
     }),
   ) as Record<
