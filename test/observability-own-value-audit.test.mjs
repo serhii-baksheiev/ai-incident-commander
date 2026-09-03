@@ -140,7 +140,7 @@
  *      caller-supplied data" red. It was the one coarsening with no planted read
  *      behind it, and a number nothing holds is a number that drifts down.
  *
- * ⚠ Five blind spots no audit of this file's text can close, stated here so no
+ * ⚠ The blind spots no audit of this file's text can close, stated here so no
  * reader infers cover that is not there:
  *
  *   - a built-in that reads a caller array element for you — `slice`, `at`,
@@ -159,6 +159,15 @@
  *     caller data from nothing and reads nothing. Methods of an exported class,
  *     and of an exported object literal, are covered — they are seeded directly
  *     rather than reached.
+ *   - a callable this file PRODUCES by running rather than writes down. Both
+ *     halves of that are measured and both are silent in the export-surface
+ *     check as well as in the seeding: a callable handed back by a call
+ *     (`export const api = makeApi()`, a curried arrow, a getter returning one),
+ *     and a callable installed after the declaration (`Object.assign(api, …)`,
+ *     `api.m = …`). The walk reads a value; it does not execute one. A callable
+ *     WRITTEN into an exported value is found however deep or indirect it sits —
+ *     that is what › "hands caller data to every callable the layer exports"
+ *     covers.
  *   - a read performed BY a helper rather than by this file. `Reflect.get(o, k)`
  *     walks the prototype chain inside the call, and there is no property access
  *     here to report. What the walker does instead is refuse to launder: the
@@ -1132,6 +1141,12 @@ function layerSources(directory = auditedLayer) {
  * behind one indirection was invisible to the check meant to catch exactly that.
  * Falling through means a spelling nobody anticipated still surfaces the
  * callable inside it.
+ *
+ * ⚠ **What it does not find, stated because a check like this invites more
+ * confidence than it earns:** a callable this file produces by RUNNING rather
+ * than writes down — returned by a call or installed onto an object after the
+ * declaration. Those are in the blind-spot list at the top of this file, with
+ * the measurements behind them.
  *
  * ⚠ **A red here is not necessarily a bug in the layer.** It says the file
  * exports a callable the seeding does not hand caller data to, so the audit is
