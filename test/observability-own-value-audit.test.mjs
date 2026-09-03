@@ -74,6 +74,10 @@
  *     carries a passthrough field — an `unknown` holding the caller's object —
  *     launders the container but not that field, so a later read THROUGH it is
  *     still reported.
+ *   - **A name takes caller data from an ASSIGNMENT as well as a
+ *     declaration.** `let x; x = caller;` reads exactly like `const x = caller`
+ *     from the next line on, and modelling only declarations let that two-line
+ *     detour launder — including `x ||= caller` and its two siblings.
  *   - **A container is only as laundered as what was put in it.**
  *     `Object.fromEntries` builds with CreateDataProperty exactly as a literal
  *     does, so the CONTAINER is fresh — but its values are the pairs it was
@@ -113,7 +117,7 @@
  *      caller-supplied data" red. It was the one coarsening with no planted read
  *      behind it, and a number nothing holds is a number that drifts down.
  *
- * ⚠ Four blind spots no audit of this file's text can close, stated here so no
+ * ⚠ Five blind spots no audit of this file's text can close, stated here so no
  * reader infers cover that is not there:
  *
  *   - a built-in that reads a caller array element for you — `slice`, `at`,
@@ -134,6 +138,11 @@
  *     RESULT of any helper it does not model carries caller data, so the next
  *     read off it IS reported — pinned below by
  *     `reflected.plantedBehindAnUnmodelledHelper`. The call itself stays silent.
+ *   - an assignment whose target is not a plain identifier. `o.field = caller`
+ *     and `[a] = caller` put caller data somewhere this walker does not follow,
+ *     so a later read of it is silent. An IDENTIFIER target is modelled, and
+ *     pinned below by `alias.plantedThroughAnAssignment` — this bullet is about
+ *     the two shapes beside it, not about assignment as such.
  */
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -271,6 +280,18 @@ function descriptorKey(descriptor, depth = 0) {
 /* -------------------------------------------------------------------------- */
 /* Syntax helpers                                                              */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The assignments that put a value into an existing name. A binding is not only
+ * what it was declared with: `let x; x = caller;` reads exactly like
+ * `const x = caller` from the next line onwards.
+ */
+const ASSIGNMENT_OPERATORS = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+]);
 
 /** `Object.*` helpers that hand back caller data (or a wrapper around it). */
 const OBJECT_HELPERS_RETURNING_CALLER_DATA = new Set([
@@ -565,9 +586,20 @@ function analyse(sourceFile) {
           // Anything else is unknown, and the unknown answer is "still caller
           // data" — `Object.freeze(caller)` hands back the same object, and a
           // helper this walker has not been taught must not launder by default.
+          //
+          // EVERY argument, not the first one. `Object.assign({}, caller)` is
+          // `{ ...caller }` written differently, with the caller in position
+          // two — reading only position one laundered it while the spelling one
+          // line away was reported, which is the shape of hole that makes an
+          // audit worth less than no audit.
+          const carried = expression.arguments.reduce(
+            (accumulated, argumentNode) =>
+              join(accumulated, taintOf(argumentNode, depth + 1)),
+            clean(),
+          );
           return {
-            self: argument.self || elementOf(argument).self,
-            fields: argument.fields,
+            self: carried.self || elementOf(carried).self,
+            fields: carried.fields,
           };
         }
         // A method called ON caller data hands back caller data: `records.map`,
@@ -759,6 +791,29 @@ function analyse(sourceFile) {
     });
 
     eachNode(sourceFile, (node) => {
+      // `let alias;` carries no value yet, but it establishes WHERE the name
+      // lives, so the assignment below lands in the right scope rather than
+      // inventing a binding in the one that happens to contain the statement.
+      if (ts.isVariableDeclaration(node) && node.initializer === undefined) {
+        for (const bound of boundNames(node.name, [])) {
+          bind(scopeOf(node), bound, clean());
+        }
+        return;
+      }
+
+      // `alias = caller`. Modelling declarations alone meant a name was only
+      // ever what it was born with, and the two-line detour through an
+      // assignment read as clean for the rest of the function.
+      if (
+        ts.isBinaryExpression(node) &&
+        ASSIGNMENT_OPERATORS.has(node.operatorToken.kind) &&
+        ts.isIdentifier(node.left)
+      ) {
+        const scope = declaringScope(node.left, node.left.text) ?? scopeOf(node);
+        bind(scope, node.left.text, taintOf(node.right));
+        return;
+      }
+
       if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
         const descriptor = taintOf(node.initializer);
         const scope = scopeOf(node);
@@ -1055,6 +1110,23 @@ function auditTeethHonestSink(local: Readonly<{ plantedInAFreshLiteral: number }
   return local.plantedInAFreshLiteral;
 }
 
+export function auditTeethAssignmentProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  let alias;
+  alias = opts;
+  return alias.plantedThroughAnAssignment;
+}
+
+export function auditTeethCopyProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const merged = Object.assign({}, opts);
+  const created = Object.create(opts);
+  const spread = { ...opts };
+  return [
+    merged.plantedBehindObjectAssign,
+    created.plantedBehindObjectCreate,
+    spread.plantedBehindSpreadControl,
+  ];
+}
+
 export function auditTeethDepthProbe(supplied: unknown): unknown {
   const level6 = { raw: ownValue(supplied, 'deep') };
   const level5 = { nested: level6 };
@@ -1098,6 +1170,8 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethProjection',
   'auditTeethHonestSink',
   'auditTeethArraySink',
+  'auditTeethAssignmentProbe',
+  'auditTeethCopyProbe',
   'auditTeethDepthProbe',
   'auditTeethExportedArrow',
   'auditTeethMethod',
@@ -1110,6 +1184,10 @@ const EXPECTED_PROBE_REPORTS = [
   'projected.raw.plantedBehindTheProjection',
   'entry.raw.plantedBehindAnIteration',
   'first.raw.plantedBehindAnArray',
+  'alias.plantedThroughAnAssignment',
+  'merged.plantedBehindObjectAssign',
+  'created.plantedBehindObjectCreate',
+  'spread.plantedBehindSpreadControl',
   'level1.nested.nested.nested.nested.nested.raw.plantedSixLevelsDown',
   'opts.plantedOnAnExportedArrow',
   'opts.plantedOnAnExportedMethod',
