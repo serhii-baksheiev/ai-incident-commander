@@ -404,12 +404,15 @@ for (const counter of corruptPersistedCounters) {
  * boundary — but a `kind: 'resume'` takes its state from the checkpointer and
  * is never parsed by `IncidentStateSchema` at all, which is what these rows are
  * about. What refuses such a value here is the graph's own
- * `assertChallengeCounters`, called from `routeChallenge`, `terminationCheck`,
- * `challengeHypothesis` and — since these rows went green — `reviewConclusion`.
- * The first three read the counters to decide something; a `confirm` decides
- * nothing from them and reaches END without visiting any of the three, which is
- * why the corruption has to be planted on a checkpoint and resumed rather than
- * passed at start, and why `reviewConclusion` had to assert them itself.
+ * `assertChallengeCounters` — deliberately not enumerated by call site, because
+ * a hand-written list of sites in prose is the copy that goes stale, and this
+ * one did on the very next change to the set (AIC-75 added a fifth). `grep -n
+ * assertChallengeCounters packages/graph/src/investigation.ts` is the list.
+ *
+ * What matters here is not how many sites there are but which route reaches
+ * one. A `confirm` decides nothing from these counters and reaches END without
+ * entering another lifecycle node, so `reviewConclusion` asserting above
+ * `interrupt()` is the only thing standing on that route.
  *
  * Like the rows above, these hold the schema version at the CURRENT one: the
  * refusal has to name the counter rather than the version.
@@ -495,12 +498,26 @@ for (const counter of corruptPersistedChallengeCounters) {
 
 /**
  * The rows above all resume with `confirm`, which is the route the finding was
- * reported on. It is not the only route the refusal has to cover, and where the
- * assertion SITS is what decides that: above `interrupt()` and above the branch
- * on the decision, it refuses before the resumed run reads the decision at all.
- * Moved into the confirm branch it would still satisfy every row above, while a
- * reject went back to running a whole lifecycle cycle before anything refused
- * it. So the route is a dimension of its own here, not a detail of the fixture.
+ * reported on. It is not the only route the refusal has to cover, and these
+ * rows check the other two.
+ *
+ * ⚠ What these rows discriminate CHANGED under AIC-75, and saying so is the
+ * point of this paragraph. They were written to show that where
+ * `reviewConclusion`'s assertion sits is load-bearing: moved into the confirm
+ * branch it would satisfy every row above, while a `reject` went back to
+ * running a whole lifecycle cycle before anything refused it. That argument no
+ * longer holds. `reject` and `add_hypothesis` re-enter at `generate_hypotheses`
+ * and `derive_predictions`, both wrapped, and the wrapper now asserts these
+ * counters on entry — so these two rows stay green with `reviewConclusion`'s
+ * assertion deleted outright. Measured: deleting it reddens 8 tests here, and
+ * the two that went quiet are exactly these.
+ *
+ * They are kept, and not because deleting a test is unpleasant. What they pin
+ * is still true and still worth pinning — a corrupt counter is refused before
+ * another node runs, on every route a human can take — and `confirm` remains a
+ * route where `reviewConclusion` is the only guard. What they no longer prove
+ * on their own is the placement argument above, and a reader who took the old
+ * sentence at face value would over-trust them.
  */
 for (const { label, decision } of resumeDecisions) {
   test(`refuses a negative challenge round counter before a resumed ${label} executes another node`, async () => {

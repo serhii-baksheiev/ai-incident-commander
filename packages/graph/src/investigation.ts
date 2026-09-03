@@ -510,13 +510,17 @@ function preserveGraphOwnedControl(
     // "refuses a round count past the cap on entry to the first node, not nine
     // nodes in"
     //
-    // ⚠ It moved coverage rather than only adding it, and that is stated
-    // because nothing else would say so. `terminationCheck` makes the same call
-    // and, with this one in front of it, no test in the suite fails when that
-    // one is deleted — measured. It is kept as defence for a node added to this
-    // graph WITHOUT the wrapper, which is the case it was written for and the
-    // case this call cannot cover; it is no longer a checked guard, and a reader
-    // should not count it as one.
+    // ⚠ Which of this graph's calls to `assertChallengeCounters` are actually
+    // pinned, because the answer is not "all of them" and a reader would
+    // otherwise assume it. Deleting one call at a time and running the suite:
+    // `routeChallenge`, `terminationCheck` and `challengeHypothesis` redden
+    // NOTHING — they are mutually masking, and were so before this call
+    // existed. `reviewConclusion` and this call are the two that redden. That
+    // is what a layered fail-closed graph looks like under mutation, not a
+    // decayed guard: whichever layer you remove, the next one catches it. The
+    // three unpinned calls are kept because each sits immediately before a
+    // decision made FROM these counters, which is the strongest placement
+    // there is.
     assertChallengeCounters(current);
 
     const protectedControl = {
