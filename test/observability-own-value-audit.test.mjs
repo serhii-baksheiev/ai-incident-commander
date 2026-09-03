@@ -752,71 +752,143 @@ function analyse(sourceFile) {
   for (; round < MAX_ROUNDS && changed; round += 1) {
     changed = false;
 
-    // Caller data enters here, and only here — at every form the module can
-    // export a callable in, not at one of them. `export function f(o)` and
-    // `export const f = (o) => …` are the same surface to a caller, and seeding
-    // only the first meant a style refactor silently emptied this audit.
+    // Caller data enters here, and only here — at every callable the module
+    // puts within a caller's reach.
+    //
+    // 🔴 **This resolves a VALUE to the callables it carries; it does not
+    // enumerate spellings.** The difference is the whole finding of AIC-82's
+    // second gate round. A first version listed the shapes it knew — arrow,
+    // function expression, flat object literal, class declaration — and six
+    // more shapes reached a caller anyway. The nearest one was the ordinary way
+    // a barrel is written:
+    //
+    //     function persistRunV2(options) { return options.client; }  // unreported
+    //     export const persistenceV2 = { persistRunV2 };
+    //
+    // Measured: a new entry point in any of those spellings carrying the
+    // inherited-`client` read AIC-69 exists to close gave ZERO violations with
+    // the suite green, while the plain-function control was caught. A list of
+    // shapes is a guess that goes quietly green on the shape nobody listed;
+    // `seedValue` asks instead what the expression evaluates to.
+    //
+    // Bounded, and it has to be — a guard doing unbounded work is a guard whose
+    // throw resolves to "no violations found". `seen` stops `const a = b; const
+    // b = a;`, and the node budget stops depth. Exhausting the budget seeds
+    // FEWER callables, so it can only under-report — which is why the budget is
+    // set far above anything this layer produces and the convergence assertion
+    // below remains the thing that catches under-propagation.
+    const SEED_BUDGET = 200;
     eachNode(sourceFile, (node) => {
       const seed = (fn) => {
         for (const parameter of fn.parameters) {
           handToParameter(parameter, fn, callerData());
         }
       };
+
+      const seedValue = (value, seen, budget) => {
+        if (value === undefined || seen.has(value) || budget.spent >= SEED_BUDGET) return;
+        seen.add(value);
+        budget.spent += 1;
+
+        if (isFunctionLike(value) || ts.isConstructorDeclaration(value)) {
+          seed(value);
+          return;
+        }
+        if (ts.isFunctionDeclaration(value)) {
+          seed(value);
+          return;
+        }
+        // `export const api = { persistOne }` and `{ named: persistOne }` are
+        // the same surface as writing the method inline. Resolving the name
+        // through `functions` is what makes the shorthand barrel visible — and
+        // `functions` holds function DECLARATIONS as well as const-bound
+        // arrows, which is the half a first attempt at this missed: every
+        // synthetic probe passed on const-arrows while all four real restyles,
+        // which use declarations, stayed silent.
+        if (ts.isIdentifier(value)) {
+          seedValue(functions.get(value.text), seen, budget);
+          return;
+        }
+        if (ts.isObjectLiteralExpression(value)) {
+          for (const property of value.properties) {
+            if (isFunctionLike(property)) {
+              seed(property);
+              continue;
+            }
+            if (ts.isPropertyAssignment(property)) {
+              seedValue(property.initializer, seen, budget);
+              continue;
+            }
+            if (ts.isShorthandPropertyAssignment(property)) {
+              seedValue(functions.get(property.name.text), seen, budget);
+            }
+          }
+          return;
+        }
+        if (ts.isClassDeclaration(value) || ts.isClassExpression(value)) {
+          for (const member of value.members) {
+            if (isFunctionLike(member) || ts.isConstructorDeclaration(member)) {
+              seed(member);
+              continue;
+            }
+            if (ts.isPropertyDeclaration(member)) {
+              seedValue(member.initializer, seen, budget);
+            }
+          }
+          return;
+        }
+        if (ts.isArrayLiteralExpression(value)) {
+          for (const element of value.elements) seedValue(element, seen, budget);
+          return;
+        }
+        if (ts.isConditionalExpression(value)) {
+          seedValue(value.whenTrue, seen, budget);
+          seedValue(value.whenFalse, seen, budget);
+          return;
+        }
+        // `export const api = Object.freeze({ … })` — the idiomatic HARDENING
+        // spelling of an exported object was the one that blinded the audit.
+        // The callables are in the arguments, whatever the call does with them.
+        if (ts.isCallExpression(value)) {
+          for (const argument of value.arguments) seedValue(argument, seen, budget);
+          // `export const api = makeApi();` — a factory hands the callable back,
+          // and what the caller reaches is the RETURN, not the factory. The
+          // arguments above are what catches `Object.freeze({ … })`; this half
+          // is what catches the closure.
+          const called = unwrap(value.expression);
+          if (ts.isIdentifier(called)) {
+            const factory = functions.get(called.text);
+            if (factory !== undefined) {
+              for (const returned of returnedExpressions(factory)) {
+                seedValue(returned, seen, budget);
+              }
+            }
+          }
+          return;
+        }
+        if (ts.isParenthesizedExpression(value) || ts.isAsExpression(value)) {
+          seedValue(value.expression, seen, budget);
+        }
+      };
+
+      const enter = (value) => seedValue(value, new Set(), { spent: 0 });
+
       if (ts.isFunctionDeclaration(node) && isEntryPoint(node)) {
         seed(node);
         return;
       }
-      if (
-        ts.isVariableDeclaration(node) &&
-        isEntryPoint(node) &&
-        node.initializer !== undefined &&
-        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
-      ) {
-        seed(node.initializer);
-        return;
-      }
-      // An exported object literal is an entry point per callable it carries.
-      // `export const persistence = { async persistOne(options) { … } }` is the
-      // same surface to a caller as `export async function persistOne(options)`,
-      // and seeding only the second let a NEW entry point in this style carry an
-      // unprojected read with the whole audit green — which is the ADDITION case
-      // this file exists for, not a regression any behavioural test would catch.
-      if (
-        ts.isVariableDeclaration(node) &&
-        isEntryPoint(node) &&
-        node.initializer !== undefined &&
-        ts.isObjectLiteralExpression(node.initializer)
-      ) {
-        for (const property of node.initializer.properties) {
-          if (isFunctionLike(property)) {
-            seed(property);
-            continue;
-          }
-          if (
-            ts.isPropertyAssignment(property) &&
-            (ts.isArrowFunction(property.initializer) ||
-              ts.isFunctionExpression(property.initializer))
-          ) {
-            seed(property.initializer);
-          }
-        }
-        return;
-      }
       if (ts.isClassDeclaration(node) && isEntryPoint(node)) {
-        for (const member of node.members) {
-          if (isFunctionLike(member) || ts.isConstructorDeclaration(member)) {
-            seed(member);
-            continue;
-          }
-          if (
-            ts.isPropertyDeclaration(member) &&
-            member.initializer !== undefined &&
-            (ts.isArrowFunction(member.initializer) ||
-              ts.isFunctionExpression(member.initializer))
-          ) {
-            seed(member.initializer);
-          }
-        }
+        enter(node);
+        return;
+      }
+      if (ts.isVariableDeclaration(node) && isEntryPoint(node)) {
+        enter(node.initializer);
+        return;
+      }
+      // `export default <expression>` is an entry point with no declaration to
+      // carry a modifier and no name for an export clause to carry.
+      if (ts.isExportAssignment(node) && node.isExportEquals !== true) {
+        enter(node.expression);
       }
     });
 
@@ -1365,6 +1437,51 @@ export function auditTeethInlineCalleeProbe(
 }
 
 export { auditTeethExportListProbe, auditTeethAliasedArrow as auditTeethAliasedExport };
+
+function auditTeethBarrelRef(opts: Readonly<Record<string, unknown>>): unknown {
+  return opts.plantedBehindAShorthandBarrel;
+}
+
+function auditTeethNamedRef(opts: Readonly<Record<string, unknown>>): unknown {
+  return opts.plantedBehindANamedBarrelProperty;
+}
+
+export const auditTeethBarrel = {
+  auditTeethBarrelRef,
+  named: auditTeethNamedRef,
+};
+
+export const auditTeethNestedBarrel = {
+  sub: {
+    auditTeethNestedMethod(opts: Readonly<Record<string, unknown>>): unknown {
+      return opts.plantedInsideANestedBarrel;
+    },
+  },
+};
+
+export const auditTeethFrozenBarrel = Object.freeze({
+  auditTeethFrozenMethod(opts: Readonly<Record<string, unknown>>): unknown {
+    return opts.plantedBehindAFrozenBarrel;
+  },
+});
+
+export const AuditTeethClassExpression = class {
+  auditTeethClassExpressionMethod(opts: Readonly<Record<string, unknown>>): unknown {
+    return opts.plantedOnAClassExpression;
+  }
+};
+
+function auditTeethFactory() {
+  return (opts: Readonly<Record<string, unknown>>): unknown => opts.plantedInAFactoryClosure;
+}
+
+export const auditTeethFactoryMade = auditTeethFactory();
+
+export default {
+  auditTeethDefaultMethod(opts: Readonly<Record<string, unknown>>): unknown {
+    return opts.plantedOnADefaultBarrel;
+  },
+};
 `;
 
 const PROBE_FUNCTIONS = new Set([
@@ -1392,6 +1509,13 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethAliasedArrow',
   'auditTeethObjectMethod',
   'auditTeethInlineCalleeProbe',
+  'auditTeethBarrelRef',
+  'auditTeethNamedRef',
+  'auditTeethNestedMethod',
+  'auditTeethFrozenMethod',
+  'auditTeethClassExpressionMethod',
+  'auditTeethFactory',
+  'auditTeethDefaultMethod',
 ]);
 
 /**
@@ -1420,6 +1544,16 @@ const WALKER_CAPABILITIES = [
   'exported-via-aliased-export-list',
   'exported-object-literal-method',
   'inline-callee-parameters',
+  // A value reaches a caller through more than the shapes a list can name. Each
+  // of these was measured SILENT while an added entry point spelled that way
+  // carried the inherited-`client` read AIC-69 closed — AIC-82, round two.
+  'barrel-shorthand-property',
+  'barrel-named-property',
+  'barrel-nested-object',
+  'barrel-behind-a-call',
+  'exported-class-expression',
+  'factory-returned-callable',
+  'export-default-value',
   'destructured-parameter',
   'argument-to-parameter',
   'return-value',
@@ -1519,6 +1653,34 @@ const EXPECTED_PROBE_REPORTS = [
   {
     expression: 'inner.plantedInAnInlineCallee',
     pins: ['inline-callee-parameters'],
+  },
+  {
+    expression: 'opts.plantedBehindAShorthandBarrel',
+    pins: ['barrel-shorthand-property'],
+  },
+  {
+    expression: 'opts.plantedBehindANamedBarrelProperty',
+    pins: ['barrel-named-property'],
+  },
+  {
+    expression: 'opts.plantedInsideANestedBarrel',
+    pins: ['barrel-nested-object'],
+  },
+  {
+    expression: 'opts.plantedBehindAFrozenBarrel',
+    pins: ['barrel-behind-a-call'],
+  },
+  {
+    expression: 'opts.plantedOnAClassExpression',
+    pins: ['exported-class-expression'],
+  },
+  {
+    expression: 'opts.plantedInAFactoryClosure',
+    pins: ['factory-returned-callable'],
+  },
+  {
+    expression: 'opts.plantedOnADefaultBarrel',
+    pins: ['export-default-value'],
   },
   { expression: 'for…in opts', pins: ['for-in-enumeration'] },
   {
