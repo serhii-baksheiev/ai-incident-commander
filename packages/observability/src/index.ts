@@ -239,9 +239,11 @@ function assertResultIdentity(record: OwnIdentity, result: OwnIdentity): void {
  *
  * So this header states the boundary instead of enumerating it: **nothing here
  * entitles a reader to conclude that no published value came from a getter.**
- * The audit belongs in a triage item with a mechanical check behind it — a test
- * that goes red when a non-`ownValue` read is added to this file — and until
- * that exists, assume any read not going through `ownValue` walks the chain.
+ * What the file as a whole is held to is mechanical rather than stated here —
+ * see observability-own-value-audit.test.mjs ›
+ * "reads every caller-supplied field of the observability layer through ownValue",
+ * which recomputes the inventory from this file's AST on every run and names
+ * each violation by line. Read that test's header for what it does NOT cover.
  *
  * ⚠ And one shape this function does NOT close, on any path: a `Proxy` traps
  * `getOwnPropertyDescriptor`, so a proxied container answers this read with
@@ -258,18 +260,6 @@ function ownValue(target: unknown, key: string): unknown {
     : descriptor.value;
 }
 
-/**
- * The write half of the same hazard, and it is a separate function because
- * refusing to READ a polluted value is only half the job.
- *
- * `target[key] = value` is an ordinary `[[Set]]`: it walks the prototype chain,
- * and an inherited ACCESSOR named like the field swallows the write — the
- * setter runs, no own property is created, and the field vanishes from the
- * published record. CreateDataProperty semantics cannot be intercepted by the
- * prototype chain — the qualifier is load-bearing, since a `Proxy` traps
- * `defineProperty` and a frozen target throws. Every call site passes a freshly
- * created local object, which is neither.
- */
 /**
  * The typed own reads the rest of this file uses, so that no caller-supplied
  * field is read twice: once to check it and once to publish it.
@@ -323,6 +313,18 @@ function requireOwnArray(target: unknown, key: string, subject: string): readonl
   return value;
 }
 
+/**
+ * The write half of the same hazard, and it is a separate function because
+ * refusing to READ a polluted value is only half the job.
+ *
+ * `target[key] = value` is an ordinary `[[Set]]`: it walks the prototype chain,
+ * and an inherited ACCESSOR named like the field swallows the write — the
+ * setter runs, no own property is created, and the field vanishes from the
+ * published record. CreateDataProperty semantics cannot be intercepted by the
+ * prototype chain — the qualifier is load-bearing, since a `Proxy` traps
+ * `defineProperty` and a frozen target throws. Every call site passes a freshly
+ * created local object, which is neither.
+ */
 function defineOwn(
   target: Record<string, unknown>,
   key: string,
@@ -361,6 +363,16 @@ type OwnResult = OwnIdentity & Readonly<{ actualStopKind: unknown }>;
 function ownRecord(record: unknown): OwnRecord {
   const scenario = ownValue(record, 'scenario');
   const metadata = ownValue(record, 'metadata');
+  // `metadata` is REQUIRED, not merely own-read. Before this change a record
+  // carrying no metadata threw on the way to publication; own-reading it without
+  // requiring it turned that refusal into a successful-looking run named
+  // `benchmark:` with an empty metadata block — which reads downstream exactly
+  // like a run that declared no graph, prompt, toolset or status-rules version.
+  // Dropping an inherited block was the point; publishing a hollow one in its
+  // place is the same lie in the other direction.
+  if (typeof metadata !== 'object' || metadata === null) {
+    throw new Error('benchmark record must carry its own metadata');
+  }
   return {
     runId: requireOwnString(record, 'runId', 'benchmark record'),
     exampleId: requireOwnString(record, 'exampleId', 'benchmark record'),
@@ -369,7 +381,7 @@ function ownRecord(record: unknown): OwnRecord {
     scenarioId: requireOwnString(scenario, 'id', 'benchmark record scenario'),
     groundTruth: ownValue(scenario, 'groundTruth'),
     metadata,
-    metadataScenarioId: ownString(metadata, 'scenarioId'),
+    metadataScenarioId: requireOwnString(metadata, 'scenarioId', 'benchmark record metadata'),
   };
 }
 
@@ -438,7 +450,13 @@ function requireMetrics(
       // metric whose score would otherwise be taken off the prototype and
       // published as a figure no evaluator computed.
       const score = ownValue(metric, 'score');
-      if (typeof score !== 'number') {
+      // `Number.isFinite`, not `typeof === 'number'`: the sibling resource check
+      // refuses a non-finite figure and this one admitted NaN and Infinity, so
+      // the loosest of the three checks in this file was the one on the score
+      // that reaches the feedback stream. The item names this beside the
+      // by-reference return; implementing half of that sentence silently would
+      // read as having implemented all of it.
+      if (!Number.isFinite(score)) {
         throw new Error(`benchmark result metric has no score of its own: ${key}`);
       }
       // A FRESH pair, not the caller's object. Returning `metric` published
@@ -661,10 +679,18 @@ function requireExperiment(experiment: unknown): OwnExperiment {
   for (let index = 0; index < rawRecords.length; index += 1) {
     records.push(ownRecord(ownElement(rawRecords, index)));
   }
-  const firstRecord = records[0];
-  if (firstRecord === undefined) {
+  // Emptiness is checked BEFORE the index read, not after it. `records` is our
+  // own array, but an index read on an EMPTY array walks its prototype like any
+  // other — with `Object.prototype['0']` planted, an experiment of
+  // `{ records: [], results: [] }` passed a `records[0] === undefined` guard on
+  // an inherited object and its `experimentId` reached `createProject` as the
+  // project name. Provenance is not the property that matters; emptiness is.
+  // (`ownElement` would also close it, and re-taints: it returns a caller value
+  // by design, so the audit would then treat this projection as caller data.)
+  if (records.length === 0) {
     throw new Error('benchmark experiment must contain at least one record');
   }
+  const firstRecord = records[0] as OwnRecord;
   if (records.some(({ experimentId }) => experimentId !== firstRecord.experimentId)) {
     throw new Error('benchmark records must belong to one experiment');
   }
@@ -680,10 +706,12 @@ async function persistPreparedExperiment({
   datasetId: string;
   experiment: OwnExperiment;
 }>): Promise<void> {
-  const firstRecord = experiment.records[0];
-  if (firstRecord === undefined) {
+  // The same empty-array read as in `requireExperiment` above, guarded the same
+  // way and for the same reason.
+  if (experiment.records.length === 0) {
     throw new Error('benchmark experiment must contain at least one record');
   }
+  const firstRecord = experiment.records[0] as OwnRecord;
   const createdProject = await client.createProject({
     projectName: firstRecord.experimentId,
     referenceDatasetId: datasetId,
@@ -718,7 +746,7 @@ async function persistPreparedExperiment({
 
     await client.createRun({
       id: record.runId,
-      name: `benchmark:${record.metadataScenarioId ?? ''}`,
+      name: `benchmark:${record.metadataScenarioId}`,
       run_type: 'chain',
       project_name: record.experimentId,
       inputs: {
@@ -772,11 +800,11 @@ async function persistPreparedExperiment({
 }
 
 /**
- * ⚠ `client` is read off the options object with a plain `[[Get]]`, and a
- * destructuring default fires only on `undefined` — so an inherited `client`
- * suppresses the default below and every outbound call in this layer goes
- * wherever it points. AIC-69 carries the measurement; this note is here because
- * the reasoning lives on `ownValue` and nobody editing this signature reads it.
+ * ⚠ The options object is caller-supplied, so it is read own-only rather than
+ * destructured — a destructuring default fires only on `undefined`, so an
+ * inherited `client` used to suppress the default and send every outbound call
+ * in this layer wherever it pointed. Keep the reads own if you change this
+ * signature; the audit will tell you if you do not.
  */
 export async function persistBenchmarkExperiments(
   options: Readonly<{
@@ -791,7 +819,17 @@ export async function persistBenchmarkExperiments(
   // suppressed the default and sent every outbound call in this layer wherever
   // it pointed — dataset, examples, runs and every feedback, ground truth
   // included, with no own `client` key anywhere on the object.
-  const suppliedClient = ownValue(options, 'client');
+  // Absent and present-but-unreadable are different answers. `ownValue` refuses
+  // an accessor as well as an inherited value, so reading it alone would send a
+  // caller who passed a getter to the LIVE workspace instead of to their client
+  // — silently, and against this file's own rule that a present field which
+  // cannot be read is refused rather than defaulted.
+  const suppliedClient = Object.hasOwn(options, 'client')
+    ? ownValue(options, 'client')
+    : undefined;
+  if (Object.hasOwn(options, 'client') && suppliedClient === undefined) {
+    throw new Error('persist options carry a client that is not an own data property');
+  }
   const client =
     suppliedClient === undefined
       ? createLangSmithClient()
@@ -815,10 +853,10 @@ export async function persistBenchmarkExperiments(
   for (let index = 0; index < rawExperiments.length; index += 1) {
     experiments.push(requireExperiment(ownElement(rawExperiments, index)));
   }
-  const firstExperiment = experiments[0];
-  if (firstExperiment === undefined) {
+  if (experiments.length === 0) {
     throw new Error('at least one benchmark experiment is required');
   }
+  const firstExperiment = experiments[0] as OwnExperiment;
 
   const nativeExampleIds = new Set(
     firstExperiment.records.map(({ exampleId }) => exampleId),
@@ -844,7 +882,7 @@ export async function persistBenchmarkExperiments(
   }
 }
 
-/** ⚠ Same inherited-`client` hazard as its plural sibling above — AIC-69. */
+/** Reads its options own-only for the same reason as its plural sibling above. */
 export async function persistBenchmarkExperiment(
   options: Readonly<{
     client?: LangSmithPersistenceClient;
