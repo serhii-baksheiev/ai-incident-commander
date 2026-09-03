@@ -467,6 +467,17 @@ function analyse(sourceFile) {
   const returns = new Map();
   /** parameter/variable node → descriptor of the OBJECT it destructures */
   const patternSources = new Map();
+  /**
+   * Every function node the seeding handed caller data to.
+   *
+   * 🔴 This is what turns the seeding from a guess into a measurement. Two gate
+   * rounds of AIC-82 each found a further spelling that reached a caller and was
+   * not seeded, because nothing tied the walker's idea of an entry point to the
+   * audited file's actual export surface — the same defect the header describes
+   * at the top of this file for the hand-written inventory of reads, one level
+   * up. `every exported callable of the layer receives caller data` reads this.
+   */
+  const seededFunctions = new Set();
   let changed = true;
 
   const scopeOf = (node) => {
@@ -780,6 +791,7 @@ function analyse(sourceFile) {
     const SEED_BUDGET = 200;
     eachNode(sourceFile, (node) => {
       const seed = (fn) => {
+        seededFunctions.add(fn);
         for (const parameter of fn.parameters) {
           handToParameter(parameter, fn, callerData());
         }
@@ -1048,7 +1060,7 @@ function analyse(sourceFile) {
     );
   }
 
-  return { taintOf, patternSources };
+  return { taintOf, patternSources, seededFunctions };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1168,6 +1180,97 @@ function layerSources(directory = auditedLayer) {
   }
   return found.sort();
 }
+
+/**
+ * The layer's export surface, walked a SECOND time and deliberately more
+ * coarsely than the seeding walks it.
+ *
+ * 🔴 Two independent implementations is the point, not an accident. The seeding
+ * resolves a value to the callables it carries and is precise about which ones a
+ * caller can reach. This one asks a blunter question — *is there a function
+ * anywhere in an exported value, without descending into a body?* — and every
+ * function it finds must have been seeded. Where the two disagree the test goes
+ * red, in the direction that matters: a spelling the seeding does not know is a
+ * function this one still finds.
+ *
+ * AIC-82 cost two gate rounds to the same defect, each one a further spelling
+ * that reached a caller while the audit stayed green, because nothing checked
+ * the walker's idea of an entry point against the file's actual exports. This is
+ * that check. It is the same move the header makes one level up, where the
+ * inventory of reads is computed rather than hand-written.
+ *
+ * ⚠ It does NOT descend into function bodies, so a callback written inside an
+ * exported function is not claimed here — that is propagation, which the probe
+ * covers, not an entry point.
+ */
+const exportedCallables = (sourceFile) => {
+  const found = new Set();
+  const clauseNames = new Set();
+  eachNode(sourceFile, (node) => {
+    if (!ts.isExportDeclaration(node) || node.moduleSpecifier !== undefined) return;
+    const clause = node.exportClause;
+    if (clause === undefined || !ts.isNamedExports(clause)) return;
+    for (const specifier of clause.elements) {
+      clauseNames.add((specifier.propertyName ?? specifier.name).text);
+    }
+  });
+
+  // One bounded sweep of a value, stopping at every function it meets: a
+  // function is an answer, never a container to look inside.
+  const collect = (value, seen) => {
+    if (value === undefined || value === null || seen.has(value) || seen.size > 400) return;
+    seen.add(value);
+    if (isFunctionLike(value) || ts.isConstructorDeclaration(value) || ts.isFunctionDeclaration(value)) {
+      found.add(value);
+      return;
+    }
+    if (ts.isIdentifier(value)) {
+      const resolved = collectFunctions(sourceFile).get(value.text);
+      if (resolved !== undefined) collect(resolved, seen);
+      return;
+    }
+    value.forEachChild((child) => collect(child, seen));
+  };
+
+  const named = (node) =>
+    node.name !== undefined && ts.isIdentifier(node.name) && clauseNames.has(node.name.text);
+
+  eachNode(sourceFile, (node) => {
+    if (ts.isFunctionDeclaration(node) && (isExported(node) || named(node))) {
+      found.add(node);
+      return;
+    }
+    if (ts.isVariableDeclaration(node) && (isExported(node) || named(node))) {
+      collect(node.initializer, new Set());
+      return;
+    }
+    if (ts.isClassDeclaration(node) && (isExported(node) || named(node))) {
+      collect(node, new Set());
+      return;
+    }
+    if (ts.isExportAssignment(node) && node.isExportEquals !== true) {
+      collect(node.expression, new Set());
+    }
+  });
+  return found;
+};
+
+test('hands caller data to every callable the layer exports', () => {
+  const sourceFile = parse(`${auditedSource}${TEETH_PROBE}`);
+  const { seededFunctions } = analyse(sourceFile);
+  const unseeded = [...exportedCallables(sourceFile)]
+    .filter((fn) => fn.parameters.length > 0 && !seededFunctions.has(fn))
+    .map((fn) => {
+      const { line } = position(sourceFile, fn);
+      return `${line}: ${oneLine(fn.getText(sourceFile).slice(0, 80))}`;
+    });
+
+  assert.deepEqual(
+    unseeded,
+    [],
+    `a callable this layer exports was handed no caller data, so every read inside it is judged clean and this audit is blind to it.\nThat is how AIC-82 happened twice: the seeding knew a list of spellings, and the export surface had one more.\nSeed the form in seedValue rather than deleting this assertion — it is the only thing tying the walker's idea of an entry point to what the file actually exports.\n\n${unseeded.join('\n')}`,
+  );
+});
 
 test('audits every source file the observability layer has', () => {
   assert.deepEqual(
