@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   INCIDENT_STATE_SCHEMA_VERSION,
+  IncidentStateSchema,
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
@@ -567,8 +568,70 @@ for (const invalidCounter of [
 
     assert.equal(challengeCalls, 0, 'invalid counters must fail before challenge execution');
     assert.equal('error' in outcome, true, 'invalid counters must reject invocation');
+    assert.deepEqual(
+      trace,
+      [],
+      'a counter that is not a count must be refused at the input boundary, before any lifecycle node runs',
+    );
   });
 }
+
+/**
+ * The row above stops at "not a count". This one is the other side of that
+ * line: `MAX_CHALLENGE_ROUNDS + 1` is a perfectly good count, so the domain
+ * schema accepts it — see domain-contract.test.mjs > "accepts a challenge round
+ * count past the graph cap, which is not a schema concern" — and only the graph
+ * knows it is not a state this graph can be in.
+ *
+ * This is the regression pin on `assertChallengeCounters`: however strict the
+ * schema becomes about the SHAPE of the counter, the cap stays the graph's job,
+ * and deleting the guard because "the schema covers it now" turns this red.
+ * Unlike the rows above, lifecycle nodes DO run here before the refusal lands —
+ * the input was well-formed, so the refusal cannot come from the boundary.
+ */
+test('refuses a start state one past the challenge round cap, which the domain schema accepts', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  let challengeCalls = 0;
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(
+      trace,
+      async () => ({
+        route: 'challenge-required',
+        leaderId: 'current-leader',
+      }),
+      async () => {
+        challengeCalls += 1;
+        return {
+          alternative: challengeAlternative(challengeCalls),
+          discriminatingTests: [discriminatingTest(challengeCalls)],
+        };
+      },
+    ),
+  });
+  const state = initialState();
+  state.hypotheses = [currentLeader()];
+  state.control.challengeRounds = graphPackage.MAX_CHALLENGE_ROUNDS + 1;
+
+  assert.equal(
+    IncidentStateSchema.safeParse(state).success,
+    true,
+    'this state must be well-formed at the domain boundary, or the graph refusal below proves nothing about the cap',
+  );
+
+  const outcome = await graph.execute({ kind: 'start', state }).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+
+  assert.equal(challengeCalls, 0, 'a run past the cap must not execute another challenge');
+  assert.equal('error' in outcome, true, 'a challenge round count past the cap must reject the run');
+  assert.match(
+    outcome.error.message,
+    /invalid challenge round counter/,
+    'the refusal must name the counter it refused on, not surface as an opaque input error',
+  );
+});
 
 test('targets the adjudicated leader for both challenge rounds and terminates a third request as ambiguous', async () => {
   const createInvestigationGraph = requireGraphFactory();
