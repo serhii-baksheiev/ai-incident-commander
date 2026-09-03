@@ -163,12 +163,23 @@
  *     forms named `exported-*` in `WALKER_CAPABILITIES` and no others, so a
  *     barrel, a spread, a frozen object, a factory's return or a getter puts a
  *     callable within a caller's reach whose body this audit does not judge.
- *     ⚠ This is a gap in what is AUDITED, and it is no longer a SILENT one:
- *     › "reaches no callable this audit was not told about" turns red the moment
- *     such a callable appears, so the choice — seed the form, or accept and
- *     record that its body is unaudited — has to be made out loud. That test is
- *     the reason this bullet is a stated limit rather than the defect AIC-82 was
- *     filed about.
+ *     ⚠ This is a gap in what is AUDITED. It is not silent for a NEW EXPORT:
+ *     › "reaches no callable this audit was not told about" compares the layer's
+ *     export NAMES, so a new name is red whatever it holds, and the choice —
+ *     seed the form, or record that its body is unaudited — has to be made out
+ *     loud. It IS still silent for a callable hung under an EXISTING export
+ *     name, which is the bullet below.
+ *   - a callable hung under an EXISTING export name. Measured on this layer,
+ *     each leaving all nine tests green while a caller reaches an unprojected
+ *     `options.client`: a property assigned onto an exported function
+ *     (`(resolveTracingConfig as …).handler = (o) => o.client`), the same via
+ *     `Object.defineProperty` whether enumerable or not, and a callable in the
+ *     object an exported factory returns when it is CALLED. Neither half of the
+ *     export check sees these: the name comparison sees no new name, and the
+ *     reachability walk records a function and stops there rather than
+ *     enumerating its properties — it also stops below a depth of four. Nothing
+ *     static closes the factory case, because the object exists only once the
+ *     factory has run.
  *   - a read performed BY a helper rather than by this file. `Reflect.get(o, k)`
  *     walks the prototype chain inside the call, and there is no property access
  *     here to report. What the walker does instead is refuse to launder: the
@@ -1136,20 +1147,32 @@ function layerSources(directory = auditedLayer) {
  * collapses to the same thing once the module has run: a value on the namespace
  * object. So this asks the module.
  *
- * What it buys is narrow and worth stating exactly: it does NOT prove a callable
- * is seeded. It proves the SET has not changed. A new export in any spelling
- * turns this red, and the person who added it then has to decide, deliberately,
- * whether the seeding above reaches it — which is the decision that was being
- * made silently and wrongly.
+ * What it buys is narrow and worth stating exactly. It does NOT prove a callable
+ * is seeded. It proves two things: the layer's export NAMES are unchanged, and
+ * the callables reachable from them by enumerating own properties down to a
+ * depth of four are unchanged. A new export in any spelling turns this red
+ * whatever it holds, and the person who added it then has to decide,
+ * deliberately, whether the seeding above reaches it — the decision that was
+ * being made silently and wrongly. A callable hung under an EXISTING export name
+ * is outside both halves; that limit is in the blind-spot list above, with the
+ * measurements behind it.
  *
- * ⚠ It reads `dist`, so it is only as fresh as the last build. `npm run check`
- * builds before it tests, and CI builds before it tests, so the stale window
- * belongs to someone running this file directly. ⚠ This is the FIRST in-process
- * import of the observability layer into the test runner — the suites that
- * depend on a build spawn `apps/cli/dist` as a child process instead — so it is
- * also the first time `langsmith` is loaded here. Measured at import: no network
- * call and no credential-shaped environment read, because the client is
- * referenced and never constructed.
+ * ⚠ It reads `dist`, so it is only as fresh as the last build — and `npm test`,
+ * the repo's own script for the whole suite, does NOT build. Measured: add an
+ * export, skip the rebuild, and this test stays green. `npm run check` and CI
+ * both build first, so the false green is transient rather than shipped, but the
+ * window is any run that did not build, not just this file run alone.
+ *
+ * It imports the built layer in-process, as six other suites already do —
+ * `metric-path-prototype-safety`, `persist-boundary-refusals`,
+ * `behavior-evaluators`, `benchmark-evaluation`, `benchmark-resource-evidence`
+ * and `langsmith-tracing` — and `dist/index.js` imports `langsmith` on its first
+ * line, so neither the layer nor that dependency arrives here first. Measured at
+ * import: no network call and no credential-shaped environment read, because the
+ * client is referenced and never constructed.
+ *
+ * The two expected lists below are what the test compares against; the walk
+ * itself is `reachableCallables`, further down.
  */
 const EXPECTED_EXPORT_NAMES = [
   'OBSERVABILITY_LAYER',
@@ -1171,10 +1194,11 @@ const reachableCallables = async () => {
   const found = [];
   const seen = new Set();
   // Bounded: depth-capped and cycle-guarded. ⚠ Both bounds find FEWER callables
-  // than the layer really holds, and against the exact-set comparison below that
-  // is not harmless in either direction — it is why the export NAMES are
-  // asserted separately above, and why the depth cap is named in the blind-spot
-  // list rather than treated as a detail.
+  // than the layer really holds, which is why the export NAMES are asserted
+  // separately above — that half does not depend on reaching anything. The
+  // depth cap, and the fact that a function is recorded without enumerating its
+  // own properties, are stated in the blind-spot list at the top of this file
+  // under "a callable hung under an EXISTING export name".
   const visit = (value, path, depth) => {
     if (depth > 4 || value === null) return;
     const kind = typeof value;
@@ -1538,10 +1562,12 @@ const WALKER_CAPABILITIES = [
   'exported-function-declaration',
   'exported-const-arrow',
   'exported-class-method',
-  // Four forms a caller reaches that the modifier-based test above cannot see.
-  // An `export { … }` clause leaves no modifier on the declaration it names, so
+  // Forms a caller reaches that the modifier-based test above cannot see. An
+  // `export { … }` clause leaves no modifier on the declaration it names, so
   // seeding on `ModifierFlags.Export` alone meant a style refactor emptied this
   // audit without changing a single read — measured, on this file, in AIC-82.
+  // `inline-callee-parameters` is the odd one out: a propagation rule rather
+  // than an export form, kept here because it is seeded in the same pass.
   'exported-via-export-list',
   'exported-via-aliased-export-list',
   'exported-object-literal-method',
