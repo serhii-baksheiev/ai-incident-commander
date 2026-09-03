@@ -467,6 +467,14 @@ function analyse(sourceFile) {
   const returns = new Map();
   /** parameter/variable node → descriptor of the OBJECT it destructures */
   const patternSources = new Map();
+  /**
+   * Every function node the seeding handed caller data to.
+   *
+   * Read by › "hands caller data to every callable the layer exports", which is
+   * the check that makes the seeding answerable to the file instead of to a
+   * list of spellings. See that test for why it exists.
+   */
+  const seededFunctions = new Set();
   let changed = true;
 
   const scopeOf = (node) => {
@@ -758,6 +766,7 @@ function analyse(sourceFile) {
     // only the first meant a style refactor silently emptied this audit.
     eachNode(sourceFile, (node) => {
       const seed = (fn) => {
+        seededFunctions.add(fn);
         for (const parameter of fn.parameters) {
           handToParameter(parameter, fn, callerData());
         }
@@ -976,7 +985,7 @@ function analyse(sourceFile) {
     );
   }
 
-  return { taintOf, patternSources };
+  return { taintOf, patternSources, seededFunctions };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1096,6 +1105,131 @@ function layerSources(directory = auditedLayer) {
   }
   return found.sort();
 }
+
+/**
+ * The layer's export surface, found by a walk that knows almost nothing.
+ *
+ * 🔴 **This is the check that makes the seeding answerable to the file.** The
+ * seeding above knows a LIST of spellings — `export function`, an export clause,
+ * a method written inline in an exported object. A list is a guess, and AIC-82
+ * spent three review rounds proving it: each round closed the spellings it knew
+ * and the next round found another one that reached a caller with the suite
+ * green. The lesson was not "write a longer list". It was that nothing tied the
+ * walker's idea of an entry point to what the file actually exports.
+ *
+ * So this walk deliberately does NOT share the seeding's vocabulary. It knows
+ * three things:
+ *
+ *   - a function is an ANSWER, never a container — it is recorded and not
+ *     descended into, so a callback written inside an exported function is not
+ *     claimed here (that is propagation, which the probe covers);
+ *   - a name resolves to whatever it was declared with, callable or not, and if
+ *     it resolves to nothing the walk keeps going through the node's children;
+ *   - everything else is just children to walk.
+ *
+ * That last clause is the whole point, and it is where the previous attempt
+ * failed: it returned when a name did not resolve to a *function*, so a barrel
+ * behind one indirection was invisible to the check meant to catch exactly that.
+ * Falling through means a spelling nobody anticipated still surfaces the
+ * callable inside it.
+ *
+ * ⚠ **A red here is not necessarily a bug in the layer.** It says the file
+ * exports a callable the seeding does not hand caller data to, so the audit is
+ * blind to every read inside it. The fix is to seed that form — or, if the form
+ * genuinely cannot be seeded, to say so in the blind-spot list above and exempt
+ * it here, with the reason.
+ *
+ * It runs on the audited file ALONE, without the probe: the probe deliberately
+ * contains forms this walker is not asked to seed, and the question here is
+ * about the layer, not about the fixture.
+ */
+const exportedCallables = (sourceFile) => {
+  const found = new Set();
+  const values = new Map();
+  const clauseNames = new Set();
+  eachNode(sourceFile, (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined
+    ) {
+      values.set(node.name.text, node.initializer);
+    }
+    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+      values.set(node.name.text, node);
+    }
+    if (ts.isClassDeclaration(node) && node.name !== undefined) {
+      values.set(node.name.text, node);
+    }
+    if (!ts.isExportDeclaration(node) || node.moduleSpecifier !== undefined) return;
+    if (node.isTypeOnly) return;
+    const clause = node.exportClause;
+    if (clause === undefined || !ts.isNamedExports(clause)) return;
+    for (const specifier of clause.elements) {
+      if (specifier.isTypeOnly) continue;
+      clauseNames.add((specifier.propertyName ?? specifier.name).text);
+    }
+  });
+
+  // Bounded: `seen` is node identity over an acyclic tree, and the visit cap
+  // stops a pathological file rather than this walk running long. Both bounds
+  // err toward finding FEWER callables, which can only make this check quieter —
+  // never louder — so neither can turn an honest file red.
+  const VISIT_CAP = 4000;
+  const collect = (value, seen) => {
+    if (value === undefined || seen.has(value) || seen.size > VISIT_CAP) return;
+    seen.add(value);
+    if (
+      isFunctionLike(value) ||
+      ts.isConstructorDeclaration(value) ||
+      ts.isFunctionDeclaration(value)
+    ) {
+      found.add(value);
+      return;
+    }
+    if (ts.isIdentifier(value)) {
+      const resolved = values.get(value.text);
+      if (resolved !== undefined) collect(resolved, seen);
+      return;
+    }
+    value.forEachChild((child) => collect(child, seen));
+  };
+
+  const named = (node) =>
+    node.name !== undefined && ts.isIdentifier(node.name) && clauseNames.has(node.name.text);
+
+  eachNode(sourceFile, (node) => {
+    if (ts.isFunctionDeclaration(node) && (isExported(node) || named(node))) {
+      found.add(node);
+      return;
+    }
+    if (
+      (ts.isVariableDeclaration(node) || ts.isClassDeclaration(node)) &&
+      (isExported(node) || named(node))
+    ) {
+      collect(ts.isVariableDeclaration(node) ? node.initializer : node, new Set());
+      return;
+    }
+    if (ts.isExportAssignment(node) && node.isExportEquals !== true) {
+      collect(node.expression, new Set());
+    }
+  });
+  return found;
+};
+
+test('hands caller data to every callable the layer exports', () => {
+  const sourceFile = parse(auditedSource);
+  const { seededFunctions } = analyse(sourceFile);
+  const blind = [...exportedCallables(sourceFile)]
+    .filter((fn) => fn.parameters.length > 0 && !seededFunctions.has(fn))
+    .map((fn) => `${position(sourceFile, fn).line}: ${oneLine(fn.getText(sourceFile).slice(0, 70))}`);
+
+  assert.deepEqual(
+    blind,
+    [],
+    `this layer exports a callable the seeding hands no caller data to, so every read inside it is judged clean and this audit is blind to it.\nThe seeding knows a list of spellings; this check knows the file. Three review rounds of AIC-82 were spent on the gap between the two.\nSeed the form, or declare it in the blind-spot list at the top of this file and exempt it here with the reason. Do not delete the assertion.\n\n${blind.join('\n')}`,
+  );
+});
 
 test('audits every source file the observability layer has', () => {
   assert.deepEqual(
