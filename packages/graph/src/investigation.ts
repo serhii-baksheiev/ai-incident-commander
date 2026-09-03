@@ -518,9 +518,16 @@ function preserveGraphOwnedControl(
     // existed. `reviewConclusion` and this call are the two that redden. That
     // is what a layered fail-closed graph looks like under mutation, not a
     // decayed guard: whichever layer you remove, the next one catches it. The
-    // three unpinned calls are kept because each sits immediately before a
-    // decision made FROM these counters, which is the strongest placement
-    // there is.
+    // three unpinned calls are kept because each sits immediately before the
+    // graph uses these counters for something — `routeChallenge` and
+    // `terminationCheck` branch on them, `challengeHypothesis` increments and
+    // decrements them, and asserting before incrementing garbage is as good a
+    // reason as asserting before branching on it.
+    //
+    // This paragraph is itself a hand-written list, which is the shape AIC-67
+    // warns about, and the trade is deliberate rather than overlooked: a grep
+    // produces the call sites but cannot say which of them a test would catch,
+    // and that is the whole content here. It goes stale on the next site added.
     assertChallengeCounters(current);
 
     const protectedControl = {
@@ -827,11 +834,14 @@ export function createInvestigationGraph({
     // check runs FIRST so stale state is refused for the reason it is stale,
     // rather than surfacing as a counter error that reads like a bug.
     //
-    // The challenge counters are asserted here for a different reason than at
-    // `routeChallenge`, `terminationCheck` and `challengeHypothesis`: those
-    // three read them to decide something, while a confirm decides nothing from
-    // them and reaches END, so an unasserted value would be read for the first
-    // time by whoever receives the finished control.
+    // The challenge counters are asserted here for a reason no other site
+    // covers, and the reason is the ROUTE rather than the count of sites — the
+    // enumeration that used to be here went stale the moment AIC-75 added one.
+    // A `confirm` decides nothing from these counters and reaches END without
+    // entering a single wrapped node, so this is the only assertion standing on
+    // that route; an unasserted value would be read for the first time by
+    // whoever receives the finished control. `reject` and `add_hypothesis`
+    // re-enter at wrapped nodes and are covered twice over.
     // see hitl-resume-contract.test.mjs › "refuses a current-version checkpoint
     // carrying a negative challenge round counter, and names the counter"
     assertPersistedStateVersion(state.control);

@@ -512,6 +512,12 @@ for (const counter of corruptPersistedChallengeCounters) {
  * assertion deleted outright. Measured: deleting it reddens 8 tests here, and
  * the two that went quiet are exactly these.
  *
+ * Do not complete that thought as "so the wrapper is what these rows exercise
+ * now" — it is not. Deleting the WRAPPER's assertion alone also leaves them
+ * green; only the entry-time test in investigation-graph.test.mjs reddens.
+ * These two rows redden when BOTH calls go, and not before. They are mutually
+ * masked, exactly like the three sites named in that wrapper's own comment.
+ *
  * They are kept, and not because deleting a test is unpleasant. What they pin
  * is still true and still worth pinning — a corrupt counter is refused before
  * another node runs, on every route a human can take — and `confirm` remains a
