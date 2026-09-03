@@ -232,10 +232,12 @@ matters on a self-hosted runner, which inherits the machine's environment.
 ⚠ What the preload does **not** clear is `LANGSMITH_API_KEY` itself. That is the
 right scope for flag-gated tracing — a key alone traces nothing — but a
 `langsmith` `Client` constructed directly reads the key with no flag involved.
-`createLangSmithClient()` is such a constructor, and it is the default value of
-the `client` parameter on `persistBenchmarkExperiment(s)` — so a call that omits
-that argument sends through a client holding whatever key the environment
-carries.
+`createLangSmithClient()` is such a constructor, and it is what
+`persistBenchmarkExperiment(s)` falls back to when the options object carries no
+own `client` — so a call that omits it sends through a client holding whatever
+key the environment carries. It was a destructuring default until AIC-69; the
+operator-facing consequence is the same, and the mechanism is now an own read,
+so an INHERITED `client` no longer suppresses the fallback.
 
 The api key reaches neither the process output nor the trace payload — ›
 "never prints the api key on stdout or stderr" and › "never sends the api key
