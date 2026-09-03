@@ -14,6 +14,7 @@ import {
   Command,
   END,
   INTERRUPT,
+  Send,
   isCommand,
   isInterrupted,
 } from '@langchain/langgraph';
@@ -242,17 +243,23 @@ test('refuses a Command carrying a control update, and no later node runs', asyn
   );
 });
 
-test('refuses an array carrying a Command, which LangGraph would otherwise honour', async () => {
-  // `isCommand` alone says false for `[command]`, and LangGraph honours an
-  // array containing one — so without this shape in the guard a node could hand
-  // back routing that the wrapper waved through and the graph then discarded
-  // silently. Measured before the guard covered it: the run RESOLVED, every
-  // downstream node ran, and the Command's routing was dropped with no error.
-  // The control hijack did not land even then, so this closes a silent-discard
-  // hole rather than an ownership hole.
+test('refuses an array carrying a Command, which this wrapper would otherwise flatten into a plain object', async () => {
+  // The title says what was measured, and it is NOT "LangGraph would honour
+  // this". On this path LangGraph never sees an array: the wrapper's own
+  // destructure spreads `[command]` into `{ '0': command }` and hands that on.
+  // With the arm disabled the run RESOLVED, every downstream node ran, and the
+  // control was untouched — the routing was destroyed here, not rejected there.
+  //
+  // A raw StateGraph DOES honour `[command]` for an unwrapped node, which is
+  // why the shape is worth naming at all; the silence is this wrapper's doing.
+  //
+  // The Command sits at index 1 behind a plain object, so the arm has to look
+  // past the first element: with `.some` replaced by a check of index 0 alone,
+  // or by `.every`, this goes red.
   const { trace } = await assertWrapperRefusesFirstNodeResult(
     'an array carrying a Command',
     (state) => [
+      { hypotheses: [] },
       new Command({
         goto: END,
         update: { control: { ...state.control, ...HIJACKED_CONTROL } },
@@ -264,6 +271,24 @@ test('refuses an array carrying a Command, which LangGraph would otherwise honou
     trace,
     ['normalize_incident'],
     'the refusal must land on the node that returned the array',
+  );
+});
+
+test('refuses a bare Send, which this wrapper would otherwise flatten away entirely', async () => {
+  // The same hole one shape over, found by the AIC-72 gate rather than by the
+  // item. A `Send` is routing too, `isCommand` says false for it, and spreading
+  // one yields `{}` — so with this arm disabled the run RESOLVED with all
+  // eleven nodes executed and the routing gone without a word. A raw
+  // StateGraph routes a bare Send to its target.
+  const { trace } = await assertWrapperRefusesFirstNodeResult(
+    'a bare Send',
+    () => new Send('propose_conclusion', {}),
+  );
+
+  assert.deepStrictEqual(
+    trace,
+    ['normalize_incident'],
+    'the refusal must land on the node that returned the Send',
   );
 });
 
