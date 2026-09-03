@@ -60,11 +60,16 @@
  *     hypothetical: seeding keyed on `ModifierFlags.Export` alone, and moving
  *     this layer's four exports into one `export { … }` clause took the audit
  *     to zero violations over two reverted own reads (AIC-82). ⚠ **Which forms
- *     are seeded is `WALKER_CAPABILITIES`, not this sentence** — the entries
- *     whose names begin `exported-` are the whole set, each one held by a probe
- *     that goes red when its branch is deleted. Prose states capabilities at a
- *     finer grain than any list checked against it, so the capability names are
- *     the contract; read them rather than this paragraph. An internal function's parameter
+ *     are seeded is `WALKER_CAPABILITIES`, not this sentence** — every entry
+ *     there is named by a probe, and the two directions of that are checked by
+ *     › "pins every capability the walker states as contract" and
+ *     › "names a declared capability in every probe entry". What ties the set to
+ *     the file being audited is a different check —
+ *     › "hands caller data to every callable the layer exports" — which walks
+ *     the export surface a second time, coarsely, and goes red on a callable the
+ *     seeding missed. Prose states capabilities at a finer grain than any list
+ *     checked against it, so the capability names are the contract; read them
+ *     rather than this paragraph. An internal function's parameter
  *     holds caller data only when some call site hands it some, which is what
  *     makes `persistPreparedExperiment`'s `OwnExperiment` parameter clean while
  *     `requireResourceEvidence`'s parameter is not — the same shape, different
@@ -151,14 +156,23 @@
  *     binding is not resolved to its declaration, so caller data does not follow
  *     it. A `const`-bound arrow IS resolved — that is what makes the `own` alias
  *     in `requireResourceEvidence` a non-event rather than a false positive —
- *     and so is a callee written INLINE at the call, `(o => o.field)(caller)`,
- *     which is not reached through anything: it is present in the call itself
- *     (`inline-callee-parameters`).
+ *     and so are the PARAMETERS of a callee written INLINE at the call,
+ *     `(o => o.field)(caller)`, which is not reached through anything: it is
+ *     present in the call itself (`inline-callee-parameters`). ⚠ Only the
+ *     parameters. What such a call RETURNS is not modelled — `const v = ((x) =>
+ *     x)(caller); v.field` is silent, while both named spellings of the same
+ *     identity function are reported. The capability name says "parameters"
+ *     because that is all it is.
  *   - a METHOD is in that same set. An argument passed to `x.m(…)` is not
  *     matched to `m`'s parameter, so a method of a NON-exported class receives
  *     caller data from nothing and reads nothing. Methods of an exported class,
  *     and of an exported object literal, are covered — they are seeded directly
  *     rather than reached.
+ *   - a name that is REASSIGNED after its declaration. `export let f = A; f = B`
+ *     seeds `A` only, so a callable installed by the later assignment reads
+ *     unreported. The seeding resolves a binding to the value it was declared
+ *     with; the assignment machinery further down models reassignment for taint
+ *     but is not consulted here.
  *   - a read performed BY a helper rather than by this file. `Reflect.get(o, k)`
  *     walks the prototype chain inside the call, and there is no property access
  *     here to report. What the walker does instead is refuse to launder: the
@@ -739,9 +753,13 @@ function analyse(sourceFile) {
   const exportListNames = new Set();
   eachNode(sourceFile, (node) => {
     if (!ts.isExportDeclaration(node) || node.moduleSpecifier !== undefined) return;
+    // `export type { X }` exports no runtime binding, so it is not an entry
+    // point — a caller cannot call it.
+    if (node.isTypeOnly) return;
     const clause = node.exportClause;
     if (clause === undefined || !ts.isNamedExports(clause)) return;
     for (const specifier of clause.elements) {
+      if (specifier.isTypeOnly) continue;
       exportListNames.add((specifier.propertyName ?? specifier.name).text);
     }
   });
@@ -769,9 +787,9 @@ function analyse(sourceFile) {
     // 🔴 **This resolves a VALUE to the callables it carries; it does not
     // enumerate spellings.** The difference is the whole finding of AIC-82's
     // second gate round. A first version listed the shapes it knew — arrow,
-    // function expression, flat object literal, class declaration — and six
-    // more shapes reached a caller anyway. The nearest one was the ordinary way
-    // a barrel is written:
+    // function expression, flat object literal, class declaration — and further
+    // spellings reached a caller anyway. The nearest one was the ordinary way a
+    // barrel is written:
     //
     //     function persistRunV2(options) { return options.client; }  // unreported
     //     export const persistenceV2 = { persistRunV2 };
