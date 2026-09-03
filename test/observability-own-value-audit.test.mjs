@@ -18,6 +18,12 @@
  * the AIC-67 entry). So the inventory is COMPUTED here, from the file's AST,
  * every run.
  *
+ * Its scope is ONE file, `packages/observability/src/index.ts`, and "the
+ * observability layer" in the test names above means that file only because a
+ * second one would fail › "audits every source file the observability layer
+ * has". Without that check the claim would go quietly false on the day someone
+ * adds a source file, which is the day it would matter.
+ *
  * ## Why an AST and not a regex
  *
  * At the commit this audit was written against, two functions in that file
@@ -48,12 +54,17 @@
  * own-only local objects and read those downstream, so the audit has to be able
  * to tell a projection from the thing it projects. Three properties do that:
  *
- *   - **Caller data enters at the exported functions and spreads by
- *     argument.** A parameter of an exported function holds caller data; an
- *     internal function's parameter holds caller data only when some call site
- *     hands it some. This is what makes `persistPreparedExperiment`'s
- *     `OwnExperiment` parameter clean while `requireResourceEvidence`'s
- *     parameter is not — the same shape, different callers.
+ *   - **Caller data enters at everything this module exports as a callable,
+ *     and spreads by argument.** That is a parameter of an exported function
+ *     DECLARATION, of an exported `const` bound to an arrow or function
+ *     expression, and of a method, accessor, constructor or arrow-valued
+ *     property of an exported class — the forms are interchangeable to a
+ *     caller, so seeding one of them would let a style refactor empty this
+ *     audit without changing a single read. An internal function's parameter
+ *     holds caller data only when some call site hands it some, which is what
+ *     makes `persistPreparedExperiment`'s `OwnExperiment` parameter clean while
+ *     `requireResourceEvidence`'s parameter is not — the same shape, different
+ *     callers.
  *   - **A function's return value carries caller data if any expression it
  *     returns does.** A fresh object literal does not, which is exactly why the
  *     projections launder and `ownValue` deliberately does not: `ownValue`
@@ -63,6 +74,13 @@
  *     carries a passthrough field — an `unknown` holding the caller's object —
  *     launders the container but not that field, so a later read THROUGH it is
  *     still reported.
+ *   - **A container is only as laundered as what was put in it.**
+ *     `Object.fromEntries` builds with CreateDataProperty exactly as a literal
+ *     does, so the CONTAINER is fresh — but its values are the pairs it was
+ *     handed, and `map` yields what its callback returned. That chain is what
+ *     makes `requireMetrics` returning a fresh `{ key, score }` pair, rather
+ *     than the caller's own metric object, a thing this audit holds: reverting
+ *     it reports the two reads off that object at the feedback call.
  *
  * ## The coarsenings, stated rather than implied
  *
@@ -89,9 +107,13 @@
  *      are followed; any other way of filling an array is not.
  *   5. **Field knowledge stops at six levels deep**, which is what makes the
  *      lattice finite and the fixpoint terminate. Deeper than that a projection
- *      reads as opaque rather than as caller data.
+ *      reads as opaque rather than as caller data. Six is not decoration: the
+ *      probe below carries a projection nested exactly that deep, so lowering
+ *      the cap to five or less turns › "reports every plain [[Get]] planted on
+ *      caller-supplied data" red. It was the one coarsening with no planted read
+ *      behind it, and a number nothing holds is a number that drifts down.
  *
- * ⚠ Two blind spots no audit of this file's text can close, stated here so no
+ * ⚠ Four blind spots no audit of this file's text can close, stated here so no
  * reader infers cover that is not there:
  *
  *   - a built-in that reads a caller array element for you — `slice`, `at`,
@@ -102,17 +124,28 @@
  *     binding is not resolved to its declaration, so caller data does not follow
  *     it. A `const`-bound arrow IS resolved — that is what makes the `own` alias
  *     in `requireResourceEvidence` a non-event rather than a false positive.
+ *   - a METHOD is in that same set. An argument passed to `x.m(…)` is not
+ *     matched to `m`'s parameter, so a method of a NON-exported class receives
+ *     caller data from nothing and reads nothing. Methods of an exported class
+ *     are covered, because they are seeded directly rather than reached.
+ *   - a read performed BY a helper rather than by this file. `Reflect.get(o, k)`
+ *     walks the prototype chain inside the call, and there is no property access
+ *     here to report. What the walker does instead is refuse to launder: the
+ *     RESULT of any helper it does not model carries caller data, so the next
+ *     read off it IS reported — pinned below by
+ *     `reflected.plantedBehindAnUnmodelledHelper`. The call itself stays silent.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join as joinPath, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const auditedPath = resolve(projectRoot, 'packages/observability/src/index.ts');
+const auditedLayer = resolve(projectRoot, 'packages/observability/src');
+const auditedPath = resolve(auditedLayer, 'index.ts');
 const auditedSource = readFileSync(auditedPath, 'utf8');
 
 /**
@@ -149,6 +182,11 @@ const DECLARED_EXEMPTIONS = [
     fn: 'requireExperiment',
     expression: 'results.length',
     why: 'same: proven to be an array by requireOwnArray before its length is read',
+  },
+  {
+    fn: 'persistPreparedExperiment',
+    expression: 'resources[key]',
+    why: 'the container is built by Object.fromEntries from a pair pushed for EVERY key of PERSISTED_RESOURCE_KEYS — requireResourceEvidence throws on any that is absent — and this loop reads that same list, so each key read here is one this layer inserted itself',
   },
   {
     fn: 'persistBenchmarkExperiments',
@@ -280,7 +318,10 @@ function isFunctionLike(node) {
     ts.isFunctionDeclaration(node) ||
     ts.isArrowFunction(node) ||
     ts.isFunctionExpression(node) ||
-    ts.isMethodDeclaration(node)
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
   );
 }
 
@@ -322,6 +363,13 @@ function enclosingFunctionName(node) {
       ts.isIdentifier(current.parent.name)
     ) {
       return current.parent.name.text;
+    }
+    if (
+      (ts.isMethodDeclaration(current) || ts.isGetAccessorDeclaration(current) ||
+        ts.isSetAccessorDeclaration(current)) &&
+      ts.isIdentifier(current.name)
+    ) {
+      return current.name.text;
     }
   }
   return '<module>';
@@ -400,6 +448,9 @@ function analyse(sourceFile) {
     record(bindings.get(scope), name, descriptor);
   };
 
+  const argumentsCarryCallerData = (call, depth) =>
+    call.arguments.some((argument) => taintOf(argument, depth + 1).self);
+
   const taintOf = (node, depth = 0) => {
     const expression = unwrap(node);
 
@@ -417,8 +468,10 @@ function analyse(sourceFile) {
       if (depth >= MAX_FIELD_DEPTH) return descriptor;
       for (const property of expression.properties) {
         if (ts.isSpreadAssignment(property)) {
-          const spread = taintOf(property.expression, depth + 1);
-          descriptor = join(descriptor, { self: false, fields: spread.fields });
+          // `{ ...caller }` copies own enumerable properties into a FRESH object
+          // — whose prototype is `Object.prototype` all the same, so a field the
+          // source did not own is still supplied by the chain on the way out.
+          descriptor = join(descriptor, taintOf(property.expression, depth + 1));
           continue;
         }
         if (ts.isPropertyAssignment(property) && !ts.isComputedPropertyName(property.name)) {
@@ -481,20 +534,36 @@ function analyse(sourceFile) {
       const [firstArgument] = expression.arguments;
 
       if (ts.isPropertyAccessExpression(callee)) {
-        if (
-          ts.isIdentifier(callee.expression) &&
-          callee.expression.text === 'Object' &&
-          OBJECT_HELPERS_RETURNING_CALLER_DATA.has(callee.name.text)
-        ) {
+        if (ts.isIdentifier(callee.expression) && callee.expression.text === 'Object') {
+          const helper = callee.name.text;
           const argument =
             firstArgument === undefined ? clean() : taintOf(firstArgument, depth + 1);
           // `entries`, `values` and `keys` hand back an ARRAY of the caller's
           // values; `getOwnPropertyDescriptor` hands back a fresh wrapper whose
           // `value` is one of them, and collapsing the two is how this walker
           // once laundered every own read in the file.
-          return callee.name.text === 'getOwnPropertyDescriptor'
-            ? { self: argument.self, fields: new Map() }
-            : { self: false, fields: new Map([[ELEMENT, argument]]) };
+          if (helper === 'entries' || helper === 'values' || helper === 'keys') {
+            return { self: false, fields: new Map([[ELEMENT, argument]]) };
+          }
+          if (helper === 'getOwnPropertyDescriptor') {
+            return { self: argument.self, fields: new Map() };
+          }
+          // `fromEntries` BUILDS a container with CreateDataProperty, exactly
+          // as an object literal does — so the container is fresh. Its VALUES
+          // are the second half of each pair it was handed, and a caller's
+          // object arriving that way is republished under this layer's own key
+          // and then read off again. Tuple positions are joined here, so the
+          // element OF the element is exactly those values.
+          if (helper === 'fromEntries') {
+            return { self: elementOf(elementOf(argument)).self, fields: new Map() };
+          }
+          // Anything else is unknown, and the unknown answer is "still caller
+          // data" — `Object.freeze(caller)` hands back the same object, and a
+          // helper this walker has not been taught must not launder by default.
+          return {
+            self: argument.self || elementOf(argument).self,
+            fields: argument.fields,
+          };
         }
         // A method called ON caller data hands back caller data: `records.map`,
         // `experiments.slice`, `client.createDataset`.
@@ -502,11 +571,37 @@ function analyse(sourceFile) {
         // elements; `map` hands back the callback's, and treating those as the
         // receiver's is the conservative direction.
         const receiver = taintOf(callee.expression, depth + 1);
-        return { self: receiver.self, fields: new Map([[ELEMENT, elementOf(receiver)]]) };
+        let element = elementOf(receiver);
+        // `map` hands back what its CALLBACK returns, and reading only the
+        // receiver's elements loses a projection built inside one — or a
+        // caller's object handed straight back out of one.
+        if (
+          (callee.name.text === 'map' || callee.name.text === 'flatMap') &&
+          depth < MAX_FIELD_DEPTH
+        ) {
+          for (const argument of expression.arguments) {
+            const callback = unwrap(argument);
+            if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) continue;
+            for (const returned of returnedExpressions(callback)) {
+              element = join(element, taintOf(returned, depth + 1));
+            }
+          }
+        }
+        const elements = new Map([[ELEMENT, element]]);
+        if (receiver.self) return { self: true, fields: elements };
+        // A helper on some OTHER namespace — `Reflect.get`, `structuredClone`,
+        // `Array.from` — is not modelled, and `Reflect.get` walks the prototype
+        // chain, so an unmodelled helper handed caller data hands caller data
+        // back. Failing toward reporting is the only safe default here.
+        return { self: argumentsCarryCallerData(expression, depth), fields: elements };
       }
 
       if (ts.isIdentifier(callee)) {
-        return returns.get(callee.text) ?? clean();
+        // A function this file declares is answered by its OWN return analysis,
+        // even in the rounds before that answer exists — guessing "caller data"
+        // for it would be joined in permanently, since the fixpoint only grows.
+        if (functions.has(callee.text)) return returns.get(callee.text) ?? clean();
+        return { self: argumentsCarryCallerData(expression, depth), fields: new Map() };
       }
       return clean();
     }
@@ -562,11 +657,43 @@ function analyse(sourceFile) {
   for (; round < MAX_ROUNDS && changed; round += 1) {
     changed = false;
 
-    // Caller data enters here, and only here.
+    // Caller data enters here, and only here — at every form the module can
+    // export a callable in, not at one of them. `export function f(o)` and
+    // `export const f = (o) => …` are the same surface to a caller, and seeding
+    // only the first meant a style refactor silently emptied this audit.
     eachNode(sourceFile, (node) => {
+      const seed = (fn) => {
+        for (const parameter of fn.parameters) {
+          handToParameter(parameter, fn, callerData());
+        }
+      };
       if (ts.isFunctionDeclaration(node) && isExported(node)) {
-        for (const parameter of node.parameters) {
-          handToParameter(parameter, node, callerData());
+        seed(node);
+        return;
+      }
+      if (
+        ts.isVariableDeclaration(node) &&
+        isExported(node) &&
+        node.initializer !== undefined &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      ) {
+        seed(node.initializer);
+        return;
+      }
+      if (ts.isClassDeclaration(node) && isExported(node)) {
+        for (const member of node.members) {
+          if (isFunctionLike(member) || ts.isConstructorDeclaration(member)) {
+            seed(member);
+            continue;
+          }
+          if (
+            ts.isPropertyDeclaration(member) &&
+            member.initializer !== undefined &&
+            (ts.isArrowFunction(member.initializer) ||
+              ts.isFunctionExpression(member.initializer))
+          ) {
+            seed(member.initializer);
+          }
         }
       }
     });
@@ -647,6 +774,16 @@ function analyse(sourceFile) {
         }
         for (const bound of boundNames(node.name, [])) {
           bind(scope, bound, { self: descriptor.self, fields: new Map() });
+        }
+        return;
+      }
+
+      if (ts.isForInStatement(node) && ts.isVariableDeclarationList(node.initializer)) {
+        const key = { self: taintOf(node.expression).self, fields: new Map() };
+        for (const declaration of node.initializer.declarations) {
+          for (const bound of boundNames(declaration.name, [])) {
+            bind(scopeOf(node), bound, key);
+          }
         }
         return;
       }
@@ -745,6 +882,17 @@ function auditReads(text) {
       return;
     }
 
+    // `for (const key in caller)` needs no property access to be a chain walk:
+    // the ENUMERATION itself yields inherited enumerable keys, so the loop is
+    // the violation. `Object.keys` is the own-only form.
+    if (ts.isForInStatement(node) && taintOf(node.expression).self) {
+      report(
+        node.expression,
+        `for…in ${oneLine(node.expression.getText(sourceFile))}`,
+      );
+      return;
+    }
+
     if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
       reportPattern(node.name, node);
       return;
@@ -778,6 +926,25 @@ function formatViolations(violations) {
 /* -------------------------------------------------------------------------- */
 /* The audit                                                                   */
 /* -------------------------------------------------------------------------- */
+
+/** Every TypeScript source the observability layer ships, relative to its root. */
+function layerSources(directory = auditedLayer) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = joinPath(directory, entry.name);
+    if (entry.isDirectory()) found.push(...layerSources(path));
+    else if (/\.(?:ts|mts|cts|tsx)$/.test(entry.name)) found.push(relative(auditedLayer, path));
+  }
+  return found.sort();
+}
+
+test('audits every source file the observability layer has', () => {
+  assert.deepEqual(
+    layerSources(),
+    ['index.ts'],
+    'this audit reads ONE hard-coded file. A second source file in this layer would be audited by nothing, while this file\'s header still read as though the layer were covered — audit the new file too, or glob the directory. Do not delete this assertion: it is the only thing that makes "the observability layer" in the sentence above mean the layer.',
+  );
+});
 
 test('reads every caller-supplied field of the observability layer through ownValue', () => {
   const violations = unexemptedReads(auditedSource);
@@ -836,6 +1003,13 @@ test('states a reason for every exemption it declares', () => {
  *   - the same, where the projection reached the reader inside an array it was
  *     pushed onto — the array machinery laundered every own read in the file
  *     once, silently, and this is what caught it;
+ *   - a read inside an exported const arrow, and inside a method of an exported
+ *     class: rewriting `export function f(o)` as `export const f = (o) => …` is
+ *     a style refactor, and while the seeding named only the declaration form it
+ *     emptied this whole audit without changing a single read;
+ *   - a read after `Object.freeze`, after an object spread, and the enumeration
+ *     in `for (const k in caller)` — the three shapes that look like copies and
+ *     are not;
  *
  * and the honest side — an `ownValue` read, and an internal function that is
  * only ever handed a freshly built local object — must stay unreported.
@@ -875,6 +1049,42 @@ function auditTeethProjection(source: unknown): Readonly<{ raw: unknown }> {
 function auditTeethHonestSink(local: Readonly<{ plantedInAFreshLiteral: number }>): unknown {
   return local.plantedInAFreshLiteral;
 }
+
+export function auditTeethDepthProbe(supplied: unknown): unknown {
+  const level6 = { raw: ownValue(supplied, 'deep') };
+  const level5 = { nested: level6 };
+  const level4 = { nested: level5 };
+  const level3 = { nested: level4 };
+  const level2 = { nested: level3 };
+  const level1 = { nested: level2 };
+  return level1.nested.nested.nested.nested.nested.raw.plantedSixLevelsDown;
+}
+
+export const auditTeethExportedArrow = (
+  opts: Readonly<Record<string, unknown>>,
+): unknown => opts.plantedOnAnExportedArrow;
+
+export class AuditTeethExportedClass {
+  auditTeethMethod(opts: Readonly<Record<string, unknown>>): unknown {
+    return opts.plantedOnAnExportedMethod;
+  }
+}
+
+export function auditTeethLaundering(opts: Readonly<Record<string, unknown>>): unknown {
+  const frozen = Object.freeze(opts);
+  const copied = { ...opts };
+  const enumerated: string[] = [];
+  for (const key in opts) {
+    enumerated.push(key);
+  }
+  const reflected = Reflect.get(opts, 'nested');
+  return [
+    frozen.plantedBehindFreeze,
+    copied.plantedBehindSpread,
+    reflected.plantedBehindAnUnmodelledHelper,
+    enumerated,
+  ];
+}
 `;
 
 const PROBE_FUNCTIONS = new Set([
@@ -883,6 +1093,10 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethProjection',
   'auditTeethHonestSink',
   'auditTeethArraySink',
+  'auditTeethDepthProbe',
+  'auditTeethExportedArrow',
+  'auditTeethMethod',
+  'auditTeethLaundering',
 ]);
 
 const EXPECTED_PROBE_REPORTS = [
@@ -891,6 +1105,13 @@ const EXPECTED_PROBE_REPORTS = [
   'projected.raw.plantedBehindTheProjection',
   'entry.raw.plantedBehindAnIteration',
   'first.raw.plantedBehindAnArray',
+  'level1.nested.nested.nested.nested.nested.raw.plantedSixLevelsDown',
+  'opts.plantedOnAnExportedArrow',
+  'opts.plantedOnAnExportedMethod',
+  'frozen.plantedBehindFreeze',
+  'copied.plantedBehindSpread',
+  'reflected.plantedBehindAnUnmodelledHelper',
+  'for…in opts',
 ];
 
 function probeReports() {
