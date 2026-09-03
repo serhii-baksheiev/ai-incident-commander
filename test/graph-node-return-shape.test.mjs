@@ -63,14 +63,15 @@ const NAMES_THE_REFUSED_SHAPE = /\bcommand\b/i;
 const NAMES_WHAT_THE_GRAPH_OWNS = /\bcontrol\b|\brout(e|ing)\b/i;
 
 /**
- * A control update a `Command` could carry, with every graph-owned field set to
- * a value that differs from what `initialState()` starts with — so a hijack
- * that got through is visible rather than accidentally equal to what the graph
- * would have written.
+ * A control update a `Command` could carry, one entry per graph-owned field.
  *
- * Keyed by the exported protected set rather than by hand, and asserted against
- * it below, so a field added to `GRAPH_OWNED_CONTROL_FIELDS` cannot quietly go
- * untested on this path.
+ * ⚠ Only the KEY SET is load-bearing. The values are chosen to differ from what
+ * `initialState()` starts with, but nothing here observes them: the refusal
+ * fires before any of them is read, so replacing all ten with the graph's own
+ * starting values leaves this file green. Do not read the differing values as
+ * protection — the assertion that carries weight is the one below, which pins
+ * these keys against `GRAPH_OWNED_CONTROL_FIELDS` so a field added there cannot
+ * quietly go untested on this path.
  */
 const HIJACKED_CONTROL = {
   runId: 'hijacked-run',
@@ -216,7 +217,7 @@ test('refuses a Command returned by a lifecycle node, naming what the graph owns
   );
 });
 
-test('refuses a Command carrying a control update before the update is read', async () => {
+test('refuses a Command carrying a control update, and no later node runs', async () => {
   const { trace } = await assertWrapperRefusesFirstNodeResult(
     'a Command carrying a control update',
     (state) =>
@@ -228,12 +229,41 @@ test('refuses a Command carrying a control update before the update is read', as
 
   // The spread of the graph-owned control over a `Command` is meaningless: the
   // update rides inside the Command instead of on the object the wrapper
-  // rewrote, so nothing the wrapper did applies to it. Refusing before the
-  // update is read is what makes that unreachable rather than merely unlikely.
+  // rewrote, so nothing the wrapper did applies to it.
+  //
+  // ⚠ What this test does NOT pin is the ORDER inside the wrapper. Moving the
+  // guard below the destructure leaves the whole suite green, because the only
+  // observable here is that the run stopped. The title used to claim "before
+  // the update is read" and has been corrected to what is actually asserted.
   assert.deepStrictEqual(
     trace,
     ['normalize_incident'],
     'no node may run after a Command carrying a hijacked control was returned',
+  );
+});
+
+test('refuses an array carrying a Command, which LangGraph would otherwise honour', async () => {
+  // `isCommand` alone says false for `[command]`, and LangGraph honours an
+  // array containing one — so without this shape in the guard a node could hand
+  // back routing that the wrapper waved through and the graph then discarded
+  // silently. Measured before the guard covered it: the run RESOLVED, every
+  // downstream node ran, and the Command's routing was dropped with no error.
+  // The control hijack did not land even then, so this closes a silent-discard
+  // hole rather than an ownership hole.
+  const { trace } = await assertWrapperRefusesFirstNodeResult(
+    'an array carrying a Command',
+    (state) => [
+      new Command({
+        goto: END,
+        update: { control: { ...state.control, ...HIJACKED_CONTROL } },
+      }),
+    ],
+  );
+
+  assert.deepStrictEqual(
+    trace,
+    ['normalize_incident'],
+    'the refusal must land on the node that returned the array',
   );
 });
 
@@ -261,9 +291,13 @@ test('refuses a duck-typed Command shape, the way isCommand does', async () => {
  * The regression guard, and the one test here that must pass both before and
  * after the refusal exists.
  *
- * The graph's OWN nodes return `Command` legitimately — `review_conclusion` on
- * all three resume routes, and `termination_check` / `challenge_hypothesis` for
- * routing. Checked in `packages/graph/src/investigation.ts` rather than
+ * The graph's OWN routing uses `Command` legitimately — `review_conclusion` on
+ * all three resume routes, and `termination_check` when it routes. Not
+ * `challenge_hypothesis`, whose only return path is a plain object: the Command
+ * that sends TO that node is built by `routeChallenge`, which is easy to
+ * conflate and was conflated in the first draft of this comment. What keeps all
+ * three out of the refusal's reach is the REGISTRATION, not the return shape.
+ * Checked in `packages/graph/src/investigation.ts` rather than
  * assumed: `addNode('termination_check', terminationCheck, …)`,
  * `addNode('challenge_hypothesis', challengeHypothesis)` and
  * `addNode('review_conclusion', reviewConclusion, …)` all register the graph's

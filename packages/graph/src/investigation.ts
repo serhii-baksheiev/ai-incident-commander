@@ -551,12 +551,25 @@ function preserveGraphOwnedControl(
     // LangGraph's own predicate, which also catches the duck-typed
     // `{ lg_name: 'Command' }` shape a hand-built object could carry.
     //
-    // The graph's OWN nodes still route this way — `termination_check`,
-    // `challenge_hypothesis` and `review_conclusion` return `Command` and are
-    // registered unwrapped, so this refusal cannot reach them. see
-    // graph-node-return-shape.test.mjs › "still lets the graph's own nodes
-    // return a Command"
-    if (isCommand(result)) {
+    // ⚠ `isCommand` says false for an ARRAY containing a Command, and LangGraph
+    // honours that shape — so the array is checked too. Without it a node could
+    // hand back routing the wrapper waved through and the graph then discarded
+    // in silence; measured before this arm existed, such a run RESOLVED with
+    // every downstream node executed and no error. `.some` stops at the first
+    // match. see graph-node-return-shape.test.mjs › "refuses an array carrying
+    // a Command, which LangGraph would otherwise honour"
+    //
+    // The graph's OWN routing still works this way. `termination_check` and
+    // `review_conclusion` return `Command` directly, and `routeChallenge`
+    // builds the one that sends to `challenge_hypothesis` — that node itself
+    // returns a plain object. All three are registered UNWRAPPED, and the
+    // registration, not the return shape, is why this refusal cannot reach
+    // them. see graph-node-return-shape.test.mjs › "still lets the graph's own
+    // nodes return a Command"
+    if (
+      isCommand(result) ||
+      (Array.isArray(result) && result.some((entry) => isCommand(entry)))
+    ) {
       throw new Error(
         'lifecycle node returned a Command: routing and graph-owned control are the graph\'s, not a node\'s',
       );
