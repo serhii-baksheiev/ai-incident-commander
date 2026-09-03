@@ -95,6 +95,78 @@ export type InvestigationExecutionConfig = Readonly<{
 }>;
 
 /**
+ * The control fields the graph owns: a node may not decide any of them.
+ *
+ * This list is the one spelling of that set **in the code**.
+ * `preserveGraphOwnedControl` derives its sites from it and
+ * `InvestigationNodeResult` derives the compile-time prohibition from it.
+ * Before AIC-73 that function spelled the names by hand three times: ten in
+ * `protectedControl`, ten in the destructuring of the node's update, and nine
+ * in `graphOwned`, which leaves `stopKind` out on purpose. The three agreed;
+ * nothing made them, which is what this constant changes.
+ *
+ * A fourth copy, in prose, is why they were worth collapsing: the wrapper's
+ * docstring used to name the set (written by AIC-62), went stale when AIC-63
+ * added `resumeCount`, and AIC-65 deleted the sentence rather than repairing it.
+ *
+ * ⚠ Outside this file the set is described only in PART, and the drift that
+ * predicts has already landed rather than being ahead of us:
+ * `docs/incident-commander-architecture-v1.md` calls eight of these ten
+ * graph-owned — the three budgets, the three usage counters, `runId` and
+ * `humanReview` — and describes `challengeRounds` and `stopKind` as graph-owned
+ * nowhere; `packages/domain/src/contracts.ts` annotates three
+ * (`iterationsUsed`, `llmCallsUsed`, `resumeCount`) as per-field notes. Neither
+ * is wrong about what it does say, neither is derived from this constant, and
+ * neither is a place to audit the set from.
+ *
+ * **Frozen, and that is load-bearing rather than tidy.** `as const` is erased at
+ * compile time, so an exported array is ordinary mutable runtime state that any
+ * caller — a lifecycle node included, since a node is arbitrary in-process code
+ * handed to `createInvestigationGraph` — can `import` and splice. Two entries
+ * removed from it used to be enough to make `humanReview` and `runId` vanish
+ * from persisted control, routing `propose_conclusion` straight to END with no
+ * interrupt and no error: the exact bypass this set exists to prevent, reached
+ * without writing either field. Under ESM's strict mode a frozen array throws
+ * on every mutation form instead — pinned in
+ * graph-owned-control-contract.test.mjs › "publishes the graph-owned control
+ * field set as one exported constant".
+ *
+ * `satisfies` proves every entry is a real control field; it does NOT prove the
+ * list is complete, so completeness is a test rather than a type — see
+ * graph-owned-control-contract.test.mjs › "classifies every control field the
+ * schema declares as graph-owned or node-writable", which partitions
+ * `IncidentStateControlSchema` and goes red on a field classified neither way.
+ */
+export const GRAPH_OWNED_CONTROL_FIELDS = Object.freeze([
+  'stopKind',
+  'runId',
+  'humanReview',
+  'challengeRounds',
+  'reservedChallengeBudget',
+  'maxIterations',
+  'llmCallBudget',
+  'iterationsUsed',
+  'llmCallsUsed',
+  'resumeCount',
+] as const satisfies readonly (keyof IncidentStateControl)[]);
+
+export type GraphOwnedControlField =
+  (typeof GRAPH_OWNED_CONTROL_FIELDS)[number];
+
+/**
+ * The control a lifecycle node may hand back — everything the graph does not
+ * own, and nothing else.
+ */
+export type NodeWritableControl = Omit<
+  IncidentStateControl,
+  GraphOwnedControlField
+>;
+
+const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
+  GRAPH_OWNED_CONTROL_FIELDS,
+);
+
+/**
  * What a lifecycle node hands back to the graph.
  *
  * `declaredLlmCalls` is the ONE channel through which a node reports LLM
@@ -122,8 +194,8 @@ export type InvestigationExecutionConfig = Readonly<{
  * `investigation-graph.test.mjs` › "adds a node-declared llm call count to
  * llmCallsUsed through the typed boundary" for what the channel does cover.
  */
-export type InvestigationNodeResult = Partial<IncidentState> &
-  Readonly<{ declaredLlmCalls?: number }>;
+export type InvestigationNodeResult = Omit<Partial<IncidentState>, 'control'> &
+  Readonly<{ control?: NodeWritableControl; declaredLlmCalls?: number }>;
 
 export type InvestigationNode = (
   state: IncidentState,
@@ -332,16 +404,89 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 }
 
 /**
+ * Writes an own data property, the way object-rest already does — never `[[Set]]`.
+ *
+ * Plain assignment consults the prototype chain for a setter, so a polluted
+ * `Object.prototype.humanReview` would swallow the graph's own value on its way
+ * into the object being built and leave the field absent. Both accumulators
+ * below start as `{}` and are therefore exposed to exactly that, which is why
+ * neither of them assigns — see graph-owned-control-contract.test.mjs ›
+ * "keeps graph-owned control intact while Object.prototype carries a setter of
+ * that name".
+ */
+function defineOwnValue(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
+ * Reads the graph-owned half of a control object, by the one list that names it.
+ *
+ * A field absent from the source lands as `undefined`, which is the shape
+ * `stopKind` legitimately has on a run that has not stopped — the wrapper below
+ * restores that field only when it carries a value.
+ */
+function pickGraphOwnedControl(
+  control: IncidentStateControl,
+): Pick<IncidentStateControl, GraphOwnedControlField> {
+  const picked: Record<string, unknown> = {};
+  for (const field of GRAPH_OWNED_CONTROL_FIELDS) {
+    defineOwnValue(picked, field, control[field]);
+  }
+  return picked as Pick<IncidentStateControl, GraphOwnedControlField>;
+}
+
+/**
+ * Drops every graph-owned field from a control object a node handed back.
+ *
+ * ⚠ Load-bearing for `stopKind` and for `stopKind` only. The `...graphOwned`
+ * spread in the caller re-imposes the other nine whatever this function leaves
+ * behind; `stopKind` is not in that spread, so a node's value survives unless
+ * it is dropped here — pinned in graph-owned-control-contract.test.mjs ›
+ * "hides a hijacked graph-owned field from every node that runs after it".
+ *
+ * `Object.keys` reads OWN enumerable keys only, the idiom the rest of this file
+ * uses on caller data: a polluted `Object.prototype.llmCallsUsed` is not a key
+ * of the node's update and so cannot arrive here as one. It also narrows what
+ * the rest-spread this replaced would copy — a symbol-keyed own property on the
+ * node's update no longer reaches the persisted control, which is a behaviour
+ * change and so is pinned rather than asserted here:
+ * graph-owned-control-contract.test.mjs › "drops a symbol-keyed property a
+ * lifecycle node puts on its control update". Nothing in the domain schema is
+ * symbol-keyed, and the direction is toward less caller data, not more.
+ */
+function withoutGraphOwnedControl(
+  control: IncidentStateControl | NodeWritableControl,
+): NodeWritableControl {
+  const source = control as Record<string, unknown>;
+  const rest: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    if (GRAPH_OWNED_CONTROL_FIELD_SET.has(key)) continue;
+    defineOwnValue(rest, key, source[key]);
+  }
+  return rest as NodeWritableControl;
+}
+
+/**
  * Wraps a lifecycle node so the graph keeps ownership of every control field a
- * node must not decide. The `protectedControl` object below is the one list of
- * those fields; this comment deliberately does not repeat it, because the copy
- * that used to be here fell behind the code — AIC-63 added `resumeCount` and
- * the sentence never named it, not even when AIC-65 rewrote it to add `runId`
- * and `humanReview`. `humanReview` is what the `propose_conclusion`
- * edge routes on and `runId` is what the interactive identity check compares
- * against the thread, so a node writing either could route a conclusion past
- * its human review — pinned in hitl-conclusion-review.test.mjs › "does not let
- * a lifecycle node disarm both the review gate and the run identity at once".
+ * node must not decide. Which fields those are is `GRAPH_OWNED_CONTROL_FIELDS`
+ * and only that constant — this comment deliberately does not repeat the list,
+ * because the copy that used to be here fell behind the code twice.
+ *
+ * Two of them are why the set matters rather than merely being tidy:
+ * `humanReview` is what the `propose_conclusion` edge routes on and `runId` is
+ * what the interactive identity check compares against the thread, so a node
+ * writing either could route a conclusion past its human review — pinned in
+ * hitl-conclusion-review.test.mjs › "does not let a lifecycle node disarm both
+ * the review gate and the run identity at once".
  *
  * `countsLogicalIteration` is what makes `iterationsUsed` graph-owned rather
  * than node-reported: the increment happens HERE, on entry to the wrapped node,
@@ -350,62 +495,38 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 function preserveGraphOwnedControl(
   node: InvestigationNode,
   options: Readonly<{ countsLogicalIteration?: boolean }> = {},
-): InvestigationNode {
+): (state: IncidentState) => Promise<Partial<IncidentState>> {
   return async (state) => {
     const current = (state as InvestigationGraphState).control;
     assertPersistedStateVersion(current);
     assertLogicalBudgetCounters(current);
 
     const protectedControl = {
-      stopKind: current.stopKind,
-      runId: current.runId,
-      humanReview: current.humanReview,
-      challengeRounds: current.challengeRounds,
-      reservedChallengeBudget: current.reservedChallengeBudget,
-      maxIterations: current.maxIterations,
-      llmCallBudget: current.llmCallBudget,
+      ...pickGraphOwnedControl(current),
       iterationsUsed:
         current.iterationsUsed + (options.countsLogicalIteration ? 1 : 0),
-      llmCallsUsed: current.llmCallsUsed,
-      resumeCount: current.resumeCount,
     };
     const result = await node(incidentStateOf(state as InvestigationGraphState));
     const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
+
+    // `stopKind` is restored separately from the other nine: absent means "this
+    // run has not stopped", and writing the key with an `undefined` value is a
+    // different state from not writing it.
+    const { stopKind, ...graphOwnedWithoutStopKind } = protectedControl;
     const graphOwned = {
-      runId: protectedControl.runId,
-      humanReview: protectedControl.humanReview,
-      challengeRounds: protectedControl.challengeRounds,
-      reservedChallengeBudget: protectedControl.reservedChallengeBudget,
-      maxIterations: protectedControl.maxIterations,
-      llmCallBudget: protectedControl.llmCallBudget,
-      iterationsUsed: protectedControl.iterationsUsed,
+      ...graphOwnedWithoutStopKind,
       llmCallsUsed: protectedControl.llmCallsUsed + readDeclaredLlmCalls(result),
-      resumeCount: protectedControl.resumeCount,
     };
 
     // The node's own control update is the base only when it sent one; with no
     // update the current control is, so a graph-owned increment still lands.
-    const {
-      stopKind: _ignoredStopKind,
-      runId: _ignoredRunId,
-      humanReview: _ignoredHumanReview,
-      challengeRounds: _ignoredChallengeRounds,
-      reservedChallengeBudget: _ignoredReservedChallengeBudget,
-      maxIterations: _ignoredMaxIterations,
-      llmCallBudget: _ignoredLlmCallBudget,
-      iterationsUsed: _ignoredIterationsUsed,
-      llmCallsUsed: _ignoredLlmCallsUsed,
-      resumeCount: _ignoredResumeCount,
-      ...control
-    } = update.control ?? current;
+    const control = withoutGraphOwnedControl(update.control ?? current);
     const controlUpdate = { ...control, ...graphOwned };
 
     return {
       ...update,
       control:
-        protectedControl.stopKind === undefined
-          ? controlUpdate
-          : { ...controlUpdate, stopKind: protectedControl.stopKind },
+        stopKind === undefined ? controlUpdate : { ...controlUpdate, stopKind },
     };
   };
 }
