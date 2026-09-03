@@ -132,10 +132,25 @@ export const InvestigationStopSchema = z.enum([
 /**
  * A budget or a usage count: a non-negative safe integer, and nothing else.
  *
- * Exported because the graph validates the same four fields at runtime and must
- * not restate the rule — a schema that admits `-1` while the graph rejects it is
- * one fact spelled two ways, and the copy nobody is looking at is the one that
- * is wrong (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * Exported because the graph re-validates these same counters at runtime and
+ * must not restate the rule — a schema that admits `-1` while the graph rejects
+ * it is one fact spelled two ways, and the copy nobody is looking at is the one
+ * that is wrong (`.claude/rules/invariants.md`, "one mechanism, one
+ * implementation"). The challenge counters carried a hand-written second
+ * spelling of this rule until AIC-76 and no longer do — see
+ * `assertChallengeCounters` in `packages/graph/src/investigation.ts`. Which
+ * fields carry the rule is not listed here, because a list in a comment is the
+ * copy that goes stale: read the schema below. The one that did go stale said "four"
+ * while the graph checked five, and two more have just been added.
+ *
+ * The graph's re-validation is not redundant, and this is the distinction worth
+ * keeping. It runs where this schema cannot: a `kind: 'resume'` takes its state
+ * from the checkpointer and is never parsed by `IncidentStateSchema` at all. And
+ * for `challengeRounds` it enforces something no schema here expresses — the
+ * `MAX_CHALLENGE_ROUNDS` cap, which is the graph's business because the graph is
+ * what spends the rounds. A value one past the cap parses cleanly here on
+ * purpose: investigation-graph.test.mjs › "refuses a start state one past the
+ * challenge round cap, which the domain schema accepts".
  */
 export const LogicalCountSchema = z.number().int().nonnegative();
 
@@ -146,8 +161,8 @@ export const IncidentStateControlSchema = z.strictObject({
   phase: InvestigationPhaseSchema,
   maxIterations: LogicalCountSchema,
   llmCallBudget: LogicalCountSchema,
-  reservedChallengeBudget: z.number(),
-  challengeRounds: z.number(),
+  reservedChallengeBudget: LogicalCountSchema,
+  challengeRounds: LogicalCountSchema,
   // Usage against the two logical budgets above. Required, not optional: an
   // absent counter would have to be read as zero, which is indistinguishable
   // from a run that has spent nothing.

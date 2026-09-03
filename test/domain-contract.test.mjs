@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import * as domain from '@aic/domain';
+import * as graph from '@aic/graph';
 
 const state = {
   incident: { id: 'incident-1', title: 'Checkout failures' },
@@ -331,6 +332,98 @@ for (const invalidCount of [
     }
   });
 }
+
+/**
+ * The two challenge counters are counts in exactly the same sense as the five
+ * budgets above: `challengeRounds` is how many challenge rounds a run has
+ * spent, `reservedChallengeBudget` is how many it may still spend. Declared as
+ * bare numbers they were the looser of two spellings of one fact: a
+ * `kind: 'start'` state carrying **-1, 0.5 or a non-safe integer** parsed here
+ * and was refused later, by the graph, after nine wrapped lifecycle nodes had
+ * run.
+ *
+ * That list is exactly three values, and the two rows below it are not part of
+ * it. `NaN` and the infinities were refused by the bare `z.number()` too — zod
+ * checks finiteness — so those two rows pin ZOD's behaviour, not this
+ * tightening, and reverting either field to `z.number()` leaves them green
+ * while the other three redden. They are kept because a count rule that stopped
+ * refusing NaN would be worth hearing about from somewhere.
+ */
+const challengeCounters = ['challengeRounds', 'reservedChallengeBudget'];
+
+test('declares both challenge counters under the names these rejections check', () => {
+  for (const counter of challengeCounters) {
+    assert.equal(
+      Object.hasOwn(domain.IncidentStateControlSchema.shape, counter),
+      true,
+      `IncidentStateControlSchema must still declare ${counter}, or the rejections below constrain a field that no longer exists`,
+    );
+  }
+});
+
+for (const invalidCount of [
+  { label: 'a fractional', value: 0.5 },
+  { label: 'a negative', value: -1 },
+  { label: 'an infinite', value: Number.POSITIVE_INFINITY },
+  { label: 'a NaN', value: Number.NaN },
+  { label: 'a non-safe-integer', value: Number.MAX_SAFE_INTEGER + 1 },
+]) {
+  test(`rejects ${invalidCount.label} value in every challenge counter`, () => {
+    assert.equal(
+      domain.IncidentStateSchema.safeParse(state).success,
+      true,
+      'the fixture carrying whole counts must parse, or these rejections prove nothing',
+    );
+
+    for (const counter of challengeCounters) {
+      const candidate = structuredClone(state);
+      candidate.control[counter] = invalidCount.value;
+
+      assert.equal(
+        domain.IncidentStateSchema.safeParse(candidate).success,
+        false,
+        `${counter} must reject ${invalidCount.label} value at the schema boundary, not one node into the graph`,
+      );
+    }
+  });
+}
+
+test('accepts zero and a whole positive count in every challenge counter', () => {
+  for (const counter of challengeCounters) {
+    for (const value of [0, 2]) {
+      const candidate = structuredClone(state);
+      candidate.control[counter] = value;
+
+      assert.equal(
+        domain.IncidentStateSchema.safeParse(candidate).success,
+        true,
+        `${counter} must accept ${value}: tightening the counters must not narrow what a legitimate run may carry`,
+      );
+    }
+  }
+});
+
+/**
+ * The boundary between the two rules, and the reason the graph's
+ * `assertChallengeCounters` is still load-bearing after the counters become
+ * counts: `MAX_CHALLENGE_ROUNDS` is deliberately NOT a schema concern. The
+ * schema decides what a counter IS — a whole non-negative count — while how
+ * many rounds this graph will run is the graph's policy, and a cap the domain
+ * package cannot see cannot be expressed by `LogicalCountSchema`. A state past
+ * the cap is therefore a well-formed state the graph refuses, not a malformed
+ * one — see investigation-graph.test.mjs › "refuses a start state one past the
+ * challenge round cap, which the domain schema accepts".
+ */
+test('accepts a challenge round count past the graph cap, which is not a schema concern', () => {
+  const candidate = structuredClone(state);
+  candidate.control.challengeRounds = graph.MAX_CHALLENGE_ROUNDS + 1;
+
+  assert.equal(
+    domain.IncidentStateSchema.safeParse(candidate).success,
+    true,
+    'the cap belongs to the graph; the schema constrains the shape of the count and nothing else',
+  );
+});
 
 test('keeps the baseline status-rules version at v0.1 across the state schema bump', () => {
   assert.equal(domain.STATUS_RULES_VERSION, 'v0.1');

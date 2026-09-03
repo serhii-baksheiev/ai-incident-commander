@@ -399,10 +399,11 @@ for (const counter of corruptPersistedCounters) {
  * The challenge counters need their own rows, for a reason the logical
  * counters' header does NOT give.
  *
- * `LogicalCountSchema` is not what guards these two: `IncidentStateControlSchema`
- * declares `reservedChallengeBudget` and `challengeRounds` as bare `z.number()`,
- * which accepts -1 on the `kind: 'start'` path as readily as a checkpoint does
- * on the resume path. What refuses such a value is the graph's own
+ * `LogicalCountSchema` is not what guards these two ON THIS PATH. Both fields
+ * have carried it since AIC-76, so a `-1` is refused at the `kind: 'start'`
+ * boundary — but a `kind: 'resume'` takes its state from the checkpointer and
+ * is never parsed by `IncidentStateSchema` at all, which is what these rows are
+ * about. What refuses such a value here is the graph's own
  * `assertChallengeCounters`, called from `routeChallenge`, `terminationCheck`,
  * `challengeHypothesis` and — since these rows went green — `reviewConclusion`.
  * The first three read the counters to decide something; a `confirm` decides

@@ -591,19 +591,29 @@ function assertPersistedStateVersion(control: IncidentStateControl): void {
   }
 }
 
+/**
+ * Fails closed on a challenge counter that is not a count, and on a round
+ * counter past the cap.
+ *
+ * "Is a count" is `isLogicalCount`, the same `LogicalCountSchema` the domain
+ * exports and the logical budgets are checked with — deliberately not a second
+ * hand-written spelling of it. It used to be one (`Number.isSafeInteger(x) &&
+ * x >= 0`), which agreed with the schema by luck rather than by construction.
+ *
+ * The cap is the part that is genuinely this function's own: no schema in the
+ * domain package expresses `MAX_CHALLENGE_ROUNDS`, because the graph is what
+ * spends the rounds — see investigation-graph.test.mjs › "refuses a start state
+ * one past the challenge round cap, which the domain schema accepts".
+ */
 function assertChallengeCounters(control: IncidentStateControl): void {
   if (
-    !Number.isSafeInteger(control.challengeRounds) ||
-    control.challengeRounds < 0 ||
+    !isLogicalCount(control.challengeRounds) ||
     control.challengeRounds > MAX_CHALLENGE_ROUNDS
   ) {
     throw new Error('invalid challenge round counter');
   }
 
-  if (
-    !Number.isSafeInteger(control.reservedChallengeBudget) ||
-    control.reservedChallengeBudget < 0
-  ) {
+  if (!isLogicalCount(control.reservedChallengeBudget)) {
     throw new Error('invalid reserved challenge budget');
   }
 }
