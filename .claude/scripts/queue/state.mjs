@@ -77,9 +77,56 @@ import { mainCheckoutRoot } from './checkout.mjs';
  * before and records `normal` — which clears the ration outright rather than as
  * prose (`docs/decisions/review-lanes.md`).
  */
-const tierOf = (elevated) => {
-  if (elevated.length === 0) return 'normal';
-  return elevated.every(executesNothing) ? 'elevated-prose' : 'elevated-mechanism';
+/**
+ * A ticket id, strictly — the key half of the one path excluded below.
+ *
+ * 🔴 It is validated rather than interpolated because the value builds a PATH.
+ * `../../etc` would name a file outside the claims directory entirely, and an
+ * exclusion that can be pointed anywhere is not an exclusion, it is a way to
+ * opt any single file out of the ration. Refusing loudly is the only safe
+ * answer: the caller always knows its own ticket, so a value that is not one is
+ * a bug in the caller, never a case to be lenient about.
+ */
+const TICKET_ID = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/**
+ * The one elevated path a task crosses because the PROCEDURE says so, not
+ * because of what the work touched.
+ *
+ * Every task writes `.rig/claims/<ticket>.json` — the `loop` skill requires the
+ * record, and `CLAUDE.md` declares the whole of `.rig/` elevated. So before
+ * AIC-70 every close recorded `elevated-mechanism`, and a ration that fires on
+ * every item spaces nothing: it is indistinguishable from a ration that is off.
+ * Measured on this repository: an ordinary task touching a source file, a test
+ * and its own claim record recorded the mechanism tier.
+ *
+ * ⚠ **Only the CURRENT task's record, and only for the ration.** Another task's
+ * claim record is a record that decides someone else's revalidation and nothing
+ * in this task's procedure requires touching it. And `elevatedPaths` in the
+ * return value keeps naming this file either way — that answers the GATE's
+ * question, and a close that stopped listing it would look clean to the sweep
+ * built to catch merges across elevated paths.
+ */
+const canonicalClaimRecord = (ticket) => {
+  if (!TICKET_ID.test(ticket)) {
+    throw new Error(
+      `recordCompletedTier was given ${JSON.stringify(ticket)} as a ticket id, which is not one. ` +
+        'The id builds the path of the claim record excluded from the spacing ration, so a value ' +
+        'that is not a ticket id could name any file; it is refused rather than interpolated.',
+    );
+  }
+  return `.rig/claims/${ticket}.json`;
+};
+
+const tierOf = (elevated, ticket) => {
+  // No ticket, no exclusion. Deriving one from the diff would let any change opt
+  // out of the ration by adding a file shaped like a claim record.
+  const rationed =
+    ticket === undefined || ticket === null
+      ? elevated
+      : elevated.filter((path) => path !== canonicalClaimRecord(ticket));
+  if (rationed.length === 0) return 'normal';
+  return rationed.every(executesNothing) ? 'elevated-prose' : 'elevated-mechanism';
 };
 
 /**
@@ -88,6 +135,12 @@ const tierOf = (elevated) => {
  * `changedFiles` is the diff's file list — `git diff --name-only <base>...<head>`
  * for the merged PR. It is a required argument and not a defaulted one, which is
  * the whole point of the two refusals below.
+ *
+ * `ticket` is the item being closed. It is what excludes that task's own
+ * `.rig/claims/<ticket>.json` from the SPACING decision — see
+ * `canonicalClaimRecord` for why the procedure's own file must not ration the
+ * next item. Omitting it is safe and conservative: the record then counts, which
+ * is the pre-AIC-70 behaviour.
  *
  * Returns `{ tier, elevatedPaths }`: the value written, and the files that
  * earned it, so the close step can journal *why* rather than just *what*.
@@ -116,7 +169,13 @@ const tierOf = (elevated) => {
  * cases: `execFileSync`, which the documented snippet uses, throws `ENOBUFS`
  * rather than returning a short string — measured, so it fails loudly.)
  */
-export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runDir } = {}) => {
+export const recordCompletedTier = ({
+  changedFiles,
+  projectRoot,
+  statePath,
+  runDir,
+  ticket,
+} = {}) => {
   // 🔴 An absent file list is NOT a normal change. A zero and an unknown look
   // identical in a count and mean opposite things, and guessing `normal` here
   // would rebuild the exact blind spot this module closes: the permissive
@@ -145,7 +204,7 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   }
 
   const elevated = elevatedPathsIn(changedFiles, declared);
-  const tier = tierOf(elevated);
+  const tier = tierOf(elevated, ticket);
 
   // State only. It deliberately does NOT carry `adapter` or `options`: two files
   // answering "which queue is this" is two answers with no rule for which wins,

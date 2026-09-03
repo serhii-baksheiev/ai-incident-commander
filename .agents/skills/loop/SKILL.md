@@ -981,6 +981,7 @@ three poisons the only channel by which this project learns.
       changedFiles,
       projectRoot: process.cwd(),
       runDir: process.env.RIG_RUN_DIR,
+      ticket: "<item-id>",
     }));
   '
   ```
@@ -991,7 +992,12 @@ three poisons the only channel by which this project learns.
   - **`<merge-sha>^1 <merge-sha>`**, never `origin/<default>...<merge-sha>`;
   - **`-z`, and split on `\0`**, or a quoted path records the wrong tier;
   - **`execFileSync` with an argument array**, never a shell string;
-  - **`env: withoutGitLocation()`**, or under a git hook it diffs another repo.
+  - **`env: withoutGitLocation()`**, or under a git hook it diffs another repo;
+  - **`ticket`**, or the item's own `.rig/claims/<item-id>.json` counts toward
+    the spacing ration. Every task writes that record because this procedure
+    requires it, so counting it spaces every item equally — which is the same as
+    spacing none (AIC-70). Passing the wrong id is refused rather than applied;
+    passing none is the old, conservative behaviour.
 
   🔴 One of them — `-z` — fails **silently and permissively**: it records
   `normal` for an elevated change rather than refusing. The wrong diff form
