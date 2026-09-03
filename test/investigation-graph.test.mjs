@@ -586,8 +586,12 @@ for (const invalidCounter of [
  * This is the regression pin on `assertChallengeCounters`: however strict the
  * schema becomes about the SHAPE of the counter, the cap stays the graph's job,
  * and deleting the guard because "the schema covers it now" turns this red.
- * Unlike the rows above, lifecycle nodes DO run here before the refusal lands —
- * the input was well-formed, so the refusal cannot come from the boundary.
+ * Unlike the rows above, the refusal here cannot come from the input boundary —
+ * the state is well-formed. Which node it comes from is the sibling test's
+ * subject, not this one's: since AIC-75 the wrapper refuses on entry to the
+ * first node, and this test deliberately asserts only THAT it is refused and by
+ * what message, so it keeps pinning the cap even if the assertion point moves
+ * again.
  */
 test('refuses a start state one past the challenge round cap, which the domain schema accepts', async () => {
   const createInvestigationGraph = requireGraphFactory();
@@ -630,6 +634,78 @@ test('refuses a start state one past the challenge round cap, which the domain s
     outcome.error.message,
     /invalid challenge round counter/,
     'the refusal must name the counter it refused on, not surface as an opaque input error',
+  );
+});
+
+/**
+ * The sibling above pins WHAT the graph refuses; this one pins WHEN.
+ *
+ * `preserveGraphOwnedControl` asserts the persisted schema version and the
+ * logical budget counters on entry to every wrapped lifecycle node, and does
+ * not assert the challenge counters — so a round count past the cap is not seen
+ * until `termination_check` reads it, nine lifecycle nodes into the run. Those
+ * nine nodes execute on a state the graph has already decided it cannot be in:
+ * they call tools, spend LLM calls and write evidence, and the run is refused
+ * afterwards. Entry-time is the only point at which the refusal costs nothing.
+ *
+ * The round counter is the only field this test can exercise, and that is a
+ * property of the schema rather than an omission here. Both challenge counters
+ * carry `LogicalCountSchema`, so a counter that is not a count is refused at the
+ * input boundary with zero nodes entered already — see the row above ›
+ * "fails closed on ${invalidCounter.label} before challenge execution".
+ * `assertChallengeCounters` adds exactly one rule the schema does not express,
+ * the `MAX_CHALLENGE_ROUNDS` cap, and it applies to `challengeRounds` alone:
+ * the reserve is checked only for being a count, which is the schema's own rule
+ * restated. There is therefore no well-formed `reservedChallengeBudget` that
+ * reaches a lifecycle node and is then refused, so there is no second row to
+ * write here.
+ */
+test('refuses a round count past the cap on entry to the first node, not nine nodes in', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const trace = [];
+  let challengeCalls = 0;
+  const graph = createInvestigationGraph({
+    nodes: fakeNodes(
+      trace,
+      async () => ({
+        route: 'challenge-required',
+        leaderId: 'current-leader',
+      }),
+      async () => {
+        challengeCalls += 1;
+        return {
+          alternative: challengeAlternative(challengeCalls),
+          discriminatingTests: [discriminatingTest(challengeCalls)],
+        };
+      },
+    ),
+  });
+  const state = initialState();
+  state.hypotheses = [currentLeader()];
+  state.control.challengeRounds = graphPackage.MAX_CHALLENGE_ROUNDS + 1;
+
+  assert.equal(
+    IncidentStateSchema.safeParse(state).success,
+    true,
+    'this state must be well-formed at the domain boundary, or a refusal before the first node proves nothing about the cap',
+  );
+
+  const outcome = await graph.execute({ kind: 'start', state }).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+
+  assert.equal('error' in outcome, true, 'a challenge round count past the cap must reject the run');
+  assert.match(
+    outcome.error.message,
+    /invalid challenge round counter/,
+    'moving the assertion earlier must not cost the reason its name',
+  );
+  assert.equal(challengeCalls, 0, 'a run past the cap must not execute another challenge');
+  assert.deepEqual(
+    trace,
+    [],
+    'the wrapper must assert the challenge counters on entry, so no lifecycle node body runs on a state the graph has already refused',
   );
 });
 
