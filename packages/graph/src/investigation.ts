@@ -29,6 +29,7 @@ import {
   StateGraph,
   getConfig,
   interrupt,
+  isCommand,
   type LangGraphRunnableConfig,
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
@@ -536,6 +537,31 @@ function preserveGraphOwnedControl(
         current.iterationsUsed + (options.countsLogicalIteration ? 1 : 0),
     };
     const result = await node(incidentStateOf(state as InvestigationGraphState));
+
+    // A `Command` is a routing instruction, and routing is the graph's. Spread
+    // over one, the graph-owned control below would land on an object LangGraph
+    // reads for its `goto` and its own `update` — so the ownership this wrapper
+    // exists to enforce would be decided somewhere else.
+    //
+    // It already fails today, and that is exactly why the check is worth
+    // adding: the failure is `input._updateAsTuples is not a function`, raised
+    // by the dependency's internals after the wrapper has waved the value
+    // through. Nothing local names that behaviour, so an upgrade could turn a
+    // fail-closed into a bypass with every test still green. `isCommand` is
+    // LangGraph's own predicate, which also catches the duck-typed
+    // `{ lg_name: 'Command' }` shape a hand-built object could carry.
+    //
+    // The graph's OWN nodes still route this way — `termination_check`,
+    // `challenge_hypothesis` and `review_conclusion` return `Command` and are
+    // registered unwrapped, so this refusal cannot reach them. see
+    // graph-node-return-shape.test.mjs › "still lets the graph's own nodes
+    // return a Command"
+    if (isCommand(result)) {
+      throw new Error(
+        'lifecycle node returned a Command: routing and graph-owned control are the graph\'s, not a node\'s',
+      );
+    }
+
     const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
 
     // `stopKind` is restored separately from the other nine: absent means "this
