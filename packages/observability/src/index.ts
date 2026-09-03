@@ -377,6 +377,14 @@ function ownRecord(record: unknown): OwnRecord {
     runId: requireOwnString(record, 'runId', 'benchmark record'),
     exampleId: requireOwnString(record, 'exampleId', 'benchmark record'),
     experimentId: requireOwnString(record, 'experimentId', 'benchmark record'),
+    // The one field the type requires and this projection reads softly, and the
+    // asymmetry is deliberate: an absent thread id publishes `undefined` rather
+    // than refusing the run. `threadId` names a conversation for a human to find
+    // later; it decides nothing and no aggregate reads it, so an absent one is a
+    // missing convenience rather than a claim nobody made. The identity triple
+    // and the scenario id are refused because a run published under them asserts
+    // something. If that ever stops being true — if a thread id starts deciding
+    // anything — this line becomes a `requireOwnString` like its neighbours.
     threadId: ownString(record, 'threadId'),
     scenarioId: requireOwnString(scenario, 'id', 'benchmark record scenario'),
     groundTruth: ownValue(scenario, 'groundTruth'),
@@ -449,14 +457,19 @@ function requireMetrics(
       // that owns its name but no score of its own is not missing — it is a
       // metric whose score would otherwise be taken off the prototype and
       // published as a figure no evaluator computed.
-      const score = ownValue(metric, 'score');
+      const score: unknown = ownValue(metric, 'score');
       // `Number.isFinite`, not `typeof === 'number'`: the sibling resource check
       // refuses a non-finite figure and this one admitted NaN and Infinity, so
       // the loosest of the three checks in this file was the one on the score
       // that reaches the feedback stream. The item names this beside the
       // by-reference return; implementing half of that sentence silently would
       // read as having implemented all of it.
-      if (!Number.isFinite(score)) {
+      // `typeof` first, then finiteness: `Number.isFinite` refuses a non-number
+      // but does not NARROW one, so without the type guard the fresh pair below
+      // is `{ key: string; score: unknown }` and only a cast makes it compile.
+      // A cast that stands in for a check is the shape this file spends its
+      // length arguing against.
+      if (typeof score !== 'number' || !Number.isFinite(score)) {
         throw new Error(`benchmark result metric has no score of its own: ${key}`);
       }
       // A FRESH pair, not the caller's object. Returning `metric` published
@@ -800,13 +813,6 @@ async function persistPreparedExperiment({
 }
 
 /**
- * ⚠ The options object is caller-supplied, so it is read own-only rather than
- * destructured — a destructuring default fires only on `undefined`, so an
- * inherited `client` used to suppress the default and send every outbound call
- * in this layer wherever it pointed. Keep the reads own if you change this
- * signature; the audit will tell you if you do not.
- */
-/**
  * The caller's client, or `undefined` when they supplied none.
  *
  * Three answers, not two, and collapsing them is how this got wrong twice:
@@ -838,6 +844,13 @@ function ownClient(options: unknown): LangSmithPersistenceClient | undefined {
   return descriptor.value as LangSmithPersistenceClient | undefined;
 }
 
+/**
+ * ⚠ The options object is caller-supplied, so it is read own-only rather than
+ * destructured — a destructuring default fires only on `undefined`, so an
+ * inherited `client` used to suppress the default and send every outbound call
+ * in this layer wherever it pointed. Keep the reads own if you change this
+ * signature; the audit will tell you if you do not.
+ */
 export async function persistBenchmarkExperiments(
   options: Readonly<{
     client?: LangSmithPersistenceClient;
@@ -871,6 +884,11 @@ export async function persistBenchmarkExperiments(
   for (let index = 0; index < rawExperiments.length; index += 1) {
     experiments.push(requireExperiment(ownElement(rawExperiments, index)));
   }
+  // Unreachable in practice — the raw list was refused when empty above, and the
+  // loop pushes one entry per raw element — and kept anyway, because this is the
+  // site that reads index 0 and this file's rule is that a refusal belongs where
+  // the read is. Recorded as unreachable rather than left for a reader to
+  // mistake for a live guard: deleting it does not turn the suite red.
   if (experiments.length === 0) {
     throw new Error('at least one benchmark experiment is required');
   }

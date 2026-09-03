@@ -86,6 +86,24 @@
  *     than the caller's own metric object, a thing this audit holds: reverting
  *     it reports the two reads off that object at the feedback call.
  *
+ * ## Every capability stated here is pinned, and that is checked
+ *
+ * Three review rounds each found a different capability that WORKED, that this
+ * header promised, and that could be deleted with every test green. They were
+ * one defect, not three: nothing tied the claims to the probe, so each round
+ * closed the instance it happened to try. The rule that replaces the rounds:
+ *
+ *   **a capability stated here has a probe entry naming it, or it is not stated
+ *   — it goes in the blind-spot list instead. Rewording is not an exit.**
+ *
+ * `WALKER_CAPABILITIES` is that list of claims, and the two checks over it go
+ * red in both directions: › "pins every capability the walker states as
+ * contract" when a claim has no read behind it, and › "names a declared
+ * capability in every probe entry" when a probe drifts from what it was written
+ * to hold. A precision rule — one whose loss makes the walker LOUDER, so no
+ * planted read can catch it — is pinned from the other side, by an honest read
+ * in `HONEST_PROBE_READS` that must stay silent.
+ *
  * ## The coarsenings, stated rather than implied
  *
  * They do not all err the same way, and pretending otherwise would be the exact
@@ -293,13 +311,15 @@ const ASSIGNMENT_OPERATORS = new Set([
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
 ]);
 
-/** `Object.*` helpers that hand back caller data (or a wrapper around it). */
-const OBJECT_HELPERS_RETURNING_CALLER_DATA = new Set([
-  'entries',
-  'values',
-  'keys',
-  'getOwnPropertyDescriptor',
-]);
+/**
+ * The `Object.*` helpers that hand back an ARRAY of the caller's own values.
+ *
+ * The walker READS this set rather than restating it: this constant spent a
+ * revision declared and unreferenced beside an inline list that said something
+ * different, which is two spellings of one fact — and widening the inert one
+ * would have changed nothing while looking like it had.
+ */
+const OBJECT_HELPERS_YIELDING_ELEMENTS = new Set(['entries', 'values', 'keys']);
 
 function parse(text) {
   return ts.createSourceFile(
@@ -568,7 +588,7 @@ function analyse(sourceFile) {
           // values; `getOwnPropertyDescriptor` hands back a fresh wrapper whose
           // `value` is one of them, and collapsing the two is how this walker
           // once laundered every own read in the file.
-          if (helper === 'entries' || helper === 'values' || helper === 'keys') {
+          if (OBJECT_HELPERS_YIELDING_ELEMENTS.has(helper)) {
             return { self: false, fields: new Map([[ELEMENT, argument]]) };
           }
           if (helper === 'getOwnPropertyDescriptor') {
@@ -1049,8 +1069,10 @@ test('states a reason for every exemption it declares', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Five hazardous reads and three honest ones, appended to the parsed TEXT only — the
- * file on disk is never touched.
+ * The planted reads, appended to the parsed TEXT only — the file on disk is never
+ * touched. Their exact set is `EXPECTED_PROBE_REPORTS` below, which is also
+ * where the count lives; a number spelled here as well would be a second
+ * spelling of one fact, and it was wrong within two rounds of being written.
  *
  * Every precision rule the walker gained to stop reporting projections is a rule
  * that could be widened until nothing is reported at all, so each one is pinned
@@ -1108,6 +1130,69 @@ function auditTeethProjection(source: unknown): Readonly<{ raw: unknown }> {
 
 function auditTeethHonestSink(local: Readonly<{ plantedInAFreshLiteral: number }>): unknown {
   return local.plantedInAFreshLiteral;
+}
+
+export function auditTeethDestructuredFieldProbe(
+  opts: Readonly<Record<string, unknown>>,
+): unknown {
+  return auditTeethDestructuredFieldSink({ carried: ownValue(opts, 'carried') });
+}
+
+function auditTeethDestructuredFieldSink({
+  carried,
+}: Readonly<{ carried: unknown }>): unknown {
+  return carried.plantedThroughADestructuredField;
+}
+
+export function auditTeethOwnIterationProbe(
+  opts: Readonly<Record<string, unknown>>,
+): unknown {
+  const values = Object.values(opts);
+  return values.length;
+}
+
+export function auditTeethContainerProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const keys = ['alpha'];
+  const mapped = keys.map((key) => ({ raw: ownValue(opts, key) }));
+  const firstMapped = mapped[0];
+  const built = Object.fromEntries(keys.map((key) => [key, ownValue(opts, key)]));
+  return [
+    firstMapped.raw.plantedThroughAMapCallback,
+    built.plantedThroughAFromEntriesContainer,
+  ];
+}
+
+export function auditTeethDestructureProbe({
+  plantedByDestructuring,
+  renamed: alsoPlanted,
+}: Readonly<{ plantedByDestructuring: unknown; renamed: unknown }>): unknown {
+  return [plantedByDestructuring, alsoPlanted];
+}
+
+export function auditTeethLogicalAssignmentProbe(
+  opts: Readonly<Record<string, unknown>>,
+): unknown {
+  let nullish;
+  nullish ??= opts;
+  let disjunctive;
+  disjunctive ||= opts;
+  let conjunctive;
+  conjunctive &&= opts;
+  return [
+    nullish.plantedThroughNullishAssignment,
+    disjunctive.plantedThroughDisjunctiveAssignment,
+    conjunctive.plantedThroughConjunctiveAssignment,
+  ];
+}
+
+export function auditTeethReceiverProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const items = ownValue(opts, 'items') as unknown[];
+  const tail = items.slice(1);
+  return tail.plantedBehindAMethodReceiver;
+}
+
+export function auditTeethBareHelperProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  return structuredClone(opts).plantedBehindABareHelper;
 }
 
 export function auditTeethAssignmentProbe(opts: Readonly<Record<string, unknown>>): unknown {
@@ -1170,6 +1255,14 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethProjection',
   'auditTeethHonestSink',
   'auditTeethArraySink',
+  'auditTeethDestructuredFieldProbe',
+  'auditTeethDestructuredFieldSink',
+  'auditTeethOwnIterationProbe',
+  'auditTeethContainerProbe',
+  'auditTeethDestructureProbe',
+  'auditTeethLogicalAssignmentProbe',
+  'auditTeethReceiverProbe',
+  'auditTeethBareHelperProbe',
   'auditTeethAssignmentProbe',
   'auditTeethCopyProbe',
   'auditTeethDepthProbe',
@@ -1178,24 +1271,137 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethLaundering',
 ]);
 
-const EXPECTED_PROBE_REPORTS = [
-  'supplied.plantedByTheTeethProbe',
-  'handed.plantedInTheInternalSink',
-  'projected.raw.plantedBehindTheProjection',
-  'entry.raw.plantedBehindAnIteration',
-  'first.raw.plantedBehindAnArray',
-  'alias.plantedThroughAnAssignment',
-  'merged.plantedBehindObjectAssign',
-  'created.plantedBehindObjectCreate',
-  'spread.plantedBehindSpreadControl',
-  'level1.nested.nested.nested.nested.nested.raw.plantedSixLevelsDown',
-  'opts.plantedOnAnExportedArrow',
-  'opts.plantedOnAnExportedMethod',
-  'frozen.plantedBehindFreeze',
-  'copied.plantedBehindSpread',
-  'reflected.plantedBehindAnUnmodelledHelper',
-  'for…in opts',
+/**
+ * Every capability of this walker that the header above states as CONTRACT.
+ *
+ * The rule this list exists to make mechanical: a capability stated in the
+ * header has a probe entry naming it, or it is not stated — it belongs in the
+ * blind-spot list instead. Rewording is not an exit. Three separate review
+ * rounds each found a different capability that worked, that the header
+ * promised, and that could be deleted with every test green; they were the same
+ * defect three times, because nothing tied the claims to the probe.
+ *
+ * The two checks below close that in both directions: a capability nothing pins
+ * is a claim with no cover, and an entry pinning a name that is not here is a
+ * probe that has drifted from what it was written to hold.
+ */
+const WALKER_CAPABILITIES = [
+  'exported-function-declaration',
+  'exported-const-arrow',
+  'exported-class-method',
+  'destructured-parameter',
+  'argument-to-parameter',
+  'return-value',
+  'object-literal-fields',
+  'array-elements-and-push',
+  'for-of-elements',
+  'field-depth-six',
+  'assignment-equals',
+  'assignment-nullish',
+  'assignment-disjunctive',
+  'assignment-conjunctive',
+  'object-spread',
+  'object-helper-later-arguments',
+  'object-helper-unmodelled',
+  'namespaced-helper-unmodelled',
+  'bare-identifier-helper',
+  'method-receiver',
+  'map-callback-return',
+  'fromEntries-values',
+  'for-in-enumeration',
+  'destructured-field-precision',
+  // Held by a read that must stay SILENT rather than by a planted one: losing
+  // these makes the walker louder, not quieter, so no hazardous read can pin
+  // them. `test('leaves the honest reads of the same fields unreported')` is
+  // what goes red.
+  'own-value-read-is-silent',
+  'fresh-local-argument',
+  'own-only-iteration',
 ];
+
+/** Each planted read the probe must report, and the capability it holds. */
+const EXPECTED_PROBE_REPORTS = [
+  { expression: 'supplied.plantedByTheTeethProbe', pins: ['exported-function-declaration'] },
+  { expression: 'handed.plantedInTheInternalSink', pins: ['argument-to-parameter'] },
+  {
+    expression: 'projected.raw.plantedBehindTheProjection',
+    pins: ['return-value', 'object-literal-fields'],
+  },
+  { expression: 'entry.raw.plantedBehindAnIteration', pins: ['for-of-elements'] },
+  { expression: 'first.raw.plantedBehindAnArray', pins: ['array-elements-and-push'] },
+  { expression: 'alias.plantedThroughAnAssignment', pins: ['assignment-equals'] },
+  { expression: 'nullish.plantedThroughNullishAssignment', pins: ['assignment-nullish'] },
+  {
+    expression: 'disjunctive.plantedThroughDisjunctiveAssignment',
+    pins: ['assignment-disjunctive'],
+  },
+  {
+    expression: 'conjunctive.plantedThroughConjunctiveAssignment',
+    pins: ['assignment-conjunctive'],
+  },
+  { expression: '{…}.plantedByDestructuring', pins: ['destructured-parameter'] },
+  { expression: '{…}.renamed', pins: ['destructured-parameter'] },
+  { expression: 'merged.plantedBehindObjectAssign', pins: ['object-helper-later-arguments'] },
+  { expression: 'created.plantedBehindObjectCreate', pins: ['object-helper-unmodelled'] },
+  { expression: 'frozen.plantedBehindFreeze', pins: ['object-helper-unmodelled'] },
+  { expression: 'spread.plantedBehindSpreadControl', pins: ['object-spread'] },
+  { expression: 'copied.plantedBehindSpread', pins: ['object-spread'] },
+  {
+    expression: 'reflected.plantedBehindAnUnmodelledHelper',
+    pins: ['namespaced-helper-unmodelled'],
+  },
+  {
+    expression: 'structuredClone(opts).plantedBehindABareHelper',
+    pins: ['bare-identifier-helper'],
+  },
+  { expression: 'tail.plantedBehindAMethodReceiver', pins: ['method-receiver'] },
+  {
+    expression: 'firstMapped.raw.plantedThroughAMapCallback',
+    pins: ['map-callback-return'],
+  },
+  {
+    expression: 'built.plantedThroughAFromEntriesContainer',
+    pins: ['fromEntries-values'],
+  },
+  {
+    expression: 'level1.nested.nested.nested.nested.nested.raw.plantedSixLevelsDown',
+    pins: ['field-depth-six'],
+  },
+  { expression: 'opts.plantedOnAnExportedArrow', pins: ['exported-const-arrow'] },
+  { expression: 'opts.plantedOnAnExportedMethod', pins: ['exported-class-method'] },
+  { expression: 'for…in opts', pins: ['for-in-enumeration'] },
+  {
+    expression: 'carried.plantedThroughADestructuredField',
+    pins: ['destructured-field-precision'],
+  },
+];
+
+/**
+ * The honest reads the probe also carries, and what each one holds.
+ *
+ * A precision rule cannot be pinned by a planted read, because losing it makes
+ * the walker report MORE rather than less. What holds it is a read that must
+ * stay silent — so these are enforced by the exact-set assertion from the other
+ * side, and listed here so the coverage check below can see them.
+ */
+const HONEST_PROBE_READS = [
+  {
+    description: "auditTeethProbe reads the same field through ownValue",
+    pins: ['own-value-read-is-silent'],
+  },
+  {
+    description: 'auditTeethHonestSink is only ever handed a fresh local literal',
+    pins: ['fresh-local-argument'],
+  },
+  {
+    description: 'auditTeethOwnIterationProbe takes the length of Object.values(caller)',
+    pins: ['own-only-iteration'],
+  },
+];
+
+const EXPECTED_PROBE_EXPRESSIONS = EXPECTED_PROBE_REPORTS.map(
+  ({ expression }) => expression,
+);
 
 function probeReports() {
   return auditReads(`${auditedSource}${TEETH_PROBE}`).filter((violation) =>
@@ -1208,14 +1414,47 @@ test('reports every plain [[Get]] planted on caller-supplied data', () => {
 
   assert.deepEqual(
     [...reported].sort(),
-    [...EXPECTED_PROBE_REPORTS].sort(),
+    [...EXPECTED_PROBE_EXPRESSIONS].sort(),
     'the walker must report a planted plain [[Get]] — directly, through an internal function it is handed to, and through a projection field that carries it — or the audit above proves nothing',
+  );
+});
+
+test('pins every capability the walker states as contract', () => {
+  const pinned = new Set(
+    [...EXPECTED_PROBE_REPORTS, ...HONEST_PROBE_READS].flatMap(({ pins }) => pins),
+  );
+  const unpinned = WALKER_CAPABILITIES.filter((capability) => !pinned.has(capability));
+
+  assert.deepEqual(
+    unpinned,
+    [],
+    'a capability with no planted read behind it can be deleted from the walker with every test green — three review rounds found one each. Add a probe entry that only that capability can satisfy, or move the claim to the blind-spot list and take it out of this array',
+  );
+});
+
+test('names a declared capability in every probe entry', () => {
+  const known = new Set(WALKER_CAPABILITIES);
+  const stray = [...EXPECTED_PROBE_REPORTS, ...HONEST_PROBE_READS].flatMap(
+    ({ expression, description, pins }) => {
+      const subject = expression ?? description;
+      return pins.length === 0
+          ? [`${subject}: pins nothing`]
+          : pins
+              .filter((capability) => !known.has(capability))
+              .map((capability) => `${subject}: ${capability}`);
+    },
+  );
+
+  assert.deepEqual(
+    stray,
+    [],
+    'a probe entry that pins nothing, or names a capability this walker does not declare, has drifted from what it was written to hold',
   );
 });
 
 test('leaves the honest reads of the same fields unreported', () => {
   const unexpected = probeReports().filter(
-    (violation) => !EXPECTED_PROBE_REPORTS.includes(violation.expression),
+    (violation) => !EXPECTED_PROBE_EXPRESSIONS.includes(violation.expression),
   );
 
   assert.deepEqual(
