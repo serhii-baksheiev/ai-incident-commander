@@ -8,14 +8,17 @@
  * authoring mistake is a type error rather than a write the graph quietly
  * undoes.
  *
- * ⚠ Its limit, stated because a reader would otherwise infer cover that is not
- * there: excess-property checking applies to the literal only. A node that
- * builds the control under a name first, mutates a copy, or hands back the
- * whole `state.control` it was given, compiles clean — the last three
- * declarations below are exactly those shapes, and this fixture asserts they
- * still compile. That is the runtime half's job, and the runtime half does it:
- * graph-owned-control-contract.test.mjs › "hides a hijacked graph-owned field
- * from every node that runs after it".
+ * ⚠ Its limits, stated because a reader would otherwise infer cover that is not
+ * there. Excess-property checking sees a property WRITTEN OUT in a fresh
+ * literal, and two things defeat that: naming the object first (a node that
+ * builds its control under a name, or mutates a copy, is no longer assigning a
+ * fresh literal), and spreading (a fresh literal's spread-derived properties
+ * are not inspected, so handing back `{ ...state.control }` with all ten fields
+ * in it compiles). The three declarations below are exactly those shapes, and
+ * this fixture asserts they still compile — a limit that stops being true stops
+ * this file compiling, which is the signal. Covering them is the runtime half's
+ * job, and the runtime half does it: graph-owned-control-contract.test.mjs ›
+ * "hides a hijacked graph-owned field from every node that runs after it".
  */
 import {
   INCIDENT_STATE_SCHEMA_VERSION,
@@ -78,7 +81,10 @@ mutatedCopy.iterationsUsed = 3;
 const mutatedUpdate: InvestigationNodeResult = { control: mutatedCopy };
 
 // Limit 3: handing back the whole control the node was given, all ten
-// graph-owned fields included.
+// graph-owned fields included. This one IS a fresh literal — it compiles
+// because excess-property checking does not inspect spread-derived properties,
+// not because the object is named. Writing `iterationsUsed: 3` alongside the
+// spread does error.
 const passthroughUpdate: InvestigationNodeResult = {
   control: { ...handedControl },
 };

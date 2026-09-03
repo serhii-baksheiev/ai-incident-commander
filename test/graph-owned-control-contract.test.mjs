@@ -153,6 +153,30 @@ const EXPECTED_OBSERVED_VALUES = {
   llmCallBudget: [8],
 };
 
+/**
+ * Every node that runs after the hijacking `normalize_incident` and reports what
+ * it was handed, in order.
+ *
+ * Declared rather than counted: asserting only that SOME node observed would
+ * pass with one observer, and if that one were `propose_conclusion` — the node
+ * exempt from the `stopKind` check because `terminate()` has legitimately
+ * written one by then — a live leak would read as clean.
+ *
+ * `challenge_hypothesis` is absent because a `terminal` route never reaches it.
+ */
+const EXPECTED_OBSERVERS = [
+  'collect_baseline',
+  'generate_hypotheses',
+  'derive_predictions',
+  'plan_investigation',
+  'execute_investigation',
+  'evaluate_predictions',
+  'interpret_residual_evidence',
+  'derive_hypothesis_state',
+  'termination_check',
+  'propose_conclusion',
+];
+
 function requireGraphFactory() {
   assert.equal(
     typeof graphPackage.createInvestigationGraph,
@@ -351,10 +375,10 @@ test('hides a hijacked graph-owned field from every node that runs after it', as
         `a node writing ${field} must not abort the run`,
       );
 
-      assert.equal(
-        observations.length > 0,
-        true,
-        'the downstream nodes must actually have run for this to prove anything',
+      assert.deepStrictEqual(
+        observations.map(({ node }) => node),
+        EXPECTED_OBSERVERS,
+        'every node downstream of the hijack must have been read; a shrunken observer set hides the leak instead of proving its absence',
       );
 
       for (const observation of observations) {
@@ -379,6 +403,34 @@ test('hides a hijacked graph-owned field from every node that runs after it', as
       }
     });
   }
+});
+
+test('drops a symbol-keyed property a lifecycle node puts on its control update', async () => {
+  const createInvestigationGraph = requireGraphFactory();
+  const smuggled = Symbol.for('aic.graph-owned-control-contract.smuggled');
+
+  const nodes = fakeNodes([], terminalStall, async (state) => ({
+    control: { ...state.control, [smuggled]: 'carried by a symbol key' },
+  }));
+  const result = assertResolved(
+    await runToCompletion(createInvestigationGraph({ nodes }), initialState()),
+    'a node attaching a symbol-keyed property must not abort the run',
+  );
+
+  // The rest-destructuring this replaced copied own symbol keys through to the
+  // persisted control. Dropping them is a deliberate narrowing — less caller
+  // data reaches persisted state — and it is a behaviour change, so it is
+  // pinned here rather than only described in the implementation's docstring.
+  assert.deepStrictEqual(
+    Object.getOwnPropertySymbols(result.control),
+    [],
+    'a symbol-keyed property from a node must not reach the persisted control',
+  );
+  assert.deepStrictEqual(
+    result.control,
+    EXPECTED_FINAL_CONTROL,
+    'dropping the symbol key must not disturb anything else',
+  );
 });
 
 test('still lets a lifecycle node write a control field the graph does not own', async () => {

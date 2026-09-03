@@ -106,14 +106,18 @@ export type InvestigationExecutionConfig = Readonly<{
  * nothing made them, which is what this constant changes.
  *
  * A fourth copy, in prose, is why they were worth collapsing: the wrapper's
- * docstring used to name the set, went stale when AIC-63 added `resumeCount`,
- * and AIC-65 deleted the sentence rather than repairing it a second time.
+ * docstring used to name the set (written by AIC-62), went stale when AIC-63
+ * added `resumeCount`, and AIC-65 deleted the sentence rather than repairing it.
  *
- * ⚠ Two prose enumerations of this set still live outside this file and derive
- * from nothing: `docs/incident-commander-architecture-v1.md` and the field
- * comments in `packages/domain/src/contracts.ts`. Both are correct today, and
- * neither is checked against this constant — they are where the next drift
- * lands.
+ * ⚠ Outside this file the set is described only in PART, and the drift that
+ * predicts has already landed rather than being ahead of us:
+ * `docs/incident-commander-architecture-v1.md` calls eight of these ten
+ * graph-owned — the three budgets, the three usage counters, `runId` and
+ * `humanReview` — and describes `challengeRounds` and `stopKind` as graph-owned
+ * nowhere; `packages/domain/src/contracts.ts` annotates three
+ * (`iterationsUsed`, `llmCallsUsed`, `resumeCount`) as per-field notes. Neither
+ * is wrong about what it does say, neither is derived from this constant, and
+ * neither is a place to audit the set from.
  *
  * `satisfies` proves every entry is a real control field; it does NOT prove the
  * list is complete, so completeness is a test rather than a type — see
@@ -417,9 +421,11 @@ function pickGraphOwnedControl(
  * uses on caller data: a polluted `Object.prototype.llmCallsUsed` is not a key
  * of the node's update and so cannot arrive here as one. It also narrows what
  * the rest-spread this replaced would copy — a symbol-keyed own property on the
- * node's update no longer reaches the persisted control. Nothing in the domain
- * schema is symbol-keyed, and the direction is toward less caller data, not
- * more.
+ * node's update no longer reaches the persisted control, which is a behaviour
+ * change and so is pinned rather than asserted here:
+ * graph-owned-control-contract.test.mjs › "drops a symbol-keyed property a
+ * lifecycle node puts on its control update". Nothing in the domain schema is
+ * symbol-keyed, and the direction is toward less caller data, not more.
  */
 function withoutGraphOwnedControl(
   control: IncidentStateControl | NodeWritableControl,
