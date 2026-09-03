@@ -337,9 +337,17 @@ for (const invalidCount of [
  * The two challenge counters are counts in exactly the same sense as the five
  * budgets above: `challengeRounds` is how many challenge rounds a run has
  * spent, `reservedChallengeBudget` is how many it may still spend. Declared as
- * bare numbers, a `kind: 'start'` state carrying -1, 0.5 or NaN parses here and
- * is refused later, by the graph, after wrapped lifecycle nodes have run — the
- * same fact spelled two ways, with the persisted shape as the looser of the two.
+ * bare numbers they were the looser of two spellings of one fact: a
+ * `kind: 'start'` state carrying **-1, 0.5 or a non-safe integer** parsed here
+ * and was refused later, by the graph, after nine wrapped lifecycle nodes had
+ * run.
+ *
+ * That list is exactly three values, and the two rows below it are not part of
+ * it. `NaN` and the infinities were refused by the bare `z.number()` too — zod
+ * checks finiteness — so those two rows pin ZOD's behaviour, not this
+ * tightening, and reverting either field to `z.number()` leaves them green
+ * while the other three redden. They are kept because a count rule that stopped
+ * refusing NaN would be worth hearing about from somewhere.
  */
 const challengeCounters = ['challengeRounds', 'reservedChallengeBudget'];
 

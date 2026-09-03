@@ -136,10 +136,12 @@ export const InvestigationStopSchema = z.enum([
  * must not restate the rule — a schema that admits `-1` while the graph rejects
  * it is one fact spelled two ways, and the copy nobody is looking at is the one
  * that is wrong (`.claude/rules/invariants.md`, "one mechanism, one
- * implementation"). Which fields carry it is not listed here, because a list in
- * a comment is the copy that goes stale: read the schema below. The one that
- * did go stale said "four" while the graph checked five, and two more have just
- * been added.
+ * implementation"). Every runtime check of "is this a count" in
+ * `packages/graph` goes through this export; the challenge counters had a
+ * hand-written second spelling until AIC-76 and no longer do. Which fields
+ * carry the rule is not listed here, because a list in a comment is the copy
+ * that goes stale: read the schema below. The one that did go stale said "four"
+ * while the graph checked five, and two more have just been added.
  *
  * The graph's re-validation is not redundant, and this is the distinction worth
  * keeping. It runs where this schema cannot: a `kind: 'resume'` takes its state
