@@ -97,14 +97,23 @@ export type InvestigationExecutionConfig = Readonly<{
 /**
  * The control fields the graph owns: a node may not decide any of them.
  *
- * This list is the ONE spelling of that set. `preserveGraphOwnedControl`
- * derives every runtime site from it and `InvestigationNodeResult` derives the
- * compile-time prohibition from it. Before AIC-73 the same ten names were
- * spelled by hand at three sites in that function, with a fourth copy in the
- * prose above it — and it is the prose copy that had already fallen behind
- * twice, once when AIC-63 added `resumeCount` and once when AIC-65 added
- * `runId` and `humanReview`. The three code copies happened to agree; nothing
- * made them, which is what this constant changes.
+ * This list is the one spelling of that set **in the code**.
+ * `preserveGraphOwnedControl` derives its sites from it and
+ * `InvestigationNodeResult` derives the compile-time prohibition from it.
+ * Before AIC-73 that function spelled the names by hand three times: ten in
+ * `protectedControl`, ten in the destructuring of the node's update, and nine
+ * in `graphOwned`, which leaves `stopKind` out on purpose. The three agreed;
+ * nothing made them, which is what this constant changes.
+ *
+ * A fourth copy, in prose, is why they were worth collapsing: the wrapper's
+ * docstring used to name the set, went stale when AIC-63 added `resumeCount`,
+ * and AIC-65 deleted the sentence rather than repairing it a second time.
+ *
+ * ⚠ Two prose enumerations of this set still live outside this file and derive
+ * from nothing: `docs/incident-commander-architecture-v1.md` and the field
+ * comments in `packages/domain/src/contracts.ts`. Both are correct today, and
+ * neither is checked against this constant — they are where the next drift
+ * lands.
  *
  * `satisfies` proves every entry is a real control field; it does NOT prove the
  * list is complete, so completeness is a test rather than a type — see
@@ -398,9 +407,19 @@ function pickGraphOwnedControl(
 /**
  * Drops every graph-owned field from a control object a node handed back.
  *
+ * ⚠ Load-bearing for `stopKind` and for `stopKind` only. The `...graphOwned`
+ * spread in the caller re-imposes the other nine whatever this function leaves
+ * behind; `stopKind` is not in that spread, so a node's value survives unless
+ * it is dropped here — pinned in graph-owned-control-contract.test.mjs ›
+ * "hides a hijacked graph-owned field from every node that runs after it".
+ *
  * `Object.keys` reads OWN enumerable keys only, the idiom the rest of this file
  * uses on caller data: a polluted `Object.prototype.llmCallsUsed` is not a key
- * of the node's update and so cannot arrive here as one.
+ * of the node's update and so cannot arrive here as one. It also narrows what
+ * the rest-spread this replaced would copy — a symbol-keyed own property on the
+ * node's update no longer reaches the persisted control. Nothing in the domain
+ * schema is symbol-keyed, and the direction is toward less caller data, not
+ * more.
  */
 function withoutGraphOwnedControl(
   control: IncidentStateControl | NodeWritableControl,

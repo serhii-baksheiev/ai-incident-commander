@@ -36,6 +36,9 @@ const lifecycleNodes = [
   'propose_conclusion',
 ];
 
+/** The stop kind `terminalStall` decides, and the only one this file uses. */
+const TERMINAL_STOP_KIND = 'stalled';
+
 const initialState = () => ({
   incident: { id: 'incident-graph-owned-control' },
   hypotheses: [],
@@ -79,7 +82,7 @@ const NODE_WRITABLE_CONTROL_FIELDS = [
 /**
  * For each graph-owned field, a value that is valid for its type and differs
  * from what `initialState()` starts with — so a hijack that got through is
- * visible in the final control rather than accidentally equal to the baseline.
+ * visible rather than accidentally equal to what the graph would have written.
  */
 const HIJACK_VALUES = {
   runId: 'hijacked-run',
@@ -92,6 +95,62 @@ const HIJACK_VALUES = {
   reservedChallengeBudget: 99,
   maxIterations: 99,
   llmCallBudget: 99,
+};
+
+/**
+ * The control a run of `fakeNodes` + `terminalStall` must end with, DECLARED
+ * rather than captured from a baseline run of the same code.
+ *
+ * A baseline run cannot discriminate: a mutation that moves the hijack run also
+ * moves the baseline, so the two stay equal and the assertion says nothing.
+ * This literal does not move.
+ */
+const EXPECTED_FINAL_CONTROL = {
+  schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
+  statusRulesVersion: STATUS_RULES_VERSION,
+  phase: 'normalizing',
+  runId: 'run-graph-owned-control',
+  humanReview: false,
+  challengeRounds: 0,
+  reservedChallengeBudget: 2,
+  maxIterations: 4,
+  llmCallBudget: 8,
+  iterationsUsed: 1,
+  llmCallsUsed: 0,
+  resumeCount: 0,
+  stopKind: TERMINAL_STOP_KIND,
+};
+
+/**
+ * Every value a graph-owned field is allowed to hold **while the run is still
+ * going** — read by the nodes themselves, one snapshot per node.
+ *
+ * This is the assertion the final control cannot make. `terminate()` rewrites
+ * `stopKind` on every path into `propose_conclusion`, so a `stopKind` a node
+ * smuggled in earlier is overwritten before anyone reads the result: the run
+ * ends correct and was wrong throughout. The same holds more weakly for the
+ * other nine — a mid-run leak is visible to every later node and to every
+ * checkpoint written in between, whatever the final value says.
+ *
+ * `iterationsUsed` legitimately moves 0 -> 1 when `plan_investigation` is
+ * entered, which is why these are sets rather than single values.
+ *
+ * `propose_conclusion` is the one node exempt from the `stopKind` half: it runs
+ * only after `terminate()` has written the stop kind the graph itself decided,
+ * so seeing one there is the correct state and not a leak. It is still checked
+ * — against that decided value — rather than skipped.
+ */
+const EXPECTED_OBSERVED_VALUES = {
+  runId: ['run-graph-owned-control'],
+  humanReview: [false],
+  stopKind: [undefined],
+  iterationsUsed: [0, 1],
+  llmCallsUsed: [0],
+  resumeCount: [0],
+  challengeRounds: [0],
+  reservedChallengeBudget: [2],
+  maxIterations: [4],
+  llmCallBudget: [8],
 };
 
 function requireGraphFactory() {
@@ -146,7 +205,10 @@ const assertResolved = (outcome, message) => {
   return outcome.value;
 };
 
-const terminalStall = async () => ({ route: 'terminal', stopKind: 'stalled' });
+const terminalStall = async () => ({
+  route: 'terminal',
+  stopKind: TERMINAL_STOP_KIND,
+});
 
 test('publishes the graph-owned control field set as one exported constant', () => {
   const fields = requireGraphOwnedControlFields();
@@ -201,13 +263,18 @@ test('keeps every graph-owned control field intact when a lifecycle node writes 
     'each graph-owned field needs a hijack value, or a new field goes untested',
   );
 
-  const baseline = assertResolved(
+  const clean = assertResolved(
     await runToCompletion(
       createInvestigationGraph({ nodes: fakeNodes([], terminalStall) }),
       initialState(),
     ),
-    'the baseline run must resolve before any hijack is judged against it',
+    'the undisturbed run must resolve before any hijack is judged',
   ).control;
+  assert.deepStrictEqual(
+    clean,
+    EXPECTED_FINAL_CONTROL,
+    'the declared expectation must describe what an undisturbed run really ends with',
+  );
 
   for (const field of graphOwned) {
     await t.test(`restores ${field} written by a lifecycle node`, async () => {
@@ -224,9 +291,92 @@ test('keeps every graph-owned control field intact when a lifecycle node writes 
 
       assert.deepStrictEqual(
         result.control,
-        baseline,
+        EXPECTED_FINAL_CONTROL,
         `a lifecycle node writing ${field} must leave the persisted control untouched`,
       );
+    });
+  }
+});
+
+test('hides a hijacked graph-owned field from every node that runs after it', async (t) => {
+  const createInvestigationGraph = requireGraphFactory();
+  const graphOwned = requireGraphOwnedControlFields();
+
+  assert.deepStrictEqual(
+    Object.keys(EXPECTED_OBSERVED_VALUES).sort(),
+    [...graphOwned].sort(),
+    'each graph-owned field needs a declared mid-run expectation, or a new field goes unobserved',
+  );
+
+  for (const field of graphOwned) {
+    await t.test(`keeps a hijacked ${field} out of later nodes' control`, async () => {
+      const observations = [];
+      const observe = (name) => (state) => {
+        observations.push({
+          node: name,
+          value: state.control[field],
+          declaresStopKind: Object.hasOwn(state.control, 'stopKind'),
+        });
+        return {};
+      };
+
+      const nodes = Object.fromEntries(
+        lifecycleNodes.map((name) => {
+          if (name === 'normalize_incident') {
+            // The one hijacking node, and it runs first so every other node is
+            // downstream of it.
+            return [
+              name,
+              async (state) => ({
+                control: { ...state.control, [field]: HIJACK_VALUES[field] },
+              }),
+            ];
+          }
+          if (name === 'termination_check') {
+            return [
+              name,
+              async (state) => {
+                observe(name)(state);
+                return { route: 'terminal', stopKind: TERMINAL_STOP_KIND };
+              },
+            ];
+          }
+          if (name === 'challenge_hypothesis') return [name, async () => ({})];
+          return [name, async (state) => observe(name)(state)];
+        }),
+      );
+
+      assertResolved(
+        await runToCompletion(createInvestigationGraph({ nodes }), initialState()),
+        `a node writing ${field} must not abort the run`,
+      );
+
+      assert.equal(
+        observations.length > 0,
+        true,
+        'the downstream nodes must actually have run for this to prove anything',
+      );
+
+      for (const observation of observations) {
+        const afterTerminate = observation.node === 'propose_conclusion';
+        const allowed =
+          field === 'stopKind' && afterTerminate
+            ? [TERMINAL_STOP_KIND]
+            : EXPECTED_OBSERVED_VALUES[field];
+
+        assert.equal(
+          allowed.includes(observation.value),
+          true,
+          `${observation.node} read ${field} as ${String(observation.value)} after an earlier node wrote ${String(HIJACK_VALUES[field])}`,
+        );
+        assert.equal(
+          observation.declaresStopKind,
+          afterTerminate,
+          afterTerminate
+            ? 'propose_conclusion must be handed the stop kind the graph decided'
+            : `${observation.node} was handed a control declaring stopKind before the run stopped`,
+        );
+      }
     });
   }
 });
