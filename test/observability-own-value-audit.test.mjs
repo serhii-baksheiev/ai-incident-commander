@@ -55,12 +55,13 @@
  * to tell a projection from the thing it projects. Three properties do that:
  *
  *   - **Caller data enters at everything this module exports as a callable,
- *     and spreads by argument.** That is a parameter of an exported function
- *     DECLARATION, of an exported `const` bound to an arrow or function
- *     expression, and of a method, accessor, constructor or arrow-valued
- *     property of an exported class — the forms are interchangeable to a
- *     caller, so seeding one of them would let a style refactor empty this
- *     audit without changing a single read. An internal function's parameter
+ *     and spreads by argument.** Seeding one syntactic form would let a style
+ *     refactor empty this audit without changing a single read, so the walker
+ *     seeds them all. ⚠ **Which forms are PINNED is `WALKER_CAPABILITIES`, not
+ *     this sentence** — it used to name five forms here, four of which could be
+ *     deleted from the walker with every test green, because prose states
+ *     capabilities at a finer grain than any list checked against it. The
+ *     capability names are the contract; read them. An internal function's parameter
  *     holds caller data only when some call site hands it some, which is what
  *     makes `persistPreparedExperiment`'s `OwnExperiment` parameter clean while
  *     `requireResourceEvidence`'s parameter is not — the same shape, different
@@ -125,8 +126,9 @@
  *      which yields real arrays. Audit it if that stops being true.
  *   4. **Array elements are one descriptor, not one per index.** Everything an
  *      array is known to hold is joined, so a single caller value in it makes
- *      every read of every element a read of caller data. `push` and `unshift`
- *      are followed; any other way of filling an array is not.
+ *      every read of every element a read of caller data. Which fill operations
+ *      are followed is `array-elements-and-push` in `WALKER_CAPABILITIES` and the
+ *      probe entry that pins it; any other way of filling an array is not.
  *   5. **Field knowledge stops at six levels deep**, which is what makes the
  *      lattice finite and the fixpoint terminate. Deeper than that a projection
  *      reads as opaque rather than as caller data. Six is not decoration: the
@@ -1106,7 +1108,9 @@ export function auditTeethProbe(supplied: Readonly<Record<string, unknown>>): un
   const deep = projected.raw.plantedBehindTheProjection;
   const fresh = auditTeethHonestSink({ plantedInAFreshLiteral: 1 });
   const collected = auditTeethArraySink(supplied);
-  return [hazard, honest, sunk, deep, fresh, collected];
+  const shorthand = auditTeethShorthandSink(supplied) as { plantedThroughAShorthandField?: unknown };
+  const bundledRead = shorthand.plantedThroughAShorthandField;
+  return [hazard, honest, sunk, deep, fresh, collected, bundledRead];
 }
 
 function auditTeethArraySink(supplied: unknown): unknown {
@@ -1126,6 +1130,21 @@ function auditTeethSink(handed: Readonly<Record<string, unknown>>): unknown {
 
 function auditTeethProjection(source: unknown): Readonly<{ raw: unknown }> {
   return { raw: ownValue(source, 'raw') };
+}
+
+/**
+ * The SHORTHAND spelling of an object literal, which had no probe of its own.
+ *
+ * A shorthand field and a written-out one are the same operation, and only the
+ * written-out spelling was planted — so the branch could be deleted with every
+ * test green while the audited file leans on it: the object requireExperiment
+ * returns, and the one persistBenchmarkExperiments hands to
+ * persistPreparedExperiment, are both shorthand, and they are what carry caller
+ * data into the function that publishes every run and every feedback.
+ */
+function auditTeethShorthandSink(carried: unknown): unknown {
+  const bundled = { carried };
+  return bundled.carried;
 }
 
 function auditTeethHonestSink(local: Readonly<{ plantedInAFreshLiteral: number }>): unknown {
@@ -1253,6 +1272,7 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethProbe',
   'auditTeethSink',
   'auditTeethProjection',
+  'auditTeethShorthandSink',
   'auditTeethHonestSink',
   'auditTeethArraySink',
   'auditTeethDestructuredFieldProbe',
@@ -1326,6 +1346,10 @@ const EXPECTED_PROBE_REPORTS = [
   {
     expression: 'projected.raw.plantedBehindTheProjection',
     pins: ['return-value', 'object-literal-fields'],
+  },
+  {
+    expression: 'shorthand.plantedThroughAShorthandField',
+    pins: ['object-literal-fields'],
   },
   { expression: 'entry.raw.plantedBehindAnIteration', pins: ['for-of-elements'] },
   { expression: 'first.raw.plantedBehindAnArray', pins: ['array-elements-and-push'] },
