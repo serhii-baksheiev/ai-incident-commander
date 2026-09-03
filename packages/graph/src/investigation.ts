@@ -29,6 +29,7 @@ import {
   StateGraph,
   getConfig,
   interrupt,
+  isCommand,
   type LangGraphRunnableConfig,
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
@@ -404,6 +405,27 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 }
 
 /**
+ * Is this value a routing instruction rather than a state update?
+ *
+ * `isCommand` is LangGraph's own predicate and catches the duck-typed
+ * `{ lg_name: 'Command' }` shape as well as the class. `Send` is a second
+ * routing type with no exported predicate, so it is matched by class.
+ *
+ * The array arm exists because an array carrying either one is a shape a raw
+ * `StateGraph` honours, and `.some` stops at the first match. A NESTED array is
+ * deliberately not walked: LangGraph refuses `[[command]]` outright, so there is
+ * nothing there to swallow, and a recursive walk over caller data would be
+ * unbounded work for a case that cannot arise.
+ */
+function isRoutingInstruction(value: unknown): boolean {
+  if (isCommand(value) || value instanceof Send) return true;
+  return (
+    Array.isArray(value) &&
+    value.some((entry) => isCommand(entry) || entry instanceof Send)
+  );
+}
+
+/**
  * Writes an own data property, the way object-rest already does — never `[[Set]]`.
  *
  * Plain assignment consults the prototype chain for a setter, so a polluted
@@ -536,6 +558,50 @@ function preserveGraphOwnedControl(
         current.iterationsUsed + (options.countsLogicalIteration ? 1 : 0),
     };
     const result = await node(incidentStateOf(state as InvestigationGraphState));
+
+    // A `Command` is a routing instruction, and routing is the graph's. Spread
+    // over one, the graph-owned control below would land on an object LangGraph
+    // reads for its `goto` and its own `update` — so the ownership this wrapper
+    // exists to enforce would be decided somewhere else.
+    //
+    // It already fails today, and that is exactly why the check is worth
+    // adding: the failure is `input._updateAsTuples is not a function`, raised
+    // by the dependency's internals after the wrapper has waved the value
+    // through. Nothing local names that behaviour, so an upgrade could turn a
+    // fail-closed into a bypass with every test still green. `isCommand` is
+    // LangGraph's own predicate, which also catches the duck-typed
+    // `{ lg_name: 'Command' }` shape a hand-built object could carry.
+    //
+    // Two more shapes are refused for the same reason, and the reason is NOT
+    // that LangGraph would honour them here — it never sees them. The
+    // destructure below spreads whatever it is given, so an array becomes
+    // `{ '0': Command }` and a `Send` becomes `{}`: the routing is destroyed by
+    // this wrapper and the run then completes as if the node had asked for
+    // nothing. Measured, with these arms disabled: every downstream node ran,
+    // the control was untouched, and no error was raised. A routing instruction
+    // that vanishes without a word is worse than one that is refused, which is
+    // what these arms are for.
+    //
+    // Both shapes ARE honoured by a raw `StateGraph` for an unwrapped node, so
+    // the silence is this wrapper's doing rather than the dependency's.
+    // see graph-node-return-shape.test.mjs › "refuses an array carrying a
+    // Command, which this wrapper would otherwise flatten into a plain object"
+    // and › "refuses a bare Send, which this wrapper would otherwise flatten
+    // away entirely"
+    //
+    // The graph's OWN routing still works this way. `termination_check` and
+    // `review_conclusion` return `Command` directly, and `routeChallenge`
+    // builds the one that sends to `challenge_hypothesis` — that node itself
+    // returns a plain object. All three are registered UNWRAPPED, and the
+    // registration, not the return shape, is why this refusal cannot reach
+    // them. see graph-node-return-shape.test.mjs › "still lets the graph's own
+    // nodes return a Command"
+    if (isRoutingInstruction(result)) {
+      throw new Error(
+        'lifecycle node returned routing (Command or Send): routing and graph-owned control are the graph\'s, not a node\'s',
+      );
+    }
+
     const { declaredLlmCalls: _ignoredDeclaredLlmCalls, ...update } = result;
 
     // `stopKind` is restored separately from the other nine: absent means "this
