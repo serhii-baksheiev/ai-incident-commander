@@ -40,6 +40,55 @@ import { mainCheckoutRoot } from './checkout.mjs';
 
 
 /**
+ * A ticket id, as the three adapters in this rulebook actually emit them.
+ *
+ * 🔴 It is validated because the value builds a PATH. `../../etc` would name a
+ * file outside the claims directory entirely, and an exclusion that can be
+ * pointed anywhere is not an exclusion — it is a way to opt any single file out
+ * of the ration. The class below admits a letter or digit followed by letters,
+ * digits, `_` and `-`, which covers `jira` (`AIC-70`), `github-issues`
+ * (`String(issue.number)` → `42`) and `plan-md` (`String(n)` → `3`), and admits
+ * no `.`, `/` or `\` — so no value that passes can escape `.rig/claims/`.
+ *
+ * ⚠ **An id that is well-formed but not this task's is applied, not refused.**
+ * Passing another item's id excludes THAT record instead, exactly as passing a
+ * truncated `changedFiles` records the wrong tier: the caller owns which item it
+ * is closing, and nothing here can check that claim. Stated because the reader
+ * of the check above will otherwise read it as validating more than shape.
+ */
+const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * The one elevated path a task crosses because the PROCEDURE says so, not
+ * because of what the work touched.
+ *
+ * Every task writes `.rig/claims/<ticket>.json` — the `loop` skill requires the
+ * record, and `CLAUDE.md` declares the whole of `.rig/` elevated. So before
+ * AIC-70 every close recorded `elevated-mechanism`, and a ration that fires on
+ * every item spaces nothing: it is indistinguishable from a ration that is off
+ * (`see test/queue-tier-spacing.test.mjs › "spaces the next item when no ticket
+ * is given, rather than guessing"`, which pins that pre-exclusion answer for
+ * exactly this shape of diff).
+ *
+ * ⚠ **Only the CURRENT task's record, and only for the ration.** Another task's
+ * claim record decides someone else's revalidation and nothing in this task's
+ * procedure requires touching it. And `elevatedPaths` in the return value keeps
+ * naming this file either way — that answers the GATE's question, and a close
+ * that stopped listing it would look clean to the sweep built to catch merges
+ * across elevated paths.
+ *
+ * Returns `null` for an id it does not recognise. 🔴 It does NOT throw, and that
+ * is the whole lesson of this function's first version: it validated inside the
+ * `filter` callback, so a bad id was silent when nothing was elevated and threw
+ * when something was — and the throw landed BEFORE the state file was written,
+ * leaving the ration reading `null`, which `clearsSpacing` treats as "go ahead".
+ * The guard failed open on precisely the closes it exists to ration. A refusal
+ * that discards the tier is more permissive than no refusal at all.
+ */
+const canonicalClaimRecord = (ticket) =>
+  typeof ticket === 'string' && TICKET_ID.test(ticket) ? `.rig/claims/${ticket}.json` : null;
+
+/**
  * The tier of a close, from the elevated paths the change crossed.
  *
  * 🔴 **The elevated tier splits in two, and only the ration reads the split.**
@@ -77,9 +126,18 @@ import { mainCheckoutRoot } from './checkout.mjs';
  * before and records `normal` — which clears the ration outright rather than as
  * prose (`docs/decisions/review-lanes.md`).
  */
-const tierOf = (elevated) => {
-  if (elevated.length === 0) return 'normal';
-  return elevated.every(executesNothing) ? 'elevated-prose' : 'elevated-mechanism';
+const tierOf = (elevated, excluded) => {
+  // No exclusion to apply — no ticket, or one this module does not recognise.
+  // Deriving one from the diff would let any change opt out of the ration by
+  // adding a file shaped like a claim record.
+  //
+  // 🔴 The comparison is `!==`, never a substring test. `.rig/claims/AIC-70.json.bak`
+  // and `.rig/claims/sub/AIC-70.json` are different files and stay elevated;
+  // a containment check would drop both, which is how "exclude only the
+  // canonical record" quietly becomes "exclude anything named like it".
+  const rationed = excluded === null ? elevated : elevated.filter((path) => path !== excluded);
+  if (rationed.length === 0) return 'normal';
+  return rationed.every(executesNothing) ? 'elevated-prose' : 'elevated-mechanism';
 };
 
 /**
@@ -89,10 +147,22 @@ const tierOf = (elevated) => {
  * for the merged PR. It is a required argument and not a defaulted one, which is
  * the whole point of the two refusals below.
  *
+ * `ticket` is the item being closed. It is what excludes that task's own
+ * `.rig/claims/<ticket>.json` from the SPACING decision — see
+ * `canonicalClaimRecord` for why the procedure's own file must not ration the
+ * next item. Omitting it is safe and conservative: the record then counts, which
+ * is the pre-AIC-70 behaviour.
+ *
  * Returns `{ tier, elevatedPaths }`: the value written, and the files that
  * earned it, so the close step can journal *why* rather than just *what*.
- * `elevatedPaths` is always an array — empty on a normal change, never absent,
- * and **unaffected by the prose/mechanism split above**. `elevatedPaths` answers
+ * `elevatedPaths` is always an array — never absent, and **unaffected by both
+ * the prose/mechanism split above and the claim-record exclusion**. ⚠ Since
+ * AIC-70 a `normal` tier and a NON-EMPTY `elevatedPaths` co-exist, and that
+ * pairing is the point: the ration ignored the task's own claim record, the gate
+ * must still see it (`see test/queue-tier-spacing.test.mjs › "still names the
+ * claim record in elevatedPaths, because the gate asks a different question"`).
+ * A consumer written against "normal means nothing was crossed" would stop
+ * journalling the record on exactly the closes the sweep exists to catch. `elevatedPaths` answers
  * "what did this change cross", which is the gate's question and not the
  * ration's: a prose merge that stopped listing its rulebook files would look
  * clean to the sweep that exists to catch exactly those merges.
@@ -116,7 +186,13 @@ const tierOf = (elevated) => {
  * cases: `execFileSync`, which the documented snippet uses, throws `ENOBUFS`
  * rather than returning a short string — measured, so it fails loudly.)
  */
-export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runDir } = {}) => {
+export const recordCompletedTier = ({
+  changedFiles,
+  projectRoot,
+  statePath,
+  runDir,
+  ticket,
+} = {}) => {
   // 🔴 An absent file list is NOT a normal change. A zero and an unknown look
   // identical in a count and mean opposite things, and guessing `normal` here
   // would rebuild the exact blind spot this module closes: the permissive
@@ -145,7 +221,10 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   }
 
   const elevated = elevatedPathsIn(changedFiles, declared);
-  const tier = tierOf(elevated);
+  // Resolved ONCE, before any classification, so an unrecognised id cannot make
+  // this depend on whether the diff happened to cross an elevated path.
+  const excluded = ticket === undefined || ticket === null ? null : canonicalClaimRecord(ticket);
+  const tier = tierOf(elevated, excluded);
 
   // State only. It deliberately does NOT carry `adapter` or `options`: two files
   // answering "which queue is this" is two answers with no rule for which wins,
@@ -193,5 +272,9 @@ export const recordCompletedTier = ({ changedFiles, projectRoot, statePath, runD
   // stopping is one to hear about, not one to swallow.
   if (runDir) updateState(runDir, { lastCompletedTier: tier, escalations: 0 });
 
-  return { tier, elevatedPaths: elevated };
+  // `ticketIgnored` names an id that was supplied and not recognised. The tier is
+  // still recorded — conservatively, with no exclusion applied — because the one
+  // thing this function must never do is leave the ration unwritten.
+  const ignored = ticket !== undefined && ticket !== null && excluded === null;
+  return { tier, elevatedPaths: elevated, ...(ignored ? { ticketIgnored: ticket } : {}) };
 };

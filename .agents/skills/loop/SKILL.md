@@ -981,21 +981,35 @@ three poisons the only channel by which this project learns.
       changedFiles,
       projectRoot: process.cwd(),
       runDir: process.env.RIG_RUN_DIR,
+      ticket: "<item-id>",
     }));
   '
   ```
 
-  Five details in that command are load-bearing — copy it, do not re-derive it:
+  Six details in that command are load-bearing — copy it, do not re-derive it:
 
   - **`runDir`**, or the escalation streak (§3) never resets;
   - **`<merge-sha>^1 <merge-sha>`**, never `origin/<default>...<merge-sha>`;
   - **`-z`, and split on `\0`**, or a quoted path records the wrong tier;
   - **`execFileSync` with an argument array**, never a shell string;
-  - **`env: withoutGitLocation()`**, or under a git hook it diffs another repo.
+  - **`env: withoutGitLocation()`**, or under a git hook it diffs another repo;
+  - **`ticket`**, or the item's own `.rig/claims/<item-id>.json` counts toward
+    the spacing ration. Every task writes that record because this procedure
+    requires it, so counting it spaces every item equally — which is the same as
+    spacing none (AIC-70). ⚠ Only the SHAPE of the id is checked: an id that is
+    well-formed but belongs to another item excludes THAT record instead, and
+    nothing here can catch it — the caller owns which item it is closing. An id
+    the module cannot recognise applies no exclusion at all, records the tier it
+    would have recorded before AIC-70, and names the id back to you as
+    `ticketIgnored`; omitting `ticket` does the same without the report. Read
+    that field with `'ticketIgnored' in result` — an empty string and `0` are
+    ids it reports, and both are falsy.
 
-  🔴 One of them — `-z` — fails **silently and permissively**: it records
-  `normal` for an elevated change rather than refusing. The wrong diff form
-  refuses loudly, and omitting `runDir` fails quietly toward a stop nobody can
+  🔴 Two of them fail **silently and permissively**. `-z`: a quoted path records
+  `normal` for an elevated change rather than refusing. `ticket`: an id that is
+  well-formed but not this item's excludes another record, and nothing reports
+  it. The wrong diff form refuses loudly, an id that is not well-formed is named
+  back to you, and omitting `runDir` fails quietly toward a stop nobody can
   clear. Which fails which way, measured rather than assumed, is in
   `docs/decisions/closing-a-task.md`.
 

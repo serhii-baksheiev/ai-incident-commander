@@ -48,6 +48,38 @@ was indistinguishable from the rule working.
 | any elevated path is not | `elevated-mechanism` | spaces it |
 | no elevated path at all | `normal` | clears the ration |
 
+**One path is excluded from the table above, and only from it.** Every task
+writes `.rig/claims/<ticket>.json` — the `loop` skill requires the record and
+`CLAUDE.md` declares the whole of `.rig/` elevated — so before AIC-70 every
+close recorded `elevated-mechanism` for a reason that had nothing to do with the
+work (`see test/queue-tier-spacing.test.mjs › "spaces the next item when no
+ticket is given, rather than guessing"`, which pins that answer for an ordinary
+task's diff). A ration that fires on every item spaces nothing; it is indistinguishable
+from a ration that is off. `recordCompletedTier` therefore drops the CURRENT
+task's own canonical claim record before classifying, and nothing else: another
+task's record still counts, and so does anything else under `.rig/`, `.claude/`
+or `.github/workflows/`.
+
+The exclusion is **for the ration only**. `elevatedPaths` in the same return
+value keeps naming the claim record, because that answers the gate sweep's
+question — what did this change cross — and a close that stopped listing it
+would look clean to the check built to catch merges across elevated paths. The
+two answers differ on purpose, and `test/queue-tier-spacing.test.mjs` pins both
+sides, plus what an unrecognised ticket id does: no exclusion, the tier this
+close would have recorded before AIC-70, and the id named back as
+`ticketIgnored`. It does **not** throw — the id builds a path, so it is checked,
+but a refusal that discarded the tier would leave the ration unwritten and so be
+more permissive than not checking at all.
+
+**A second effect, measured and easy to miss.** Dropping the claim record does
+not only move closes from `elevated-mechanism` to `normal`. It also revives
+`elevated-prose`, which was unreachable while every diff carried a `.json`
+record: `['pkg/a.ts', '.rig/claims/<ticket>.json', '.claude/rules/x.md']` records
+`elevated-prose` here where `origin/main` records `elevated-mechanism`. Both
+clear the ration, so the ration's answer is unchanged — but the recorded tier is
+different, and a reader of the journal should know why the word appears now and
+did not before.
+
 ⚠ **"Elevated path" is the sweep's answer, not the diff's.** `elevatedPathsIn`
 drops inert paths *before* this classification runs, and a non-rulebook `.md` is
 inert — so `scripts/notes.md` under a declared directory records `normal`, not

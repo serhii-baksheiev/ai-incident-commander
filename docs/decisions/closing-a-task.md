@@ -5,20 +5,32 @@ This file is the evidence behind each argument in the `recordCompletedTier`
 call, and it is not loaded into any session. Read it before "simplifying" that
 command.
 
-Four of the five were live defects; the fifth (`execFileSync` with an argument
-array) is prophylaxis. They do **not** fail the same way, and the difference is
-the whole reason each is pinned rather than left to judgement:
+Four of the six were live defects; `execFileSync` with an argument array is
+prophylaxis, and `ticket` arrived with AIC-70. They do **not** fail the same
+way, and the difference is the whole reason each is pinned rather than left to
+judgement:
 
 | argument | how it fails when wrong |
 | --- | --- |
 | `-z` | silently, **permissively** — records `normal` for an elevated change |
+| `ticket` | silently, **permissively**, for an id that is well-formed but not this item's — it excludes that item's claim record instead. An id the module cannot recognise is named back in `ticketIgnored` and excludes nothing |
 | `runDir` | silently, but toward a **stop** nobody can clear |
 | the diff form | **loudly** — the call refuses on an empty file list |
 | `env: withoutGitLocation()` | loudly, for the sha-to-sha form pinned here; it is prophylaxis for this call and load-bearing for every symbolic-ref spawn |
 | `execFileSync` array | it does not; nothing is interpolated into a shell today |
 
-Exactly one of the five fails silently in the permissive direction. Do not
-round that up.
+**Two of the six fail silently in the permissive direction**, and the second one
+is newer than the sentence that used to say there was exactly one. `ticket`
+earned its row the hard way: its first implementation validated the id inside
+the `filter` callback, so a bad id was silent when nothing was elevated and
+**threw** when something was — and the throw landed before the state file was
+written, leaving the ration reading nothing at all. `clearsSpacing` treats that
+as "go ahead", so the guard failed open on precisely the elevated closes it
+exists to ration. It now resolves the id once, before classifying, and an
+unrecognised id records the tier it would have recorded before AIC-70 rather
+than discarding it (`see test/queue-tier-spacing.test.mjs › "records a
+conservative tier for an id it cannot recognise, and never leaves the ration
+unwritten"`).
 
 ## `runDir`
 
@@ -82,15 +94,20 @@ copy inside the rulebook's fenced code blocks is covered by a second sweep over
 those blocks. Both live in the generator that produced this project, not here —
 if you change the command above, that is the pair to re-check.
 
-## The shape the dangerous one has
+## The shape the dangerous ones have
 
-`-z` is the one that never announced itself: it returned a plausible answer — a
+`-z` was the first one that never announced itself: it returned a plausible answer — a
 tier of `normal` — and a plausible answer is what a run acts on, with nothing
 left behind to say it was never measured.
 
+`ticket` is the second, and it is silent in a narrower way: an id that is
+well-formed but belongs to another item excludes THAT item's record, and nothing
+in the call can tell. An id the module cannot recognise is reported back, so only
+the well-formed wrong id is quiet.
+
 The others are pinned because they are cheap to keep and expensive to
-rediscover, not because they all failed the same way. Reading the list as five
-silent bypasses is how the one that really is silent stops standing out.
+rediscover, not because they all failed the same way. Reading the list as six
+silent bypasses is how the two that really are silent stop standing out.
 
 The empty-file-list case is the deliberate counter-example: `recordCompletedTier`
 **throws** rather than guessing `normal`, because an absence and a zero look
