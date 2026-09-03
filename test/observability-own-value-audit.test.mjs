@@ -429,6 +429,16 @@ function enclosingFunctionName(node) {
     ) {
       return current.parent.name.text;
     }
+    // `{ handler: (opts) => … }` — an arrow bound to a property has a name just
+    // as much as one bound to a const, and without this its reads are attributed
+    // to `<module>`, which the probe filter then drops.
+    if (
+      (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
+      ts.isPropertyAssignment(current.parent) &&
+      ts.isIdentifier(current.parent.name)
+    ) {
+      return current.parent.name.text;
+    }
     if (
       (ts.isMethodDeclaration(current) || ts.isGetAccessorDeclaration(current) ||
         ts.isSetAccessorDeclaration(current)) &&
