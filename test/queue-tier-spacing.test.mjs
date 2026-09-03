@@ -118,10 +118,61 @@ test('spaces the next item when no ticket is given, rather than guessing', () =>
   );
 });
 
-test('refuses a ticket it cannot recognise instead of excluding something else', () => {
-  assert.throws(
-    () => close([...ORDINARY_WORK, '.rig/claims/AIC-70.json'], '../../etc'),
-    /ticket/i,
-    'a ticket id is a key, and one that is not a ticket id must be refused loudly. Silently building a path from it is how an exclusion widens to a file nobody meant to exclude.',
+test('excludes the canonical record only, never a path that merely looks like it', () => {
+  for (const lookalike of [
+    '.rig/claims/AIC-70.json.bak',
+    '.rig/claims/sub/AIC-70.json',
+    '.rig/claims/AIC-700.json',
+  ]) {
+    const { tier } = close([...ORDINARY_WORK, lookalike], 'AIC-70');
+    assert.equal(
+      tier,
+      'elevated-mechanism',
+      `${lookalike} is a different file from the canonical record and must still space the next item. A containment test instead of an equality test would drop all three, which turns "exclude only the canonical record" into "exclude anything named like it".`,
+    );
+  }
+});
+
+test('accepts the id shapes every adapter in this rulebook emits', () => {
+  // jira gives `AIC-70`; github-issues gives String(issue.number); plan-md gives
+  // String(n) and is the resolver's default. An id class that fits only one of
+  // them makes the documented close command throw in the other two rigs.
+  for (const ticket of ['AIC-70', '42', '3', 'a1', 'AR-1234']) {
+    const { tier, ticketIgnored } = close([...ORDINARY_WORK, `.rig/claims/${ticket}.json`], ticket);
+    assert.equal(tier, 'normal', `${ticket} is a legitimate item id and its own claim record must not ration`);
+    assert.equal(ticketIgnored, undefined, `${ticket} must not be reported as unrecognised`);
+  }
+});
+
+test('records a conservative tier for an id it cannot recognise, and never leaves the ration unwritten', () => {
+  // 🔴 The first version of this threw here, from inside the filter callback —
+  // so the refusal was silent when nothing was elevated and, when something was,
+  // aborted BEFORE the state file was written. `clearsSpacing` reads a missing
+  // value as "go ahead", so the guard failed open on exactly the elevated closes
+  // it exists to ration. Refusing by discarding the tier is more permissive than
+  // not refusing at all.
+  for (const bad of ['../../etc', '.rig/claims/x', 'AIC 70', '', 'a/b']) {
+    const { tier, written, ticketIgnored } = close(
+      [...ORDINARY_WORK, '.claude/hooks/guard-bash.mjs', '.rig/claims/AIC-70.json'],
+      bad,
+    );
+    assert.equal(tier, 'elevated-mechanism', `an unrecognised id must not weaken the tier (${JSON.stringify(bad)})`);
+    assert.equal(written.lastCompletedTier, 'elevated-mechanism', 'the state file is always written');
+    assert.equal(ticketIgnored, bad, 'and the unrecognised id is reported rather than swallowed');
+  }
+});
+
+test('applies no exclusion for an unrecognised id even when nothing else is elevated', () => {
+  // The dangerous half of the old defect: with nothing else elevated, the bad id
+  // was never even looked at, so it was accepted in silence. Now it is reported,
+  // and the record it failed to exclude still counts.
+  const { tier, written, ticketIgnored } = close([...ORDINARY_WORK, '.rig/claims/AIC-70.json'], 'AIC..70');
+
+  assert.equal(
+    tier,
+    'elevated-mechanism',
+    'an id carrying a path character cannot name a claim record, so nothing is excluded and the tier is what it was before AIC-70',
   );
+  assert.equal(written.lastCompletedTier, 'elevated-mechanism');
+  assert.equal(ticketIgnored, 'AIC..70', 'and it is named in the result rather than swallowed');
 });
