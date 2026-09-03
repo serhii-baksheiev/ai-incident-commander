@@ -193,10 +193,22 @@ export function createLangSmithClient(): LangSmithPersistenceClient {
   return new Client({ omitTracedRuntimeInfo: true });
 }
 
-function assertResultIdentity(
-  record: PersistedBenchmarkRecord,
-  result: PersistedBenchmarkEvaluation,
-): void {
+type OwnIdentity = Readonly<{
+  runId: string;
+  exampleId: string;
+  experimentId: string;
+}>;
+
+/**
+ * Compares two identities that are already own projections.
+ *
+ * It used to compare six `[[Get]]`s, three per side, which is why it could pass
+ * on a record and a result that both carried none of them: each comparison read
+ * the SAME inherited value on both sides and found it equal. Taking projections
+ * makes that shape unrepresentable — a missing own field is refused where it is
+ * read, before anything reaches here.
+ */
+function assertResultIdentity(record: OwnIdentity, result: OwnIdentity): void {
   if (
     result.runId !== record.runId ||
     result.exampleId !== record.exampleId ||
@@ -258,6 +270,59 @@ function ownValue(target: unknown, key: string): unknown {
  * `defineProperty` and a frozen target throws. Every call site passes a freshly
  * created local object, which is neither.
  */
+/**
+ * The typed own reads the rest of this file uses, so that no caller-supplied
+ * field is read twice: once to check it and once to publish it.
+ *
+ * `ownValue` answers "is this an own data property", which is the right question
+ * and the wrong type — every call site would otherwise narrow `unknown` itself,
+ * and a site that forgets is indistinguishable from one that did it right. These
+ * three narrow once, at the read.
+ *
+ * `requireOwn*` throws rather than returning a default, for the reason
+ * `requireResourceEvidence` gives about dropped axes: a fabricated identity is
+ * worse than a refused run, and an absent own field is exactly the case where
+ * the old plain `[[Get]]` published an inherited one.
+ */
+function ownString(target: unknown, key: string): string | undefined {
+  const value = ownValue(target, key);
+  return typeof value === 'string' ? value : undefined;
+}
+
+function requireOwnString(target: unknown, key: string, subject: string): string {
+  const value = ownString(target, key);
+  if (value === undefined) {
+    throw new Error(`${subject} must carry its own ${key}`);
+  }
+  return value;
+}
+
+/**
+ * An own read of one array element.
+ *
+ * `records[0]` on an empty array is a chain walk: `Object.prototype['0']`
+ * fabricates a whole record, and the `=== undefined` guard that follows it then
+ * passes. Index reads on caller arrays go through here.
+ */
+function ownElement(source: unknown, index: number): unknown {
+  return ownValue(source, String(index));
+}
+
+/**
+ * An own read of an array-valued container, refusing anything that is not one.
+ *
+ * The container itself is the hazard `requireMetrics` already documents for
+ * `metrics`: an experiment owning no `records` picks up an inherited array and
+ * publishes a whole run nobody submitted.
+ */
+function requireOwnArray(target: unknown, key: string, subject: string): readonly unknown[] {
+  const value = ownValue(target, key);
+  if (!Array.isArray(value)) {
+    throw new Error(`${subject} must carry its own ${key}`);
+  }
+  return value;
+}
+
 function defineOwn(
   target: Record<string, unknown>,
   key: string,
@@ -269,6 +334,53 @@ function defineOwn(
     writable: true,
     value,
   });
+}
+
+type OwnRecord = OwnIdentity &
+  Readonly<{
+    threadId: string | undefined;
+    scenarioId: string;
+    groundTruth: unknown;
+    metadata: unknown;
+    metadataScenarioId: string | undefined;
+  }>;
+
+type OwnResult = OwnIdentity & Readonly<{ actualStopKind: unknown }>;
+
+/**
+ * The own projection of one caller-supplied record, taken once at the top of
+ * the loop that publishes it.
+ *
+ * Every field below was read straight off the caller's object at the point it
+ * was published, so a record owning none of them published an inherited
+ * identity, an inherited scenario and an inherited thread under a real run.
+ * Projecting once is what makes the publishing code below unable to read the
+ * chain: it has a plain local object in hand, and `nested` reads of `scenario`
+ * and `metadata` go through their own reads here.
+ */
+function ownRecord(record: unknown): OwnRecord {
+  const scenario = ownValue(record, 'scenario');
+  const metadata = ownValue(record, 'metadata');
+  return {
+    runId: requireOwnString(record, 'runId', 'benchmark record'),
+    exampleId: requireOwnString(record, 'exampleId', 'benchmark record'),
+    experimentId: requireOwnString(record, 'experimentId', 'benchmark record'),
+    threadId: ownString(record, 'threadId'),
+    scenarioId: requireOwnString(scenario, 'id', 'benchmark record scenario'),
+    groundTruth: ownValue(scenario, 'groundTruth'),
+    metadata,
+    metadataScenarioId: ownString(metadata, 'scenarioId'),
+  };
+}
+
+/** The result half of the same projection. */
+function ownResult(result: unknown): OwnResult {
+  return {
+    runId: requireOwnString(result, 'runId', 'benchmark result'),
+    exampleId: requireOwnString(result, 'exampleId', 'benchmark result'),
+    experimentId: requireOwnString(result, 'experimentId', 'benchmark result'),
+    actualStopKind: ownValue(result, 'actualStopKind'),
+  };
 }
 
 function projectRunMetadata(
@@ -325,10 +437,16 @@ function requireMetrics(
       // that owns its name but no score of its own is not missing — it is a
       // metric whose score would otherwise be taken off the prototype and
       // published as a figure no evaluator computed.
-      if (typeof ownValue(metric, 'score') !== 'number') {
+      const score = ownValue(metric, 'score');
+      if (typeof score !== 'number') {
         throw new Error(`benchmark result metric has no score of its own: ${key}`);
       }
-      return [key, metric];
+      // A FRESH pair, not the caller's object. Returning `metric` published
+      // whatever else the caller had hung on it, plus its prototype, straight
+      // into `outputs.metrics`; and the two reads below that used to take `key`
+      // and `score` off it again were plain `[[Get]]`s on caller data, checked
+      // here and read there.
+      return [key, { key, score }];
     }),
   ) as Record<
     (typeof PERSISTED_METRIC_KEYS)[number],
@@ -353,9 +471,13 @@ function requireMetrics(
 function requireResourceEvidence(
   result: PersistedBenchmarkEvaluation,
 ): Readonly<Record<string, number>> | undefined {
-  if (result.resources === undefined) return undefined;
+  // The container is own-read for the same reason `requireMetrics` gives about
+  // `metrics`: a result declaring no resources of its own would otherwise pick
+  // up an inherited block and publish six spend figures nobody measured — the
+  // one reading this layer must never manufacture.
+  const evidence = ownValue(result, 'resources');
+  if (evidence === undefined) return undefined;
 
-  const evidence = result.resources;
   if (typeof evidence !== 'object' || evidence === null || Array.isArray(evidence)) {
     throw new Error('benchmark resource evidence is not an object');
   }
@@ -491,39 +613,61 @@ function requireBehaviorMetrics(
 
 function createNativeExamples(
   datasetId: string,
-  records: readonly PersistedBenchmarkRecord[],
+  records: readonly OwnRecord[],
 ): NativeExampleCreate[] {
   const runNumbers = new Map<string, number>();
   return records.map((record) => {
-    const runNumber = (runNumbers.get(record.scenario.id) ?? 0) + 1;
-    runNumbers.set(record.scenario.id, runNumber);
+    const runNumber = (runNumbers.get(record.scenarioId) ?? 0) + 1;
+    runNumbers.set(record.scenarioId, runNumber);
     return {
       id: record.exampleId,
       dataset_id: datasetId,
-      inputs: { scenarioId: record.scenario.id, runNumber },
-      outputs: { groundTruth: record.scenario.groundTruth },
+      inputs: { scenarioId: record.scenarioId, runNumber },
+      // `groundTruth` reaches the dataset verbatim, which is why the scenario
+      // container is own-read before we get here: a record owning no `scenario`
+      // used to publish an inherited one, ground truth included.
+      outputs: { groundTruth: record.groundTruth },
     };
   });
 }
 
-function requireExperiment(
-  experiment: PersistedBenchmarkExperiment,
-): PersistedBenchmarkRecord {
-  if (experiment.records.length !== experiment.results.length) {
+type OwnExperiment = Readonly<{
+  records: readonly OwnRecord[];
+  results: readonly unknown[];
+}>;
+
+/**
+ * Projects one caller-supplied experiment, or refuses it.
+ *
+ * Both containers are own-read for the reason `requireMetrics` gives about the
+ * `metrics` container: an experiment owning neither `records` nor `results`
+ * picked up inherited arrays and published an entire run under identities it
+ * never carried. The per-record projection happens here too, so everything
+ * downstream of this function holds plain local objects.
+ */
+function requireExperiment(experiment: unknown): OwnExperiment {
+  const rawRecords = requireOwnArray(experiment, 'records', 'benchmark experiment');
+  const results = requireOwnArray(experiment, 'results', 'benchmark experiment');
+  if (rawRecords.length !== results.length) {
     throw new Error('benchmark records and results must have the same length');
   }
-  const firstRecord = experiment.records[0];
+  // An index loop, not `map`: `map` skips a sparse HOLE and leaves one in the
+  // result, so the hole would be discovered later as an absent record rather
+  // than here as a record that carries nothing of its own. `ownElement` reads
+  // each index as an own property, which is what makes a hole read `undefined`
+  // instead of `Object.prototype[index]`.
+  const records: OwnRecord[] = [];
+  for (let index = 0; index < rawRecords.length; index += 1) {
+    records.push(ownRecord(ownElement(rawRecords, index)));
+  }
+  const firstRecord = records[0];
   if (firstRecord === undefined) {
     throw new Error('benchmark experiment must contain at least one record');
   }
-  if (
-    experiment.records.some(
-      ({ experimentId }) => experimentId !== firstRecord.experimentId,
-    )
-  ) {
+  if (records.some(({ experimentId }) => experimentId !== firstRecord.experimentId)) {
     throw new Error('benchmark records must belong to one experiment');
   }
-  return firstRecord;
+  return { records, results };
 }
 
 async function persistPreparedExperiment({
@@ -533,22 +677,29 @@ async function persistPreparedExperiment({
 }: Readonly<{
   client: LangSmithPersistenceClient;
   datasetId: string;
-  experiment: PersistedBenchmarkExperiment;
+  experiment: OwnExperiment;
 }>): Promise<void> {
-  const firstRecord = requireExperiment(experiment);
-  const project = await client.createProject({
+  const firstRecord = experiment.records[0];
+  if (firstRecord === undefined) {
+    throw new Error('benchmark experiment must contain at least one record');
+  }
+  const createdProject = await client.createProject({
     projectName: firstRecord.experimentId,
     referenceDatasetId: datasetId,
   });
+  // The client is injected, so its response is caller-supplied too — the same
+  // read `dataset.id` gets in the plural entry point above.
+  const projectId = requireOwnString(createdProject, 'id', 'created project');
 
   for (const [index, record] of experiment.records.entries()) {
-    const result = experiment.results[index];
-    if (result === undefined) {
+    const rawResult = ownElement(experiment.results, index);
+    if (rawResult === undefined) {
       throw new Error('benchmark result is missing for its run record');
     }
+    const result = ownResult(rawResult);
     assertResultIdentity(record, result);
-    const metrics = requireMetrics(result);
-    const resources = requireResourceEvidence(result);
+    const metrics = requireMetrics(rawResult as PersistedBenchmarkEvaluation);
+    const resources = requireResourceEvidence(rawResult as PersistedBenchmarkEvaluation);
     // Own-read, the same way `projectRunMetadata` reads this field further down
     // this function. This is the pairing input that decides whether the run measured
     // behaviour at all, so a `[[Get]]` here let an inherited version admit
@@ -558,7 +709,7 @@ async function persistPreparedExperiment({
     // which is the honest answer to metrics whose version nobody stated.
     const declaredEvaluatorVersion = ownValue(record.metadata, 'evaluatorVersion');
     const behaviorMetrics = requireBehaviorMetrics(
-      result,
+      rawResult as PersistedBenchmarkEvaluation,
       typeof declaredEvaluatorVersion === 'string'
         ? declaredEvaluatorVersion
         : undefined,
@@ -566,12 +717,12 @@ async function persistPreparedExperiment({
 
     await client.createRun({
       id: record.runId,
-      name: `benchmark:${record.metadata.scenarioId}`,
+      name: `benchmark:${record.metadataScenarioId ?? ''}`,
       run_type: 'chain',
       project_name: record.experimentId,
       inputs: {
         exampleId: record.exampleId,
-        scenarioId: record.metadata.scenarioId,
+        scenarioId: record.metadataScenarioId,
         threadId: record.threadId,
       },
       outputs: {
@@ -582,7 +733,9 @@ async function persistPreparedExperiment({
         // run was not measured.
         ...(resources === undefined ? {} : { resources }),
       },
-      extra: { metadata: projectRunMetadata(record.metadata) },
+      extra: {
+        metadata: projectRunMetadata(record.metadata as PersistedBenchmarkRunMetadata),
+      },
       reference_example_id: record.exampleId,
     });
 
@@ -592,7 +745,7 @@ async function persistPreparedExperiment({
     ]) {
       await client.createFeedback({
         runId: record.runId,
-        sessionId: project.id,
+        sessionId: projectId,
         key: metric.key,
         score: metric.score,
       });
@@ -608,7 +761,7 @@ async function persistPreparedExperiment({
       for (const key of PERSISTED_RESOURCE_KEYS) {
         await client.createFeedback({
           runId: record.runId,
-          sessionId: project.id,
+          sessionId: projectId,
           key,
           score: resources[key],
         });
@@ -624,29 +777,52 @@ async function persistPreparedExperiment({
  * wherever it points. AIC-69 carries the measurement; this note is here because
  * the reasoning lives on `ownValue` and nobody editing this signature reads it.
  */
-export async function persistBenchmarkExperiments({
-  client = createLangSmithClient(),
-  datasetName,
-  experiments,
-}: Readonly<{
-  client?: LangSmithPersistenceClient;
-  datasetName: string;
-  experiments: readonly PersistedBenchmarkExperiment[];
-}>): Promise<void> {
+export async function persistBenchmarkExperiments(
+  options: Readonly<{
+    client?: LangSmithPersistenceClient;
+    datasetName: string;
+    experiments: readonly PersistedBenchmarkExperiment[];
+  }>,
+): Promise<void> {
+  // The options object is read own-only, and this is the surface that made the
+  // whole item worth doing: `client = createLangSmithClient()` as a
+  // destructuring default fires only on `undefined`, so an INHERITED `client`
+  // suppressed the default and sent every outbound call in this layer wherever
+  // it pointed — dataset, examples, runs and every feedback, ground truth
+  // included, with no own `client` key anywhere on the object.
+  const suppliedClient = ownValue(options, 'client');
+  const client =
+    suppliedClient === undefined
+      ? createLangSmithClient()
+      : (suppliedClient as LangSmithPersistenceClient);
+  const datasetName = requireOwnString(options, 'datasetName', 'persist options');
+  const rawExperiments = requireOwnArray(options, 'experiments', 'persist options');
+
   if (datasetName.length === 0) {
     throw new Error('datasetName must not be empty');
+  }
+  if (rawExperiments.length === 0) {
+    throw new Error('at least one benchmark experiment is required');
+  }
+
+  // Projected before anything is published, and every index read own: the old
+  // `experiments[0]` was a chain walk on an empty array, and `.slice(1)` does
+  // its own per-index `[[Get]]`s inside the engine, which no audit of this file
+  // can see. Reading the indices here is what takes that out of the engine's
+  // hands.
+  const experiments: OwnExperiment[] = [];
+  for (let index = 0; index < rawExperiments.length; index += 1) {
+    experiments.push(requireExperiment(ownElement(rawExperiments, index)));
   }
   const firstExperiment = experiments[0];
   if (firstExperiment === undefined) {
     throw new Error('at least one benchmark experiment is required');
   }
-  requireExperiment(firstExperiment);
 
   const nativeExampleIds = new Set(
     firstExperiment.records.map(({ exampleId }) => exampleId),
   );
   for (const experiment of experiments.slice(1)) {
-    requireExperiment(experiment);
     if (
       experiment.records.length !== nativeExampleIds.size ||
       experiment.records.some(({ exampleId }) => !nativeExampleIds.has(exampleId))
@@ -658,32 +834,34 @@ export async function persistBenchmarkExperiments({
   }
 
   const dataset = await client.createDataset(datasetName);
+  const datasetId = requireOwnString(dataset, 'id', 'created dataset');
   await client.createExamples(
-    createNativeExamples(dataset.id, firstExperiment.records),
+    createNativeExamples(datasetId, firstExperiment.records),
   );
   for (const experiment of experiments) {
-    await persistPreparedExperiment({
-      client,
-      datasetId: dataset.id,
-      experiment,
-    });
+    await persistPreparedExperiment({ client, datasetId, experiment });
   }
 }
 
 /** ⚠ Same inherited-`client` hazard as its plural sibling above — AIC-69. */
-export async function persistBenchmarkExperiment({
-  client = createLangSmithClient(),
-  datasetName,
-  experiment,
-}: Readonly<{
-  client?: LangSmithPersistenceClient;
-  datasetName: string;
-  experiment: PersistedBenchmarkExperiment;
-}>): Promise<void> {
+export async function persistBenchmarkExperiment(
+  options: Readonly<{
+    client?: LangSmithPersistenceClient;
+    datasetName: string;
+    experiment: PersistedBenchmarkExperiment;
+  }>,
+): Promise<void> {
+  const suppliedClient = ownValue(options, 'client');
+  const experiment = ownValue(options, 'experiment');
+  if (experiment === undefined) {
+    throw new Error('persist options must carry its own experiment');
+  }
   await persistBenchmarkExperiments({
-    client,
-    datasetName,
-    experiments: [experiment],
+    ...(suppliedClient === undefined
+      ? {}
+      : { client: suppliedClient as LangSmithPersistenceClient }),
+    datasetName: requireOwnString(options, 'datasetName', 'persist options'),
+    experiments: [experiment as PersistedBenchmarkExperiment],
   });
 }
 
@@ -735,11 +913,22 @@ export type TracingConfig =
 export function resolveTracingConfig(
   env: Readonly<Record<string, string | undefined>>,
 ): TracingConfig {
-  if (!TRACING_FLAG_VARIABLES.some((name) => env[name] === 'true')) {
+  // Own reads, and this is the one surface of the eight on a production path:
+  // `apps/cli` passes `process.env`, whose prototype chain reaches
+  // `Object.prototype`. A plain `[[Get]]` here let a polluted prototype turn
+  // tracing ON and choose the project, from an env object owning nothing —
+  // pointing a real run's traces at somebody else's project.
+  //
+  // ⚠ What it does NOT close: the SDK reads the api key from the environment
+  // itself, with its own `[[Get]]`, so the key half of that hazard lives in
+  // `langsmith/dist/utils/env.js` and not here. This function returns no key by
+  // design, which is why the reasoning above stops at the project.
+  if (!TRACING_FLAG_VARIABLES.some((name) => ownValue(env, name) === 'true')) {
     return { enabled: false };
   }
 
-  const apiKey = env.LANGSMITH_API_KEY ?? env.LANGCHAIN_API_KEY;
+  const apiKey =
+    ownString(env, 'LANGSMITH_API_KEY') ?? ownString(env, 'LANGCHAIN_API_KEY');
   if (apiKey === undefined || apiKey.length === 0) {
     throw new Error(
       'tracing is enabled but no api key is set: export LANGSMITH_API_KEY (or LANGCHAIN_API_KEY)',
@@ -748,6 +937,9 @@ export function resolveTracingConfig(
 
   return {
     enabled: true,
-    project: env.LANGSMITH_PROJECT ?? env.LANGCHAIN_PROJECT ?? 'default',
+    project:
+      ownString(env, 'LANGSMITH_PROJECT') ??
+      ownString(env, 'LANGCHAIN_PROJECT') ??
+      'default',
   };
 }
