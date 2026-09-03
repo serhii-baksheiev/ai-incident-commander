@@ -40,44 +40,6 @@ import { mainCheckoutRoot } from './checkout.mjs';
 
 
 /**
- * The tier of a close, from the elevated paths the change crossed.
- *
- * 🔴 **The elevated tier splits in two, and only the ration reads the split.**
- * `elevated-prose` is still an elevated change everywhere it is REVIEWED — the
- * model lane, the cold readers, the `human-review` label, the gate sweep. It
- * simply does not space the next item, because the rule's own stated purpose is
- * about what compounds: *"one **unreviewed** schema or permissions change is
- * recoverable; a chain of them compounding overnight is not"*. A rule file
- * cannot compound into a broken runtime overnight, because nothing executes it —
- * and in a repository whose rulebook lives under a declared path, spacing on the
- * undivided word halts the queue rather than pacing it.
- *
- * A mixed diff is `elevated-mechanism`: the half that runs decides. Reading the
- * tier off the first path, or off "most of them are documents", would ship a
- * ration any diff can opt out of by also touching a `.md`.
- *
- * The predicate is `executesNothing` — **`.md` only, not `.mdx`** — imported
- * from `detect-missed-gate.mjs` so it sits beside the sweep's own markdown test
- * rather than drifting from it. The two are deliberately different and the
- * difference is the ration's whole subject: the sweep asks *does this need a
- * reviewer*, this asks *can it compound overnight*, and MDX is a program that
- * renders (`docs/decisions/review-lanes.md`).
- *
- * ⚠ **The limit worth knowing before trusting this:** a skill's `SKILL.md` is
- * prose by this test, and some of them carry shell snippets an agent copies and
- * runs. The owner's ruling is that skills stay prose for rationing — they are
- * reviewed like the rules they are, and rewriting a procedure is not the chain
- * of unreviewed compounding changes the ration was bought to stop. It is,
- * however, the weakest ground the "no runtime executes it" justification stands
- * on, and the place to look first if the ration ever turns out too loose.
- *
- * ⚠ Two more limits, both erring toward holding: the test is case-sensitive, so
- * `RULES.MD` records `elevated-mechanism`; and only paths `elevatedPathsIn`
- * already returned reach here, so a non-rulebook `.md` was dropped as inert long
- * before and records `normal` — which clears the ration outright rather than as
- * prose (`docs/decisions/review-lanes.md`).
- */
-/**
  * A ticket id, as the three adapters in this rulebook actually emit them.
  *
  * 🔴 It is validated because the value builds a PATH. `../../etc` would name a
@@ -126,6 +88,44 @@ const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const canonicalClaimRecord = (ticket) =>
   typeof ticket === 'string' && TICKET_ID.test(ticket) ? `.rig/claims/${ticket}.json` : null;
 
+/**
+ * The tier of a close, from the elevated paths the change crossed.
+ *
+ * 🔴 **The elevated tier splits in two, and only the ration reads the split.**
+ * `elevated-prose` is still an elevated change everywhere it is REVIEWED — the
+ * model lane, the cold readers, the `human-review` label, the gate sweep. It
+ * simply does not space the next item, because the rule's own stated purpose is
+ * about what compounds: *"one **unreviewed** schema or permissions change is
+ * recoverable; a chain of them compounding overnight is not"*. A rule file
+ * cannot compound into a broken runtime overnight, because nothing executes it —
+ * and in a repository whose rulebook lives under a declared path, spacing on the
+ * undivided word halts the queue rather than pacing it.
+ *
+ * A mixed diff is `elevated-mechanism`: the half that runs decides. Reading the
+ * tier off the first path, or off "most of them are documents", would ship a
+ * ration any diff can opt out of by also touching a `.md`.
+ *
+ * The predicate is `executesNothing` — **`.md` only, not `.mdx`** — imported
+ * from `detect-missed-gate.mjs` so it sits beside the sweep's own markdown test
+ * rather than drifting from it. The two are deliberately different and the
+ * difference is the ration's whole subject: the sweep asks *does this need a
+ * reviewer*, this asks *can it compound overnight*, and MDX is a program that
+ * renders (`docs/decisions/review-lanes.md`).
+ *
+ * ⚠ **The limit worth knowing before trusting this:** a skill's `SKILL.md` is
+ * prose by this test, and some of them carry shell snippets an agent copies and
+ * runs. The owner's ruling is that skills stay prose for rationing — they are
+ * reviewed like the rules they are, and rewriting a procedure is not the chain
+ * of unreviewed compounding changes the ration was bought to stop. It is,
+ * however, the weakest ground the "no runtime executes it" justification stands
+ * on, and the place to look first if the ration ever turns out too loose.
+ *
+ * ⚠ Two more limits, both erring toward holding: the test is case-sensitive, so
+ * `RULES.MD` records `elevated-mechanism`; and only paths `elevatedPathsIn`
+ * already returned reach here, so a non-rulebook `.md` was dropped as inert long
+ * before and records `normal` — which clears the ration outright rather than as
+ * prose (`docs/decisions/review-lanes.md`).
+ */
 const tierOf = (elevated, excluded) => {
   // No exclusion to apply — no ticket, or one this module does not recognise.
   // Deriving one from the diff would let any change opt out of the ration by
@@ -155,8 +155,14 @@ const tierOf = (elevated, excluded) => {
  *
  * Returns `{ tier, elevatedPaths }`: the value written, and the files that
  * earned it, so the close step can journal *why* rather than just *what*.
- * `elevatedPaths` is always an array — empty on a normal change, never absent,
- * and **unaffected by the prose/mechanism split above**. `elevatedPaths` answers
+ * `elevatedPaths` is always an array — never absent, and **unaffected by both
+ * the prose/mechanism split above and the claim-record exclusion**. ⚠ Since
+ * AIC-70 a `normal` tier and a NON-EMPTY `elevatedPaths` co-exist, and that
+ * pairing is the point: the ration ignored the task's own claim record, the gate
+ * must still see it (`see test/queue-tier-spacing.test.mjs › "still names the
+ * claim record in elevatedPaths, because the gate asks a different question"`).
+ * A consumer written against "normal means nothing was crossed" would stop
+ * journalling the record on exactly the closes the sweep exists to catch. `elevatedPaths` answers
  * "what did this change cross", which is the gate's question and not the
  * ration's: a prose merge that stopped listing its rulebook files would look
  * clean to the sweep that exists to catch exactly those merges.

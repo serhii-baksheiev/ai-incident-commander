@@ -52,7 +52,9 @@ was indistinguishable from the rule working.
 writes `.rig/claims/<ticket>.json` — the `loop` skill requires the record and
 `CLAUDE.md` declares the whole of `.rig/` elevated — so before AIC-70 every
 close recorded `elevated-mechanism` for a reason that had nothing to do with the
-work. A ration that fires on every item spaces nothing; it is indistinguishable
+work (`see test/queue-tier-spacing.test.mjs › "spaces the next item when no
+ticket is given, rather than guessing"`, which pins that answer for an ordinary
+task's diff). A ration that fires on every item spaces nothing; it is indistinguishable
 from a ration that is off. `recordCompletedTier` therefore drops the CURRENT
 task's own canonical claim record before classifying, and nothing else: another
 task's record still counts, and so does anything else under `.rig/`, `.claude/`

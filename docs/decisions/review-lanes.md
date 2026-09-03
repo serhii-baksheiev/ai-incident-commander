@@ -16,7 +16,7 @@ words":
 | ------------------------ | ------------------------------------------ | ------------------------------------------ | --------------------------------------------------- |
 | the Tier-2 gate sweep    | `isRulebook` in `detect-missed-gate.mjs`   | `.md`, `.mdx`, non-provisioning test paths | does not escalate on the elevated-path ground alone |
 | `decision-router.mjs`    | `isRulebookPath`, checked before extension | `.md`, `.txt`                              | may route to the `fast-path` prose lane             |
-| the queue's elevated ration (`queue/state.mjs`) | none of its own — it classifies what `elevatedPathsIn` already returned, so only **rulebook** markdown ever reaches it | `.md` (`executesNothing`) | records `elevated-prose`, which does **not** space the next item |
+| the queue's elevated ration (`queue/state.mjs`) | no *rulebook* exemption of its own — it classifies what `elevatedPathsIn` already returned, so only **rulebook** markdown ever reaches it. ⚠ It does drop one path before classifying, and it is not an extension rule: the closing task's own `.rig/claims/<ticket>.json` (AIC-70) | `.md` (`executesNothing`) | records `elevated-prose`, which does **not** space the next item |
 
 The third row is the one added last, and its question is different again: not
 "does this need the gate" nor "can a prose reviewer judge it alone", but **"can
