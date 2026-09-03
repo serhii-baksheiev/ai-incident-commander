@@ -1192,6 +1192,21 @@ const exportedCallables = (sourceFile) => {
       if (resolved !== undefined) collect(resolved, seen);
       return;
     }
+    // A function passed AS an argument is a callback, not an entry point:
+    // `rows.map((row) => row.name)` puts nothing within a caller's reach, and
+    // claiming it here would make this check fire on ordinary module-local
+    // code — which is how the previous attempt at this became noise. Every
+    // OTHER argument is still walked, because a container can carry callables:
+    // that is what keeps `Object.freeze({ … })` and `new Map([[k, fn]])`
+    // visible.
+    if (ts.isCallExpression(value) || ts.isNewExpression(value)) {
+      collect(value.expression, seen);
+      for (const argument of value.arguments ?? []) {
+        if (isFunctionLike(argument)) continue;
+        collect(argument, seen);
+      }
+      return;
+    }
     value.forEachChild((child) => collect(child, seen));
   };
 
