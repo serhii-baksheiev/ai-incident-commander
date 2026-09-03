@@ -54,14 +54,17 @@
  * own-only local objects and read those downstream, so the audit has to be able
  * to tell a projection from the thing it projects. Three properties do that:
  *
- *   - **Caller data enters at everything this module exports as a callable,
- *     and spreads by argument.** Seeding one syntactic form would let a style
- *     refactor empty this audit without changing a single read, so the walker
- *     seeds them all. ⚠ **Which forms are PINNED is `WALKER_CAPABILITIES`, not
- *     this sentence** — it used to name five forms here, four of which could be
- *     deleted from the walker with every test green, because prose states
- *     capabilities at a finer grain than any list checked against it. The
- *     capability names are the contract; read them. An internal function's parameter
+ *   - **Caller data enters at the forms this module exports a callable in, and
+ *     spreads by argument.** Seeding one syntactic form lets a style refactor
+ *     empty this audit without changing a single read — that is not a
+ *     hypothetical: seeding keyed on `ModifierFlags.Export` alone, and moving
+ *     this layer's four exports into one `export { … }` clause took the audit
+ *     to zero violations over two reverted own reads (AIC-82). ⚠ **Which forms
+ *     are seeded is `WALKER_CAPABILITIES`, not this sentence** — the entries
+ *     whose names begin `exported-` are the whole set, each one held by a probe
+ *     that goes red when its branch is deleted. Prose states capabilities at a
+ *     finer grain than any list checked against it, so the capability names are
+ *     the contract; read them rather than this paragraph. An internal function's parameter
  *     holds caller data only when some call site hands it some, which is what
  *     makes `persistPreparedExperiment`'s `OwnExperiment` parameter clean while
  *     `requireResourceEvidence`'s parameter is not — the same shape, different
@@ -137,7 +140,7 @@
  *      caller-supplied data" red. It was the one coarsening with no planted read
  *      behind it, and a number nothing holds is a number that drifts down.
  *
- * ⚠ Five blind spots no audit of this file's text can close, stated here so no
+ * ⚠ The blind spots no audit of this file's text can close, stated here so no
  * reader infers cover that is not there:
  *
  *   - a built-in that reads a caller array element for you — `slice`, `at`,
@@ -147,11 +150,36 @@
  *   - a function reached through a PARAMETER, an object property or a reassigned
  *     binding is not resolved to its declaration, so caller data does not follow
  *     it. A `const`-bound arrow IS resolved — that is what makes the `own` alias
- *     in `requireResourceEvidence` a non-event rather than a false positive.
+ *     in `requireResourceEvidence` a non-event rather than a false positive —
+ *     and so is a callee written INLINE at the call, `(o => o.field)(caller)`,
+ *     which is not reached through anything: it is present in the call itself
+ *     (`inline-callee-parameters`).
  *   - a METHOD is in that same set. An argument passed to `x.m(…)` is not
  *     matched to `m`'s parameter, so a method of a NON-exported class receives
- *     caller data from nothing and reads nothing. Methods of an exported class
- *     are covered, because they are seeded directly rather than reached.
+ *     caller data from nothing and reads nothing. Methods of an exported class,
+ *     and of an exported object literal, are covered — they are seeded directly
+ *     rather than reached.
+ *   - an exported callable the SEEDING does not reach. The seeding knows the
+ *     forms named `exported-*` in `WALKER_CAPABILITIES` and no others, so a
+ *     barrel, a spread, a frozen object, a factory's return or a getter puts a
+ *     callable within a caller's reach whose body this audit does not judge.
+ *     ⚠ This is a gap in what is AUDITED. It is not silent for a NEW EXPORT:
+ *     › "reaches no callable this audit was not told about" compares the layer's
+ *     export NAMES, so a new name is red whatever it holds, and the choice —
+ *     seed the form, or record that its body is unaudited — has to be made out
+ *     loud. It IS still silent for a callable hung under an EXISTING export
+ *     name, which is the bullet below.
+ *   - a callable hung under an EXISTING export name. Measured on this layer,
+ *     each leaving all nine tests green while a caller reaches an unprojected
+ *     `options.client`: a property assigned onto an exported function
+ *     (`(resolveTracingConfig as …).handler = (o) => o.client`), the same via
+ *     `Object.defineProperty` whether enumerable or not, and a callable in the
+ *     object an exported factory returns when it is CALLED. Neither half of the
+ *     export check sees these: the name comparison sees no new name, and the
+ *     reachability walk records a function and stops there rather than
+ *     enumerating its properties — it also stops below a depth of four. Nothing
+ *     static closes the factory case, because the object exists only once the
+ *     factory has run.
  *   - a read performed BY a helper rather than by this file. `Reflect.get(o, k)`
  *     walks the prototype chain inside the call, and there is no property access
  *     here to report. What the walker does instead is refuse to launder: the
@@ -408,6 +436,16 @@ function enclosingFunctionName(node) {
     if (
       (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
       ts.isVariableDeclaration(current.parent) &&
+      ts.isIdentifier(current.parent.name)
+    ) {
+      return current.parent.name.text;
+    }
+    // `{ handler: (opts) => … }` — an arrow bound to a property has a name just
+    // as much as one bound to a const, and without this its reads are attributed
+    // to `<module>`, which the probe filter then drops.
+    if (
+      (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
+      ts.isPropertyAssignment(current.parent) &&
       ts.isIdentifier(current.parent.name)
     ) {
       return current.parent.name.text;
@@ -706,6 +744,35 @@ function analyse(sourceFile) {
     }
   };
 
+  // 🔴 The local names a trailing `export { … }` clause exports.
+  //
+  // `isExported` reads `ModifierFlags.Export` off the DECLARATION, and an export
+  // clause leaves no modifier there — so seeding on that test alone made a
+  // callable exported this way invisible to the walker. Measured in AIC-82: a
+  // style refactor that moved this layer's four exports into one clause, without
+  // changing a single read, took the audit to zero violations while two reverted
+  // own reads sat in the file. `propertyName ?? name` is the LOCAL binding —
+  // in `export { local as public }` the declaration to seed is `local`.
+  //
+  // Bounded by construction: one pass over the tree, and the set is built once
+  // rather than per round.
+  const exportListNames = new Set();
+  eachNode(sourceFile, (node) => {
+    if (!ts.isExportDeclaration(node) || node.moduleSpecifier !== undefined) return;
+    const clause = node.exportClause;
+    if (clause === undefined || !ts.isNamedExports(clause)) return;
+    for (const specifier of clause.elements) {
+      exportListNames.add((specifier.propertyName ?? specifier.name).text);
+    }
+  });
+
+  // A declaration is a caller entry point when it carries the `export` modifier
+  // OR when an export clause names it. Both halves are load-bearing; dropping
+  // either one is the defect above, in one of its two directions.
+  const isEntryPoint = (node) =>
+    isExported(node) ||
+    (node.name !== undefined && ts.isIdentifier(node.name) && exportListNames.has(node.name.text));
+
   // The round cap is a safety net, not the termination argument — the finite
   // lattice is (see coarsening 5). It is asserted rather than trusted: a file
   // that has not converged when the cap is reached has UNDER-propagated taint,
@@ -726,20 +793,47 @@ function analyse(sourceFile) {
           handToParameter(parameter, fn, callerData());
         }
       };
-      if (ts.isFunctionDeclaration(node) && isExported(node)) {
+      if (ts.isFunctionDeclaration(node) && isEntryPoint(node)) {
         seed(node);
         return;
       }
       if (
         ts.isVariableDeclaration(node) &&
-        isExported(node) &&
+        isEntryPoint(node) &&
         node.initializer !== undefined &&
         (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
       ) {
         seed(node.initializer);
         return;
       }
-      if (ts.isClassDeclaration(node) && isExported(node)) {
+      // An exported object literal is an entry point per callable it carries.
+      // `export const persistence = { async persistOne(options) { … } }` is the
+      // same surface to a caller as `export async function persistOne(options)`,
+      // and seeding only the second let a NEW entry point in this style carry an
+      // unprojected read with the whole audit green — which is the ADDITION case
+      // this file exists for, not a regression any behavioural test would catch.
+      if (
+        ts.isVariableDeclaration(node) &&
+        isEntryPoint(node) &&
+        node.initializer !== undefined &&
+        ts.isObjectLiteralExpression(node.initializer)
+      ) {
+        for (const property of node.initializer.properties) {
+          if (isFunctionLike(property)) {
+            seed(property);
+            continue;
+          }
+          if (
+            ts.isPropertyAssignment(property) &&
+            (ts.isArrowFunction(property.initializer) ||
+              ts.isFunctionExpression(property.initializer))
+          ) {
+            seed(property.initializer);
+          }
+        }
+        return;
+      }
+      if (ts.isClassDeclaration(node) && isEntryPoint(node)) {
         for (const member of node.members) {
           if (isFunctionLike(member) || ts.isConstructorDeclaration(member)) {
             seed(member);
@@ -769,6 +863,20 @@ function analyse(sourceFile) {
           const argument = node.arguments[index];
           if (argument === undefined) return;
           handToParameter(parameter, fn, taintOf(argument));
+        });
+        return;
+      }
+
+      // An inline callee — `(o => o.field)(caller)` — is this file's own
+      // function as much as a named one is, and its parameters take the
+      // argument at the same index. Without this the read inside it was
+      // silent, and unlike the blind spots below it is not a function this
+      // walker cannot RESOLVE: it is right there in the call.
+      if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+        callee.parameters.forEach((parameter, index) => {
+          const argument = node.arguments[index];
+          if (argument === undefined) return;
+          handToParameter(parameter, callee, taintOf(argument));
         });
         return;
       }
@@ -1020,6 +1128,122 @@ function layerSources(directory = auditedLayer) {
   return found.sort();
 }
 
+/**
+ * Every callable a caller can reach from this layer, taken from the BUILT
+ * module rather than from its text.
+ *
+ * 🔴 **Why this is a runtime list and not another AST walk.** AIC-82 spent five
+ * review rounds trying to decide, from the source text, which callables a caller
+ * can reach. Each attempt closed the export spellings it knew and the next round
+ * measured another one reaching a caller with the suite green; the last attempt
+ * added a walk that resolved names with a flat, unscoped map, so an unrelated
+ * local sharing a name silently redirected it, and reading the callee of a call
+ * made it report module-local helpers as exported. Deciding this from syntax
+ * needs scope-aware name resolution — a type checker — which is the wrong price
+ * for a test.
+ *
+ * The built module already knows the answer exactly. `export { f }`, a barrel, a
+ * spread, a frozen object, a factory's return, `export default` — every spelling
+ * collapses to the same thing once the module has run: a value on the namespace
+ * object. So this asks the module.
+ *
+ * What it buys is narrow and worth stating exactly. It does NOT prove a callable
+ * is seeded. It proves two things: the layer's export NAMES are unchanged, and
+ * the callables reachable from them by enumerating own properties down to a
+ * depth of four are unchanged. A new export in any spelling turns this red
+ * whatever it holds, and the person who added it then has to decide,
+ * deliberately, whether the seeding above reaches it — the decision that was
+ * being made silently and wrongly. A callable hung under an EXISTING export name
+ * is outside both halves; that limit is in the blind-spot list above, with the
+ * measurements behind it.
+ *
+ * ⚠ It reads `dist`, so it is only as fresh as the last build — and `npm test`,
+ * the repo's own script for the whole suite, does NOT build. Measured: add an
+ * export, skip the rebuild, and this test stays green. `npm run check` and CI
+ * both build first, so the false green is transient rather than shipped, but the
+ * window is any run that did not build, not just this file run alone.
+ *
+ * It imports the built layer in-process, as six other suites already do —
+ * `metric-path-prototype-safety`, `persist-boundary-refusals`,
+ * `behavior-evaluators`, `benchmark-evaluation`, `benchmark-resource-evidence`
+ * and `langsmith-tracing` — and `dist/index.js` imports `langsmith` on its first
+ * line, so neither the layer nor that dependency arrives here first. Measured at
+ * import: no network call and no credential-shaped environment read, because the
+ * client is referenced and never constructed.
+ *
+ * The two expected lists below are what the test compares against; the walk
+ * itself is `reachableCallables`, further down.
+ */
+const EXPECTED_EXPORT_NAMES = [
+  'OBSERVABILITY_LAYER',
+  'createLangSmithClient',
+  'persistBenchmarkExperiment',
+  'persistBenchmarkExperiments',
+  'resolveTracingConfig',
+];
+
+const EXPECTED_REACHABLE_CALLABLES = [
+  'createLangSmithClient',
+  'persistBenchmarkExperiment',
+  'persistBenchmarkExperiments',
+  'resolveTracingConfig',
+];
+
+const reachableCallables = async () => {
+  const layer = await import('../packages/observability/dist/index.js');
+  const found = [];
+  const seen = new Set();
+  // Bounded: depth-capped and cycle-guarded. ⚠ Both bounds find FEWER callables
+  // than the layer really holds, which is why the export NAMES are asserted
+  // separately above — that half does not depend on reaching anything. The
+  // depth cap, and the fact that a function is recorded without enumerating its
+  // own properties, are stated in the blind-spot list at the top of this file
+  // under "a callable hung under an EXISTING export name".
+  const visit = (value, path, depth) => {
+    if (depth > 4 || value === null) return;
+    const kind = typeof value;
+    if (kind === 'function') {
+      found.push(path);
+      return;
+    }
+    if (kind !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`, depth + 1);
+    if (value instanceof Map) {
+      for (const [key, child] of value) visit(child, `${path}[${String(key)}]`, depth + 1);
+    }
+    if (value instanceof Set) {
+      let index = 0;
+      for (const child of value) visit(child, `${path}[${index++}]`, depth + 1);
+    }
+  };
+  for (const [name, value] of Object.entries(layer)) visit(value, name, 0);
+  return found.sort();
+};
+
+test('reaches no callable this audit was not told about', async () => {
+  // 🔴 The NAMES are asserted as well as the callables, and that is not
+  // belt-and-braces. The callable walk records only functions, so an export
+  // whose callables sit deeper than the depth cap, or behind a
+  // non-enumerable property, contributes NO entry — and an exact-set
+  // comparison of callables alone stays green while a caller reaches
+  // `deep.a.b.c.d.persist`. Measured, on this layer, before this line existed.
+  // Comparing the names closes both: a new export is red whatever it holds,
+  // which is the property the header claims.
+  const layer = await import('../packages/observability/dist/index.js');
+  assert.deepEqual(
+    Object.keys(layer).sort(),
+    EXPECTED_EXPORT_NAMES,
+    'this layer exports a name this audit was not told about.\nAdd it here only once you have decided the question this test exists to force: does the seeding hand caller data to whatever callable it puts within a caller\'s reach?\nA callable can hide from the reachability walk below — too deep, or non-enumerable — so the name list is the half that cannot be slipped past.',
+  );
+
+  assert.deepEqual(
+    await reachableCallables(),
+    EXPECTED_REACHABLE_CALLABLES,
+    'the set of callables a caller can reach from this layer changed.\nThat is not a failure by itself — it is the moment to decide something that used to be decided silently: does the seeding above hand caller data to the new one?\nIf it does, add the name here. If it does not, seed the form it is written in, or declare it in the blind-spot list at the top of this file with the reason.\nAIC-82 exists because a callable arrived through a spelling the seeding did not know, and every read inside it was judged clean.',
+  );
+});
+
 test('audits every source file the observability layer has', () => {
   assert.deepEqual(
     layerSources(),
@@ -1266,6 +1490,30 @@ export function auditTeethLaundering(opts: Readonly<Record<string, unknown>>): u
     enumerated,
   ];
 }
+
+function auditTeethExportListProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  return opts.plantedInAnExportListCallable;
+}
+
+const auditTeethAliasedArrow = (
+  opts: Readonly<Record<string, unknown>>,
+): unknown => opts.plantedBehindAnExportAlias;
+
+export const auditTeethExportedObject = {
+  auditTeethObjectMethod(opts: Readonly<Record<string, unknown>>): unknown {
+    return opts.plantedOnAnExportedObjectMethod;
+  },
+  auditTeethObjectArrow: (opts: Readonly<Record<string, unknown>>): unknown =>
+    opts.plantedOnAnExportedObjectArrow,
+};
+
+export function auditTeethInlineCalleeProbe(
+  opts: Readonly<Record<string, unknown>>,
+): unknown {
+  return ((inner: Readonly<Record<string, unknown>>) => inner.plantedInAnInlineCallee)(opts);
+}
+
+export { auditTeethExportListProbe, auditTeethAliasedArrow as auditTeethAliasedExport };
 `;
 
 const PROBE_FUNCTIONS = new Set([
@@ -1289,6 +1537,11 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethExportedArrow',
   'auditTeethMethod',
   'auditTeethLaundering',
+  'auditTeethExportListProbe',
+  'auditTeethAliasedArrow',
+  'auditTeethObjectMethod',
+  'auditTeethObjectArrow',
+  'auditTeethInlineCalleeProbe',
 ]);
 
 /**
@@ -1309,6 +1562,17 @@ const WALKER_CAPABILITIES = [
   'exported-function-declaration',
   'exported-const-arrow',
   'exported-class-method',
+  // Forms a caller reaches that the modifier-based test above cannot see. An
+  // `export { … }` clause leaves no modifier on the declaration it names, so
+  // seeding on `ModifierFlags.Export` alone meant a style refactor emptied this
+  // audit without changing a single read — measured, on this file, in AIC-82.
+  // `inline-callee-parameters` is the odd one out: a propagation rule rather
+  // than an export form, kept here because it is seeded in the same pass.
+  'exported-via-export-list',
+  'exported-via-aliased-export-list',
+  'exported-object-literal-method',
+  'exported-object-literal-arrow',
+  'inline-callee-parameters',
   'destructured-parameter',
   'argument-to-parameter',
   'return-value',
@@ -1393,6 +1657,26 @@ const EXPECTED_PROBE_REPORTS = [
   },
   { expression: 'opts.plantedOnAnExportedArrow', pins: ['exported-const-arrow'] },
   { expression: 'opts.plantedOnAnExportedMethod', pins: ['exported-class-method'] },
+  {
+    expression: 'opts.plantedInAnExportListCallable',
+    pins: ['exported-via-export-list'],
+  },
+  {
+    expression: 'opts.plantedBehindAnExportAlias',
+    pins: ['exported-via-aliased-export-list'],
+  },
+  {
+    expression: 'opts.plantedOnAnExportedObjectMethod',
+    pins: ['exported-object-literal-method'],
+  },
+  {
+    expression: 'opts.plantedOnAnExportedObjectArrow',
+    pins: ['exported-object-literal-arrow'],
+  },
+  {
+    expression: 'inner.plantedInAnInlineCallee',
+    pins: ['inline-callee-parameters'],
+  },
   { expression: 'for…in opts', pins: ['for-in-enumeration'] },
   {
     expression: 'carried.plantedThroughADestructuredField',
