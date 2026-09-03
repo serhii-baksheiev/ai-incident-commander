@@ -259,6 +259,30 @@ test('publishes the graph-owned control field set as one exported constant', () 
     [],
     'a graph-owned field the control schema does not declare protects nothing',
   );
+
+  // `as const` is erased at runtime, and a lifecycle node is arbitrary
+  // in-process code that can import this package. An unfrozen list let two
+  // splices delete `humanReview` and `runId` from the protected set, which
+  // routed propose_conclusion past the review gate with no interrupt and no
+  // error. Each mutation form is tried, because freezing is only worth
+  // asserting if every route it is supposed to close actually throws.
+  assert.equal(
+    Object.isFrozen(fields),
+    true,
+    'the protected set must not be mutable by anyone who can import it',
+  );
+  for (const [form, mutate] of [
+    ['splice', () => fields.splice(0, 1)],
+    ['push', () => fields.push('somethingCallerAdded')],
+    ['index assignment', () => (fields[0] = 'somethingCallerAdded')],
+    ['length reset', () => (fields.length = 0)],
+  ]) {
+    assert.throws(
+      mutate,
+      TypeError,
+      `${form} on the protected set must throw rather than silently shrink it`,
+    );
+  }
 });
 
 test('classifies every control field the schema declares as graph-owned or node-writable', () => {
@@ -431,6 +455,71 @@ test('drops a symbol-keyed property a lifecycle node puts on its control update'
     EXPECTED_FINAL_CONTROL,
     'dropping the symbol key must not disturb anything else',
   );
+});
+
+test('keeps graph-owned control intact while Object.prototype carries a setter of that name', async (t) => {
+  const createInvestigationGraph = requireGraphFactory();
+  const graphOwned = requireGraphOwnedControlFields();
+
+  for (const field of graphOwned) {
+    await t.test(`survives an inherited ${field} setter`, async () => {
+      // Both accumulators inside the wrapper start life as `{}`, so a setter on
+      // Object.prototype sits on their prototype chain. Under plain assignment
+      // the setter swallows the graph's own value and the field lands ABSENT —
+      // the same outcome as deleting it from the protected set.
+      //
+      // The pollution is armed from INSIDE the first node, not before the run.
+      // Armed earlier it also reaches the input parse and the interactive
+      // decision, which are older reads with their own prototype exposure —
+      // AIC-87. Arming it here scopes this test to the wrapper, which is what
+      // AIC-73 changed; widening it would make this test fail for reasons that
+      // predate the change and hide the one it exists to catch.
+      const swallowed = [];
+      const nodes = fakeNodes([], terminalStall);
+      const armPollution = nodes.normalize_incident;
+      nodes.normalize_incident = async (...args) => {
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          set(value) {
+            swallowed.push(value);
+          },
+          get() {
+            return 'inherited';
+          },
+        });
+        return armPollution(...args);
+      };
+
+      let outcome;
+      try {
+        outcome = await runToCompletion(
+          createInvestigationGraph({ nodes }),
+          initialState(),
+        );
+      } finally {
+        // `finally`, not `t.after`: the hooks of a subtest run at the END of
+        // the parent, so a deferred cleanup would leave each field's accessor
+        // in place for the subtests that follow and they would fail on each
+        // other's pollution rather than on their own.
+        delete Object.prototype[field];
+      }
+      const result = assertResolved(
+        outcome,
+        `a run must survive an inherited ${field} accessor`,
+      );
+
+      assert.deepStrictEqual(
+        swallowed,
+        [],
+        `the wrapper must never [[Set]] ${field}, or a polluted prototype decides what persists`,
+      );
+      assert.deepStrictEqual(
+        result.control,
+        EXPECTED_FINAL_CONTROL,
+        `an inherited ${field} setter must not change the control the graph writes`,
+      );
+    });
+  }
 });
 
 test('still lets a lifecycle node write a control field the graph does not own', async () => {

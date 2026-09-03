@@ -119,13 +119,25 @@ export type InvestigationExecutionConfig = Readonly<{
  * is wrong about what it does say, neither is derived from this constant, and
  * neither is a place to audit the set from.
  *
+ * **Frozen, and that is load-bearing rather than tidy.** `as const` is erased at
+ * compile time, so an exported array is ordinary mutable runtime state that any
+ * caller — a lifecycle node included, since a node is arbitrary in-process code
+ * handed to `createInvestigationGraph` — can `import` and splice. Two entries
+ * removed from it used to be enough to make `humanReview` and `runId` vanish
+ * from persisted control, routing `propose_conclusion` straight to END with no
+ * interrupt and no error: the exact bypass this set exists to prevent, reached
+ * without writing either field. Under ESM's strict mode a frozen array throws
+ * on every mutation form instead — pinned in
+ * graph-owned-control-contract.test.mjs › "publishes the graph-owned control
+ * field set as one exported constant".
+ *
  * `satisfies` proves every entry is a real control field; it does NOT prove the
  * list is complete, so completeness is a test rather than a type — see
  * graph-owned-control-contract.test.mjs › "classifies every control field the
  * schema declares as graph-owned or node-writable", which partitions
  * `IncidentStateControlSchema` and goes red on a field classified neither way.
  */
-export const GRAPH_OWNED_CONTROL_FIELDS = [
+export const GRAPH_OWNED_CONTROL_FIELDS = Object.freeze([
   'stopKind',
   'runId',
   'humanReview',
@@ -136,7 +148,7 @@ export const GRAPH_OWNED_CONTROL_FIELDS = [
   'iterationsUsed',
   'llmCallsUsed',
   'resumeCount',
-] as const satisfies readonly (keyof IncidentStateControl)[];
+] as const satisfies readonly (keyof IncidentStateControl)[]);
 
 export type GraphOwnedControlField =
   (typeof GRAPH_OWNED_CONTROL_FIELDS)[number];
@@ -392,6 +404,30 @@ function readDeclaredLlmCalls(result: InvestigationNodeResult): number {
 }
 
 /**
+ * Writes an own data property, the way object-rest already does — never `[[Set]]`.
+ *
+ * Plain assignment consults the prototype chain for a setter, so a polluted
+ * `Object.prototype.humanReview` would swallow the graph's own value on its way
+ * into the object being built and leave the field absent. Both accumulators
+ * below start as `{}` and are therefore exposed to exactly that, which is why
+ * neither of them assigns — see graph-owned-control-contract.test.mjs ›
+ * "keeps graph-owned control intact while Object.prototype carries a setter of
+ * that name".
+ */
+function defineOwnValue(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
  * Reads the graph-owned half of a control object, by the one list that names it.
  *
  * A field absent from the source lands as `undefined`, which is the shape
@@ -403,7 +439,7 @@ function pickGraphOwnedControl(
 ): Pick<IncidentStateControl, GraphOwnedControlField> {
   const picked: Record<string, unknown> = {};
   for (const field of GRAPH_OWNED_CONTROL_FIELDS) {
-    picked[field] = control[field];
+    defineOwnValue(picked, field, control[field]);
   }
   return picked as Pick<IncidentStateControl, GraphOwnedControlField>;
 }
@@ -434,7 +470,7 @@ function withoutGraphOwnedControl(
   const rest: Record<string, unknown> = {};
   for (const key of Object.keys(source)) {
     if (GRAPH_OWNED_CONTROL_FIELD_SET.has(key)) continue;
-    rest[key] = source[key];
+    defineOwnValue(rest, key, source[key]);
   }
   return rest as NodeWritableControl;
 }
