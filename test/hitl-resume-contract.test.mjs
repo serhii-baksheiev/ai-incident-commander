@@ -3050,6 +3050,75 @@ test('refuses a restored control field that is an own accessor rather than a val
 });
 
 /**
+ * The same own-accessor shape on the route where `reviewConclusion` never runs,
+ * which is what pins `pickGraphOwnedControl`'s OWN copy of the refusal.
+ *
+ * The row above reaches the presence check; this one reaches the primitive,
+ * because an off-contract pause replays a WRAPPED node first. Without it,
+ * deleting the descriptor test inside `pickGraphOwnedControl` leaves the whole
+ * suite green — measured — and a guard nothing reddens is a guess.
+ */
+test('refuses an own accessor at the wrapped node, where no later check runs', async () => {
+  const harness = createHarness({
+    runId: 'run-own-accessor-at-wrapped-node',
+    nodes: nodesPausingOffContract(),
+  });
+
+  try {
+    const interrupted = await harness.startRaw();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      if (reads < POLLUTED_FROM_SECOND_READ) return persisted;
+      const descriptors = Object.getOwnPropertyDescriptors(persisted);
+      delete descriptors[POLLUTED_FIELD];
+      const rebuilt = Object.create(Object.prototype, descriptors);
+      Object.defineProperty(rebuilt, POLLUTED_FIELD, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return false;
+        },
+      });
+      return rebuilt;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a wrapped node must refuse an own accessor rather than invoke it to decide what the graph owns',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'the refused run must still be under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
  * The absent-field branch of the same guard, which is the one that must NOT
  * refuse.
  *
