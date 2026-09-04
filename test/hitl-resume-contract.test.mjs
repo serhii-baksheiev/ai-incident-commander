@@ -3706,8 +3706,8 @@ test('refuses a hypothesis the caller never supplied', async () => {
     );
     assert.match(
       outcome.error.message,
-      /decision must carry its own hypothesis/,
-      `the refusal must name the field the caller did not supply: ${outcome.error.message}`,
+      /must be built from fields the caller owns/,
+      `the refusal must say the decision parses only by reading the prototype: ${outcome.error.message}`,
     );
     assert.equal(
       harness.trace.length,

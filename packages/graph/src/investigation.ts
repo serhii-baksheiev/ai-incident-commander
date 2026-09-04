@@ -444,6 +444,59 @@ function hasOwnDataProperty(source: unknown, key: string): boolean {
 
 
 /**
+ * A caller's value, rebuilt from OWN DATA PROPERTIES ONLY, with no prototype.
+ *
+ * 🔴 The reason this exists rather than a check: zod builds its output by
+ * ASSIGNING into a fresh object, so an own-writing `Object.prototype` setter
+ * intercepts that assignment and defines the attacker's value as a genuine own
+ * property of the result. Checking the caller's object then constrains nothing
+ * about the object the graph acts on. Measured on an honest, complete
+ * `add_hypothesis` resume with `Object.prototype.hypothesis` armed: accepted at
+ * every arming window, `resumeCount: 1`, and the attacker's hypothesis in
+ * persisted state, steering every node after it.
+ *
+ * So the decision the graph acts on is assembled here, never taken from the
+ * parse. `Object.create(null)` has nothing behind it, and the copy is written
+ * with `defineProperty` rather than assignment, so neither read nor write can
+ * be intercepted.
+ *
+ * ⚠ Bounded, because a fail-open guard must do provably bounded work
+ * (`.claude/rules/invariants.md`): recursion stops at `OWN_COPY_MAX_DEPTH`, and
+ * anything deeper is carried by reference rather than dropped — a decision is
+ * two levels deep by schema, so the cap is slack, and keeping the value intact
+ * means the parse still judges it.
+ *
+ * see hitl-resume-contract.test.mjs › "refuses an own-writing gadget that
+ * rewrites a nested hypothesis field"
+ */
+const OWN_COPY_MAX_DEPTH = 4;
+
+function ownDataCopy(
+  value: unknown,
+  prototype: object | null,
+  depth = 0,
+): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (depth >= OWN_COPY_MAX_DEPTH) return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => ownDataCopy(entry, prototype, depth + 1));
+  }
+  const rebuilt = Object.create(prototype) as Record<string, unknown>;
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined && Object.hasOwn(descriptor, 'value')) {
+      Object.defineProperty(rebuilt, key, {
+        value: ownDataCopy(descriptor.value, prototype, depth + 1),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  return rebuilt;
+}
+
+/**
  * Which fields a decision of this action declares — asked of the schema, never
  * listed here.
  *
@@ -517,17 +570,43 @@ function decisionFieldsFor(action: unknown): readonly string[] {
 function parseCallerOwnedDecision(
   supplied: unknown,
 ): ConclusionReviewDecision | undefined {
-  const parsed = ConclusionReviewDecisionSchema.safeParse(supplied);
-  if (!parsed.success) return undefined;
+  // Validate what the caller OWNS, and act on it. The prototype cannot supply a
+  // field to this copy, so a field the caller omitted is refused by the schema
+  // instead of being filled in for them.
+  // TWO copies, and the prototypes are the whole difference between them.
+  //
+  // The one that is VALIDATED has none: a field the caller omitted then finds
+  // nothing to read, so the schema refuses it instead of the prototype filling
+  // it in.
+  //
+  // The one that is RETURNED has the ordinary prototype, because a null-prototype
+  // object is observably different downstream — `deepStrictEqual` compares
+  // prototypes, so one reaching persisted state changes what callers and tests
+  // see. Both are written with `defineProperty`, which no inherited setter can
+  // intercept, so the returned copy carries the caller's values either way.
+  const ownOnly = ownDataCopy(supplied, null);
+  const parsed = ConclusionReviewDecisionSchema.safeParse(ownOnly);
+  if (!parsed.success) {
+    // Told apart from an ordinary invalid decision: if the caller's object
+    // parses while what they own does not, the difference IS the substitution,
+    // and this project reports an attempt rather than absorbing it (AIC-92).
+    if (ConclusionReviewDecisionSchema.safeParse(supplied).success) {
+      throw new Error(
+        'conclusion review decision must be built from fields the caller owns: it parses only by reading a field off the prototype',
+      );
+    }
+    return undefined;
+  }
 
   // BOTH sides are own-data reads. The first version of this guard compared an
   // own read against `parsed.action` — a plain `[[Get]]` — and a getter that
   // answered honestly once and attacker-side afterwards satisfied it and then
   // decided the route.
-  const suppliedAction = readOwnDataValue(supplied, 'action');
+  const suppliedAction = readOwnDataValue(ownOnly, 'action');
+  const asSent = ConclusionReviewDecisionSchema.safeParse(supplied);
   if (
     suppliedAction === undefined ||
-    suppliedAction !== readOwnDataValue(parsed.data, 'action')
+    (asSent.success && suppliedAction !== readOwnDataValue(asSent.data, 'action'))
   ) {
     // The caller's OWN value is what the message names — never a fresh read of
     // the parsed one, which an accessor controls in content and length alike
@@ -546,7 +625,10 @@ function parseCallerOwnedDecision(
     }
   }
 
-  return parsed.data;
+  // NOT `parsed.data`: zod assembles that by assignment, which an own-writing
+  // setter intercepts. The caller's own copy is what the graph acts on, and the
+  // parse above is what proved it valid.
+  return ownDataCopy(supplied, Object.prototype) as ConclusionReviewDecision;
 }
 
 /**
