@@ -997,3 +997,138 @@ test('passes challenge effect from a graph-backed status trajectory and executed
   assert.equal(result.behaviorMetrics.challenge_effect.score, 1);
   assert.equal(result.behaviorMetrics.challenge_effect.reason, 'passed');
 });
+
+// The shared fixture for the three trial-status tests below. It differs from
+// the status-trajectory test above in what it deliberately LEAVES OUT: nothing
+// after the challenge writes an assessment or confirms a prediction, so the
+// leader's derived status is identical either side of the challenge, and the
+// leader itself never changes. Every route to a non-zero challenge_effect is
+// therefore closed except the executed-discriminating-trial count, which is
+// what these tests are about.
+async function graphExperimentWithDiscriminatingTrialStatus(trialStatus) {
+  return evals.runGraphBenchmarkExperiment({
+    experimentId: `challenge-trial-${trialStatus}-calibration-v0.2`,
+    scenarioSet: 'calibration',
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    createNodes(input) {
+      assertExecutionInputAllowlist(input);
+      const leaderId = `leader-${input.runId}`;
+      const predictionId = `prediction-${input.runId}`;
+      const testId = `challenge-test-${input.runId}`;
+      const trialId = `challenge-trial-${input.runId}`;
+      const tool = input.fixture.entries[0].toolId;
+      const empty = async () => ({});
+      return {
+        normalize_incident: empty,
+        collect_baseline: empty,
+        generate_hypotheses: async () => ({
+          hypotheses: [{
+            id: leaderId,
+            statement: 'initial leader survives a discriminating challenge',
+            createdBy: 'initial',
+          }],
+        }),
+        derive_predictions: async () => ({
+          predictions: [{
+            id: predictionId,
+            hypothesisId: leaderId,
+            statement: 'the discriminating test separates the alternatives',
+            expectedIfTrue: [],
+            expectedIfFalse: [],
+            status: 'untested',
+          }],
+        }),
+        plan_investigation: empty,
+        execute_investigation: async (state) => {
+          if (state.control.challengeRounds === 0) return {};
+          return {
+            tests: [{
+              id: testId,
+              predictionId,
+              tool,
+              input: { challenge: true },
+              cost: 'cheap',
+              status: 'executed',
+            }],
+            trials: [{
+              id: trialId,
+              runId: input.runId,
+              testId,
+              attempt: 1,
+              tool,
+              input: { challenge: true },
+              status: trialStatus,
+              durationMs: 1,
+              evidenceIds: [],
+            }],
+          };
+        },
+        evaluate_predictions: empty,
+        interpret_residual_evidence: empty,
+        derive_hypothesis_state: empty,
+        termination_check: async () => ({
+          route: 'terminal',
+          stopKind: 'sufficient',
+          leaderId,
+        }),
+        challenge_hypothesis: async () => ({
+          alternative: {
+            id: `alternative-${input.runId}`,
+            statement: 'challenge alternative',
+            createdBy: 'challenge',
+          },
+          discriminatingTests: [{
+            id: testId,
+            predictionId,
+            tool,
+            input: { challenge: true },
+            cost: 'cheap',
+            status: 'planned',
+          }],
+        }),
+        propose_conclusion: async () => ({
+          conclusion: { kind: 'inconclusive', causes: [] },
+        }),
+      };
+    },
+    async recordEvaluation() {},
+  });
+}
+
+function challengeEffectForKeptLeader(experiment) {
+  const record = experiment.records.find(
+    ({ scenario }) => scenario.id === 'challenge-keeps-leader',
+  );
+  assert.ok(record);
+  const result = experiment.results.find(({ runId }) => runId === record.runId);
+  assert.ok(result);
+  return result.behaviorMetrics.challenge_effect;
+}
+
+test('passes challenge effect when the only investigation change is a discriminating trial that succeeded', async () => {
+  const metric = challengeEffectForKeptLeader(
+    await graphExperimentWithDiscriminatingTrialStatus('ok'),
+  );
+
+  assert.equal(metric.score, 1);
+  assert.equal(metric.reason, 'passed');
+});
+
+test('does not credit a discriminating trial that ended in error', async () => {
+  const metric = challengeEffectForKeptLeader(
+    await graphExperimentWithDiscriminatingTrialStatus('error'),
+  );
+
+  assert.equal(metric.score, 0);
+  assert.equal(metric.reason, 'no-investigation-change');
+});
+
+test('does not credit a discriminating trial whose tool was unavailable', async () => {
+  const metric = challengeEffectForKeptLeader(
+    await graphExperimentWithDiscriminatingTrialStatus('unavailable'),
+  );
+
+  assert.equal(metric.score, 0);
+  assert.equal(metric.reason, 'no-investigation-change');
+});

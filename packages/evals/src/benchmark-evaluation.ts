@@ -781,8 +781,23 @@ export async function runGraphBenchmarkExperiment(
         leaderAfterChallengeId,
         leaderStatusBeforeChallenge,
         leaderStatusAfterChallenge,
-        executedDiscriminatingTrialCount: finalState.trials.filter(({ testId }) =>
-          discriminatingTestIds.has(testId),
+        // Counted only when the trial SUCCEEDED. `Trial.status` is
+        // 'ok' | 'unavailable' | 'error', and only `ok` produced evidence the
+        // investigation could act on — a tool that was unavailable, or errored,
+        // discriminated nothing. The evaluator reads a non-zero count as "the
+        // challenge changed the investigation" on its own axis
+        // (`evaluateChallengeEffect`, behavior-evaluators.ts), so counting a
+        // failed trial here credits a challenge that produced no evidence —
+        // see behavior-evaluators.test.mjs › "does not credit a discriminating
+        // trial that ended in error" and › "does not credit a discriminating
+        // trial whose tool was unavailable", one per status this excludes.
+        //
+        // Deliberately narrower than `toolCallsUsed` above, which counts every
+        // trial because a failed attempt still SPENT the resource it reports.
+        // Success is the question here; spend is the question there.
+        executedDiscriminatingTrialCount: finalState.trials.filter(
+          ({ testId, status }) =>
+            status === 'ok' && discriminatingTestIds.has(testId),
         ).length,
       });
     },
