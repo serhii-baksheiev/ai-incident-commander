@@ -17,11 +17,14 @@ import {
  * behavior metric.
  *
  * DERIVED from the two canonical arrays rather than listed again, so a new
- * entry in either one reaches the comparison with no edit here, and
- * benchmark-evaluation.test.mjs › "compares exactly the union of the v0.1 and
- * the behavior metric keys" goes red in both directions. A second hand-written
- * list here would be a copy that drifts, and the drifting copy is the one
- * nobody is looking at.
+ * entry in either one reaches the comparison with no edit here. A canonical
+ * metric nothing emits reddens benchmark-evaluation.test.mjs › "compares
+ * exactly the union of the v0.1 and the behavior metric keys"; a key added
+ * HERE and nowhere else does not reach that test at all — `tsc` refuses it
+ * first. Both directions are covered by `npm run check`, not by the one test.
+ *
+ * A second hand-written list here would be a copy that drifts, and the
+ * drifting copy is the one nobody is looking at.
  */
 export const GATE_METRIC_KEYS = [
   ...BENCHMARK_METRIC_KEYS,
@@ -194,6 +197,14 @@ function gateMetric(
  * only where the scenario's ground truth asks the question it answers, so an
  * absent metric is the normal shape of an example the question does not apply
  * to — never a missing measurement.
+ *
+ * 🔴 **An OWN-property read, and the whole presence check rests on it.** A
+ * prototype-chain read would let one entry on `Object.prototype` answer yes for
+ * every example, so a mutation that DROPPED a metric would compare as though it
+ * still declared it — the regression this gate exists to catch, returning a
+ * passing proof. Spelled `Object.hasOwn` to match
+ * `benchmark-evaluation.ts`, and pinned by benchmark-evaluation.test.mjs ›
+ * "refuses a dropped behavior metric that only the prototype declares".
  */
 function declaresBehaviorMetric(
   experiment: IndexedExperiment,
@@ -201,10 +212,7 @@ function declaresBehaviorMetric(
   metricKey: BehaviorMetricKey,
 ): boolean {
   const behaviorMetrics = experiment.resultsByExampleId.get(exampleId)?.behaviorMetrics;
-  return (
-    behaviorMetrics !== undefined &&
-    Object.prototype.hasOwnProperty.call(behaviorMetrics, metricKey)
-  );
+  return behaviorMetrics !== undefined && Object.hasOwn(behaviorMetrics, metricKey);
 }
 
 /**

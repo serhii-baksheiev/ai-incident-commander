@@ -14,6 +14,7 @@ import {
   requireFunction,
 } from './fixtures/benchmark-experiment.mjs';
 import { childEnv } from './fixtures/child-env.mjs';
+import { withPollutedObjectPrototype } from './fixtures/prototype-decoy.mjs';
 
 import * as evals from '@aic/evals';
 import * as graph from '@aic/graph';
@@ -1469,6 +1470,123 @@ test('rejects a behavior metric the mutation stops declaring', async () => {
     () => compareControlledExperiments({ baseline, mutation }),
     /(?:challenge_effect.*declar|declar.*challenge_effect)/i,
   );
+});
+
+/**
+ * The presence check the two tests above pin is only as good as the READ behind
+ * it, and the read is the part a test does not reach by accident: swap
+ * `declaresBehaviorMetric`'s own-property read for a plain
+ * `behaviorMetrics[metricKey] !== undefined` and the whole suite stays green
+ * while one entry on `Object.prototype` makes every example look as though it
+ * declares the metric — so a mutation that DROPPED it compares as though it had
+ * not, and the regression this item exists to catch returns a passing proof.
+ *
+ * Same class as AIC-67 and AIC-92, and the decoy comes from the fixture those
+ * left behind.
+ */
+test('refuses a dropped behavior metric that only the prototype declares', async () => {
+  const baseline = await getBehaviorBaseline();
+  const declared = await runBehaviorExperiment(
+    'aic-81-prototype-declared-behavior-mutation-v0.2',
+    { mutateOutcome: dropRequiredFingerprint() },
+  );
+  const exampleId = firstExampleIdOf(declared, 'challenge-keeps-leader');
+  const mutation = withBehaviorMetrics(
+    declared,
+    exampleId,
+    ({ challenge_effect: _dropped, ...kept }) => kept,
+  );
+
+  await withPollutedObjectPrototype(
+    'challenge_effect',
+    { evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION, key: 'challenge_effect', score: 1, reason: 'passed' },
+    async () => {
+      await assert.rejects(
+        () => compareControlledExperiments({ baseline, mutation }),
+        /(?:challenge_effect.*declar|declar.*challenge_effect)/i,
+        'an inherited metric must not stand in for one the mutation dropped',
+      );
+    },
+  );
+});
+
+/**
+ * The behavior path's own copies of the two guards `gateMetric` carries, which
+ * the `invalidMetricScores` table pins on the v0.1 side and nothing pinned
+ * here: deleting either left the suite green.
+ */
+test('refuses a behavior metric recorded under the wrong key or an impossible score', async () => {
+  const baseline = await getBehaviorBaseline();
+
+  for (const [note, replace, expected] of [
+    [
+      'a metric filed under another key',
+      (metrics) => ({
+        ...metrics,
+        challenge_effect: { ...metrics.challenge_effect, key: 'false_alert_correctness' },
+      }),
+      /missing metric: challenge_effect/i,
+    ],
+    [
+      'a score outside the unit interval',
+      (metrics) => ({
+        ...metrics,
+        challenge_effect: { ...metrics.challenge_effect, score: 2 },
+      }),
+      /finite number between 0 and 1/i,
+    ],
+  ]) {
+    const declared = await runBehaviorExperiment(
+      `aic-81-invalid-behavior-metric-${expected.source.length}-v0.2`,
+      { mutateOutcome: dropRequiredFingerprint() },
+    );
+    const mutation = withBehaviorMetrics(
+      declared,
+      firstExampleIdOf(declared, 'challenge-keeps-leader'),
+      replace,
+    );
+
+    await assert.rejects(
+      () => compareControlledExperiments({ baseline, mutation }),
+      expected,
+      note,
+    );
+  }
+});
+
+/**
+ * Acceptance 4 in the shape an accepted v0.1 record actually has. The inert
+ * test above runs a fixture declaring two of the three metrics; these are the
+ * two literal shapes a record with NO behavior evaluation carries — an empty
+ * object, and the field absent entirely, which is what every v0.1 record
+ * persisted before the evaluators existed looks like.
+ */
+test('compares accepted v0.1 records that carry no behavior metrics at all', async () => {
+  const stripBehaviorMetrics = (experiment, drop) => ({
+    ...experiment,
+    results: experiment.results.map(({ behaviorMetrics, ...result }) =>
+      drop ? result : { ...result, behaviorMetrics: {} }),
+  });
+
+  for (const dropField of [false, true]) {
+    const { baseline, mutation } = await getControlledMutationCycle();
+    const proof = await compareControlledExperiments({
+      baseline: stripBehaviorMetrics(baseline, dropField),
+      mutation: stripBehaviorMetrics(mutation, dropField),
+    });
+
+    for (const metricKey of evals.BEHAVIOR_METRIC_KEYS) {
+      assert.deepEqual(
+        proof.metrics[metricKey],
+        {
+          requiredScore: expectedGateScores[metricKey],
+          baseline: { passed: true, failingExampleIds: [] },
+          mutation: { passed: true, failingExampleIds: [] },
+        },
+        `a record with ${dropField ? 'no behaviorMetrics field' : 'an empty behaviorMetrics'} must still compare`,
+      );
+    }
+  }
 });
 
 test('rejects a behavior metric only the mutation declares', async () => {
