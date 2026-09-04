@@ -85,7 +85,8 @@
  *   - **A container is only as laundered as what was put in it.**
  *     `Object.fromEntries` builds with CreateDataProperty exactly as a literal
  *     does, so the CONTAINER is fresh — but its values are the pairs it was
- *     handed, and `map` yields what its callback returned. That chain is what
+ *     handed, and `map` — or `flatMap`, pinned separately as
+ *     `flatMap-callback-return` — yields what its callback returned. That chain is what
  *     makes `requireMetrics` returning a fresh `{ key, score }` pair, rather
  *     than the caller's own metric object, a thing this audit holds: reverting
  *     it reports the two reads off that object at the feedback call.
@@ -1541,7 +1542,7 @@ class AuditTeethHolder {
 export function auditTeethNewExpressionProbe(
   opts: Readonly<Record<string, unknown>>,
 ): unknown {
-  const wrapped = new AuditTeethHolder(opts) as unknown as Record<string, unknown>;
+  const wrapped = new AuditTeethHolder(opts);
   return wrapped.plantedThroughANewExpression;
 }
 
@@ -1643,7 +1644,10 @@ const WALKER_CAPABILITIES = [
   // Held by a read that must stay SILENT rather than by a planted one: losing
   // these makes the walker louder, not quieter, so no hazardous read can pin
   // them. `test('leaves the honest reads of the same fields unreported')` is
-  // what goes red.
+  // what names the extra reads. `test('reports every plain [[Get]] planted on
+  // caller-supplied data')` reddens as well, because it compares an exact set
+  // and an extra report fails it just as a missing one does — which is also why
+  // WHICH test goes red cannot be read as the direction a rule fails in.
   'own-value-read-is-silent',
   'fresh-local-argument',
   'own-only-iteration',
@@ -1735,9 +1739,14 @@ const EXPECTED_PROBE_REPORTS = [
   },
   // A second `for…in`, over a parameter named apart from the one in
   // auditTeethLaundering so the two reports are distinct strings rather than
-  // one duplicated one. Two entries because two rules: the ENUMERATION is
-  // reported with no property access anywhere, and separately the KEY it binds
-  // carries caller data into the read on the next line.
+  // one duplicated one. That naming is a readability choice and nothing rests
+  // on it: renaming the parameter and listing the duplicate expression twice
+  // keeps the file green and equally discriminating — measured.
+  //
+  // Two entries because two rules. The ENUMERATION rule reports the loop
+  // itself, needing no property access to fire; the KEY BINDING rule is what
+  // carries caller data into the read on the next line. This probe exercises
+  // both, which is why removing either rule reddens it.
   { expression: 'for…in supply', pins: ['for-in-enumeration'] },
   { expression: 'key.plantedOnTheForInKey', pins: ['for-in-key-binding'] },
   {
