@@ -502,7 +502,8 @@ function ownDataCopy(
  * (AIC-92): a repaired input is indistinguishable from one that was never
  * attacked, so the attempt is surfaced rather than silently corrected.
  *
- * The two failure shapes, both measured:
+ * Three failure shapes, all measured, and the third is why checking was
+ * replaced by assembling:
  *
  * - **the discriminant** — an accessor named `action` makes the union return
  *   `confirm` for a caller who wrote `reject`; the run then resolves at END,
@@ -512,14 +513,21 @@ function ownDataCopy(
  *   sending `{ action: 'add_hypothesis' }` and nothing else PARSES, because the
  *   strict object reads the missing field off the prototype, and the attacker's
  *   hypothesis enters persisted state. The own-only parse refuses it, and the
- *   own-field check refuses it by name.
+ *   own-only parse refuses it by name.
+ * - **the parse output itself** — zod builds its result by ASSIGNING into a
+ *   fresh object, so an own-writing setter defines the attacker's value as a
+ *   genuine own property of that result. A caller sending a complete, honest
+ *   `add_hypothesis` then had the attacker's hypothesis enter persisted state
+ *   at every arming window. No check on the CALLER's object can see this; only
+ *   not using the parse output as the value can.
  *
  * 🔴 The first version compared an own-data read against `parsed.action` — a
  * plain `[[Get]]` — so a getter answering honestly ONCE and attacker-side
  * afterwards satisfied the guard and then decided the route. Two reads of one
- * property through one getter compare whatever the getter feels like. Both
- * sides are own-data reads now, and `undefined` on the caller's side is refused
- * rather than compared, so two absences cannot agree.
+ * property through one getter compare whatever the getter feels like. That is
+ * why the value the graph acts on is ASSEMBLED from the caller's own
+ * descriptors rather than read out of anything the parse produced — the
+ * comparison that remains only reports the attempt.
  *
  * ⚠ It narrows what a caller may send. A decision whose `action` is the
  * caller's OWN accessor, or lives on a class prototype, no longer reaches the
@@ -540,9 +548,6 @@ function ownDataCopy(
 function parseCallerOwnedDecision(
   supplied: unknown,
 ): ConclusionReviewDecision | undefined {
-  // Validate what the caller OWNS, and act on it. The prototype cannot supply a
-  // field to this copy, so a field the caller omitted is refused by the schema
-  // instead of being filled in for them.
   // TWO copies, and the prototypes are the whole difference between them.
   //
   // The one that is VALIDATED has none: a field the caller omitted then finds
@@ -568,10 +573,6 @@ function parseCallerOwnedDecision(
     return undefined;
   }
 
-  // BOTH sides are own-data reads. The first version of this guard compared an
-  // own read against `parsed.action` — a plain `[[Get]]` — and a getter that
-  // answered honestly once and attacker-side afterwards satisfied it and then
-  // decided the route.
   // What remains is DETECTION. Correctness is already settled above: the parse
   // ran on a copy with no prototype, so `ownOnly` carries the caller's own
   // action and nothing else could have supplied it. This asks the separate

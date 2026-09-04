@@ -295,9 +295,7 @@ are the same mistake in different clothes: trusting a read the attacker controls
 through the getter — as does the routing test further down. A getter answering
 honestly ONCE and attacker-side afterwards satisfied the guard and then decided
 the route. Measured 3/3: a human `reject` resolved the run at END. Two reads of
-one property through one getter compare whatever the getter feels like, so both
-sides are own-data reads now, and `undefined` on the caller's side is refused
-rather than compared — two absences must not agree with each other.
+one property through one getter compare whatever the getter feels like.
 
 *The field list came from the result.* `add_hypothesis` carries a `hypothesis`
 the graph writes into state, and with `Object.prototype.hypothesis` armed a
@@ -307,6 +305,23 @@ sees nothing, because zod never makes that field own: the result's own keys are
 `['action']` while `parsed.hypothesis` still hands the graph the attacker's
 value. The list has to come from the **schema**, asked through its own options
 rather than its internals.
+
+*And the parse output was the third.* Checking the caller's object constrained
+nothing about the object the graph acted on: zod builds its result by
+**assigning** into a fresh object, which an own-writing setter intercepts, so a
+caller sending a complete and honest `add_hypothesis` had the attacker's
+hypothesis enter persisted state. That is what ended the checking approach. The
+decision the graph acts on is now ASSEMBLED from the caller's own descriptors
+with `defineProperty` — which no inherited setter can intercept — and validated
+against a copy with no prototype, so an omitted field is refused rather than
+filled in.
+
+Two consequences worth recording. The remaining comparison is **detection only**;
+correctness is settled by the assembly, which is why removing the comparison
+reddens rows about *reporting* rather than about substitution. And the earlier
+declared-field loop and `undefined` refusal became unreachable and were deleted
+rather than pinned — measured, neutering either reddened nothing. A guard that
+cannot fail is not a guard.
 
 A guard that reads its subject the way the subject wants to be read is not a
 guard. That is the same sentence as "a guard that normalises its input defeats
