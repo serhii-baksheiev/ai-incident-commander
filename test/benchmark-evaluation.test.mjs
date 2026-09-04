@@ -8,11 +8,13 @@ import { fileURLToPath } from 'node:url';
 import {
   benchmarkVersions,
   getControlledMutationCycle,
+  behaviorPerfectOutcomeFor,
   perfectOutcomeFor,
   replayBackedNodes,
   requireFunction,
 } from './fixtures/benchmark-experiment.mjs';
 import { childEnv } from './fixtures/child-env.mjs';
+import { withPollutedObjectPrototype } from './fixtures/prototype-decoy.mjs';
 
 import * as evals from '@aic/evals';
 import * as graph from '@aic/graph';
@@ -38,6 +40,21 @@ const expectedMetricScores = {
   evidence_coverage: 1,
   termination_correctness: 1,
   unsupported_claim_rate: 0,
+};
+
+/**
+ * What the regression gate requires of every metric a benchmark declares.
+ *
+ * The behavior half is DERIVED from `BEHAVIOR_METRIC_KEYS` rather than written
+ * out, because a hand-written copy is exactly the hole AIC-81 is about: a
+ * metric added to the canonical list would arrive with no required score, and
+ * a gate reading a hand-written map would hand it a free pass in silence.
+ */
+const expectedGateScores = {
+  ...expectedMetricScores,
+  ...Object.fromEntries(
+    evals.BEHAVIOR_METRIC_KEYS.map((metricKey) => [metricKey, 1]),
+  ),
 };
 
 const structuralOnlyOutcome = Object.freeze({
@@ -143,7 +160,216 @@ function failingExampleIds(experiment, metricKey) {
     .map(({ exampleId }) => exampleId);
 }
 
-async function compareControlledExperiments({ baseline, mutation, testedHeadSha }) {
+/**
+ * Five scenarios whose ground truth declares all three behavior metrics between
+ * them, so a gate over the union has something to gate on every key:
+ * `false-alert` declares `false_alert_correctness`,
+ * `dependency-caused-incident-b` declares `misleading_evidence_handling`, and
+ * `challenge-keeps-leader` declares `challenge_effect` — which the accepted
+ * v0.1 five cannot supply, pinned by
+ * › "treats a behavior metric neither experiment declares as inert".
+ *
+ * That none of them is a hold-out case is asserted in `scenariosById` below
+ * rather than stated here: a sentence saying so would go stale silently the
+ * day a scenario moves partition, and no gate fixture may reach hold-out data
+ * before AIC-19's one-shot protocol.
+ */
+const behaviorScenarioIds = [
+  'bad-deployment',
+  'db-pool-exhaustion',
+  'false-alert',
+  'dependency-caused-incident-b',
+  'challenge-keeps-leader',
+];
+
+function scenariosById(scenarioIds) {
+  const holdout = new Set(evals.BENCHMARK_SCENARIO_PARTITIONS.holdout);
+  return scenarioIds.map((scenarioId) => {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `missing declared scenario: ${scenarioId}`);
+    assert.equal(
+      holdout.has(scenarioId),
+      false,
+      `${scenarioId} is a hold-out scenario and must not enter a gate fixture`,
+    );
+    return scenario;
+  });
+}
+
+async function runBehaviorExperiment(experimentId, {
+  scenarioIds = behaviorScenarioIds,
+  mutateOutcome = (outcome) => outcome,
+} = {}) {
+  const runBenchmarkExperiment = requireFunction(
+    evals,
+    'runBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const scenarios = scenariosById(scenarioIds);
+  const byId = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
+
+  return runBenchmarkExperiment({
+    experimentId,
+    scenarioSet: 'ad-hoc',
+    scenarios,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    async investigate(input) {
+      const scenario = byId.get(input.scenarioId);
+      assert.ok(scenario, `missing execution scenario: ${input.scenarioId}`);
+      return mutateOutcome(behaviorPerfectOutcomeFor(scenario), scenario);
+    },
+    async recordEvaluation() {},
+  });
+}
+
+/** Applies `transform` to the first run of one scenario and to nothing else. */
+function firstRunOf(scenarioId, transform) {
+  let applied = false;
+  return (outcome, scenario) => {
+    if (applied || scenario.id !== scenarioId) return outcome;
+    applied = true;
+    return transform(outcome, scenario);
+  };
+}
+
+function composeOutcomeMutations(...mutations) {
+  return (outcome, scenario) =>
+    mutations.reduce((carried, mutate) => mutate(carried, scenario), outcome);
+}
+
+/**
+ * A fresh mutator per call: `firstRunOf` carries the "already applied" flag, so
+ * a shared instance would fire once for the whole file and hand every later
+ * experiment an unmutated one.
+ */
+function dropRequiredFingerprint() {
+  return firstRunOf('bad-deployment', (outcome) => ({
+    ...outcome,
+    evidenceFingerprints: outcome.evidenceFingerprints.slice(1),
+  }));
+}
+
+/**
+ * The test-side reading of "gated only where it is declared": an example that
+ * never declared the metric is not failing it, it is not being asked.
+ */
+function behaviorFailingExampleIds(experiment, metricKey) {
+  return experiment.results
+    .filter(({ behaviorMetrics }) => {
+      const metric = behaviorMetrics[metricKey];
+      return (
+        metric !== undefined && metric.score !== expectedGateScores[metricKey]
+      );
+    })
+    .map(({ exampleId }) => exampleId);
+}
+
+function firstExampleIdOf(experiment, scenarioId) {
+  const record = experiment.records.find(
+    ({ scenario }) => scenario.id === scenarioId,
+  );
+  assert.ok(record, `missing benchmark record for scenario: ${scenarioId}`);
+  return record.exampleId;
+}
+
+function withBehaviorMetrics(experiment, exampleId, replace) {
+  return {
+    ...experiment,
+    results: experiment.results.map((result) =>
+      result.exampleId === exampleId
+        ? { ...result, behaviorMetrics: replace(result.behaviorMetrics) }
+        : result),
+  };
+}
+
+/**
+ * The three behavior metrics, each with the narrowest mutation that turns it
+ * red and leaves every v0.1 metric of that example untouched.
+ *
+ * `false_alert_correctness` has no outcome-level route to that. Read the three
+ * early returns of `evaluateFalseAlertOutcome` in
+ * `packages/evals/src/behavior-evaluators.ts`: a wrong stop kind or a wrong
+ * conclusion kind also turns `termination_correctness` red, and missing
+ * expected evidence also turns `evidence_coverage` red, so no outcome regresses
+ * that metric alone. That one regresses the recorded metric instead, the way
+ * the v0.1 metric tests above regress `termination_correctness`.
+ */
+const behaviorRegressions = [
+  {
+    metricKey: 'misleading_evidence_handling',
+    scenarioId: 'dependency-caused-incident-b',
+    regressOutcome: (outcome, scenario) => ({
+      ...outcome,
+      evidenceFingerprints: scenario.groundTruth.expectedEvidence.map(
+        (fingerprint) => ({ ...fingerprint }),
+      ),
+    }),
+  },
+  {
+    metricKey: 'challenge_effect',
+    scenarioId: 'challenge-keeps-leader',
+    regressOutcome: (outcome) => ({
+      ...outcome,
+      challengeEffect: {
+        ...outcome.challengeEffect,
+        leaderAfterChallengeId: 'unexpectedly-replaced-leader',
+      },
+    }),
+  },
+  {
+    metricKey: 'false_alert_correctness',
+    scenarioId: 'false-alert',
+    regressOutcome: undefined,
+  },
+];
+
+async function behaviorRegressionExperiment(
+  { metricKey, scenarioId, regressOutcome },
+  { alsoDropRequiredFingerprint = false } = {},
+) {
+  const experiment = await runBehaviorExperiment(
+    `aic-81-${metricKey.replaceAll('_', '-')}-mutation-v0.2`,
+    {
+      mutateOutcome: composeOutcomeMutations(
+        alsoDropRequiredFingerprint
+          ? dropRequiredFingerprint()
+          : (outcome) => outcome,
+        regressOutcome === undefined
+          ? (outcome) => outcome
+          : firstRunOf(scenarioId, regressOutcome),
+      ),
+    },
+  );
+  const regressedExampleId = firstExampleIdOf(experiment, scenarioId);
+
+  return {
+    regressedExampleId,
+    coverageExampleId: firstExampleIdOf(experiment, 'bad-deployment'),
+    mutation:
+      regressOutcome === undefined
+        ? withBehaviorMetrics(experiment, regressedExampleId, (metrics) => ({
+            ...metrics,
+            [metricKey]: { ...metrics[metricKey], score: 0, reason: 'regressed' },
+          }))
+        : experiment,
+  };
+}
+
+let behaviorBaseline;
+
+function getBehaviorBaseline() {
+  behaviorBaseline ??= runBehaviorExperiment('aic-81-behavior-baseline-v0.2');
+  return behaviorBaseline;
+}
+
+async function compareControlledExperiments({
+  baseline,
+  mutation,
+  testedHeadSha,
+  expectedScores = expectedGateScores,
+  expectedMutationMetric = 'evidence_coverage',
+}) {
   const internalGate = await import(
     '../packages/evals/dist/benchmark-regression-gate.js'
   );
@@ -156,8 +382,8 @@ async function compareControlledExperiments({ baseline, mutation, testedHeadSha 
     testedHeadSha: testedHeadSha ?? currentHeadSha(),
     baseline,
     mutation,
-    expectedScores: expectedMetricScores,
-    expectedMutationMetric: 'evidence_coverage',
+    expectedScores,
+    expectedMutationMetric,
   });
 }
 
@@ -807,6 +1033,30 @@ test('gates a controlled benchmark mutation independently for each metric', asyn
       baseline: { passed: true, failingExampleIds: [] },
       mutation: { passed: true, failingExampleIds: [] },
     },
+    // The behavior half of the union, and the three entries are green for two
+    // different reasons — which is the point of asserting them here rather than
+    // trusting the shape. `misleading_evidence_handling` is DECLARED by the
+    // three `dependency-caused-incident-b` examples and
+    // `false_alert_correctness` by the three `false-alert` ones; both are green
+    // because the evidence mutation touches neither. `challenge_effect` is
+    // declared by NO accepted-v0.1 scenario, so it passes vacuously — the inert
+    // case that keeps a v0.1 experiment comparable, pinned on its own by
+    // › "treats a behavior metric neither experiment declares as inert".
+    misleading_evidence_handling: {
+      requiredScore: 1,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: { passed: true, failingExampleIds: [] },
+    },
+    false_alert_correctness: {
+      requiredScore: 1,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: { passed: true, failingExampleIds: [] },
+    },
+    challenge_effect: {
+      requiredScore: 1,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: { passed: true, failingExampleIds: [] },
+    },
   });
   assert.equal(
     Object.hasOwn(proof, 'compositeScore'),
@@ -1069,6 +1319,355 @@ test('rejects a mutation that turns an undeclared metric red', async () => {
       mutation: multiMetricMutation,
     }),
     /mutation.*termination_correctness/i,
+  );
+});
+
+test('compares exactly the union of the v0.1 and the behavior metric keys', async () => {
+  const baseline = await getBehaviorBaseline();
+  const mutation = await runBehaviorExperiment(
+    'aic-81-union-missing-evidence-mutation-v0.2',
+    { mutateOutcome: dropRequiredFingerprint() },
+  );
+
+  assert.equal(Array.isArray(evals.BENCHMARK_METRIC_KEYS), true);
+  assert.equal(Array.isArray(evals.BEHAVIOR_METRIC_KEYS), true);
+  assert.equal(evals.BEHAVIOR_METRIC_KEYS.length > 0, true);
+  assert.deepEqual(
+    [
+      ...new Set(
+        baseline.results.flatMap((result) => Object.keys(result.behaviorMetrics)),
+      ),
+    ].sort(),
+    [...evals.BEHAVIOR_METRIC_KEYS].sort(),
+    'the fixture must declare every behavior metric, or the union is untested',
+  );
+
+  const proof = await compareControlledExperiments({ baseline, mutation });
+
+  assert.deepEqual(
+    Object.keys(proof.metrics).sort(),
+    [...evals.BENCHMARK_METRIC_KEYS, ...evals.BEHAVIOR_METRIC_KEYS].sort(),
+    'every declared key must be compared, and nothing the packages do not declare',
+  );
+});
+
+for (const regression of behaviorRegressions) {
+  test(`fails the gate on a regressed ${regression.metricKey} the v0.1 metrics cannot see`, async () => {
+    const baseline = await getBehaviorBaseline();
+    const { mutation, regressedExampleId, coverageExampleId } =
+      await behaviorRegressionExperiment(regression, {
+        alsoDropRequiredFingerprint: true,
+      });
+
+    assert.deepEqual(
+      behaviorFailingExampleIds(baseline, regression.metricKey),
+      [],
+      'the baseline must be green on the metric under test',
+    );
+    assert.deepEqual(
+      behaviorFailingExampleIds(mutation, regression.metricKey),
+      [regressedExampleId],
+      `the mutation must turn ${regression.metricKey} red on exactly one example`,
+    );
+    assert.deepEqual(
+      Object.fromEntries(
+        expectedMetricKeys.map((metricKey) => [
+          metricKey,
+          failingExampleIds(mutation, metricKey),
+        ]),
+      ),
+      {
+        evidence_coverage: [coverageExampleId],
+        termination_correctness: [],
+        unsupported_claim_rate: [],
+      },
+      'no v0.1 metric may see the behavior regression',
+    );
+
+    await assert.rejects(
+      () => compareControlledExperiments({ baseline, mutation }),
+      new RegExp(`mutation.*${regression.metricKey}`, 'i'),
+    );
+  });
+}
+
+test('gates a declared behavior-metric mutation per example and publishes no aggregate', async () => {
+  const [misleadingEvidence] = behaviorRegressions;
+  const baseline = await getBehaviorBaseline();
+  const { mutation, regressedExampleId } =
+    await behaviorRegressionExperiment(misleadingEvidence);
+  const testedHeadSha = currentHeadSha();
+
+  const proof = await compareControlledExperiments({
+    testedHeadSha,
+    baseline,
+    mutation,
+    expectedMutationMetric: misleadingEvidence.metricKey,
+  });
+
+  assert.equal(proof.testedHeadSha, testedHeadSha);
+  assert.deepEqual(proof.metrics[misleadingEvidence.metricKey], {
+    requiredScore: 1,
+    baseline: { passed: true, failingExampleIds: [] },
+    mutation: { passed: false, failingExampleIds: [regressedExampleId] },
+  });
+  assert.deepEqual(
+    Object.keys(proof.metrics)
+      .filter((metricKey) => metricKey !== misleadingEvidence.metricKey)
+      .map((metricKey) => proof.metrics[metricKey].mutation.passed),
+    Object.keys(proof.metrics)
+      .filter((metricKey) => metricKey !== misleadingEvidence.metricKey)
+      .map(() => true),
+    'one behavior regression must leave every other declared metric green',
+  );
+  assert.equal(
+    Object.hasOwn(proof, 'compositeScore'),
+    false,
+    'the gate must not collapse behavior metrics into a composite score',
+  );
+  assert.equal(
+    Object.hasOwn(proof.metrics[misleadingEvidence.metricKey], 'score'),
+    false,
+    'a behavior metric gate carries failing examples, never an aggregate score',
+  );
+});
+
+test('rejects an all-green mutation for a declared behavior-metric regression', async () => {
+  const baseline = await getBehaviorBaseline();
+  const mutation = await runBehaviorExperiment(
+    'aic-81-behavior-baseline-after-mutation-v0.2',
+  );
+
+  await assert.rejects(
+    () => compareControlledExperiments({
+      baseline,
+      mutation,
+      expectedMutationMetric: 'challenge_effect',
+    }),
+    /mutation.*challenge_effect/i,
+  );
+});
+
+test('rejects a behavior metric the mutation stops declaring', async () => {
+  const baseline = await getBehaviorBaseline();
+  const declared = await runBehaviorExperiment(
+    'aic-81-undeclared-behavior-mutation-v0.2',
+    { mutateOutcome: dropRequiredFingerprint() },
+  );
+  const exampleId = firstExampleIdOf(declared, 'challenge-keeps-leader');
+  const mutation = withBehaviorMetrics(
+    declared,
+    exampleId,
+    ({ challenge_effect: _dropped, ...kept }) => kept,
+  );
+
+  assert.deepEqual(
+    behaviorFailingExampleIds(baseline, 'challenge_effect'),
+    [],
+    'the baseline must declare a green challenge_effect for this example',
+  );
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation }),
+    /(?:challenge_effect.*declar|declar.*challenge_effect)/i,
+  );
+});
+
+/**
+ * The presence check the two tests above pin is only as good as the READ behind
+ * it, and the read is the part a test does not reach by accident: swap
+ * `declaresBehaviorMetric`'s own-property read for a plain
+ * `behaviorMetrics[metricKey] !== undefined` and the whole suite stays green
+ * while one entry on `Object.prototype` makes every example look as though it
+ * declares the metric — so a mutation that DROPPED it compares as though it had
+ * not, and the regression this item exists to catch returns a passing proof.
+ *
+ * Same class as AIC-67 and AIC-92, and the decoy comes from the fixture those
+ * left behind.
+ */
+test('refuses a dropped behavior metric that only the prototype declares', async () => {
+  const baseline = await getBehaviorBaseline();
+  const declared = await runBehaviorExperiment(
+    'aic-81-prototype-declared-behavior-mutation-v0.2',
+    { mutateOutcome: dropRequiredFingerprint() },
+  );
+  const exampleId = firstExampleIdOf(declared, 'challenge-keeps-leader');
+  const mutation = withBehaviorMetrics(
+    declared,
+    exampleId,
+    ({ challenge_effect: _dropped, ...kept }) => kept,
+  );
+
+  await withPollutedObjectPrototype(
+    'challenge_effect',
+    { evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION, key: 'challenge_effect', score: 1, reason: 'passed' },
+    async () => {
+      await assert.rejects(
+        () => compareControlledExperiments({ baseline, mutation }),
+        /(?:challenge_effect.*declar|declar.*challenge_effect)/i,
+        'an inherited metric must not stand in for one the mutation dropped',
+      );
+    },
+  );
+});
+
+/**
+ * The behavior path's own copies of the two guards `gateMetric` carries, which
+ * the `invalidMetricScores` table pins on the v0.1 side and nothing pinned
+ * here: deleting either left the suite green.
+ */
+test('refuses a behavior metric recorded under the wrong key or an impossible score', async () => {
+  const baseline = await getBehaviorBaseline();
+
+  for (const [note, replace, expected] of [
+    [
+      'a metric filed under another key',
+      (metrics) => ({
+        ...metrics,
+        challenge_effect: { ...metrics.challenge_effect, key: 'false_alert_correctness' },
+      }),
+      /missing metric: challenge_effect/i,
+    ],
+    [
+      'a score outside the unit interval',
+      (metrics) => ({
+        ...metrics,
+        challenge_effect: { ...metrics.challenge_effect, score: 2 },
+      }),
+      /finite number between 0 and 1/i,
+    ],
+  ]) {
+    const declared = await runBehaviorExperiment(
+      `aic-81-invalid-behavior-metric-${expected.source.length}-v0.2`,
+      { mutateOutcome: dropRequiredFingerprint() },
+    );
+    const mutation = withBehaviorMetrics(
+      declared,
+      firstExampleIdOf(declared, 'challenge-keeps-leader'),
+      replace,
+    );
+
+    await assert.rejects(
+      () => compareControlledExperiments({ baseline, mutation }),
+      expected,
+      note,
+    );
+  }
+});
+
+/**
+ * Acceptance 4 in the shape an accepted v0.1 record actually has. The inert
+ * test above runs a fixture declaring two of the three metrics; these are the
+ * two literal shapes a record with NO behavior evaluation carries — an empty
+ * object, and the field absent entirely, which is what every v0.1 record
+ * persisted before the evaluators existed looks like.
+ */
+test('compares accepted v0.1 records that carry no behavior metrics at all', async () => {
+  const stripBehaviorMetrics = (experiment, drop) => ({
+    ...experiment,
+    results: experiment.results.map(({ behaviorMetrics, ...result }) =>
+      drop ? result : { ...result, behaviorMetrics: {} }),
+  });
+
+  for (const dropField of [false, true]) {
+    const { baseline, mutation } = await getControlledMutationCycle();
+    const proof = await compareControlledExperiments({
+      baseline: stripBehaviorMetrics(baseline, dropField),
+      mutation: stripBehaviorMetrics(mutation, dropField),
+    });
+
+    for (const metricKey of evals.BEHAVIOR_METRIC_KEYS) {
+      assert.deepEqual(
+        proof.metrics[metricKey],
+        {
+          requiredScore: expectedGateScores[metricKey],
+          baseline: { passed: true, failingExampleIds: [] },
+          mutation: { passed: true, failingExampleIds: [] },
+        },
+        `a record with ${dropField ? 'no behaviorMetrics field' : 'an empty behaviorMetrics'} must still compare`,
+      );
+    }
+  }
+});
+
+test('rejects a behavior metric only the mutation declares', async () => {
+  const baseline = await getBehaviorBaseline();
+  const declared = await runBehaviorExperiment(
+    'aic-81-manufactured-behavior-mutation-v0.2',
+    { mutateOutcome: dropRequiredFingerprint() },
+  );
+  const exampleId = firstExampleIdOf(declared, 'db-pool-exhaustion');
+  const mutation = withBehaviorMetrics(declared, exampleId, (metrics) => ({
+    ...metrics,
+    challenge_effect: {
+      evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
+      key: 'challenge_effect',
+      score: 1,
+      reason: 'passed',
+    },
+  }));
+
+  assert.deepEqual(
+    Object.keys(
+      baseline.results.find((result) => result.exampleId === exampleId)
+        .behaviorMetrics,
+    ),
+    [],
+    'the baseline must declare no behavior metric for this example',
+  );
+  await assert.rejects(
+    () => compareControlledExperiments({ baseline, mutation }),
+    /(?:challenge_effect.*declar|declar.*challenge_effect)/i,
+  );
+});
+
+test('treats a behavior metric neither experiment declares as inert', async () => {
+  const scenarioIds = acceptedV01ScenarioIds;
+  const baseline = await runBehaviorExperiment('aic-81-accepted-baseline-v0.2', {
+    scenarioIds,
+  });
+  const mutation = await runBehaviorExperiment('aic-81-accepted-mutation-v0.2', {
+    scenarioIds,
+    mutateOutcome: dropRequiredFingerprint(),
+  });
+
+  assert.deepEqual(
+    [
+      ...new Set(
+        baseline.results.flatMap((result) => Object.keys(result.behaviorMetrics)),
+      ),
+    ].sort(),
+    ['false_alert_correctness', 'misleading_evidence_handling'],
+    'no accepted v0.1 example declares challenge_effect',
+  );
+
+  const proof = await compareControlledExperiments({ baseline, mutation });
+
+  assert.deepEqual(
+    proof.metrics.challenge_effect,
+    {
+      requiredScore: 1,
+      baseline: { passed: true, failingExampleIds: [] },
+      mutation: { passed: true, failingExampleIds: [] },
+    },
+    'a metric no example declares gates nothing and fails nothing',
+  );
+});
+
+test('rejects expected scores that omit a declared behavior metric', async () => {
+  const baseline = await getBehaviorBaseline();
+  const mutation = await runBehaviorExperiment(
+    'aic-81-incomplete-expected-scores-mutation-v0.2',
+    { mutateOutcome: dropRequiredFingerprint() },
+  );
+  const { challenge_effect: _omitted, ...incompleteScores } = expectedGateScores;
+
+  await assert.rejects(
+    () => compareControlledExperiments({
+      baseline,
+      mutation,
+      expectedScores: incompleteScores,
+    }),
+    /(?:expected score.*challenge_effect|challenge_effect.*expected score)/i,
   );
 });
 

@@ -75,6 +75,58 @@ export function perfectOutcomeFor(scenario) {
   };
 }
 
+/**
+ * A perfect outcome on EVERY metric the gate compares, not only the v0.1 three.
+ *
+ * `perfectOutcomeFor` above reports no misleading evidence, no root cause and
+ * no challenge observation, so every behavior metric a scenario declares scores
+ * 0 against it. That was invisible while the regression gate compared the v0.1
+ * metrics alone; once it compares the union, a baseline has to be green on all
+ * of them before a mutation's behavior regression means anything.
+ *
+ * Kept separate from `perfectOutcomeFor` rather than folded into it: every
+ * other caller uses that one to exercise the v0.1 surface, and widening it
+ * there would change what those tests hand the evaluators for no reason they
+ * asked for. No count of those callers is written here on purpose — a
+ * hand-written tally of call sites is wrong the first time somebody adds one,
+ * and `git grep` answers it correctly every time.
+ */
+export function behaviorPerfectOutcomeFor(scenario) {
+  const { groundTruth } = scenario;
+  const misleadingEvidence = groundTruth.misleadingEvidence ?? [];
+  const leaderId = `leader-${scenario.id}`;
+
+  return {
+    ...perfectOutcomeFor(scenario),
+    evidenceFingerprints: [
+      ...groundTruth.expectedEvidence,
+      ...misleadingEvidence,
+    ].map((fingerprint) => ({ ...fingerprint })),
+    ...(groundTruth.rootCause === undefined
+      ? {}
+      : { rootCause: groundTruth.rootCause, rootCauseHypothesisId: leaderId }),
+    evidenceAssessments: misleadingEvidence.map((fingerprint) => ({
+      fingerprint: { ...fingerprint },
+      hypothesisId: leaderId,
+      effect: 'contradicts',
+    })),
+    ...(groundTruth.expectedLeaderChangeAfterChallenge === undefined
+      ? {}
+      : {
+          challengeEffect: {
+            challengeNodeExecuted: true,
+            challengeInvocationCount: 1,
+            leaderBeforeChallengeId: leaderId,
+            leaderAfterChallengeId:
+              groundTruth.expectedLeaderChangeAfterChallenge
+                ? `${leaderId}-alternative`
+                : leaderId,
+            executedDiscriminatingTrialCount: 1,
+          },
+        }),
+  };
+}
+
 const acceptedV01ScenarioIds = [
   'bad-deployment',
   'db-pool-exhaustion',
@@ -112,7 +164,9 @@ async function runOutcomeExperiment(experimentId, mutateOutcome = (outcome) => o
     async investigate(input) {
       const scenario = scenariosById.get(input.scenarioId);
       assert.ok(scenario, `missing execution scenario: ${input.scenarioId}`);
-      return mutateOutcome(perfectOutcomeFor(scenario), input);
+      // Behavior-perfect, because this cycle feeds the regression gate, and the
+      // gate refuses a baseline that is red on any metric it compares.
+      return mutateOutcome(behaviorPerfectOutcomeFor(scenario), input);
     },
     async recordEvaluation() {},
   });
