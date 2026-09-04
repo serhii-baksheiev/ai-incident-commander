@@ -880,6 +880,22 @@ test('reject resumes at hypothesis generation and returns to review', async () =
   }
 });
 
+/**
+ * The invariant here is unchanged and the ANSWER is not, which is why this row
+ * was rewritten rather than left alone.
+ *
+ * A stale id has never been able to complete a newer review. What it used to do
+ * was RESOLVE — LangGraph replayed the pending task with the resume map
+ * unmatched, handed the caller back the interrupt that was already there, and
+ * said nothing about the id it had ignored. A caller who did not compare
+ * interrupt ids read that as success. AIC-92 made it a refusal that names the
+ * id, because the same silent replay was also the route into
+ * `preserveGraphOwnedControl` on a run that had moved past its review.
+ *
+ * Both halves are asserted: the refusal, and — still — that the newer review is
+ * untouched underneath it. A refusal that also consumed the pending interrupt
+ * would satisfy the first half alone.
+ */
 test('a stale interrupt id cannot complete a newer review', async () => {
   const harness = createHarness({ runId: 'run-stale-review-decision' });
 
@@ -893,20 +909,47 @@ test('a stale interrupt id cannot complete a newer review', async () => {
     const secondInterrupt = currentInterrupt(secondInterrupted);
     assert.notEqual(secondInterrupt.id, firstInterrupt.id);
 
-    const staleReplay = await harness.execution.execute(
-      {
-        kind: 'resume',
-        interruptId: firstInterrupt.id,
-        decision: { action: 'confirm' },
-      },
-      harness.config,
+    const staleReplay = await harness.execution
+      .execute(
+        {
+          kind: 'resume',
+          interruptId: firstInterrupt.id,
+          decision: { action: 'confirm' },
+        },
+        harness.config,
+      )
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+
+    assert.equal(
+      'error' in staleReplay,
+      true,
+      'a decision aimed at an interrupt the run has moved past must be refused, not replayed into a resolved-looking answer',
+    );
+    assert.match(
+      staleReplay.error.message,
+      /not the interrupt thread .* is waiting on/,
+      `the refusal must say the run is waiting on a different interrupt: ${staleReplay.error.message}`,
+    );
+    assert.equal(
+      staleReplay.error.message.includes(firstInterrupt.id),
+      true,
+      'the refusal must name the id the caller sent, not only the thread',
     );
 
-    assert.equal(isInterrupted(staleReplay), true);
-    assert.equal(currentInterrupt(staleReplay).id, secondInterrupt.id);
     const persisted = await harness.execution.getState(harness.config);
-    assert.deepEqual(persisted.next, ['review_conclusion']);
-    assert.equal(persisted.tasks[0].interrupts[0].id, secondInterrupt.id);
+    assert.deepEqual(
+      persisted.next,
+      ['review_conclusion'],
+      'the refusal must leave the newer review exactly where it was',
+    );
+    assert.equal(
+      persisted.tasks[0].interrupts[0].id,
+      secondInterrupt.id,
+      'the newer interrupt must still be the pending one after the refusal',
+    );
   } finally {
     harness.cleanup();
   }

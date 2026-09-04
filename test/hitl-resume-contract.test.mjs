@@ -13,7 +13,7 @@ import * as graphPackage from '@aic/graph';
 
 import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
-import { INTERRUPT, isInterrupted } from '@langchain/langgraph';
+import { INTERRUPT, interrupt, isInterrupted } from '@langchain/langgraph';
 
 const lifecycleNodes = [
   'normalize_incident',
@@ -99,6 +99,7 @@ function createHarness({
   runId,
   terminationCheck = stalledTermination,
   control = {},
+  nodes,
 }) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-hitl-resume-'));
   const checkpointer = createSqliteCheckpointer(
@@ -121,7 +122,7 @@ function createHarness({
 
   const trace = [];
   const execution = graphPackage.createInvestigationGraph({
-    nodes: reviewedRunNodes(trace, terminationCheck),
+    nodes: nodes?.(trace) ?? reviewedRunNodes(trace, terminationCheck),
     checkpointer,
   });
   const config = { threadId: runId };
@@ -135,6 +136,20 @@ function createHarness({
     },
     rewriteEveryPersistedControl(rewrite) {
       rewritePersistedControl = rewrite;
+    },
+    startRaw() {
+      return execution.execute(
+        { kind: 'start', state: initialState(runId, control) },
+        config,
+      );
+    },
+    resumeWith(interruptId, decision) {
+      return execution
+        .execute({ kind: 'resume', interruptId, decision }, config)
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
     },
     async start() {
       const interrupted = await execution.execute(
@@ -1764,12 +1779,31 @@ function describeTurns(turns) {
  * of refusal before it and 37 turns of clean completion after it, so both edges
  * are covered rather than assumed.
  *
- * It CANNOT see: an arming turn past 200 — beyond the range, a chain simply
- * never fires, and 164-400 was measured clean for that reason rather than for a
- * reassuring one; the other twelve control fields; the `reject` and
- * `add_hypothesis` routes, whose resumes replay more nodes and therefore have
- * their own, longer, unmeasured windows; and any window that a future change
- * opens at a turn this scan happens to step over.
+ * It CANNOT see: an arming turn past 200; the other twelve control fields; the
+ * `reject` and `add_hypothesis` resumes, whose replays are longer and have
+ * their own unmeasured windows; and any window a future change opens at a turn
+ * this scan steps over.
+ *
+ * ⚠ Why it cannot see past 200 is the RANGE, not "a chain that never fires" —
+ * which is what this paragraph claimed until AIC-92 checked it. A chain still
+ * arms the prototype well beyond turn 163, and turns there are clean because
+ * both deserializations are already past by the time the accessor lands, not
+ * because nothing was armed. That is a claim about a mechanism, so it is a row
+ * rather than a sentence: see › "arms the prototype well past the scan's range,
+ * and lands after both deserializations". The old wording understated the
+ * coverage in the safe direction while misstating the mechanism, in the
+ * paragraph a reader trusts about the scan's reach — a limits block that is
+ * wrong about WHY is the shape that survives review, because the conclusion
+ * still reads right.
+ *
+ * ⚠ The `reject` and `add_hypothesis` limit above stays, and a reader comparing
+ * this block with the stale-retry scan further down should not read that scan
+ * as closing it. That one covers the `reject` route only, and only on a retry
+ * of a run whose node THREW — a thread waiting on no interrupt at all, which is
+ * a different replay from the ordinary in-contract `reject` resume this block
+ * is about. It is deliberately NOT the `SUPERSEDED_INTERRUPT_REFUSAL` case
+ * either; that scan asserts it is not. `add_hypothesis` gains nothing from it;
+ * that scan's own limits block says so.
  *
  * So this row SAMPLES the absence of a window. It does not prove one. If it
  * goes red on a turn outside 40-163, the correct response is to re-measure the
@@ -1891,6 +1925,42 @@ test('refuses the pollution armed at a turn inside the measured window', async (
 });
 
 /**
+ * The mechanism behind the limits block's "past 200 is the range, not a chain
+ * that never fires", so that sentence is a pointer rather than a claim.
+ *
+ * One turn well past the scan's last, chosen inside the region the old wording
+ * called unarmed. Both halves are asserted, and neither is enough alone: the
+ * chain DID reach its turn during the resume, and the resume was clean anyway —
+ * which is the corrected mechanism, a late accessor rather than an absent one.
+ *
+ * It does not pin the exact turn the chain stops firing at. That number moves
+ * with the machine, and a row asserting it would be a flake rather than a
+ * limit; what has to be true is that arming continues past the range this scan
+ * covers.
+ *
+ * Cost, measured: one resume, ~30ms.
+ */
+const TURN_PAST_SCAN_RANGE = 250;
+
+test("arms the prototype well past the scan's range, and lands after both deserializations", async () => {
+  const raced = await resumeRacedByMicrotaskChain({
+    runId: 'run-resume-race-past-range',
+    turn: TURN_PAST_SCAN_RANGE,
+  });
+
+  assert.equal(
+    raced.armed,
+    true,
+    `the chain did not reach turn ${TURN_PAST_SCAN_RANGE} during the resume, so turns past the scan's range really are unarmed and the limits block above is wrong the other way`,
+  );
+  assert.equal(
+    raced.kind,
+    'clean',
+    `a turn past the scan's range must land after both deserializations, not produce a ${raced.kind} outcome`,
+  );
+});
+
+/**
  * The control arm, and the reason the two rows above mean what they say.
  *
  * The same self-rescheduling chain, interleaved with the same resume at the
@@ -1923,4 +1993,1341 @@ test('completes a resume interleaved with a microtask chain that arms nothing', 
     1,
     'one human confirm is one resume, however the microtasks interleaved',
   );
+});
+
+/**
+ * AIC-92 — the laundering primitive, and the two routes that reach it.
+ *
+ * AIC-87, 89 and 90 each closed a refusal SITE. None of them touched the thing
+ * that makes a substituted value survive a refusal site: `pickGraphOwnedControl`
+ * read each graph-owned field with a plain `[[Get]]` and re-defined it as an own
+ * property, so a value the prototype supplied came out of that function owned,
+ * carrying the substitution, and every ownership check downstream then passed.
+ *
+ * The two routes measured to reach it, both entirely through
+ * `createInvestigationGraph`'s own API:
+ *
+ * 1. **A stale `interruptId`.** A resume whose interrupt is no longer pending
+ *    replays the thread's pending task — a WRAPPED lifecycle node — so
+ *    `preserveGraphOwnedControl` runs before `reviewConclusion` ever does. What
+ *    a CLI does after a transient failure: pause, reject, a node throws, retry
+ *    the same id.
+ * 2. **A caller-supplied node that calls `interrupt()`.** Resuming it re-enters
+ *    at that node, which is wrapped, with the same result and a PENDING id.
+ *    `InvestigationNode` does not declare `interrupt()`, but nothing refuses a
+ *    node that calls it, and a contract gap a caller can walk through is a
+ *    route.
+ *
+ * ⚠ Both are closed at the PRIMITIVE, and no row here is satisfied by a route
+ * refusal. An earlier version of this change also refused the stale id in
+ * `execute`, which would have made route 1's rows green without
+ * `pickGraphOwnedControl` doing anything — and, worse, made a run whose node
+ * threw unresumable, since such a thread has a pending task and zero pending
+ * interrupts and `execute` offers no replay that carries no id. What survives
+ * of that idea is narrower and is about answering the wrong question rather
+ * than about ownership: a decision naming an interrupt while the run waits on a
+ * DIFFERENT one is refused, and a run waiting on none is still resumable.
+ *
+ * Measured on `main` (d8bdea1) for route 1, arming
+ * `Object.prototype.humanReview` as an accessor returning `false` at each turn
+ * of a microtask chain racing the retry: turns 1-33 refused, **34-175
+ * substituted** — the retry completed, `humanReview: false` reached disk, the
+ * control PARSED, and the run never paused for review again — 176 and past it
+ * clean, the accessor arriving after both deserializations. That range is this
+ * scan's own output on `main`, not a figure carried from the ticket: a
+ * standalone probe of the same route reported 34-174, one turn narrower,
+ * because the harness below takes an extra `getState` to prove the id is stale
+ * before it retries. Route 2 is
+ * deterministic rather than raced and is measured by checkpoint read below.
+ *
+ * The severity is the parse: a corrupt control is at least visible to anything
+ * that reads it back, and this one is not. So every row here classifies on
+ * VALUE FIDELITY, never on `safeParse` alone.
+ */
+
+/** The control the graph must be running on, and therefore what has to be on
+ * disk after any resume these rows call clean. The accessor supplies `false`,
+ * which is schema-valid — that is the whole point. */
+const RETRY_EXPECTED_HUMAN_REVIEW = true;
+
+/** The refusal a decision aimed at a SUPERSEDED interrupt must produce, in the
+ * graph's own words. */
+const SUPERSEDED_INTERRUPT_REFUSAL = /not the interrupt thread .* is waiting on/;
+
+/**
+ * Lifecycle nodes with one arming hook: `armFailure(name)` makes that node
+ * throw ONCE, the next time it runs.
+ *
+ * Once, not always, because the sequence under test is a TRANSIENT failure — a
+ * node that kept throwing would make the retry fail for its own reason and the
+ * row would pass without ever exercising the replay.
+ */
+function nodesWithTransientFailure() {
+  let armed;
+  const armFailure = (name) => {
+    armed = name;
+  };
+  return {
+    armFailure,
+    nodes: (trace) =>
+      Object.fromEntries(
+        lifecycleNodes.map((name) => [
+          name,
+          async (state) => {
+            trace.push(name);
+            if (armed === name) {
+              armed = undefined;
+              throw new Error('transient model failure');
+            }
+            if (name === 'termination_check') return stalledTermination(state);
+            if (name === 'propose_conclusion') {
+              return { conclusion: proposedConclusion };
+            }
+            return {};
+          },
+        ]),
+      ),
+  };
+}
+
+/**
+ * Route 1, end to end: pause, reject, a node fails transiently, retry the same
+ * interrupt id — with the prototype armed for exactly the window of the retry.
+ *
+ * The orderings `resumeRacedByMicrotaskChain` documents above are load-bearing
+ * here for the same reasons, and one more: the failure is armed BETWEEN the
+ * start and the reject, because `derive_predictions` also runs on the way to
+ * the first pause and a failure armed at construction would break the start.
+ */
+async function retryStaleInterruptRacedByMicrotaskChain({
+  runId,
+  turn,
+  arm = true,
+}) {
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    `the prototype is already carrying ${POLLUTED_FIELD} before this run started: an earlier row leaked it`,
+  );
+
+  const { nodes, armFailure } = nodesWithTransientFailure();
+  const harness = createHarness({ runId, nodes });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    armFailure('derive_predictions');
+    const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in failed,
+      true,
+      'the transient failure must reject the first resume, or the retry under test is not a retry',
+    );
+
+    const stranded = await harness.execution.getState(harness.config);
+    const pendingInterruptIds = stranded.tasks.flatMap(({ interrupts }) =>
+      interrupts.map(({ id }) => id),
+    );
+    assert.equal(
+      pendingInterruptIds.includes(pending.id),
+      false,
+      'the id under test must be stale after the failure, or this row proves nothing',
+    );
+    assert.ok(
+      stranded.tasks.length > 0,
+      'the thread must still have pending work, or this is the finished-run no-op rather than a stale retry',
+    );
+
+    let outcome;
+    let chain;
+    try {
+      chain = scheduleMicrotaskChain({
+        turns: turn,
+        onTurn: arm
+          ? () => armInheritedAccessor(POLLUTED_FIELD, false)
+          : undefined,
+      });
+      outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+    } finally {
+      chain.cancel();
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    const persistedControl = await harness.control();
+    const parsed = IncidentStateControlSchema.safeParse(persistedControl);
+    const refused = 'error' in outcome;
+    const substituted =
+      !refused &&
+      parsed.success &&
+      persistedControl[POLLUTED_FIELD] !== RETRY_EXPECTED_HUMAN_REVIEW;
+
+    return {
+      turn,
+      armed: chain.fired,
+      outcome,
+      persistedControl,
+      pausedAgain: !refused && isInterrupted(outcome.value),
+      kind: refused
+        ? 'refused'
+        : substituted
+          ? 'substituted'
+          : parsed.success
+            ? 'clean'
+            : 'corrupt',
+      issues:
+        parsed.success === true
+          ? ''
+          : parsed.error.issues
+              .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+              .join('; '),
+    };
+  } finally {
+    harness.cleanup();
+  }
+}
+
+/**
+ * ⚠ What this scan sees, and what it does not — the same shape as the confirm
+ * route's block above, because a green run here is just as easy to over-read.
+ *
+ * It CAN see every arming turn from 1 to 200 on the `reject` retry route, for
+ * an accessor on `humanReview`. The measured window on `main` (34-175 on this
+ * machine) sits inside that with 33 turns of refusal before it and 25 turns of
+ * clean completion after it, so both edges are covered rather than assumed.
+ *
+ * It CANNOT see the other twelve control fields, the `confirm` and
+ * `add_hypothesis` retry routes, or a window a future change opens at a turn it
+ * steps over. It SAMPLES the absence of a window; it does not prove one.
+ *
+ * The deterministic rows below are what carry the regression signal. This one
+ * is what would catch the window MOVING.
+ *
+ * ⚠ Under the shipped code every row here is the same ownership refusal, so it
+ * is a weak signal on its own — reverting `pickGraphOwnedControl` alone is what
+ * reddens it, and that is the mutation this scan exists for.
+ *
+ * Cost, measured on this machine, as two figures rather than a difference:
+ * this row run alone reports 5.2s, and the whole file reports 9.3s. 200
+ * sequences of a start, a failed resume and a retry against a real SQLite
+ * checkpointer. Both include the runner's own startup, which the row below
+ * puts at about 0.5s.
+ */
+const RETRY_SCAN_FIRST_TURN = 1;
+const RETRY_SCAN_LAST_TURN = 200;
+const RETRY_SCAN_STRIDE = 1;
+
+test('no arming turn launders a value into the control a stale retry persists', async () => {
+  const rows = [];
+  for (
+    let turn = RETRY_SCAN_FIRST_TURN;
+    turn <= RETRY_SCAN_LAST_TURN;
+    turn += RETRY_SCAN_STRIDE
+  ) {
+    rows.push(
+      await retryStaleInterruptRacedByMicrotaskChain({
+        runId: `run-stale-retry-turn-${turn}`,
+        turn,
+      }),
+    );
+  }
+
+  assert.ok(
+    rows.some((row) => row.armed),
+    'no scanned turn armed the prototype during its retry, so this scan proves nothing — re-measure the turn range',
+  );
+
+  const corrupt = rows.filter((row) => row.kind === 'corrupt');
+  assert.deepEqual(
+    corrupt.map((row) => row.turn),
+    [],
+    `a stale retry persisted a control the domain schema rejects at turns ${describeTurns(
+      corrupt.map((row) => row.turn),
+    )}; first failure: ${corrupt[0]?.issues ?? ''}`,
+  );
+
+  const substituted = rows.filter((row) => row.kind === 'substituted');
+  assert.deepEqual(
+    substituted.map((row) => row.turn),
+    [],
+    `a stale retry persisted a PARSEABLE control carrying the accessor's ${POLLUTED_FIELD} at turns ${describeTurns(
+      substituted.map((row) => row.turn),
+    )} — the review gate is disarmed and the checkpoint records nothing about it`,
+  );
+});
+
+/**
+ * The deterministic row for route 1, at a turn well inside the measured window:
+ * 100 sits 66 turns past the substitution edge and 75 short of the clean one.
+ *
+ * ⚠ It asserts the OWNERSHIP refusal, and that is the point of the row rather
+ * than a detail of it. An earlier version of this change also refused the stale
+ * id in `execute`, which closed this route before a node ran — and made this row
+ * green for a reason that had nothing to do with the primitive. The refusal here
+ * has to come from `pickGraphOwnedControl`, or the class is not what is closed.
+ *
+ * Ten other refusals are already reachable on this path —
+ * `INCIDENTAL_RESUME_REFUSALS` — so "it threw" would be green for every one of
+ * them.
+ */
+const RETRY_TURN_INSIDE_WINDOW = 100;
+
+test('refuses the value a stale retry launders into a wrapped node', async () => {
+  const raced = await retryStaleInterruptRacedByMicrotaskChain({
+    runId: 'run-stale-retry-inside-window',
+    turn: RETRY_TURN_INSIDE_WINDOW,
+  });
+
+  assert.equal(
+    raced.armed,
+    true,
+    `the chain never reached turn ${RETRY_TURN_INSIDE_WINDOW} during the retry, so nothing was under test — the window has moved and needs re-measuring`,
+  );
+  assert.equal(
+    raced.kind,
+    'refused',
+    `a retry carrying a laundered graph-owned field must be refused, not resumed to a ${raced.kind} completion`,
+  );
+
+  const message = raced.outcome.error.message;
+  assert.doesNotMatch(
+    message,
+    INCIDENTAL_RESUME_REFUSALS,
+    `refusing for an unrelated reason is not this defect being fixed: ${message}`,
+  );
+  assert.doesNotMatch(
+    message,
+    SUPERSEDED_INTERRUPT_REFUSAL,
+    `this route must be closed by the ownership guard, not by a refusal that never lets it run: ${message}`,
+  );
+
+  const named = OWN_CONTROL_REFUSAL.exec(message);
+  assert.notEqual(
+    named,
+    null,
+    `the refusal must be the graph's own words about ownership, not: ${message}`,
+  );
+  assert.equal(
+    named[1],
+    POLLUTED_FIELD,
+    `the refusal named ${named?.[1]} while the prototype supplied ${POLLUTED_FIELD}`,
+  );
+  assert.equal(
+    raced.persistedControl[POLLUTED_FIELD],
+    RETRY_EXPECTED_HUMAN_REVIEW,
+    'a refused retry must leave the run still under human review',
+  );
+});
+
+/**
+ * The recovery path, and it is here because closing route 1 at the ROUTE would
+ * have silently taken it away.
+ *
+ * A lifecycle node that throws — or a process that dies mid-superstep — leaves
+ * a thread with a pending TASK and **zero** pending interrupts. A resume is the
+ * only way to advance it: `execute` has no replay that carries no interrupt id,
+ * `getState` is read-only, and `kind: 'start'` overwrites the control. An
+ * earlier version of this change refused on `tasks.length > 0`, which made
+ * every id a caller could send an error and a crashed run unresumable. Nothing
+ * asked for that, and nothing would have recorded it.
+ *
+ * So the row asserts the recovery, and the sibling below asserts that the
+ * refusal still fires where it belongs. Neither is safe to have alone.
+ */
+test('advances a run past a transient node failure when the caller retries the same id', async () => {
+  const { nodes, armFailure } = nodesWithTransientFailure();
+  const harness = createHarness({ runId: 'run-transient-failure-recovery', nodes });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    armFailure('derive_predictions');
+    const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in failed,
+      true,
+      'the transient failure must reject the first resume, or there is nothing to recover from',
+    );
+
+    const stranded = await harness.execution.getState(harness.config);
+    assert.ok(
+      stranded.tasks.length > 0,
+      'the crashed run must still have pending work',
+    );
+    assert.deepEqual(
+      stranded.tasks.flatMap(({ interrupts }) => interrupts.map(({ id }) => id)),
+      [],
+      'the crashed run must be waiting on no interrupt at all — that is the shape this row is about',
+    );
+
+    const recovered = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in recovered,
+      false,
+      `a retry must advance a run whose node threw, not strand it: ${recovered.error?.message ?? ''}`,
+    );
+    assert.equal(
+      isInterrupted(recovered.value),
+      true,
+      'the recovered run must reach its next human review rather than completing unreviewed',
+    );
+
+    const control = await harness.control();
+    assert.equal(
+      control[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'recovery must leave the run under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The refusal where it does belong: the thread IS waiting on an interrupt, and
+ * the caller named a different one — a decision aimed at a question that has
+ * already been replaced.
+ *
+ * All three decisions, because `add_hypothesis` is the one that reads the
+ * snapshot on its own and could refuse for an unrelated reason.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`refuses a stale ${label} decision while the run waits on a different interrupt`, async () => {
+    const harness = createHarness({ runId: `run-superseded-${label}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [first] = interrupted[INTERRUPT];
+
+      const reopened = await harness.resume(interrupted, { action: 'reject' });
+      assert.equal(
+        'error' in reopened,
+        false,
+        `the reject must reopen the review: ${reopened.error?.message ?? ''}`,
+      );
+      const [second] = reopened.value[INTERRUPT];
+      assert.notEqual(
+        second.id,
+        first.id,
+        'the reopened review must carry a new interrupt id, or nothing here is superseded',
+      );
+
+      const outcome = await harness.resumeWith(first.id, decision(1));
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a decision aimed at a superseded interrupt must be refused, not replayed into a resolved-looking answer',
+      );
+      assert.match(
+        outcome.error.message,
+        SUPERSEDED_INTERRUPT_REFUSAL,
+        `the refusal must say the run is waiting on a different interrupt: ${outcome.error.message}`,
+      );
+      assert.equal(
+        outcome.error.message.includes(first.id),
+        true,
+        'the refusal must name the id the caller sent, so a CLI can tell which decision it was',
+      );
+
+      const stillPending = await harness.execution.getState(harness.config);
+      assert.equal(
+        stillPending.tasks[0].interrupts[0].id,
+        second.id,
+        'the refusal must leave the newer review exactly where it was',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * Route 2 — the same primitive, reached with a PENDING id, which is why the
+ * stale-id refusal above cannot be what closes it.
+ *
+ * Deterministic rather than raced: the harness rewrites the control the
+ * checkpointer hands back, from a chosen read onward, so the pollution lands
+ * between `execute`'s validation and the object `graph.invoke` builds the run
+ * from. That is the same two-read gap "reads the checkpoint twice per resume"
+ * measures, exercised here on a node that is WRAPPED — so
+ * `preserveGraphOwnedControl` sees the polluted control before `reviewConclusion`
+ * would, and on `main` re-owns the substituted value rather than refusing it.
+ *
+ * Measured on `main` (d8bdea1) at each read: read 1 refused by the guard
+ * `execute` already had; read 2 **substituted** — the run completed, the control
+ * parsed, `humanReview: false` reached disk and the review node never ran; read
+ * 3 clean, the pollution arriving after both deserializations.
+ */
+const POLLUTED_FROM_SECOND_READ = 2;
+
+/** The same own fields the checkpoint carried, minus one the prototype now
+ * supplies — the shape a deserializer's plain assignment leaves behind when an
+ * inherited setter swallows the write. */
+function withInheritedField(control, field, value) {
+  const descriptors = Object.getOwnPropertyDescriptors(control);
+  delete descriptors[field];
+  return Object.create({ [field]: value }, descriptors);
+}
+
+/** Lifecycle nodes where `collect_baseline` pauses the run once, off-contract. */
+function nodesPausingOffContract() {
+  return (trace) =>
+    Object.fromEntries(
+      lifecycleNodes.map((name) => [
+        name,
+        async (state) => {
+          trace.push(name);
+          if (
+            name === 'collect_baseline' &&
+            trace.filter((entry) => entry === 'collect_baseline').length === 1
+          ) {
+            interrupt({ kind: 'off-contract-pause' });
+          }
+          if (name === 'termination_check') return stalledTermination(state);
+          if (name === 'propose_conclusion') {
+            return { conclusion: proposedConclusion };
+          }
+          return {};
+        },
+      ]),
+    );
+}
+
+async function resumeOffContractPause({ runId, pollutedFromRead }) {
+  const harness = createHarness({ runId, nodes: nodesPausingOffContract() });
+
+  try {
+    const interrupted = await harness.startRaw();
+    assert.equal(
+      isInterrupted(interrupted),
+      true,
+      'a lifecycle node calling interrupt() must pause the run',
+    );
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    if (pollutedFromRead !== undefined) {
+      harness.rewriteEveryPersistedControl((persisted) => {
+        reads += 1;
+        return reads >= pollutedFromRead
+          ? withInheritedField(persisted, POLLUTED_FIELD, false)
+          : persisted;
+      });
+    }
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    const persistedControl = await harness.control();
+    const parsed = IncidentStateControlSchema.safeParse(persistedControl);
+    const refused = 'error' in outcome;
+    const substituted =
+      !refused &&
+      parsed.success &&
+      persistedControl[POLLUTED_FIELD] !== RETRY_EXPECTED_HUMAN_REVIEW;
+
+    return {
+      outcome,
+      persistedControl,
+      trace: [...harness.trace],
+      kind: refused
+        ? 'refused'
+        : substituted
+          ? 'substituted'
+          : parsed.success
+            ? 'clean'
+            : 'corrupt',
+    };
+  } finally {
+    harness.cleanup();
+  }
+}
+
+test('refuses a control the prototype supplies to a wrapped node, on a pending interrupt', async () => {
+  const resumed = await resumeOffContractPause({
+    runId: 'run-off-contract-pause-polluted',
+    pollutedFromRead: POLLUTED_FROM_SECOND_READ,
+  });
+
+  assert.equal(
+    resumed.kind,
+    'refused',
+    `a wrapped node must refuse a graph-owned field it does not own, not run on it to a ${resumed.kind} completion`,
+  );
+
+  const message = resumed.outcome.error.message;
+  assert.doesNotMatch(
+    message,
+    INCIDENTAL_RESUME_REFUSALS,
+    `refusing for an unrelated reason is not this guard: ${message}`,
+  );
+  assert.doesNotMatch(
+    message,
+    SUPERSEDED_INTERRUPT_REFUSAL,
+    `this id IS the one the run waits on, so the superseded-interrupt refusal must not be what answers here: ${message}`,
+  );
+
+  const named = OWN_CONTROL_REFUSAL.exec(message);
+  assert.notEqual(
+    named,
+    null,
+    `the refusal must be the graph's own words about ownership, not: ${message}`,
+  );
+  assert.equal(
+    named[1],
+    POLLUTED_FIELD,
+    `the refusal named ${named?.[1]} while the prototype supplied ${POLLUTED_FIELD}`,
+  );
+  assert.equal(
+    resumed.persistedControl[POLLUTED_FIELD],
+    RETRY_EXPECTED_HUMAN_REVIEW,
+    'a refused resume must leave the run still under human review',
+  );
+});
+
+/**
+ * The control arm for route 2, and it is what stops the guard above from being
+ * satisfied by a graph that refuses this route outright.
+ *
+ * Same off-contract pause, same resume, nothing rewritten: the run must
+ * complete, and it must complete having gone THROUGH the wrapped node twice —
+ * once before the pause and once on the replay — which is what puts
+ * `pickGraphOwnedControl` on the polluted path in the row above.
+ */
+test('completes a resume of an off-contract pause when nothing is polluted', async () => {
+  const resumed = await resumeOffContractPause({
+    runId: 'run-off-contract-pause-clean',
+  });
+
+  assert.equal(
+    'error' in resumed.outcome,
+    false,
+    `a resume of a node that paused itself must complete: ${resumed.outcome.error?.message ?? ''}`,
+  );
+  assert.equal(
+    resumed.kind,
+    'clean',
+    'the completed run must leave a parseable control carrying its own humanReview',
+  );
+  assert.equal(
+    resumed.trace.filter((entry) => entry === 'collect_baseline').length,
+    2,
+    'the replay must re-enter the wrapped node that paused, or the polluted row above tests nothing',
+  );
+});
+
+/**
+ * The half the first version of this guard left open, and the reason the
+ * refusal does not ask whether the prototype is still carrying the value.
+ *
+ * The mechanism is a swallowed WRITE. A setter that takes the deserializer's
+ * one assignment and then deletes itself leaves the field **absent, with a
+ * pristine prototype** — so a guard conditioned on `field in control` sees
+ * nothing and defines the field as an own `undefined`. For `humanReview` that
+ * is the value the attacker wants: falsy at the `propose_conclusion` edge, an
+ * early return out of `assertInteractiveRunIdentity`, and — because it is now
+ * OWN — a shadow that hides anything the prototype could still carry.
+ *
+ * This row models the state such a gadget leaves rather than the gadget: the
+ * restored control simply has no `humanReview`, on an ordinary prototype. That
+ * is deterministic, needs no timing, and is the same input the self-erasing
+ * setter produces. Found by `security-scanner` on the first version of this
+ * change, where it completed the run with the review gate disarmed.
+ */
+function withoutOwnField(control, field) {
+  const descriptors = Object.getOwnPropertyDescriptors(control);
+  delete descriptors[field];
+  return Object.create(Object.prototype, descriptors);
+}
+
+test('refuses a required control field erased before a wrapped node runs on it', async () => {
+  const harness = createHarness({
+    runId: 'run-field-erased-by-a-swallowed-write',
+    nodes: nodesPausingOffContract(),
+  });
+
+  try {
+    const interrupted = await harness.startRaw();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      return reads >= POLLUTED_FROM_SECOND_READ
+        ? withoutOwnField(persisted, POLLUTED_FIELD)
+        : persisted;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a required graph-owned field that is absent must be refused however it went missing, not defined as an own undefined',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'the refused run must still be under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The same damage on the route where NO wrapped node runs, which is why the
+ * primitive cannot be the only thing that refuses it.
+ *
+ * A `confirm` reaches END from `reviewConclusion` without entering a single
+ * wrapped node, so `pickGraphOwnedControl` never sees the control. Measured
+ * before `assertRestoredControlFieldsPresent` existed: the run COMPLETED and wrote a
+ * control with no `humanReview` at all — `IncidentStateControlSchema` rejects
+ * it, so the damage is at least visible, but the run finished on it and the
+ * checkpoint is unusable.
+ *
+ * `assertOwnControlFields` cannot be the check that catches this: it asks only
+ * that a PRESENT field be own, which is the right question for a caller's
+ * `kind: 'start'` state, where a missing field must produce the schema's parse
+ * error rather than an ownership one. A restored control has been parsed once
+ * already, so a required field missing from it is damage rather than an
+ * omission.
+ *
+ * All three decisions, because they reach the check through different routes —
+ * `confirm` through `reviewConclusion` alone, the other two with wrapped nodes
+ * behind them.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`refuses a ${label} whose restored control lost a required field, leaving the checkpoint intact`, async () => {
+    const harness = createHarness({ runId: `run-erased-field-${label}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+
+      let reads = 0;
+      harness.rewriteEveryPersistedControl((persisted) => {
+        reads += 1;
+        return reads >= POLLUTED_FROM_SECOND_READ
+          ? withoutOwnField(persisted, POLLUTED_FIELD)
+          : persisted;
+      });
+
+      const outcome = await harness.resumeWith(pending.id, decision(1));
+      harness.rewriteEveryPersistedControl(undefined);
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a restored control missing a required field must be refused, not run on',
+      );
+      assert.doesNotMatch(
+        outcome.error.message,
+        INCIDENTAL_RESUME_REFUSALS,
+        `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+      );
+
+      const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+      assert.notEqual(
+        named,
+        null,
+        `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+      );
+      assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+      // The property AIC-89 established and this route would otherwise lose:
+      // a refusal must not leave behind a control the domain schema rejects.
+      const persistedControl = await harness.control();
+      assert.equal(
+        IncidentStateControlSchema.safeParse(persistedControl).success,
+        true,
+        'the refusal must land before anything writes a control the schema rejects',
+      );
+      assert.equal(
+        persistedControl[POLLUTED_FIELD],
+        RETRY_EXPECTED_HUMAN_REVIEW,
+        'the refused run must still be under human review',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * What `reviewConclusion`'s own `assertOwnControlFields` still covers alone, and
+ * the row that keeps it from being deleted as redundant.
+ *
+ * `assertRestoredControlFieldsPresent` runs right after it and refuses every
+ * REQUIRED field it would have caught, so this row is the ONLY row that reddens
+ * when the ownership call is removed. Two guards where one appears to do the
+ * work is exactly how the surviving one gets deleted next year, so the residual
+ * is written down and pinned rather than assumed.
+ *
+ * ⚠ Deliberately no suite total here. Three rounds running, this file carried a
+ * pass count that a later commit's new rows made wrong, each time in a sentence
+ * whose POINT was still true — the shape of the mutation and the name of the
+ * row that answers it are what a reader needs, and they do not go stale when
+ * the file grows.
+ *
+ * The residual is an OPTIONAL graph-owned field on the `confirm` route:
+ * `stopKind` is skipped by the presence check because absence is legitimate for
+ * it, and a `confirm` reaches END without entering a wrapped node, so
+ * `pickGraphOwnedControl` never sees it either. Measured with the ownership
+ * call removed: the run COMPLETES and the terminal stop kind is silently
+ * dropped from disk — the optional field's damage is quiet, which is what AIC-89
+ * recorded about `stopKind` and why it needs a row rather than an argument.
+ */
+test('refuses an inherited stopKind on the route where no wrapped node runs', async () => {
+  const harness = createHarness({ runId: 'run-inherited-stop-kind-on-confirm' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      return reads >= POLLUTED_FROM_SECOND_READ
+        ? withInheritedField(persisted, 'stopKind', 'budget-exhausted')
+        : persisted;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'an inherited stopKind must be refused, not completed with the terminal stop kind silently dropped',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], 'stopKind', `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      Object.hasOwn(persistedControl, 'stopKind'),
+      true,
+      'the refusal must leave the run its own terminal stop kind',
+    );
+    assert.equal(
+      persistedControl.stopKind,
+      'stalled',
+      'the stop kind on disk must be the one the graph decided, not the prototype\'s',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * ⚠⚠ THE LIMIT OF EVERY OWNERSHIP CHECK IN THIS FILE, and it is a row rather
+ * than a sentence because this repository's rule is that a claim about what a
+ * mechanism does — or cannot do — is either generated or a pointer.
+ *
+ * All of these guards ask one question: *is this field the run's own data
+ * property?* A prototype gadget can make the answer honestly YES and still
+ * choose the value, by defining it ON THE TARGET from its setter:
+ *
+ * ```js
+ * Object.defineProperty(Object.prototype, 'humanReview', {
+ *   configurable: true,
+ *   get() { return false; },
+ *   set() { Object.defineProperty(this, 'humanReview', { value: false, ... }); },
+ * });
+ * ```
+ *
+ * `JsonPlusSerializer._reviver` assigns the checkpointed `true`; the inherited
+ * setter takes the assignment and defines `false` as the target's own data
+ * property. From that point the control is indistinguishable from an honest
+ * one, and `pickGraphOwnedControl` reading a descriptor sees exactly what an
+ * uncorrupted run would.
+ *
+ * So this row asserts the CURRENT, UNSAFE outcome on purpose. It is not an
+ * endorsement and it is not a test of a feature: it is the limit, pinned, so
+ * that the sentences elsewhere claiming the class is closed at the primitive
+ * stay honest, and so that whoever closes it is told by a red row to update
+ * them. Measured identically on `main` (d8bdea1) and here, so it is
+ * pre-existing rather than introduced by AIC-92.
+ *
+ * The remedy is not another ownership check — there is nothing left to detect.
+ * `JSON.parse` uses define semantics and is immune to this gadget where plain
+ * assignment is not, which is measured by the first half of this row. That
+ * makes a define-semantics serde the only remedy for this shape, and it is
+ * filed rather than folded in here, because it lives in `packages/persistence`
+ * and is a different layer's responsibility: AIC-93.
+ */
+test('documents the limit: an inherited setter that writes an own property is not refused', async () => {
+  // First, the semantics the remedy would rest on, measured rather than
+  // asserted from the specification.
+  try {
+    Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
+      configurable: true,
+      get() {
+        return false;
+      },
+      set() {
+        Object.defineProperty(this, POLLUTED_FIELD, {
+          value: false,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      },
+    });
+
+    const parsed = JSON.parse(`{"${POLLUTED_FIELD}":true}`);
+    assert.equal(
+      parsed[POLLUTED_FIELD],
+      true,
+      'JSON.parse must define rather than assign, or the remedy this row names would not work either',
+    );
+
+    const assigned = {};
+    assigned[POLLUTED_FIELD] = true;
+    assert.equal(
+      assigned[POLLUTED_FIELD],
+      false,
+      'plain assignment must be the half that loses the value, or the gadget below is not the one described',
+    );
+    assert.equal(
+      Object.hasOwn(assigned, POLLUTED_FIELD),
+      true,
+      'the substituted value must be an OWN property, or an ownership check would still catch it',
+    );
+  } finally {
+    delete Object.prototype[POLLUTED_FIELD];
+  }
+
+  // Then the end-to-end consequence, against a real checkpointer.
+  const harness = createHarness({ runId: 'run-own-writing-setter-limit' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let outcome;
+    try {
+      Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
+        configurable: true,
+        get() {
+          return false;
+        },
+        set() {
+          Object.defineProperty(this, POLLUTED_FIELD, {
+            value: false,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+      outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    } finally {
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    assert.equal(
+      'error' in outcome,
+      false,
+      'if this now refuses, the limit has been closed — update the claims in investigation.ts and the decision record, and close AIC-93',
+    );
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      IncidentStateControlSchema.safeParse(persistedControl).success,
+      true,
+      'the substituted control parses, which is what makes this outcome invisible on disk',
+    );
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      false,
+      'if this is no longer the gadget\'s value, the limit has moved — re-measure before editing the claims',
+    );
+    assert.equal(
+      Object.hasOwn(persistedControl, POLLUTED_FIELD),
+      true,
+      'the substituted field is genuinely own, which is why no ownership check can see it',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The own-ACCESSOR half of `assertRestoredControlFieldsPresent`, which is the
+ * half `assertOwnControlFields` cannot reach.
+ *
+ * `Object.hasOwn` is true for an own accessor, so the ownership check passes one
+ * — its message says "accessor-supplied", which overstates it. The presence
+ * check asks for a DESCRIPTOR CARRYING A VALUE, and that is what refuses this.
+ *
+ * The distinction is not academic under this ticket's own threat model: the
+ * gadget in the limit row further up defines a property on its target from a
+ * setter, and a gadget that defines an ACCESSOR there instead produces exactly
+ * this shape — an own property whose value is computed on every read.
+ *
+ * Written because the claim was in the docstring with nothing behind it:
+ * weakening the check to `Object.hasOwn(control, field)` left the whole suite
+ * green.
+ */
+test('refuses a restored control field that is an own accessor rather than a value', async () => {
+  const harness = createHarness({ runId: 'run-own-accessor-field' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      if (reads < POLLUTED_FROM_SECOND_READ) return persisted;
+      const descriptors = Object.getOwnPropertyDescriptors(persisted);
+      delete descriptors[POLLUTED_FIELD];
+      const rebuilt = Object.create(Object.prototype, descriptors);
+      Object.defineProperty(rebuilt, POLLUTED_FIELD, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return false;
+        },
+      });
+      return rebuilt;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'an own accessor is not a value of the run\'s own, and must be refused rather than read',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'the refused run must still be under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The same own-accessor shape on the route where `reviewConclusion` never runs,
+ * which is what pins `pickGraphOwnedControl`'s OWN copy of the refusal.
+ *
+ * The row above reaches the presence check; this one reaches the primitive,
+ * because an off-contract pause replays a WRAPPED node first. Without it,
+ * deleting the descriptor test inside `pickGraphOwnedControl` leaves the whole
+ * suite green — measured — and a guard nothing reddens is a guess.
+ */
+test('refuses an own accessor at the wrapped node, where no later check runs', async () => {
+  const harness = createHarness({
+    runId: 'run-own-accessor-at-wrapped-node',
+    nodes: nodesPausingOffContract(),
+  });
+
+  try {
+    const interrupted = await harness.startRaw();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      if (reads < POLLUTED_FROM_SECOND_READ) return persisted;
+      const descriptors = Object.getOwnPropertyDescriptors(persisted);
+      delete descriptors[POLLUTED_FIELD];
+      const rebuilt = Object.create(Object.prototype, descriptors);
+      Object.defineProperty(rebuilt, POLLUTED_FIELD, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return false;
+        },
+      });
+      return rebuilt;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a wrapped node must refuse an own accessor rather than invoke it to decide what the graph owns',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'the refused run must still be under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * What `execute`'s own ownership check covers alone: pollution that is present
+ * for the FIRST checkpoint read and gone by the second.
+ *
+ * The two reads are the whole reason AIC-90 exists — `execute` validates what
+ * `graph.getState` deserialized, and `graph.invoke` deserializes again. Every
+ * other row in this file arms the SECOND read, because that is the object the
+ * run is built from and the one the later guards see. This row arms only the
+ * first: by the time `graph.invoke` reads, the checkpoint is clean, so nothing
+ * downstream has anything to refuse and the run would complete on a control
+ * that was fabricated when it was inspected.
+ *
+ * Without this row that call reddens nothing at all — every other guard sees
+ * only the second read — which by this repository's own rule makes it a guess
+ * rather than a guard.
+ */
+test('refuses pollution that is gone by the second checkpoint read', async () => {
+  const harness = createHarness({ runId: 'run-polluted-first-read-only' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      return reads === 1
+        ? withInheritedField(persisted, POLLUTED_FIELD, false)
+        : persisted;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a control that was not the run\'s own when it was inspected must be refused there, even though the next read is clean',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The same limit on the route AIC-92 deliberately REOPENED, which is the sentence
+ * in `execute` that concedes what allowing that route costs.
+ *
+ * The row above arms the gadget on a plain `confirm`. This one arms it on the
+ * crashed-run retry — pause, reject, a node throws, retry the same id against a
+ * thread waiting on zero interrupts — because that is the route the narrowed
+ * refusal lets through, and a comment that says "this route IS a path to that
+ * limit" has to be a pointer rather than a claim.
+ *
+ * The cost is real and the trade is still the right one: the row above shows
+ * the same gadget reaching a plain `confirm`, which no form of that refusal
+ * ever covered. Refusing here would remove one path to a limit that stays open
+ * regardless, and would cost every crashed run its only way forward — pinned by
+ * › "advances a run past a transient node failure when the caller retries the
+ * same id". Both halves are rows, so neither can drift into the other's place.
+ */
+test('documents the limit on the crashed-run retry route the refusal lets through', async () => {
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    `the prototype is already carrying ${POLLUTED_FIELD} before this run started: an earlier row leaked it`,
+  );
+
+  const { nodes, armFailure } = nodesWithTransientFailure();
+  const harness = createHarness({ runId: 'run-gadget-on-crash-retry', nodes });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    armFailure('derive_predictions');
+    const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in failed,
+      true,
+      'the transient failure must reject the first resume, or this is not the reopened route',
+    );
+
+    const stranded = await harness.execution.getState(harness.config);
+    assert.deepEqual(
+      stranded.tasks.flatMap(({ interrupts }) => interrupts.map(({ id }) => id)),
+      [],
+      'the thread must be waiting on no interrupt, or the narrowed refusal would have answered instead',
+    );
+
+    let outcome;
+    try {
+      Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
+        configurable: true,
+        get() {
+          return false;
+        },
+        set() {
+          Object.defineProperty(this, POLLUTED_FIELD, {
+            value: false,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+      outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+    } finally {
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    assert.equal(
+      'error' in outcome,
+      false,
+      'if this now refuses, the limit has been closed on this route — update the claims in investigation.ts and the decision record, and close AIC-93',
+    );
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      false,
+      'if this is no longer the gadget\'s value, the limit has moved — re-measure before editing the claims',
+    );
+    assert.equal(
+      IncidentStateControlSchema.safeParse(persistedControl).success,
+      true,
+      'the substituted control parses, which is what makes this outcome invisible on disk',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The absent-field branch of the same guard, which is the one that must NOT
+ * refuse.
+ *
+ * `stopKind` is graph-owned and legitimately absent on a run that has not
+ * stopped, so a guard deciding on "not an own property" without separating
+ * ABSENT from INHERITED would refuse every healthy run at its first wrapped
+ * node. The whole suite would go red on that, but not by name — this row says
+ * which branch broke, and proves the field really was absent where the guard
+ * read it rather than inferring it from a green run.
+ */
+test('accepts a graph-owned field that is absent rather than inherited', async () => {
+  const seen = [];
+  const harness = createHarness({
+    runId: 'run-absent-stop-kind',
+    nodes: (trace) =>
+      Object.fromEntries(
+        lifecycleNodes.map((name) => [
+          name,
+          async (state) => {
+            trace.push(name);
+            seen.push({
+              name,
+              own: Object.hasOwn(state.control, 'stopKind'),
+              reachable: 'stopKind' in state.control,
+            });
+            if (name === 'termination_check') return stalledTermination(state);
+            if (name === 'propose_conclusion') {
+              return { conclusion: proposedConclusion };
+            }
+            return {};
+          },
+        ]),
+      ),
+  });
+
+  try {
+    const interrupted = await harness.start();
+
+    const before = seen[0];
+    assert.equal(
+      before?.name,
+      'normalize_incident',
+      'the first wrapped node must be the one this row inspects',
+    );
+    assert.equal(
+      before.reachable,
+      false,
+      'the first node must see no stopKind at all, or this row is not testing the absent branch',
+    );
+
+    const resumed = await harness.resume(interrupted, { action: 'confirm' });
+    assert.equal(
+      'error' in resumed,
+      false,
+      `an absent graph-owned field must not be refused as inherited: ${resumed.error?.message ?? ''}`,
+    );
+  } finally {
+    harness.cleanup();
+  }
 });

@@ -308,6 +308,41 @@ const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
 );
 
 /**
+ * The control fields the schema lets be absent, asked of the schema rather than
+ * listed here — a field that gains or loses its optionality carries this set
+ * with it, and a hand-written copy is the one that goes stale.
+ *
+ * The question is asked by parsing rather than through a version-specific
+ * `isOptional` accessor — and it asks for the PARSED VALUE, not merely that the
+ * parse succeeded. `safeParse(undefined).success` alone is true for `.default(x)`,
+ * `.catch(x)`, `z.any()` and `z.unknown()` as well as for `.optional()`. A
+ * graph-owned field that gained a default would then stop being refused and
+ * instead land `undefined`, be dropped by JSON, and be re-read as the default —
+ * for `humanReview` that is the review gate quietly resetting itself, which is
+ * the exact outcome this guard exists to prevent, downgraded from loud to
+ * silent. Requiring `data === undefined` separates "may be absent" from "has a
+ * value of its own when absent".
+ *
+ * ⚠ Uncovered today, and stated here rather than only in a pull request: no
+ * control field carries a `.default()` or `.catch()`, so the strict and loose
+ * forms classify the same single field and dropping `data === undefined`
+ * reddens no row. It is protection against a schema change, and the row that
+ * would back it does not exist until such a field does.
+ *
+ * see graph-owned-control-contract.test.mjs › "classifies every control field
+ * the schema declares as graph-owned or node-writable" for the sibling
+ * partition this mirrors.
+ */
+const OPTIONAL_CONTROL_FIELDS: ReadonlySet<string> = new Set(
+  Object.entries(IncidentStateControlSchema.shape)
+    .filter(([, fieldSchema]) => {
+      const parsed = fieldSchema.safeParse(undefined);
+      return parsed.success && parsed.data === undefined;
+    })
+    .map(([field]) => field),
+);
+
+/**
  * Refuses a control whose field is not the caller's OWN.
  *
  * The hazard is not a reader walking the prototype chain — it is the PARSE.
@@ -325,14 +360,21 @@ const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
  * schema tomorrow joins the first group silently. So the guard names the real
  * property, ownership, rather than the fields that currently survive.
  *
- * ⚠ This closes the `kind: 'start'` path and NOT the class of defect. A
- * `kind: 'resume'` takes its control from the checkpointer and never reaches
- * this function, and the same substitution is live there — measured against a
- * real checkpointer: an inherited `humanReview` accessor returning `false`
- * completes a paused interactive run, skips the identity check, and persists a
- * control that no longer parses. That is AIC-89, not this guard's job, and it
- * is said here because a reader landing on this function would otherwise infer
- * the class is closed.
+ * ⚠ This closes the `kind: 'start'` path and only that path. A `kind: 'resume'`
+ * takes its control from the checkpointer and never reaches this function; the
+ * same substitution was live there — an inherited `humanReview` accessor
+ * returning `false` completed a paused interactive run, skipped the identity
+ * check and persisted a control that no longer parses — and is closed by three
+ * other calls rather than by this one: `execute` on the restored control
+ * (AIC-89), `reviewConclusion` on the object the run was built from (AIC-90),
+ * and `pickGraphOwnedControl`, which is where a value the prototype
+ * SUPPLIES ON READ stopped being launderable (AIC-92). Said here because a
+ * reader landing on this function would otherwise infer that the class is
+ * closed by it. ⚠ It is not closed by anything: an inherited setter that
+ * DEFINES the value on the target produces a genuine own data property, which
+ * no ownership check can distinguish from an honest one — pinned in
+ * hitl-resume-contract.test.mjs › "documents the limit: an inherited setter
+ * that writes an own property is not refused", remedy in AIC-93.
  *
  * ⚠ Two limits of the check itself. It verifies that CONTROL owns its fields,
  * not that `state` owns `control` — a polluted `Object.prototype.control` is
@@ -350,9 +392,66 @@ function assertOwnControlFields(control: object): void {
     // difference being detected. Present-but-not-own is the refusal; absent
     // entirely is fine, which is how an unset `stopKind` passes.
     if (field in control && !Object.hasOwn(control, field)) {
-      throw new Error(
-        `investigation control must carry its own ${field}: an inherited or accessor-supplied field is not the caller's state`,
-      );
+      throw ownControlFieldError(field);
+    }
+  }
+}
+
+/**
+ * The one wording of the ownership refusal, because several guards raise it and
+ * a caller should not have to learn a spelling per guard — the rule this
+ * repository states as one mechanism, one implementation.
+ *
+ * Two causes, one invariant, and the shared PREFIX is the load-bearing part: a
+ * caller matches "must carry its own <field>" and does not care which way the
+ * field stopped being theirs.
+ */
+function ownControlFieldError(field: string): Error {
+  return new Error(
+    `investigation control must carry its own ${field}: an inherited or accessor-supplied field is not the caller's state`,
+  );
+}
+
+function missingControlFieldError(field: string): Error {
+  return new Error(
+    `investigation control must carry its own ${field}: the restored control has no value of its own for it`,
+  );
+}
+
+/**
+ * Every required control field is present, as the run's OWN value — the half
+ * `assertOwnControlFields` cannot ask.
+ *
+ * That check asks only that a field which is PRESENT be own, which is the right
+ * question for a `kind: 'start'` state: a field missing there must produce the
+ * schema's parse error rather than an ownership one. A restored control has
+ * already been parsed once, so a required field missing from it is not an
+ * omission — it is damage, and it is the shape a swallowed write leaves behind
+ * once the setter that swallowed it is gone.
+ *
+ * Left to `pickGraphOwnedControl` it is still refused, but only once a wrapped
+ * node runs, and a `confirm` reaches END from `reviewConclusion` without
+ * entering one. Measured before this call, on a control whose `humanReview` was
+ * erased between the two deserializations: the run COMPLETED and wrote a
+ * control `IncidentStateControlSchema` rejects.
+ *
+ * ⚠ Called after `assertPersistedStateVersion` and never before it: "required"
+ * is a fact about the current schema, so an older checkpoint is missing fields
+ * legitimately and must be refused for being stale instead.
+ *
+ * It also closes what `assertOwnControlFields` leaves: `Object.hasOwn` is true
+ * for an own ACCESSOR, so that check's message overstates it. Here the
+ * descriptor must carry a value.
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a ${label} whose restored
+ * control lost a required field, leaving the checkpoint intact"
+ */
+function assertRestoredControlFieldsPresent(control: object): void {
+  for (const field of CONTROL_FIELD_NAMES) {
+    if (OPTIONAL_CONTROL_FIELDS.has(field)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(control, field);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+      throw missingControlFieldError(field);
     }
   }
 }
@@ -547,18 +646,96 @@ function defineOwnValue(
 }
 
 /**
- * Reads the graph-owned half of a control object, by the one list that names it.
+ * Reads the graph-owned half of a control object, by the one list that names it
+ * — as OWN DATA PROPERTIES, or not at all.
  *
- * A field absent from the source lands as `undefined`, which is the shape
- * `stopKind` legitimately has on a run that has not stopped — the wrapper below
- * restores that field only when it carries a value.
+ * ⚠ This function was the laundering primitive the ownership checks around it
+ * could not see for a value the prototype SUPPLIES ON READ — which is the half
+ * it closes, and not the whole class; the other half is at the end of this
+ * comment. Worth naming plainly because it read as a copy loop. `defineOwnValue(picked, field, control[field])` re-defines the
+ * field as own; `control[field]` is a plain `[[Get]]`, so a value the PROTOTYPE
+ * supplied came back out of here owned. Ownership was restored carrying the
+ * substitution, and `assertOwnControlFields` — at `execute`, and again in
+ * `reviewConclusion` — then passed on the object built from it. A guard that
+ * launders its own input defeats every guard downstream of it, whichever route
+ * reached it, which is why the check belongs HERE and not on the routes: AIC-87,
+ * 89 and 90 each closed a route and the class stayed open.
+ *
+ * An own data property is taken by its DESCRIPTOR, never through `[[Get]]`. An
+ * own ACCESSOR is refused rather than invoked: nothing here produces one — the
+ * schema parse, the deserializer's assignment and object spread all make data
+ * properties — and calling a getter to decide whether a value is trustworthy is
+ * the mistake this function already made once.
+ *
+ * ⚠ What happens when the field is NOT own splits in two, and the line is drawn
+ * from the SCHEMA rather than from a field name, because the two halves are
+ * genuinely different situations:
+ *
+ * - a field the schema REQUIRES cannot legitimately be missing from a control
+ *   the graph is running on, so absent-as-own is REFUSED — in the same words
+ *   the entry points use, and **without asking whether the prototype is still
+ *   carrying it**. That condition was in the first version of this guard and it
+ *   fails open: the mechanism is a swallowed WRITE, so a setter that takes the
+ *   deserializer's one assignment and then deletes itself leaves the field
+ *   absent with a pristine prototype. `field in control` is then false, and the
+ *   field would land as an own `undefined` — which for `humanReview` is falsy at
+ *   the `propose_conclusion` edge, makes `assertInteractiveRunIdentity` return
+ *   early, and SHADOWS the prototype so nothing downstream can see anything
+ *   wrong. The invariant is presence-as-an-own-data-property, not reachability
+ *   at the moment the guard happens to look.
+ *   see hitl-resume-contract.test.mjs › "refuses a required control field
+ *   erased before a wrapped node runs on it"
+ * - a field the schema lets be ABSENT — `stopKind`, on a run that has not
+ *   stopped — is legitimately missing, and there is no way to tell "the caller
+ *   omitted it" from "the caller omitted it and someone armed the prototype".
+ *   So the prototype is simply not consulted and the field lands `undefined`.
+ *   The attacker's value does not reach the control either way; the difference
+ *   is that this half is IMMUNE rather than loud.
+ *
+ *   ⚠ What happens to that `undefined` afterwards is `stopKind`-specific and
+ *   NOT derived: the wrapper below destructures `stopKind` by name and restores
+ *   it only when it carries a value. So the classification here is general and
+ *   the handling downstream is not. A second optional graph-owned field would
+ *   land `undefined` here and be spread into the control as `undefined` there,
+ *   which the schema accepts and JSON then drops — survivable, but not what
+ *   this docstring would have promised. Whoever adds one owns that line too.
+ *
+ * That second half is not a concession to make a test pass — it is the
+ * wrapper's existing contract, pinned since AIC-73 in
+ * graph-owned-control-contract.test.mjs › "keeps graph-owned control intact
+ * while Object.prototype carries a setter of that name", which requires a run
+ * to survive an inherited accessor on every graph-owned field and write the
+ * same control it would have written. Refusing the optional half would break
+ * that for `stopKind` alone, on the start path, where nothing is being
+ * substituted.
+ *
+ * ⚠⚠ WHAT THIS CANNOT DO, stated here because the rest of this comment reads
+ * like closure. It decides OWNERSHIP, and an inherited setter that DEFINES the
+ * value on the target makes the field genuinely own — the descriptor read below
+ * then returns exactly what an honest run would. Nothing is left to detect, so
+ * no ownership check anywhere closes that shape; `JSON.parse` is immune to it
+ * where plain assignment is not, which puts the remedy at the deserializer.
+ * Measured, and filed as AIC-93 rather than folded in here.
+ * see hitl-resume-contract.test.mjs › "documents the limit: an inherited setter
+ * that writes an own property is not refused"
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a control the prototype supplies
+ * to a wrapped node, on a pending interrupt" and › "accepts a graph-owned field
+ * that is absent rather than inherited"
  */
 function pickGraphOwnedControl(
   control: IncidentStateControl,
 ): Pick<IncidentStateControl, GraphOwnedControlField> {
   const picked: Record<string, unknown> = {};
   for (const field of GRAPH_OWNED_CONTROL_FIELDS) {
-    defineOwnValue(picked, field, control[field]);
+    const descriptor = Object.getOwnPropertyDescriptor(control, field);
+    if (descriptor === undefined) {
+      if (!OPTIONAL_CONTROL_FIELDS.has(field)) throw ownControlFieldError(field);
+      defineOwnValue(picked, field, undefined);
+      continue;
+    }
+    if (!Object.hasOwn(descriptor, 'value')) throw ownControlFieldError(field);
+    defineOwnValue(picked, field, descriptor.value);
   }
   return picked as Pick<IncidentStateControl, GraphOwnedControlField>;
 }
@@ -1000,22 +1177,33 @@ export function createInvestigationGraph({
     // turn in a 124-turn window completed the resume, skipped the identity
     // check below, and persisted a control the domain schema rejects.
     //
-    // It REFUSES rather than repairing, and that is a TRADE rather than the
-    // only option. An earlier version of this comment claimed the value was
-    // "unreachable without owning a fork of the dependency's serde"; that was
-    // measurably false and is corrected here rather than softened. `JSON.parse`
-    // uses define semantics and preserves the own value — the loss is one
-    // assignment in `JsonPlusSerializer._reviver`, AFTER the parse — and the
-    // serde is an injection point, not a fork: `BaseCheckpointSaver` takes one
-    // and `.serde` is public. A define-semantics serde was measured to give
-    // zero refusals and zero substitutions at every turn on all three resume
-    // routes.
+    // It REFUSES rather than repairing, and AIC-92 decided that rather than
+    // leaving it open. The alternative was real: `JSON.parse` uses define
+    // semantics and preserves the own value — the loss is one assignment in
+    // `JsonPlusSerializer._reviver`, AFTER the parse — and the serde is an
+    // injection point, not a fork, so a define-semantics serde in
+    // `packages/persistence` would have made the substitution unrepresentable.
+    // It was not taken: repair ABSORBS the attempt where refusal reports it,
+    // costs a second parse per load, and makes this repository own behaviour
+    // the dependency may change under an upgrade. The decision and what it
+    // gives up are in docs/decisions/control-ownership-boundary.md.
     //
-    // Refusal is kept for now because it is cheap and REPORTS the attempt,
-    // where repair absorbs it silently; repair costs a second parse per load
-    // and makes this repository own behaviour the dependency may change. They
-    // are not exclusive — repair at the boundary would leave this as a tripwire
-    // that should then never fire. AIC-92 carries that decision.
+    // ⚠ What this call still covers ALONE, because "the only ownership check
+    // standing" was the first draft's answer and measurement says otherwise.
+    // `assertRestoredControlFieldsPresent`, further down this same prologue,
+    // refuses every REQUIRED field this one would have caught — so deleting
+    // this call reddens nothing else in the suite.
+    //
+    // The residual is an OPTIONAL graph-owned field on the `confirm` route:
+    // the presence check skips `stopKind` because absence is legitimate for it,
+    // and a `confirm` reaches END without entering a wrapped node, so
+    // `pickGraphOwnedControl` never sees it either. Measured with this call
+    // removed: the run COMPLETES and the terminal stop kind is silently dropped
+    // from disk — quiet damage on an optional field, which is what AIC-89
+    // recorded about `stopKind`. That is the one row that reddens for this
+    // call, and it is the row cited here rather than a scan that stays green.
+    // see hitl-resume-contract.test.mjs › "refuses an inherited stopKind on the
+    // route where no wrapped node runs"
     // see hitl-resume-contract.test.mjs › "refuses the pollution armed at a
     // turn inside the measured window"
     assertOwnControlFields(state.control);
@@ -1032,9 +1220,19 @@ export function createInvestigationGraph({
     // that route; an unasserted value would be read for the first time by
     // whoever receives the finished control. `reject` and `add_hypothesis`
     // re-enter at wrapped nodes and are covered twice over.
-    // see hitl-resume-contract.test.mjs › "refuses a current-version checkpoint
-    // carrying a negative challenge round counter, and names the counter"
+    // see hitl-resume-contract.test.mjs › "refuses a negative challenge round
+    // counter before a resumed ${label} executes another node"
     assertPersistedStateVersion(state.control);
+    // AFTER the version check, and the order is the whole of why this call is
+    // here rather than beside the ownership one above. "Required" is a fact
+    // about the CURRENT schema, so a checkpoint written by an older one is
+    // missing fields legitimately — it has to be refused for being stale, not
+    // for being incomplete. Moving this one line up replaces six version-
+    // boundary refusals with an ownership complaint about the first counter
+    // that schema had not invented yet.
+    // see hitl-resume-contract.test.mjs › "resuming ${persisted.label} with
+    // ${label} fails loudly at the schema version boundary"
+    assertRestoredControlFieldsPresent(state.control);
     assertLogicalBudgetCounters(state.control);
     assertChallengeCounters(state.control);
     const decision = ConclusionReviewDecisionSchema.parse(
@@ -1212,8 +1410,8 @@ export function createInvestigationGraph({
         // throws `No checkpointer set` there and would replace a refusal that
         // already names its reason — `Cannot use Command(resume=...) without
         // checkpointer` — with one about the wrong thing. see
-        // hitl-resume-contract.test.mjs › "still refuses a resume with no
-        // checkpointer for the reason it already gives"
+        // hitl-resume-contract.test.mjs › "still refuses a ${label} resume
+        // with no checkpointer for the reason it already gives"
         if (checkpointer !== undefined) {
           const snapshot = await graph.getState(langGraphConfig);
 
@@ -1249,7 +1447,8 @@ export function createInvestigationGraph({
           // the identity check and still raises a TypeError. Unchanged from
           // before this guard existed and out of this item's scope, but pinned
           // so the gap is a known one. see hitl-resume-contract.test.mjs ›
-          // "leaves a malformed control to the identity check, unrefused here"
+          // "refuses a malformed control by name instead of leaving it to the
+          // identity check"
           // see hitl-resume-contract.test.mjs › "refuses a resume under a
           // thread that has no checkpoint, naming the thread" and › "leaves no
           // checkpoint behind for the thread whose resume it refused"
@@ -1275,30 +1474,103 @@ export function createInvestigationGraph({
           // unparseable control on disk. see hitl-resume-contract.test.mjs ›
           // "leaves no unparseable control on disk when it refuses"
           //
-          // ⚠ Two checks, and TOGETHER THEY STILL DO NOT CLOSE THE CLASS.
-          // This one refuses before a single lifecycle node runs;
-          // `reviewConclusion` refuses on the object `graph.invoke` built
-          // (AIC-90). What neither covers: a resume whose `interruptId` is no
-          // longer pending replays some other node first, and
-          // `pickGraphOwnedControl` reads that field THROUGH the prototype and
-          // re-defines it as own — so ownership is restored carrying the
-          // substituted value and both checks pass. Measured in-contract, and
-          // the result is worse than what AIC-90 fixed: the run completes, the
-          // review gate is disarmed, and the control PARSES, so nothing on disk
-          // records it. AIC-92.
+          // ⚠ This check and `reviewConclusion`'s are two REFUSAL SITES, and
+          // sites are not what closed the class. Each covers one object — this
+          // one what `getState` deserialized, `reviewConclusion` what
+          // `graph.invoke` built from a second read (AIC-90) — and a resume
+          // that replayed some other node first reached neither, because
+          // `pickGraphOwnedControl` read the field through the prototype and
+          // handed it on as own. AIC-92 closed THAT READ inside
+          // `pickGraphOwnedControl`.
+          //
+          // ⚠ "Tripwires that should never fire" is what an earlier draft
+          // called these two, and it was wrong twice, so it is corrected rather
+          // than softened. `reviewConclusion`'s call is the only thing between a
+          // `confirm` and an inherited OPTIONAL field — the row is named there.
+          // And no arrangement of these checks closes the class: an inherited
+          // setter that DEFINES on the target yields a genuine own property.
+          // see hitl-resume-contract.test.mjs › "documents the limit: an
+          // inherited setter that writes an own property is not refused"
+          //
+          // What THIS call covers alone: pollution present for the FIRST
+          // checkpoint read and gone by the second. Every other guard sees only
+          // the object `graph.invoke` builds, so a control fabricated while it
+          // was being inspected and clean by the time it is used reaches none
+          // of them. Without a row for that, deleting this call reddened
+          // nothing at all — measured — which by this repository's own rule
+          // made it a guess rather than a guard.
+          // see hitl-resume-contract.test.mjs › "refuses pollution that is gone
+          // by the second checkpoint read"
           assertOwnControlFields(restored);
 
-          if (request.decision.action === 'add_hypothesis') {
-            const targetsPendingInterrupt = snapshot.tasks.some(
-              ({ interrupts }) =>
-                interrupts.some(({ id }) => id === request.interruptId),
+          // A resume names the interrupt it answers, and this refuses the one
+          // case where that name is WRONG rather than merely stale: the thread
+          // is waiting on an interrupt, and it is not this one. The caller is
+          // answering a question that has already been replaced by a different
+          // question, and LangGraph's answer was to replay the pending task
+          // with the resume map unmatched — silently, so a caller who did not
+          // compare interrupt ids read it as success. AIC-92.
+          //
+          // ⚠ It deliberately does NOT refuse when the thread is waiting on
+          // NOTHING, and that half is the one worth reading twice. A run whose
+          // lifecycle node threw — or whose process died mid-superstep — leaves
+          // a pending TASK with zero pending interrupts, and a resume is the
+          // only way to advance it: `execute` exposes no replay that carries no
+          // interrupt id, `getState` is read-only, and `kind: 'start'`
+          // overwrites the control. Refusing on `tasks.length > 0` instead, as
+          // the first version of this did, makes every id a caller can send an
+          // error and a crashed run UNRESUMABLE. That is a recovery path this
+          // change has no business removing, and it was removed by accident
+          // rather than chosen.
+          //
+          // ⚠ What allowing it costs, stated exactly, because an earlier
+          // draft said "nothing is given up" and that is measurably false.
+          // This route IS a path to that limit, and the row that says so arms
+          // the gadget on this route rather than on a plain `confirm`:
+          // see hitl-resume-contract.test.mjs › "documents the limit on the
+          // crashed-run retry route the refusal lets through"
+          //
+          // It is not a path the refusal would have closed, which is the whole
+          // of why the trade is taken. The same gadget reaches a plain
+          // `confirm`, which no form of this refusal ever covered — so refusing
+          // here would remove one path to a limit that stays open either way,
+          // and would cost every crashed run its only way forward. What the
+          // primitive does close on this route is the READ-supplied
+          // substitution, and that is closed whether or not the route is
+          // refused.
+          // see hitl-resume-contract.test.mjs › "documents the limit: an
+          // inherited setter that writes an own property is not refused"
+          // see hitl-resume-contract.test.mjs › "advances a run past a
+          // transient node failure when the caller retries the same id" and ›
+          // "refuses a stale ${label} decision while the run waits on a
+          // different interrupt"
+          //
+          // A FINISHED run is the same shape for a different reason — nothing
+          // pending at all — and resuming one stays the no-op that resolves.
+          // see hitl-resume-contract.test.mjs › "resolves a resume of a run
+          // that already finished, rather than calling it a missing checkpoint"
+          const pendingInterruptIds = new Set(
+            snapshot.tasks.flatMap(({ interrupts }) =>
+              interrupts.map(({ id }) => id),
+            ),
+          );
+          const targetsPendingInterrupt = pendingInterruptIds.has(
+            request.interruptId,
+          );
+          if (pendingInterruptIds.size > 0 && !targetsPendingInterrupt) {
+            throw new Error(
+              `resume targets interrupt ${request.interruptId}, which is not the interrupt thread ${executionConfig.threadId} is waiting on: answering a superseded review would decide nothing`,
             );
-            if (targetsPendingInterrupt) {
-              assertHumanHypothesisIdIsAvailable(
-                snapshot.values,
-                request.decision,
-              );
-            }
+          }
+
+          if (
+            request.decision.action === 'add_hypothesis' &&
+            targetsPendingInterrupt
+          ) {
+            assertHumanHypothesisIdIsAvailable(
+              snapshot.values,
+              request.decision,
+            );
           }
         }
       }
