@@ -265,3 +265,42 @@ interrupt — the shape a thrown lifecycle node or a dead process leaves — is
 still resumable, because a resume is the only way to advance it; and a
 **finished** run's resume stays a no-op that resolves, since refusing it would
 be a false statement about a thread that has a checkpoint and a real state.
+
+
+## The decision is not control, and needed a different question (AIC-102)
+
+Everything above protects the control the **graph owns**. The human's decision
+is the opposite: the one value the graph does not own and must not second-guess.
+It needed its own answer, and the ownership idiom this record is built on is not
+it.
+
+A prototype gadget on `action` makes `ConclusionReviewDecisionSchema` return
+`confirm` for a caller who wrote `reject`. The run then resolves at END,
+`review_conclusion` never runs again, zero nodes replay, and the checkpoint
+records a completed, reviewed-looking run.
+
+**An ownership check does not separate the two shapes.** Under a read accessor
+the parsed `action` is not own, so `Object.hasOwn` would catch it; under a setter
+that *defines* on its target the field is genuinely own and carries the
+attacker's value, so it would not. What discriminates both is a **comparison**:
+the caller's own raw `action`, read as an own data property. An object literal
+uses `CreateDataProperty`, so a literal decision keeps its own value under either
+gadget.
+
+WARNING — **the precondition is warmth, and the cold path is not a defence.**
+`ConclusionReviewDecisionSchema` is a discriminated union whose `propValues`
+lookup zod builds lazily and memoises. Built while the gadget is armed,
+`propValues['action']` reads `'confirm'` through the getter — not nullish — so
+the `Set` is never created and `.add` throws. That looks protective and is zod
+crashing on the pollution; one ordinary prior decision parse removes it, which
+is the steady state of any long-lived process after its first review. A test
+that relied on file ordering to supply that warmth would pass or fail by
+accident, so the rows arm it explicitly.
+
+**Both parse sites are guarded, and neither is redundant** —
+`parseInvestigationExecutionInput` runs synchronously before `execute`'s first
+await, so a gadget armed one microtask later is invisible to it and lands on
+`reviewConclusion`'s parse instead. Measured with the node-side check removed:
+every turn from 1 to 10, on both shapes, executes the human's rejection as a
+confirm. That is the AIC-90 two-read shape again, on the decision rather than
+the control, and it is why the guard is duplicated rather than centralised.
