@@ -102,9 +102,10 @@ run waiting on **no** interrupt is still resumable, and a finished run's resume
 stays the no-op that resolves.
 
 ⚠ "Nothing is given up" is what an earlier draft of this paragraph said, and it
-is measurably false: with the setter gadget of the section below armed, a
-crashed-run retry completes unrefused and writes an own `humanReview: false`
-that parses. The route is a path to that limit. It is not a path the refusal
+is measurably false: the route is a path to the limit the section below
+describes, and the row that shows it arms the gadget on this route rather than
+on a plain `confirm` — hitl-resume-contract.test.mjs › "documents the limit on
+the crashed-run retry route the refusal lets through". It is not a path the refusal
 would have closed — the same gadget reaches a plain `confirm`, which no form of
 this refusal ever covered — so refusing here would remove one path to a limit
 that stays open regardless, at the price of every crashed run's only way

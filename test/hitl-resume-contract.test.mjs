@@ -2776,10 +2776,11 @@ for (const { label, decision } of resumeDecisions) {
  * the row that keeps it from being deleted as redundant.
  *
  * `assertRestoredControlFieldsPresent` runs right after it and refuses every
- * REQUIRED field it would have caught, so removing the ownership call reddens
- * nothing else in this suite — measured, 226/226 with it gone. Two guards where
- * one appears to do the work is exactly how the surviving one gets deleted next
- * year, so the residual is written down and pinned rather than assumed.
+ * REQUIRED field it would have caught, so this row is the ONLY thing that
+ * reddens when the ownership call is removed — measured at HEAD: 609 of 610,
+ * and this is the one. Two guards where one appears to do the work is exactly
+ * how the surviving one gets deleted next year, so the residual is written down
+ * and pinned rather than assumed.
  *
  * The residual is an OPTIONAL graph-owned field on the `confirm` route:
  * `stopKind` is skipped by the presence check because absence is legitimate for
@@ -3112,6 +3113,152 @@ test('refuses an own accessor at the wrapped node, where no later check runs', a
       persistedControl[POLLUTED_FIELD],
       RETRY_EXPECTED_HUMAN_REVIEW,
       'the refused run must still be under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * What `execute`'s own ownership check covers alone: pollution that is present
+ * for the FIRST checkpoint read and gone by the second.
+ *
+ * The two reads are the whole reason AIC-90 exists — `execute` validates what
+ * `graph.getState` deserialized, and `graph.invoke` deserializes again. Every
+ * other row in this file arms the SECOND read, because that is the object the
+ * run is built from and the one the later guards see. This row arms only the
+ * first: by the time `graph.invoke` reads, the checkpoint is clean, so nothing
+ * downstream has anything to refuse and the run would complete on a control
+ * that was fabricated when it was inspected.
+ *
+ * Without this row that call reddens nothing at all — measured, 610/610 with it
+ * removed — which by this repository's own rule makes it a guess rather than a
+ * guard.
+ */
+test('refuses pollution that is gone by the second checkpoint read', async () => {
+  const harness = createHarness({ runId: 'run-polluted-first-read-only' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      return reads === 1
+        ? withInheritedField(persisted, POLLUTED_FIELD, false)
+        : persisted;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a control that was not the run\'s own when it was inspected must be refused there, even though the next read is clean',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The same limit on the route AIC-92 deliberately REOPENED, which is the sentence
+ * in `execute` that concedes what allowing that route costs.
+ *
+ * The row above arms the gadget on a plain `confirm`. This one arms it on the
+ * crashed-run retry — pause, reject, a node throws, retry the same id against a
+ * thread waiting on zero interrupts — because that is the route the narrowed
+ * refusal lets through, and a comment that says "this route IS a path to that
+ * limit" has to be a pointer rather than a claim.
+ *
+ * The cost is real and the trade is still the right one: the row above shows
+ * the same gadget reaching a plain `confirm`, which no form of that refusal
+ * ever covered. Refusing here would remove one path to a limit that stays open
+ * regardless, and would cost every crashed run its only way forward — pinned by
+ * › "advances a run past a transient node failure when the caller retries the
+ * same id". Both halves are rows, so neither can drift into the other's place.
+ */
+test('documents the limit on the crashed-run retry route the refusal lets through', async () => {
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    `the prototype is already carrying ${POLLUTED_FIELD} before this run started: an earlier row leaked it`,
+  );
+
+  const { nodes, armFailure } = nodesWithTransientFailure();
+  const harness = createHarness({ runId: 'run-gadget-on-crash-retry', nodes });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    armFailure('derive_predictions');
+    const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in failed,
+      true,
+      'the transient failure must reject the first resume, or this is not the reopened route',
+    );
+
+    const stranded = await harness.execution.getState(harness.config);
+    assert.deepEqual(
+      stranded.tasks.flatMap(({ interrupts }) => interrupts.map(({ id }) => id)),
+      [],
+      'the thread must be waiting on no interrupt, or the narrowed refusal would have answered instead',
+    );
+
+    let outcome;
+    try {
+      Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
+        configurable: true,
+        get() {
+          return false;
+        },
+        set() {
+          Object.defineProperty(this, POLLUTED_FIELD, {
+            value: false,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+      outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+    } finally {
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    assert.equal(
+      'error' in outcome,
+      false,
+      'if this now refuses, the limit has been closed on this route — update the claims in investigation.ts and the decision record, and close AIC-93',
+    );
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      false,
+      'if this is no longer the gadget\'s value, the limit has moved — re-measure before editing the claims',
+    );
+    assert.equal(
+      IncidentStateControlSchema.safeParse(persistedControl).success,
+      true,
+      'the substituted control parses, which is what makes this outcome invisible on disk',
     );
   } finally {
     harness.cleanup();

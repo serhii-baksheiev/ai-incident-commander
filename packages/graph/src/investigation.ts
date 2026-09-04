@@ -1486,10 +1486,15 @@ export function createInvestigationGraph({
           // see hitl-resume-contract.test.mjs › "documents the limit: an
           // inherited setter that writes an own property is not refused"
           //
-          // THIS call is the one with no row of its own: deleting it reddens
-          // rows, but every one of them is a shape another guard would also
-          // catch later. It is kept as the earliest place a damaged restore can
-          // be named, and that is stated rather than dressed up as coverage.
+          // What THIS call covers alone: pollution present for the FIRST
+          // checkpoint read and gone by the second. Every other guard sees only
+          // the object `graph.invoke` builds, so a control fabricated while it
+          // was being inspected and clean by the time it is used reaches none
+          // of them. Without a row for that, deleting this call reddened
+          // nothing at all — measured — which by this repository's own rule
+          // made it a guess rather than a guard.
+          // see hitl-resume-contract.test.mjs › "refuses pollution that is gone
+          // by the second checkpoint read"
           assertOwnControlFields(restored);
 
           // A resume names the interrupt it answers, and this refuses the one
@@ -1514,9 +1519,10 @@ export function createInvestigationGraph({
           //
           // ⚠ What allowing it costs, stated exactly, because an earlier
           // draft said "nothing is given up" and that is measurably false.
-          // Measured on this route with the AIC-93 setter gadget armed: the
-          // retry completes unrefused, own `humanReview: false` reaches disk,
-          // and the control parses. So this route IS a path to that limit.
+          // This route IS a path to that limit, and the row that says so arms
+          // the gadget on this route rather than on a plain `confirm`:
+          // see hitl-resume-contract.test.mjs › "documents the limit on the
+          // crashed-run retry route the refusal lets through"
           //
           // It is not a path the refusal would have closed, which is the whole
           // of why the trade is taken. The same gadget reaches a plain
