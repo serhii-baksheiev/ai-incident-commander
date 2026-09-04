@@ -366,14 +366,15 @@ function assertOwnControlFields(control: object): void {
  * resumable run.
  */
 function readOwnControl(values: unknown): object | undefined {
-  // ⚠ Limits, both shared with `assertOwnControlFields` and one of them worse
-  // here. A `Proxy` lying through `getOwnPropertyDescriptor` passes, as it does
-  // there — outside the threat model, since such a caller can supply the value
-  // directly. And the object this returns is NOT the object the run uses:
-  // `graph.invoke` deserializes the checkpoint a second time. see
-  // hitl-resume-contract.test.mjs › "reads the checkpoint twice per resume,
-  // which is why the guard cannot see the object the run uses", and AIC-90 for
-  // the race that follows from it.
+  // ⚠ A `Proxy` lying through `getOwnPropertyDescriptor` passes, as it does for
+  // `assertOwnControlFields` — outside the threat model, since such a caller can
+  // supply the value directly.
+  //
+  // The object this returns is NOT the object the run uses: `graph.invoke`
+  // deserializes the checkpoint a second time. That is why `reviewConclusion`
+  // carries its own ownership check — AIC-90 — rather than trusting this one.
+  // see hitl-resume-contract.test.mjs › "reads the checkpoint twice per resume,
+  // so one guard cannot cover both objects"
 
   if (typeof values !== 'object' || values === null) return undefined;
   const descriptor = Object.getOwnPropertyDescriptor(values, 'control');
@@ -991,6 +992,33 @@ export function createInvestigationGraph({
   };
 
   const reviewConclusion = (state: InvestigationGraphState) => {
+    // The ownership check on the object the RUN uses, not the one `execute`
+    // inspected. `execute` validates what `graph.getState` deserialized;
+    // `graph.invoke` deserializes the checkpoint again and builds this state
+    // from the second copy, so pollution armed between the two reads is unseen
+    // there and lands here. Measured before this call: an accessor armed at any
+    // turn in a 124-turn window completed the resume, skipped the identity
+    // check below, and persisted a control the domain schema rejects.
+    //
+    // It REFUSES rather than repairing, and that is a TRADE rather than the
+    // only option. An earlier version of this comment claimed the value was
+    // "unreachable without owning a fork of the dependency's serde"; that was
+    // measurably false and is corrected here rather than softened. `JSON.parse`
+    // uses define semantics and preserves the own value — the loss is one
+    // assignment in `JsonPlusSerializer._reviver`, AFTER the parse — and the
+    // serde is an injection point, not a fork: `BaseCheckpointSaver` takes one
+    // and `.serde` is public. A define-semantics serde was measured to give
+    // zero refusals and zero substitutions at every turn on all three resume
+    // routes.
+    //
+    // Refusal is kept for now because it is cheap and REPORTS the attempt,
+    // where repair absorbs it silently; repair costs a second parse per load
+    // and makes this repository own behaviour the dependency may change. They
+    // are not exclusive — repair at the boundary would leave this as a tripwire
+    // that should then never fire. AIC-92 carries that decision.
+    // see hitl-resume-contract.test.mjs › "refuses the pollution armed at a
+    // turn inside the measured window"
+    assertOwnControlFields(state.control);
     assertInteractiveRunIdentity(state);
     // This node is where a resumed checkpoint re-enters the graph. The version
     // check runs FIRST so stale state is refused for the reason it is stale,
@@ -1247,11 +1275,17 @@ export function createInvestigationGraph({
           // unparseable control on disk. see hitl-resume-contract.test.mjs ›
           // "leaves no unparseable control on disk when it refuses"
           //
-          // ⚠ This narrows the exposure rather than closing the class. The
-          // control checked here comes from `graph.getState`; `graph.invoke`
-          // deserializes the checkpoint again and runs on a second object, so
-          // pollution armed BETWEEN the two reads is unseen — AIC-90, with the
-          // window measured.
+          // ⚠ Two checks, and TOGETHER THEY STILL DO NOT CLOSE THE CLASS.
+          // This one refuses before a single lifecycle node runs;
+          // `reviewConclusion` refuses on the object `graph.invoke` built
+          // (AIC-90). What neither covers: a resume whose `interruptId` is no
+          // longer pending replays some other node first, and
+          // `pickGraphOwnedControl` reads that field THROUGH the prototype and
+          // re-defines it as own — so ownership is restored carrying the
+          // substituted value and both checks pass. Measured in-contract, and
+          // the result is worse than what AIC-90 fixed: the run completes, the
+          // review gate is disarmed, and the control PARSES, so nothing on disk
+          // records it. AIC-92.
           assertOwnControlFields(restored);
 
           if (request.decision.action === 'add_hypothesis') {
