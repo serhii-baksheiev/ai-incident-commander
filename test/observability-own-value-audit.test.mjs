@@ -85,7 +85,8 @@
  *   - **A container is only as laundered as what was put in it.**
  *     `Object.fromEntries` builds with CreateDataProperty exactly as a literal
  *     does, so the CONTAINER is fresh — but its values are the pairs it was
- *     handed, and `map` yields what its callback returned. That chain is what
+ *     handed, and `map` — or `flatMap`, pinned separately as
+ *     `flatMap-callback-return` — yields what its callback returned. That chain is what
  *     makes `requireMetrics` returning a fresh `{ key, score }` pair, rather
  *     than the caller's own metric object, a thing this audit holds: reverting
  *     it reports the two reads off that object at the feedback call.
@@ -1513,6 +1514,43 @@ export function auditTeethInlineCalleeProbe(
   return ((inner: Readonly<Record<string, unknown>>) => inner.plantedInAnInlineCallee)(opts);
 }
 
+export function auditTeethFlatMapProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const keys = ['alpha'];
+  const flattened = keys.flatMap(() => opts);
+  const firstFlattened = flattened[0];
+  return firstFlattened.plantedStraightOutOfAFlatMapCallback;
+}
+
+export function auditTeethOwnPairsProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const pairs = Object.entries(opts);
+  const names = Object.keys(opts);
+  return pairs.length + names.length;
+}
+
+export function auditTeethForInKeyProbe(supply: Readonly<Record<string, unknown>>): unknown {
+  const collected: unknown[] = [];
+  for (const key in supply) {
+    collected.push(key.plantedOnTheForInKey);
+  }
+  return collected;
+}
+
+class AuditTeethHolder {
+  constructor(readonly held: unknown) {}
+}
+
+export function auditTeethNewExpressionProbe(
+  opts: Readonly<Record<string, unknown>>,
+): unknown {
+  const wrapped = new AuditTeethHolder(opts);
+  return wrapped.plantedThroughANewExpression;
+}
+
+export function auditTeethStringKeyProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const projected = { raw: ownValue(opts, 'raw'), safe: 1 };
+  return projected['raw'].plantedThroughAStringLiteralKey;
+}
+
 export { auditTeethExportListProbe, auditTeethAliasedArrow as auditTeethAliasedExport };
 `;
 
@@ -1542,6 +1580,11 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethObjectMethod',
   'auditTeethObjectArrow',
   'auditTeethInlineCalleeProbe',
+  'auditTeethFlatMapProbe',
+  'auditTeethOwnPairsProbe',
+  'auditTeethForInKeyProbe',
+  'auditTeethNewExpressionProbe',
+  'auditTeethStringKeyProbe',
 ]);
 
 /**
@@ -1591,16 +1634,24 @@ const WALKER_CAPABILITIES = [
   'bare-identifier-helper',
   'method-receiver',
   'map-callback-return',
+  'flatMap-callback-return',
   'fromEntries-values',
   'for-in-enumeration',
+  'for-in-key-binding',
+  'new-expression-arguments',
+  'string-literal-element-access',
   'destructured-field-precision',
   // Held by a read that must stay SILENT rather than by a planted one: losing
   // these makes the walker louder, not quieter, so no hazardous read can pin
   // them. `test('leaves the honest reads of the same fields unreported')` is
-  // what goes red.
+  // what names the extra reads. `test('reports every plain [[Get]] planted on
+  // caller-supplied data')` reddens as well, because it compares an exact set
+  // and an extra report fails it just as a missing one does — which is also why
+  // WHICH test goes red cannot be read as the direction a rule fails in.
   'own-value-read-is-silent',
   'fresh-local-argument',
   'own-only-iteration',
+  'object-helper-entries-and-keys',
 ];
 
 /** Each planted read the probe must report, and the capability it holds. */
@@ -1682,6 +1733,30 @@ const EXPECTED_PROBE_REPORTS = [
     expression: 'carried.plantedThroughADestructuredField',
     pins: ['destructured-field-precision'],
   },
+  {
+    expression: 'firstFlattened.plantedStraightOutOfAFlatMapCallback',
+    pins: ['flatMap-callback-return'],
+  },
+  // A second `for…in`, over a parameter named apart from the one in
+  // auditTeethLaundering so the two reports are distinct strings rather than
+  // one duplicated one. That naming is a readability choice and nothing rests
+  // on it: renaming the parameter and listing the duplicate expression twice
+  // keeps the file green and equally discriminating — measured.
+  //
+  // Two entries because two rules. The ENUMERATION rule reports the loop
+  // itself, needing no property access to fire; the KEY BINDING rule is what
+  // carries caller data into the read on the next line. This probe exercises
+  // both, which is why removing either rule reddens it.
+  { expression: 'for…in supply', pins: ['for-in-enumeration'] },
+  { expression: 'key.plantedOnTheForInKey', pins: ['for-in-key-binding'] },
+  {
+    expression: 'wrapped.plantedThroughANewExpression',
+    pins: ['new-expression-arguments'],
+  },
+  {
+    expression: "projected['raw'].plantedThroughAStringLiteralKey",
+    pins: ['string-literal-element-access'],
+  },
 ];
 
 /**
@@ -1704,6 +1779,11 @@ const HONEST_PROBE_READS = [
   {
     description: 'auditTeethOwnIterationProbe takes the length of Object.values(caller)',
     pins: ['own-only-iteration'],
+  },
+  {
+    description:
+      'auditTeethOwnPairsProbe takes the length of Object.entries(caller) and of Object.keys(caller)',
+    pins: ['object-helper-entries-and-keys'],
   },
 ];
 
