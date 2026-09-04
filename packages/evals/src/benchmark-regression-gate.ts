@@ -7,6 +7,31 @@ import {
   type BenchmarkMetricKey,
   type BenchmarkRecord,
 } from './benchmark-evaluation.js';
+import {
+  BEHAVIOR_METRIC_KEYS,
+  type BehaviorMetricKey,
+} from './behavior-evaluators.js';
+
+/**
+ * Every metric this gate compares — the v0.1 three plus every declared
+ * behavior metric.
+ *
+ * DERIVED from the two canonical arrays rather than listed again, so a new
+ * entry in either one reaches the comparison with no edit here, and
+ * benchmark-evaluation.test.mjs › "compares exactly the union of the v0.1 and
+ * the behavior metric keys" goes red in both directions. A second hand-written
+ * list here would be a copy that drifts, and the drifting copy is the one
+ * nobody is looking at.
+ */
+export const GATE_METRIC_KEYS = [
+  ...BENCHMARK_METRIC_KEYS,
+  ...BEHAVIOR_METRIC_KEYS,
+] as const;
+
+export type GateMetricKey = BenchmarkMetricKey | BehaviorMetricKey;
+
+const isBehaviorMetricKey = (key: GateMetricKey): key is BehaviorMetricKey =>
+  (BEHAVIOR_METRIC_KEYS as readonly string[]).includes(key);
 
 export interface BenchmarkGateResult {
   readonly passed: boolean;
@@ -26,7 +51,10 @@ export interface BenchmarkRegressionProof {
     mutation: string;
   }>;
   readonly exampleIds: readonly string[];
-  readonly metrics: Readonly<Record<BenchmarkMetricKey, BenchmarkMetricGate>>;
+  // One entry per metric, each keeping its own per-example failures. There is
+  // deliberately no aggregate anywhere in this proof: one number standing for
+  // every metric is exactly the thing that lets a red example read as green.
+  readonly metrics: Readonly<Record<GateMetricKey, BenchmarkMetricGate>>;
 }
 
 interface IndexedExperiment {
@@ -159,6 +187,92 @@ function gateMetric(
   };
 }
 
+/**
+ * Is this behavior metric recorded for this example?
+ *
+ * Behavior metrics are CONDITIONAL: `evaluateBenchmarkRecord` emits each one
+ * only where the scenario's ground truth asks the question it answers, so an
+ * absent metric is the normal shape of an example the question does not apply
+ * to — never a missing measurement.
+ */
+function declaresBehaviorMetric(
+  experiment: IndexedExperiment,
+  exampleId: string,
+  metricKey: BehaviorMetricKey,
+): boolean {
+  const behaviorMetrics = experiment.resultsByExampleId.get(exampleId)?.behaviorMetrics;
+  return (
+    behaviorMetrics !== undefined &&
+    Object.prototype.hasOwnProperty.call(behaviorMetrics, metricKey)
+  );
+}
+
+/**
+ * Gate one behavior metric across the examples that declare it.
+ *
+ * 🔴 **Presence is compared before scores are.** A metric the baseline declares
+ * for an example and the mutation does not is refused, and so is the reverse.
+ * Without that, the cheapest way to pass this gate with a behavior regression
+ * is to stop emitting the metric: absent would read as "not applicable here"
+ * and the red score would leave the comparison entirely. That is the failure
+ * this whole item exists to close, so it is a refusal rather than a skip —
+ * see benchmark-evaluation.test.mjs › "rejects a behavior metric the mutation
+ * stops declaring" and › "rejects a behavior metric only the mutation
+ * declares".
+ *
+ * A metric NEITHER side declares gates nothing and fails nothing: it passes
+ * vacuously, which is what keeps an accepted v0.1 experiment — which declares
+ * no behavior metric at all — comparable under its own contract
+ * (› "treats a behavior metric neither experiment declares as inert").
+ */
+function gateBehaviorMetric(
+  baseline: IndexedExperiment,
+  mutation: IndexedExperiment,
+  metricKey: BehaviorMetricKey,
+  requiredScore: number,
+): Readonly<{ baseline: BenchmarkGateResult; mutation: BenchmarkGateResult }> {
+  requireMetricScore(requiredScore);
+
+  const baselineFailing: string[] = [];
+  const mutationFailing: string[] = [];
+
+  for (const exampleId of baseline.exampleIds) {
+    const inBaseline = declaresBehaviorMetric(baseline, exampleId, metricKey);
+    const inMutation = declaresBehaviorMetric(mutation, exampleId, metricKey);
+    if (inBaseline !== inMutation) {
+      throw new Error(
+        `baseline and mutation must declare ${metricKey} for the same examples: ` +
+          `${exampleId} declares it in the ${inBaseline ? 'baseline' : 'mutation'} only`,
+      );
+    }
+    if (!inBaseline) continue;
+
+    for (const [experiment, failing] of [
+      [baseline, baselineFailing],
+      [mutation, mutationFailing],
+    ] as const) {
+      const metric = experiment.resultsByExampleId.get(exampleId)
+        ?.behaviorMetrics[metricKey];
+      if (metric === undefined || metric.key !== metricKey) {
+        throw new Error(`benchmark result is missing metric: ${metricKey}`);
+      }
+      requireMetricScore(metric.score);
+      if (metric.score !== requiredScore) failing.push(exampleId);
+    }
+  }
+
+  return {
+    baseline: {
+      passed: baselineFailing.length === 0,
+      failingExampleIds: baselineFailing,
+    },
+    mutation: {
+      passed: mutationFailing.length === 0,
+      failingExampleIds: mutationFailing,
+    },
+  };
+}
+
 function requireSameBenchmark(
   baseline: IndexedExperiment,
   mutation: IndexedExperiment,
@@ -197,14 +311,30 @@ export function compareBenchmarkExperiments({
   testedHeadSha: string;
   baseline: BenchmarkExperiment;
   mutation: BenchmarkExperiment;
-  expectedScores: Readonly<Record<BenchmarkMetricKey, number>>;
-  expectedMutationMetric: BenchmarkMetricKey;
+  // Every key of the union. ⚠ The record type is not what enforces that:
+  // this function has no TypeScript caller — it is off the public @aic/evals
+  // surface and reached from an untyped .mjs suite through the compiled dist —
+  // so the loop below is what actually refuses an incomplete set, pinned by
+  // benchmark-evaluation.test.mjs › "rejects expected scores that omit a
+  // declared behavior metric".
+  expectedScores: Readonly<Record<GateMetricKey, number>>;
+  expectedMutationMetric: GateMetricKey;
 }>): BenchmarkRegressionProof {
   if (!/^[0-9a-f]{40}$/i.test(testedHeadSha)) {
     throw new Error('testedHeadSha must be a full Git commit SHA');
   }
-  if (!BENCHMARK_METRIC_KEYS.includes(expectedMutationMetric)) {
-    throw new Error('expected mutation metric must be a v0.1 benchmark metric');
+  if (!(GATE_METRIC_KEYS as readonly string[]).includes(expectedMutationMetric)) {
+    throw new Error(
+      'expected mutation metric must be a declared benchmark or behavior metric',
+    );
+  }
+  // Refused here rather than where the score is used: `requireMetricScore`
+  // would also throw on the `undefined`, but from inside one metric's gate and
+  // without naming which metric was never declared.
+  for (const metricKey of GATE_METRIC_KEYS) {
+    if (expectedScores[metricKey] === undefined) {
+      throw new Error(`expected scores must declare every metric: ${metricKey}`);
+    }
   }
 
   const baselineIndex = indexExperiment(baseline, 'baseline');
@@ -219,8 +349,22 @@ export function compareBenchmarkExperiments({
   requireSameBenchmark(baselineIndex, mutationIndex);
 
   const metrics = Object.fromEntries(
-    BENCHMARK_METRIC_KEYS.map((metricKey) => {
+    GATE_METRIC_KEYS.map((metricKey) => {
       const requiredScore = expectedScores[metricKey];
+      if (isBehaviorMetricKey(metricKey)) {
+        return [
+          metricKey,
+          {
+            requiredScore,
+            ...gateBehaviorMetric(
+              baselineIndex,
+              mutationIndex,
+              metricKey,
+              requiredScore,
+            ),
+          },
+        ];
+      }
       return [
         metricKey,
         {
@@ -230,15 +374,15 @@ export function compareBenchmarkExperiments({
         },
       ];
     }),
-  ) as Record<BenchmarkMetricKey, BenchmarkMetricGate>;
+  ) as Record<GateMetricKey, BenchmarkMetricGate>;
 
-  if (BENCHMARK_METRIC_KEYS.some((metricKey) => !metrics[metricKey].baseline.passed)) {
-    throw new Error('baseline must pass every v0.1 metric');
+  if (GATE_METRIC_KEYS.some((metricKey) => !metrics[metricKey].baseline.passed)) {
+    throw new Error('baseline must pass every metric');
   }
   if (metrics[expectedMutationMetric].mutation.passed) {
     throw new Error(`mutation must turn ${expectedMutationMetric} red`);
   }
-  for (const metricKey of BENCHMARK_METRIC_KEYS) {
+  for (const metricKey of GATE_METRIC_KEYS) {
     if (
       metricKey !== expectedMutationMetric &&
       !metrics[metricKey].mutation.passed
