@@ -9,6 +9,8 @@ import {
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
+
+import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
 import { INTERRUPT, isInterrupted } from '@langchain/langgraph';
 
@@ -172,17 +174,12 @@ const humanHypothesis = (round) => ({
   createdBy: 'initial',
 });
 
-const resumeDecisions = [
-  { label: 'confirm', decision: () => ({ action: 'confirm' }) },
-  { label: 'reject', decision: () => ({ action: 'reject' }) },
-  {
-    label: 'add_hypothesis',
-    decision: (round) => ({
-      action: 'add_hypothesis',
-      hypothesis: humanHypothesis(round),
-    }),
-  },
-];
+/**
+ * Derived from `ConclusionReviewDecisionSchema`, not listed. A member added to
+ * that union arrives here on its own, and arrives without a fixture — which
+ * throws by name rather than leaving these loops quietly one route short.
+ */
+const resumeDecisions = conclusionReviewDecisions(humanHypothesis);
 
 /**
  * A rejected resume only proves a version boundary if the same resume succeeds

@@ -9,6 +9,11 @@ import {
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
+
+import {
+  CONCLUSION_REVIEW_ACTIONS,
+  decisionFixtureFor,
+} from './fixtures/conclusion-review-decisions.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
 import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
 
@@ -87,23 +92,36 @@ test('getGraph returns an inert topology projection without runnable node data',
   );
 });
 
+/**
+ * Every member the schema declares, not the three someone wrote down. Before
+ * AIC-77 this loop was a hand-written list of three, and so was the resume
+ * suite's: a fourth member that the graph handled left both green — measured,
+ * 522/522 — so "every supported decision" was a claim about a list rather than
+ * about the schema.
+ */
 test('accepts every supported conclusion review decision', () => {
   const schema = graphPackage.ConclusionReviewDecisionSchema;
   assert.equal(typeof schema?.safeParse, 'function');
 
-  for (const decision of [
-    { action: 'confirm' },
-    { action: 'reject' },
-    {
-      action: 'add_hypothesis',
+  assert.equal(
+    CONCLUSION_REVIEW_ACTIONS.length > 0,
+    true,
+    'a union with no members would make this loop vacuous',
+  );
+
+  for (const action of CONCLUSION_REVIEW_ACTIONS) {
+    const decision = decisionFixtureFor(action, {
       hypothesis: {
         id: 'human-hypothesis',
         statement: 'A human-supplied alternative',
         createdBy: 'initial',
       },
-    },
-  ]) {
-    assert.equal(schema.safeParse(decision).success, true);
+    });
+    assert.equal(
+      schema.safeParse(decision).success,
+      true,
+      `the fixture for ${action} must be a decision the schema accepts`,
+    );
   }
 });
 
