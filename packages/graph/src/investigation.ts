@@ -2,6 +2,7 @@ import {
   ConclusionReviewDecisionSchema,
   HypothesisSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
+  IncidentStateControlSchema,
   IncidentStateSchema,
   InvestigationTestSchema,
   LogicalCountSchema,
@@ -302,6 +303,60 @@ function readExactOwnDataProperties(
   return Object.fromEntries(entries);
 }
 
+const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
+  Object.keys(IncidentStateControlSchema.shape),
+);
+
+/**
+ * Refuses a control whose field is not the caller's OWN.
+ *
+ * The hazard is not a reader walking the prototype chain — it is the PARSE.
+ * With an accessor defined on `Object.prototype` for a control field name,
+ * `IncidentStateSchema.safeParse` returns a control on which that field is not
+ * an own property, even when the input carried a correct own value: the write
+ * lands on the inherited setter, or is dropped where there is none, and every
+ * later read falls through to the getter. Measured on both accessor shapes; a
+ * plain inherited DATA property is harmless and parses correctly.
+ *
+ * Which fields that reaches is not a fixed list. Today `runId` and `phase`
+ * complete a run carrying the inherited string while the other eleven happen to
+ * be refused downstream — but only because a string fails THEIR validators, not
+ * because anything noticed the substitution. A string-typed field added to the
+ * schema tomorrow joins the first group silently. So the guard names the real
+ * property, ownership, rather than the fields that currently survive.
+ *
+ * ⚠ This closes the `kind: 'start'` path and NOT the class of defect. A
+ * `kind: 'resume'` takes its control from the checkpointer and never reaches
+ * this function, and the same substitution is live there — measured against a
+ * real checkpointer: an inherited `humanReview` accessor returning `false`
+ * completes a paused interactive run, skips the identity check, and persists a
+ * control that no longer parses. That is AIC-89, not this guard's job, and it
+ * is said here because a reader landing on this function would otherwise infer
+ * the class is closed.
+ *
+ * ⚠ Two limits of the check itself. It verifies that CONTROL owns its fields,
+ * not that `state` owns `control` — a polluted `Object.prototype.control` is
+ * stopped today only by LangGraph colliding with the pollution on its own
+ * channel map, which is luck rather than a check. And a `Proxy` that lies
+ * through `getOwnPropertyDescriptor` passes it; that is outside the threat
+ * model, since a caller able to build one can supply the value directly.
+ *
+ * see graph-input-own-control.test.mjs › "refuses a start state whose control
+ * field is supplied by an accessor on the prototype"
+ */
+function assertOwnControlFields(control: object): void {
+  for (const field of CONTROL_FIELD_NAMES) {
+    // `in` consults the prototype chain on purpose: that is exactly the
+    // difference being detected. Present-but-not-own is the refusal; absent
+    // entirely is fine, which is how an unset `stopKind` passes.
+    if (field in control && !Object.hasOwn(control, field)) {
+      throw new Error(
+        `investigation control must carry its own ${field}: an inherited or accessor-supplied field is not the caller's state`,
+      );
+    }
+  }
+}
+
 function parseInvestigationExecutionInput(
   input: unknown,
 ): InvestigationExecutionInput {
@@ -311,8 +366,22 @@ function parseInvestigationExecutionInput(
 
   const start = readExactOwnDataProperties(input, ['kind', 'state']);
   if (start?.kind === 'start') {
+    // Before the parse, because this is the only point that can see a
+    // caller-supplied `stopKind` shadowed by an accessor — the parse refuses
+    // such a state first, with a message about the input rather than about
+    // ownership.
+    const supplied = (start.state as { control?: unknown } | null)?.control;
+    if (typeof supplied === 'object' && supplied !== null) {
+      assertOwnControlFields(supplied);
+    }
+
     const state = IncidentStateSchema.safeParse(start.state);
-    if (state.success) return { kind: 'start', state: state.data };
+    if (state.success) {
+      // And again after it, because the parse is what introduces the
+      // non-ownership for the other twelve fields.
+      assertOwnControlFields(state.data.control);
+      return { kind: 'start', state: state.data };
+    }
   }
 
   const resume = readExactOwnDataProperties(input, [
