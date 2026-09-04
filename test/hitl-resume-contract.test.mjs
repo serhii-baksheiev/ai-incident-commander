@@ -860,7 +860,16 @@ function attemptResume(execution, config, decision) {
     );
 }
 
-const namesTheMissingCheckpoint = /checkpoint/i;
+/**
+ * What the refusal has to name, kept as INTENT rather than as the wording.
+ *
+ * Deliberately not `/checkpoint/i`, which is what this started as. The guard
+ * fires on two states — a thread nothing ever ran, and a checkpoint that exists
+ * without an investigation state — and "no checkpoint" is false about the
+ * second. What is true of both, and what a caller needs, is that there is no
+ * run here to resume.
+ */
+const namesTheMissingRun = /no resumable run|no investigation state/i;
 const namesTheForeignCheckpoint = /interactive runId must match LangGraph thread_id/;
 
 test('refuses a resume under a thread that has no checkpoint, naming the thread', async () => {
@@ -892,7 +901,7 @@ test('refuses a resume under a thread that has no checkpoint, naming the thread'
     );
     assert.match(
       outcome.error.message,
-      namesTheMissingCheckpoint,
+      namesTheMissingRun,
       'the refusal must name what was missing, not merely that something was',
     );
     assert.deepEqual(
@@ -950,8 +959,10 @@ test('leaves no checkpoint behind for the thread whose resume it refused', async
  * The mismatched half is built by rewriting the persisted `runId` rather than
  * by resuming under a second thread id, because a second thread id is not the
  * mismatched case at all — it is the missing one, which is what the first half
- * already covers. A checkpoint whose `runId` is foreign to its thread is the
- * only shape that reaches `assertInteractiveRunIdentity` with state to judge.
+ * already covers. Every successful resume reaches
+ * `assertInteractiveRunIdentity` with state to judge; a checkpoint whose
+ * `runId` is foreign to its thread is the only shape that reaches it and
+ * FAILS, which is the shape this half needs.
  */
 test('tells a missing checkpoint apart from a mismatched one', async () => {
   const missing = createHarness({ runId: neverRunThreadId });
@@ -990,7 +1001,7 @@ test('tells a missing checkpoint apart from a mismatched one', async () => {
     );
     assert.match(
       missingOutcome.error.message,
-      namesTheMissingCheckpoint,
+      namesTheMissingRun,
       'an absent checkpoint must be named as absent, not left for the caller to guess',
     );
     assert.doesNotMatch(
@@ -1017,30 +1028,40 @@ test('tells a missing checkpoint apart from a mismatched one', async () => {
  * not restate it as a thread-level complaint. This row passes at bc51808 and has
  * to keep passing.
  */
-test('still refuses a resume with no checkpointer for the reason it already gives', async () => {
-  const execution = graphPackage.createInvestigationGraph({
-    nodes: reviewedRunNodes([], stalledTermination),
+/**
+ * All three decisions, not just `confirm`: the guard skips the snapshot read
+ * for every one of them, and `add_hypothesis` is the route that USED to read it
+ * first — at `main` that decision answered `No checkpointer set` from `getState`
+ * while the other two answered LangGraph's resume refusal. Pinning only
+ * `confirm` would have left the one route whose message this change moved
+ * uncovered.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`still refuses a ${label} resume with no checkpointer for the reason it already gives`, async () => {
+    const execution = graphPackage.createInvestigationGraph({
+      nodes: reviewedRunNodes([], stalledTermination),
+    });
+
+    const outcome = await attemptResume(
+      execution,
+      { threadId: neverRunThreadId },
+      decision(1),
+    );
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a resume without a checkpointer must still be refused',
+    );
+    assert.match(
+      outcome.error.message,
+      /Cannot use Command\(resume=\.\.\.\) without checkpointer/,
+      'the unconfigured-checkpointer refusal must survive the new one',
+    );
+    assert.equal(
+      outcome.error.message.includes(neverRunThreadId),
+      false,
+      'with no checkpointer there is no thread to blame, so the refusal must not name one',
+    );
   });
-
-  const outcome = await attemptResume(
-    execution,
-    { threadId: neverRunThreadId },
-    { action: 'confirm' },
-  );
-
-  assert.equal(
-    'error' in outcome,
-    true,
-    'a resume without a checkpointer must still be refused',
-  );
-  assert.match(
-    outcome.error.message,
-    /Cannot use Command\(resume=\.\.\.\) without checkpointer/,
-    'the unconfigured-checkpointer refusal must survive the new one',
-  );
-  assert.equal(
-    outcome.error.message.includes(neverRunThreadId),
-    false,
-    'with no checkpointer there is no thread to blame, so the refusal must not name one',
-  );
-});
+}

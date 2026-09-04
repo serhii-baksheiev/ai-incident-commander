@@ -1098,19 +1098,31 @@ export function createInvestigationGraph({
           // `normalize_incident` with no state at all and die reading
           // `control.humanReview` off `undefined` — a TypeError from the
           // graph's insides, telling the caller nothing about which of the two
-          // things went wrong. Worse, that half-started run left a checkpoint
-          // behind under the ghost id, so a later resume read it as real state.
+          // things went wrong. It also left a checkpoint behind: `getState` on
+          // the ghost id then reported a checkpoint and one pending task at
+          // `normalize_incident` for a thread on which nothing ever ran. That
+          // is the reason this refusal is here rather than inside a node — a
+          // node can name the problem, and the half-started run is written
+          // either way.
           //
           // The test is the ABSENCE OF `control`, not an empty task list: a run
           // that has finished has no pending task either, and resuming one is a
           // no-op this deliberately leaves alone.
+          //
+          // ⚠ Two limits. `control` present but MALFORMED — `null` from a
+          // hand-edited checkpoint — still reaches the identity check and still
+          // raises a TypeError; that is unchanged and out of this item's scope.
+          // And a checkpoint that exists while its `control` channel does not
+          // is refused by this message too, which is why the message speaks of
+          // a resumable run rather than claiming the thread has no checkpoint
+          // at all.
           // see hitl-resume-contract.test.mjs › "refuses a resume under a
           // thread that has no checkpoint, naming the thread" and › "leaves no
           // checkpoint behind for the thread whose resume it refused"
           const values = snapshot.values as Partial<IncidentState> | undefined;
           if (values?.control === undefined) {
             throw new Error(
-              `no checkpoint for thread ${executionConfig.threadId}: an interactive resume needs the run it is resuming`,
+              `no resumable run on thread ${executionConfig.threadId}: an interactive resume needs the run it is resuming, and this thread has no investigation state`,
             );
           }
 
