@@ -361,10 +361,14 @@ const OPTIONAL_CONTROL_FIELDS: ReadonlySet<string> = new Set(
  * check and persisted a control that no longer parses — and is closed by three
  * other calls rather than by this one: `execute` on the restored control
  * (AIC-89), `reviewConclusion` on the object the run was built from (AIC-90),
- * and `pickGraphOwnedControl`, which is where the value stopped being
- * launderable at all (AIC-92). Said here because a reader landing on this
- * function would otherwise infer either that the class is closed by it or that
- * it is still open.
+ * and `pickGraphOwnedControl`, which is where a value the prototype
+ * SUPPLIES ON READ stopped being launderable (AIC-92). Said here because a
+ * reader landing on this function would otherwise infer that the class is
+ * closed by it. ⚠ It is not closed by anything: an inherited setter that
+ * DEFINES the value on the target produces a genuine own data property, which
+ * no ownership check can distinguish from an honest one — pinned in
+ * hitl-resume-contract.test.mjs › "documents the limit: an inherited setter
+ * that writes an own property is not refused", remedy in AIC-93.
  *
  * ⚠ Two limits of the check itself. It verifies that CONTROL owns its fields,
  * not that `state` owns `control` — a polluted `Object.prototype.control` is
@@ -640,8 +644,9 @@ function defineOwnValue(
  * — as OWN DATA PROPERTIES, or not at all.
  *
  * ⚠ This function was the laundering primitive the ownership checks around it
- * could not see, and the reason it is worth naming that plainly is that it read
- * as a copy loop. `defineOwnValue(picked, field, control[field])` re-defines the
+ * could not see for a value the prototype SUPPLIES ON READ — which is the half
+ * it closes, and not the whole class; the other half is at the end of this
+ * comment. Worth naming plainly because it read as a copy loop. `defineOwnValue(picked, field, control[field])` re-defines the
  * field as own; `control[field]` is a plain `[[Get]]`, so a value the PROTOTYPE
  * supplied came back out of here owned. Ownership was restored carrying the
  * substitution, and `assertOwnControlFields` — at `execute`, and again in
@@ -697,6 +702,16 @@ function defineOwnValue(
  * same control it would have written. Refusing the optional half would break
  * that for `stopKind` alone, on the start path, where nothing is being
  * substituted.
+ *
+ * ⚠⚠ WHAT THIS CANNOT DO, stated here because the rest of this comment reads
+ * like closure. It decides OWNERSHIP, and an inherited setter that DEFINES the
+ * value on the target makes the field genuinely own — the descriptor read below
+ * then returns exactly what an honest run would. Nothing is left to detect, so
+ * no ownership check anywhere closes that shape; `JSON.parse` is immune to it
+ * where plain assignment is not, which puts the remedy at the deserializer.
+ * Measured, and filed as AIC-93 rather than folded in here.
+ * see hitl-resume-contract.test.mjs › "documents the limit: an inherited setter
+ * that writes an own property is not refused"
  *
  * see hitl-resume-contract.test.mjs › "refuses a control the prototype supplies
  * to a wrapped node, on a pending interrupt" and › "accepts a graph-owned field
@@ -1167,11 +1182,22 @@ export function createInvestigationGraph({
     // the dependency may change under an upgrade. The decision and what it
     // gives up are in docs/decisions/control-ownership-boundary.md.
     //
-    // ⚠ This call is now the SECOND line rather than the last one.
-    // `pickGraphOwnedControl` refuses an unowned graph-owned field before any
-    // wrapped node runs on it, which is what closed the class; this stays
-    // because a `confirm` reaches END without entering a wrapped node at all,
-    // so on that route it is still the only ownership check standing.
+    // ⚠ What this call still covers ALONE, because "the only ownership check
+    // standing" was the first draft's answer and measurement says otherwise.
+    // `assertRestoredControlFieldsPresent`, further down this same prologue,
+    // refuses every REQUIRED field this one would have caught — so deleting
+    // this call reddens nothing else in the suite.
+    //
+    // The residual is an OPTIONAL graph-owned field on the `confirm` route:
+    // the presence check skips `stopKind` because absence is legitimate for it,
+    // and a `confirm` reaches END without entering a wrapped node, so
+    // `pickGraphOwnedControl` never sees it either. Measured with this call
+    // removed: the run COMPLETES and the terminal stop kind is silently dropped
+    // from disk — quiet damage on an optional field, which is what AIC-89
+    // recorded about `stopKind`. That is the one row that reddens for this
+    // call, and it is the row cited here rather than a scan that stays green.
+    // see hitl-resume-contract.test.mjs › "refuses an inherited stopKind on the
+    // route where no wrapped node runs"
     // see hitl-resume-contract.test.mjs › "refuses the pollution armed at a
     // turn inside the measured window"
     assertOwnControlFields(state.control);
@@ -1448,11 +1474,22 @@ export function createInvestigationGraph({
           // `graph.invoke` built from a second read (AIC-90) — and a resume
           // that replayed some other node first reached neither, because
           // `pickGraphOwnedControl` read the field through the prototype and
-          // handed it on as own. AIC-92 closed that inside
-          // `pickGraphOwnedControl`, so the class is shut at the primitive and
-          // these two are tripwires that should never fire. The refusal below
-          // closes the route that reached it, which is a separate contract fix
-          // rather than a second copy of the same one.
+          // handed it on as own. AIC-92 closed THAT READ inside
+          // `pickGraphOwnedControl`.
+          //
+          // ⚠ "Tripwires that should never fire" is what an earlier draft
+          // called these two, and it was wrong twice, so it is corrected rather
+          // than softened. `reviewConclusion`'s call is the only thing between a
+          // `confirm` and an inherited OPTIONAL field — the row is named there.
+          // And no arrangement of these checks closes the class: an inherited
+          // setter that DEFINES on the target yields a genuine own property.
+          // see hitl-resume-contract.test.mjs › "documents the limit: an
+          // inherited setter that writes an own property is not refused"
+          //
+          // THIS call is the one with no row of its own: deleting it reddens
+          // rows, but every one of them is a shape another guard would also
+          // catch later. It is kept as the earliest place a damaged restore can
+          // be named, and that is stated rather than dressed up as coverage.
           assertOwnControlFields(restored);
 
           // A resume names the interrupt it answers, and this refuses the one
@@ -1475,9 +1512,22 @@ export function createInvestigationGraph({
           // change has no business removing, and it was removed by accident
           // rather than chosen.
           //
-          // Nothing is given up by allowing it. The substitution that route
-          // reached is closed in `pickGraphOwnedControl`, at the primitive,
-          // which is where a class gets closed rather than a route.
+          // ⚠ What allowing it costs, stated exactly, because an earlier
+          // draft said "nothing is given up" and that is measurably false.
+          // Measured on this route with the AIC-93 setter gadget armed: the
+          // retry completes unrefused, own `humanReview: false` reaches disk,
+          // and the control parses. So this route IS a path to that limit.
+          //
+          // It is not a path the refusal would have closed, which is the whole
+          // of why the trade is taken. The same gadget reaches a plain
+          // `confirm`, which no form of this refusal ever covered — so refusing
+          // here would remove one path to a limit that stays open either way,
+          // and would cost every crashed run its only way forward. What the
+          // primitive does close on this route is the READ-supplied
+          // substitution, and that is closed whether or not the route is
+          // refused.
+          // see hitl-resume-contract.test.mjs › "documents the limit: an
+          // inherited setter that writes an own property is not refused"
           // see hitl-resume-contract.test.mjs › "advances a run past a
           // transient node failure when the caller retries the same id" and ›
           // "refuses a stale ${label} decision while the run waits on a

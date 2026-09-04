@@ -2812,6 +2812,11 @@ test('refuses an inherited stopKind on the route where no wrapped node runs', as
       true,
       'an inherited stopKind must be refused, not completed with the terminal stop kind silently dropped',
     );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
     const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
     assert.notEqual(
       named,
@@ -2964,6 +2969,80 @@ test('documents the limit: an inherited setter that writes an own property is no
       Object.hasOwn(persistedControl, POLLUTED_FIELD),
       true,
       'the substituted field is genuinely own, which is why no ownership check can see it',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The own-ACCESSOR half of `assertRestoredControlFieldsPresent`, which is the
+ * half `assertOwnControlFields` cannot reach.
+ *
+ * `Object.hasOwn` is true for an own accessor, so the ownership check passes one
+ * — its message says "accessor-supplied", which overstates it. The presence
+ * check asks for a DESCRIPTOR CARRYING A VALUE, and that is what refuses this.
+ *
+ * The distinction is not academic under this ticket's own threat model: the
+ * gadget in the limit row further up defines a property on its target from a
+ * setter, and a gadget that defines an ACCESSOR there instead produces exactly
+ * this shape — an own property whose value is computed on every read.
+ *
+ * Written because the claim was in the docstring with nothing behind it:
+ * weakening the check to `Object.hasOwn(control, field)` left the whole suite
+ * green.
+ */
+test('refuses a restored control field that is an own accessor rather than a value', async () => {
+  const harness = createHarness({ runId: 'run-own-accessor-field' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      if (reads < POLLUTED_FROM_SECOND_READ) return persisted;
+      const descriptors = Object.getOwnPropertyDescriptors(persisted);
+      delete descriptors[POLLUTED_FIELD];
+      const rebuilt = Object.create(Object.prototype, descriptors);
+      Object.defineProperty(rebuilt, POLLUTED_FIELD, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return false;
+        },
+      });
+      return rebuilt;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'an own accessor is not a value of the run\'s own, and must be refused rather than read',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'the refused run must still be under human review',
     );
   } finally {
     harness.cleanup();

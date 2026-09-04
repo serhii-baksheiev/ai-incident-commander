@@ -99,8 +99,17 @@ The narrower rule is about answering the **wrong** question rather than about
 ownership: a decision naming an interrupt while the run waits on a *different*
 one is refused, because it answers a question that has already been replaced. A
 run waiting on **no** interrupt is still resumable, and a finished run's resume
-stays the no-op that resolves. Nothing is given up, because the substitution
-that route reached is closed at the primitive.
+stays the no-op that resolves.
+
+⚠ "Nothing is given up" is what an earlier draft of this paragraph said, and it
+is measurably false: with the setter gadget of the section below armed, a
+crashed-run retry completes unrefused and writes an own `humanReview: false`
+that parses. The route is a path to that limit. It is not a path the refusal
+would have closed — the same gadget reaches a plain `confirm`, which no form of
+this refusal ever covered — so refusing here would remove one path to a limit
+that stays open regardless, at the price of every crashed run's only way
+forward. What the primitive closes on this route is the READ-supplied
+substitution, and that is closed either way.
 
 ## The remedy that was not taken: a define-semantics serde
 
