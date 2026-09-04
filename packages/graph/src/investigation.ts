@@ -1080,18 +1080,52 @@ export function createInvestigationGraph({
       const langGraphConfig = langGraphConfigOf(executionConfig);
       if (
         request.kind === 'resume' &&
-        request.decision.action === 'add_hypothesis' &&
+        executionConfig !== undefined &&
         langGraphConfig !== undefined
       ) {
-        const snapshot = await graph.getState(langGraphConfig);
-        const targetsPendingInterrupt = snapshot.tasks.some(({ interrupts }) =>
-          interrupts.some(({ id }) => id === request.interruptId),
-        );
-        if (targetsPendingInterrupt) {
-          assertHumanHypothesisIdIsAvailable(
-            snapshot.values,
-            request.decision,
-          );
+        // One snapshot read serves both checks below. It is skipped entirely
+        // when this graph was built without a checkpointer, because `getState`
+        // throws `No checkpointer set` there and would replace a refusal that
+        // already names its reason — `Cannot use Command(resume=...) without
+        // checkpointer` — with one about the wrong thing. see
+        // hitl-resume-contract.test.mjs › "still refuses a resume with no
+        // checkpointer for the reason it already gives"
+        if (checkpointer !== undefined) {
+          const snapshot = await graph.getState(langGraphConfig);
+
+          // A thread that has never run answers with an EMPTY snapshot rather
+          // than an error, so resuming a mistyped thread id used to reach
+          // `normalize_incident` with no state at all and die reading
+          // `control.humanReview` off `undefined` — a TypeError from the
+          // graph's insides, telling the caller nothing about which of the two
+          // things went wrong. Worse, that half-started run left a checkpoint
+          // behind under the ghost id, so a later resume read it as real state.
+          //
+          // The test is the ABSENCE OF `control`, not an empty task list: a run
+          // that has finished has no pending task either, and resuming one is a
+          // no-op this deliberately leaves alone.
+          // see hitl-resume-contract.test.mjs › "refuses a resume under a
+          // thread that has no checkpoint, naming the thread" and › "leaves no
+          // checkpoint behind for the thread whose resume it refused"
+          const values = snapshot.values as Partial<IncidentState> | undefined;
+          if (values?.control === undefined) {
+            throw new Error(
+              `no checkpoint for thread ${executionConfig.threadId}: an interactive resume needs the run it is resuming`,
+            );
+          }
+
+          if (request.decision.action === 'add_hypothesis') {
+            const targetsPendingInterrupt = snapshot.tasks.some(
+              ({ interrupts }) =>
+                interrupts.some(({ id }) => id === request.interruptId),
+            );
+            if (targetsPendingInterrupt) {
+              assertHumanHypothesisIdIsAvailable(
+                snapshot.values,
+                request.decision,
+              );
+            }
+          }
         }
       }
       const graphInput =

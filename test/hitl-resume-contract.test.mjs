@@ -396,6 +396,63 @@ for (const counter of corruptPersistedCounters) {
 }
 
 /**
+ * The boundary the refusal deliberately does NOT cross, pinned because the
+ * implementation had a choice here and nothing else records which one it took.
+ *
+ * "No checkpoint" is decided from the ABSENCE OF `control` in the snapshot, not
+ * from an empty task list. A run that has already been confirmed has no pending
+ * task either, but it has a checkpoint and a real state — refusing it as
+ * "no checkpoint for thread …" would be a false statement about the thread.
+ * Resuming a finished run stays what it was: a no-op that resolves.
+ *
+ * Deciding from `snapshot.tasks.length === 0` instead passes every other test
+ * in this file, which is why this one exists.
+ */
+test('resolves a resume of a run that already finished, rather than calling it a missing checkpoint', async () => {
+  const harness = createHarness({ runId: 'run-resume-after-finish' });
+
+  try {
+    const interrupted = await harness.start();
+    const confirmed = await harness.resume(interrupted, { action: 'confirm' });
+    assert.equal(
+      'error' in confirmed,
+      false,
+      `the first confirm must complete the run: ${confirmed.error?.message ?? ''}`,
+    );
+
+    const [pending] = interrupted[INTERRUPT];
+    const again = await harness.execution
+      .execute(
+        {
+          kind: 'resume',
+          interruptId: pending.id,
+          decision: { action: 'confirm' },
+        },
+        harness.config,
+      )
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+
+    assert.equal(
+      'error' in again,
+      false,
+      `a finished run has a checkpoint, so resuming it must not be refused as missing one: ${again.error?.message ?? ''}`,
+    );
+
+    const control = await harness.control();
+    assert.equal(
+      control.resumeCount,
+      1,
+      'the no-op resume must not count a second resume the human did not spend',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
  * The challenge counters need their own rows, for a reason the logical
  * counters' header does NOT give.
  *
@@ -764,3 +821,226 @@ for (const route of humanReEntryRoutes) {
     }
   });
 }
+
+/**
+ * The rows above all resume a thread that HAS a checkpoint, and the checkpoint
+ * is where every refusal so far read its reason from. A thread with no
+ * checkpoint at all has no such state to complain about, and that is the case
+ * this block covers.
+ *
+ * Measured at bc51808, with a checkpointer configured: an unknown thread's
+ * snapshot carries no channel values for `control`, the graph enters
+ * `normalize_incident` on empty state, and `assertInteractiveRunIdentity`
+ * surfaces as `TypeError: Cannot read properties of undefined (reading
+ * 'humanReview')`. A caller receiving that cannot tell a thread it mistyped
+ * from a thread whose checkpoint belongs to another run.
+ *
+ * A resume input must carry a well-formed interrupt id to be parsed at all, and
+ * a thread that never ran has no real one to offer. That is not what these rows
+ * discriminate: measured at the same commit, a well-formed id matching no
+ * pending interrupt resolves as a no-op against a live thread and leaves its
+ * interrupt pending. The thread is what decides these outcomes, not the id.
+ */
+const neverRunThreadId = 'run-thread-that-never-started-8f3a';
+const wellFormedInterruptId = 'a1b2c3d4000000000000000000000fff';
+
+function attemptResume(execution, config, decision) {
+  return execution
+    .execute(
+      {
+        kind: 'resume',
+        interruptId: wellFormedInterruptId,
+        decision,
+      },
+      config,
+    )
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+}
+
+const namesTheMissingCheckpoint = /checkpoint/i;
+const namesTheForeignCheckpoint = /interactive runId must match LangGraph thread_id/;
+
+test('refuses a resume under a thread that has no checkpoint, naming the thread', async () => {
+  const harness = createHarness({ runId: neverRunThreadId });
+
+  try {
+    const outcome = await attemptResume(harness.execution, harness.config, {
+      action: 'confirm',
+    });
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a resume of a thread that never ran must be refused, not started from nothing',
+    );
+    assert.equal(
+      outcome.error instanceof TypeError,
+      false,
+      `a caller-facing refusal is not an internal type error: ${outcome.error?.message ?? ''}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /Cannot read properties of undefined/,
+      'a missing checkpoint must not surface as a property read on absent state',
+    );
+    assert.ok(
+      outcome.error.message.includes(neverRunThreadId),
+      `the refusal must name the thread it could not resume: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheMissingCheckpoint,
+      'the refusal must name what was missing, not merely that something was',
+    );
+    assert.deepEqual(
+      harness.trace,
+      [],
+      'a thread with nothing to resume must not execute a lifecycle node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The refusal has to land BEFORE the graph is invoked, and the message alone
+ * does not prove that. Measured at bc51808: the refused resume above still
+ * writes a checkpoint for the thread it failed on — `next: ['normalize_incident']`,
+ * one pending task, a checkpoint id — so a mistyped thread id leaves a
+ * half-started run behind that a later resume would read as real state.
+ */
+test('leaves no checkpoint behind for the thread whose resume it refused', async () => {
+  const harness = createHarness({ runId: neverRunThreadId });
+
+  try {
+    const before = await harness.execution.getState(harness.config);
+    assert.deepEqual(
+      { next: [...before.next], tasks: before.tasks.length },
+      { next: [], tasks: 0 },
+      'the premise of this test: the thread starts with nothing to resume',
+    );
+
+    await attemptResume(harness.execution, harness.config, {
+      action: 'confirm',
+    });
+    const after = await harness.execution.getState(harness.config);
+
+    assert.deepEqual(
+      {
+        next: [...after.next],
+        tasks: after.tasks.length,
+        checkpointId: after.config?.configurable?.checkpoint_id ?? null,
+      },
+      { next: [], tasks: 0, checkpointId: null },
+      'a refused resume must not leave a half-started run under the thread it refused',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The item's actual complaint: the two failures a caller most needs to tell
+ * apart are a thread with NO checkpoint and a checkpoint belonging to ANOTHER
+ * run, and today only the second one is named.
+ *
+ * The mismatched half is built by rewriting the persisted `runId` rather than
+ * by resuming under a second thread id, because a second thread id is not the
+ * mismatched case at all — it is the missing one, which is what the first half
+ * already covers. A checkpoint whose `runId` is foreign to its thread is the
+ * only shape that reaches `assertInteractiveRunIdentity` with state to judge.
+ */
+test('tells a missing checkpoint apart from a mismatched one', async () => {
+  const missing = createHarness({ runId: neverRunThreadId });
+  const mismatched = createHarness({
+    runId: 'run-thread-carrying-a-foreign-checkpoint',
+  });
+
+  try {
+    const missingOutcome = await attemptResume(
+      missing.execution,
+      missing.config,
+      { action: 'confirm' },
+    );
+
+    const interrupted = await mismatched.start();
+    mismatched.rewriteEveryPersistedControl((control) => ({
+      ...control,
+      runId: 'run-some-other-investigation',
+    }));
+    const mismatchedOutcome = await mismatched.resume(interrupted, {
+      action: 'confirm',
+    });
+
+    assert.deepEqual(
+      {
+        missingRefused: 'error' in missingOutcome,
+        mismatchedRefused: 'error' in mismatchedOutcome,
+      },
+      { missingRefused: true, mismatchedRefused: true },
+      'neither an absent checkpoint nor a foreign one may resume',
+    );
+    assert.match(
+      mismatchedOutcome.error.message,
+      namesTheForeignCheckpoint,
+      'a checkpoint that belongs to another run keeps the refusal it already gives',
+    );
+    assert.match(
+      missingOutcome.error.message,
+      namesTheMissingCheckpoint,
+      'an absent checkpoint must be named as absent, not left for the caller to guess',
+    );
+    assert.doesNotMatch(
+      missingOutcome.error.message,
+      namesTheForeignCheckpoint,
+      'a thread with no checkpoint must not be reported as a run identity mismatch',
+    );
+    assert.notEqual(
+      missingOutcome.error.message,
+      mismatchedOutcome.error.message,
+      'a caller must be able to tell a thread it mistyped from a thread that holds another run',
+    );
+  } finally {
+    missing.cleanup();
+    mismatched.cleanup();
+  }
+});
+
+/**
+ * A graph built without a checkpointer already refuses a resume for a reason of
+ * its own, and that reason names the missing MECHANISM rather than a missing
+ * checkpoint. A guard that reads the snapshot on the resume path must not reach
+ * it — `getState` throws `GraphValueError: No checkpointer set` there — and must
+ * not restate it as a thread-level complaint. This row passes at bc51808 and has
+ * to keep passing.
+ */
+test('still refuses a resume with no checkpointer for the reason it already gives', async () => {
+  const execution = graphPackage.createInvestigationGraph({
+    nodes: reviewedRunNodes([], stalledTermination),
+  });
+
+  const outcome = await attemptResume(
+    execution,
+    { threadId: neverRunThreadId },
+    { action: 'confirm' },
+  );
+
+  assert.equal(
+    'error' in outcome,
+    true,
+    'a resume without a checkpointer must still be refused',
+  );
+  assert.match(
+    outcome.error.message,
+    /Cannot use Command\(resume=\.\.\.\) without checkpointer/,
+    'the unconfigured-checkpointer refusal must survive the new one',
+  );
+  assert.equal(
+    outcome.error.message.includes(neverRunThreadId),
+    false,
+    'with no checkpointer there is no thread to blame, so the refusal must not name one',
+  );
+});
