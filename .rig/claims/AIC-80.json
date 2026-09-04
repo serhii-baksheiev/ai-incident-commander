@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "AIC-80",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "f3b40bb93563c95ddaace0c833da82dc97dcdd381d1f58c93cae0bdd79db2fc8",
+      "targetSha": "c27b778acd04732ca1ca5b89714a38971a2db71f"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "b4982bcf4ddb508f839ba52faddc378cc72ec4fce9de2ff712a98d0549ccfcf1",
+      "count": 3
+    }
+  }
+}
