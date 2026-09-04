@@ -1513,6 +1513,43 @@ export function auditTeethInlineCalleeProbe(
   return ((inner: Readonly<Record<string, unknown>>) => inner.plantedInAnInlineCallee)(opts);
 }
 
+export function auditTeethFlatMapProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const keys = ['alpha'];
+  const flattened = keys.flatMap(() => opts);
+  const firstFlattened = flattened[0];
+  return firstFlattened.plantedStraightOutOfAFlatMapCallback;
+}
+
+export function auditTeethOwnPairsProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const pairs = Object.entries(opts);
+  const names = Object.keys(opts);
+  return pairs.length + names.length;
+}
+
+export function auditTeethForInKeyProbe(supply: Readonly<Record<string, unknown>>): unknown {
+  const collected: unknown[] = [];
+  for (const key in supply) {
+    collected.push(key.plantedOnTheForInKey);
+  }
+  return collected;
+}
+
+class AuditTeethHolder {
+  constructor(readonly held: unknown) {}
+}
+
+export function auditTeethNewExpressionProbe(
+  opts: Readonly<Record<string, unknown>>,
+): unknown {
+  const wrapped = new AuditTeethHolder(opts) as unknown as Record<string, unknown>;
+  return wrapped.plantedThroughANewExpression;
+}
+
+export function auditTeethStringKeyProbe(opts: Readonly<Record<string, unknown>>): unknown {
+  const projected = { raw: ownValue(opts, 'raw'), safe: 1 };
+  return projected['raw'].plantedThroughAStringLiteralKey;
+}
+
 export { auditTeethExportListProbe, auditTeethAliasedArrow as auditTeethAliasedExport };
 `;
 
@@ -1542,6 +1579,11 @@ const PROBE_FUNCTIONS = new Set([
   'auditTeethObjectMethod',
   'auditTeethObjectArrow',
   'auditTeethInlineCalleeProbe',
+  'auditTeethFlatMapProbe',
+  'auditTeethOwnPairsProbe',
+  'auditTeethForInKeyProbe',
+  'auditTeethNewExpressionProbe',
+  'auditTeethStringKeyProbe',
 ]);
 
 /**
@@ -1591,8 +1633,12 @@ const WALKER_CAPABILITIES = [
   'bare-identifier-helper',
   'method-receiver',
   'map-callback-return',
+  'flatMap-callback-return',
   'fromEntries-values',
   'for-in-enumeration',
+  'for-in-key-binding',
+  'new-expression-arguments',
+  'string-literal-element-access',
   'destructured-field-precision',
   // Held by a read that must stay SILENT rather than by a planted one: losing
   // these makes the walker louder, not quieter, so no hazardous read can pin
@@ -1601,6 +1647,7 @@ const WALKER_CAPABILITIES = [
   'own-value-read-is-silent',
   'fresh-local-argument',
   'own-only-iteration',
+  'object-helper-entries-and-keys',
 ];
 
 /** Each planted read the probe must report, and the capability it holds. */
@@ -1682,6 +1729,25 @@ const EXPECTED_PROBE_REPORTS = [
     expression: 'carried.plantedThroughADestructuredField',
     pins: ['destructured-field-precision'],
   },
+  {
+    expression: 'firstFlattened.plantedStraightOutOfAFlatMapCallback',
+    pins: ['flatMap-callback-return'],
+  },
+  // A second `for…in`, over a parameter named apart from the one in
+  // auditTeethLaundering so the two reports are distinct strings rather than
+  // one duplicated one. Two entries because two rules: the ENUMERATION is
+  // reported with no property access anywhere, and separately the KEY it binds
+  // carries caller data into the read on the next line.
+  { expression: 'for…in supply', pins: ['for-in-enumeration'] },
+  { expression: 'key.plantedOnTheForInKey', pins: ['for-in-key-binding'] },
+  {
+    expression: 'wrapped.plantedThroughANewExpression',
+    pins: ['new-expression-arguments'],
+  },
+  {
+    expression: "projected['raw'].plantedThroughAStringLiteralKey",
+    pins: ['string-literal-element-access'],
+  },
 ];
 
 /**
@@ -1704,6 +1770,11 @@ const HONEST_PROBE_READS = [
   {
     description: 'auditTeethOwnIterationProbe takes the length of Object.values(caller)',
     pins: ['own-only-iteration'],
+  },
+  {
+    description:
+      'auditTeethOwnPairsProbe takes the length of Object.entries(caller) and of Object.keys(caller)',
+    pins: ['object-helper-entries-and-keys'],
   },
 ];
 
