@@ -3400,6 +3400,85 @@ for (const shape of ['read-accessor', 'own-writing']) {
 }
 
 /**
+ * The window only `reviewConclusion`'s parse can see, and the reason the
+ * boundary check is not enough on its own.
+ *
+ * `parseInvestigationExecutionInput` runs SYNCHRONOUSLY, at the top of
+ * `execute`, before the first await. A gadget armed one microtask later is
+ * therefore invisible to it — the caller's object was clean when the boundary
+ * read it — and the substitution lands on the second parse, of the value
+ * `interrupt()` hands back inside the node. That is the same two-read shape
+ * AIC-90 found for the control, on the decision.
+ *
+ * Measured with the node-side check removed: every turn from 1 to 10, on both
+ * gadget shapes, the human's `reject` is EXECUTED AS A CONFIRM — the run
+ * resolves, `resumeCount` reaches 1, and nothing records it. Turn 1 is enough
+ * and is deterministic: the boundary is already past by the first microtask, so
+ * there is no window to search for.
+ */
+for (const shape of ['read-accessor', 'own-writing']) {
+  test(`refuses a ${shape} gadget armed after the boundary has already read the decision`, async () => {
+    assert.equal(
+      'action' in {},
+      false,
+      'the prototype is already carrying action before this run started: an earlier row leaked it',
+    );
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-decision-late-${shape}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+      const traceBefore = harness.trace.length;
+
+      let outcome;
+      let chain;
+      try {
+        chain = scheduleMicrotaskChain({
+          turns: 1,
+          onTurn: () => armDecisionGadget(shape),
+        });
+        outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+      } finally {
+        chain.cancel();
+        delete Object.prototype.action;
+      }
+
+      assert.equal(
+        chain.fired,
+        true,
+        'the chain never armed during the resume, so the boundary may simply have caught it — this row would then prove nothing',
+      );
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a decision substituted after the boundary read it must still be refused, at the node',
+      );
+      assert.match(
+        outcome.error.message,
+        DECISION_ACTION_REFUSAL,
+        `the refusal must name the decision's own action: ${outcome.error.message}`,
+      );
+      assert.equal(
+        harness.trace.length,
+        traceBefore,
+        'a refused decision must not advance the run by a single node',
+      );
+
+      const persistedControl = await harness.control();
+      assert.equal(
+        persistedControl.resumeCount,
+        0,
+        'a refused decision is not a resume the human spent',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
  * The control arm: the same warm process, the same decision, no gadget. It
  * separates "the guard refuses a rewritten decision" from "the guard refuses
  * `reject`", which a comparison written the wrong way round would do.
