@@ -412,6 +412,12 @@ function ownControlFieldError(field: string): Error {
   );
 }
 
+function decisionFieldError(field: string, detail: string): Error {
+  return new Error(
+    `conclusion review decision must carry its own ${field}: ${detail}`,
+  );
+}
+
 function missingControlFieldError(field: string): Error {
   return new Error(
     `investigation control must carry its own ${field}: the restored control has no value of its own for it`,
@@ -521,7 +527,14 @@ function decisionFieldsFor(action: unknown): readonly string[] {
       return Object.keys(option.shape);
     }
   }
-  return [];
+  // Unreachable while every option's discriminant is a bare literal, which is
+  // what makes `suppliedAction` one of three known strings by the time this is
+  // called. It THROWS rather than returning nothing, because the alternative is
+  // a security guard whose field loop silently does nothing the day someone
+  // gives the union an option this cannot classify.
+  throw new Error(
+    `conclusion review decision declares no fields for action ${String(action)}`,
+  );
 }
 
 /**
@@ -611,16 +624,18 @@ function parseCallerOwnedDecision(
     // The caller's OWN value is what the message names — never a fresh read of
     // the parsed one, which an accessor controls in content and length alike
     // and which reaches operator output verbatim.
-    throw new Error(
-      `conclusion review decision must carry its own action: the caller supplied ${String(suppliedAction)}, which is not what parsing their object produced`,
+    throw decisionFieldError(
+      'action',
+      `the caller supplied ${String(suppliedAction)}, which is not what parsing their object produced`,
     );
   }
 
   for (const field of decisionFieldsFor(suppliedAction)) {
     if (field === 'action') continue;
     if (!hasOwnDataProperty(supplied, field)) {
-      throw new Error(
-        `conclusion review decision must carry its own ${field}: the decision parses only by reading that field off the prototype`,
+      throw decisionFieldError(
+        field,
+        'the decision parses only by reading that field off the prototype',
       );
     }
   }

@@ -3870,6 +3870,64 @@ for (const field of ['hypothesis', 'statement']) {
 }
 
 /**
+ * The one shape every other row here is missing: a decision that does not own
+ * its `action` AT ALL, so the prototype supplies the discriminant outright.
+ *
+ * Every row above sends `{ action: … }` or `ownDecision(action)`, both of which
+ * own the field — so the caller's side of the comparison was never `undefined`,
+ * and two of the guard's elements were unpinned: the own-data read on the LEFT
+ * side, and the `undefined` refusal. Measured with either reverted, a caller
+ * sending `{}` under the matching gadget was ACCEPTED — run resolved at END,
+ * zero nodes replayed, `resumeCount: 1`. Found by `code-reviewer`.
+ *
+ * "Two absences must not agree with each other" is what this row is for: an
+ * absent caller value must be refused rather than compared, or it matches an
+ * equally absent parsed one.
+ */
+for (const shape of ['read-accessor', 'own-writing']) {
+  test(`refuses a decision whose action the ${shape} prototype supplies outright`, async () => {
+    assert.equal('action' in {}, false, 'an earlier row leaked the gadget');
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-no-own-action-${shape}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+      const traceBefore = harness.trace.length;
+
+      let outcome;
+      try {
+        armDecisionGadget(shape);
+        // The caller owns NOTHING. Every field of this decision is the
+        // prototype's.
+        outcome = await harness.resumeWith(pending.id, {});
+      } finally {
+        delete Object.prototype.action;
+      }
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a decision whose action the caller does not own must be refused, not executed',
+      );
+      assert.equal(
+        harness.trace.length,
+        traceBefore,
+        'a refused decision must not advance the run by a single node',
+      );
+      assert.equal(
+        (await harness.control()).resumeCount,
+        0,
+        'a refused decision is not a resume the human spent',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
  * The control arm: the same warm process, the same decision, no gadget. It
  * separates "the guard refuses a rewritten decision" from "the guard refuses
  * `reject`", which a comparison written the wrong way round would do.
