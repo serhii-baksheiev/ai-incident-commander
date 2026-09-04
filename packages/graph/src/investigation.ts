@@ -325,6 +325,22 @@ const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
  * schema tomorrow joins the first group silently. So the guard names the real
  * property, ownership, rather than the fields that currently survive.
  *
+ * ⚠ This closes the `kind: 'start'` path and NOT the class of defect. A
+ * `kind: 'resume'` takes its control from the checkpointer and never reaches
+ * this function, and the same substitution is live there — measured against a
+ * real checkpointer: an inherited `humanReview` accessor returning `false`
+ * completes a paused interactive run, skips the identity check, and persists a
+ * control that no longer parses. That is AIC-89, not this guard's job, and it
+ * is said here because a reader landing on this function would otherwise infer
+ * the class is closed.
+ *
+ * ⚠ Two limits of the check itself. It verifies that CONTROL owns its fields,
+ * not that `state` owns `control` — a polluted `Object.prototype.control` is
+ * stopped today only by LangGraph colliding with the pollution on its own
+ * channel map, which is luck rather than a check. And a `Proxy` that lies
+ * through `getOwnPropertyDescriptor` passes it; that is outside the threat
+ * model, since a caller able to build one can supply the value directly.
+ *
  * see graph-input-own-control.test.mjs › "refuses a start state whose control
  * field is supplied by an accessor on the prototype"
  */
