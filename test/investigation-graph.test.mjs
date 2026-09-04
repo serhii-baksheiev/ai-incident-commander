@@ -443,6 +443,29 @@ test('does not let normal lifecycle nodes consume reserved challenge budget', as
   assert.equal(result.control.reservedChallengeBudget, 2);
 });
 
+/**
+ * The in-place half of the challenge-budget protection, and it was vacuous
+ * until AIC-78 for exactly the reason AIC-66 found in its budget-counter
+ * sibling: the node mutated the control it was handed and returned `{}`.
+ *
+ * `incidentStateOf` hands each node a SHALLOW COPY of control, so a mutation
+ * that is not returned never reaches the channel — the test passed whether or
+ * not `challengeRounds` and `reservedChallengeBudget` were protected. Measured
+ * before the repair: dropping both fields from `GRAPH_OWNED_CONTROL_FIELDS`
+ * reddens only the return-based sibling ("does not let normal lifecycle nodes
+ * consume reserved challenge budget") and leaves this one green.
+ *
+ * Returning the mutated object is what makes it discriminate, and after the
+ * repair the same mutation reddens both.
+ *
+ * They are still not interchangeable. The in-place shape also pins that the
+ * control a node is handed is WRITABLE at all: freezing the copy —
+ * `Object.freeze({ ...state.control })` in `incidentStateOf` — reddens this test
+ * and leaves the return-based sibling green. Measured, and with one correction
+ * worth carrying: freezing reddens THREE tests, not this one alone — the two
+ * other in-place rows, over the logical budgets and the resume counter, catch
+ * it too. This row is one of three holding that property, not its sole keeper.
+ */
 test('restores graph-owned control after in-place mutation and still performs mandatory challenge', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
@@ -466,7 +489,9 @@ test('restores graph-owned control after in-place mutation and still performs ma
     trace.push('plan_investigation');
     state.control.challengeRounds = 2;
     state.control.reservedChallengeBudget = 0;
-    return {};
+    // Returned, not merely mutated: the graph hands out a shallow copy, so an
+    // unreturned write reaches nothing and proves nothing.
+    return { control: state.control };
   };
   const graph = createInvestigationGraph({ nodes });
   const state = initialState();
