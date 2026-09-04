@@ -448,23 +448,24 @@ test('does not let normal lifecycle nodes consume reserved challenge budget', as
  * until AIC-78 for exactly the reason AIC-66 found in its budget-counter
  * sibling: the node mutated the control it was handed and returned `{}`.
  *
- * `incidentStateOf` hands each node a SHALLOW COPY of control, so a mutation
- * that is not returned never reaches the channel — the test passed whether or
- * not `challengeRounds` and `reservedChallengeBudget` were protected. Measured
- * before the repair: dropping both fields from `GRAPH_OWNED_CONTROL_FIELDS`
- * reddens only the return-based sibling ("does not let normal lifecycle nodes
- * consume reserved challenge budget") and leaves this one green.
+ * An unreturned mutation reaches nothing — see the sibling at "restores
+ * graph-owned logical budgets after in-place mutation by a lifecycle node" for
+ * why, stated once there rather than a fourth time here.
  *
- * Returning the mutated object is what makes it discriminate, and after the
- * repair the same mutation reddens both.
+ * Measured before the repair, dropping `challengeRounds` and
+ * `reservedChallengeBudget` from `GRAPH_OWNED_CONTROL_FIELDS`: **in this file**
+ * 1 red, the return-based sibling, with this row green. After the repair, 2.
+ * Suite-wide those runs are 6 and 7 — the extra rows are structural checks in
+ * `graph-owned-control-contract.test.mjs` and `graph-node-return-shape.test.mjs`
+ * that catch the removal without exercising a challenge at all, which is worth
+ * knowing before reading "reddens both" as strong evidence for this row.
  *
- * They are still not interchangeable. The in-place shape also pins that the
- * control a node is handed is WRITABLE at all: freezing the copy —
- * `Object.freeze({ ...state.control })` in `incidentStateOf` — reddens this test
- * and leaves the return-based sibling green. Measured, and with one correction
- * worth carrying: freezing reddens THREE tests, not this one alone — the two
- * other in-place rows, over the logical budgets and the resume counter, catch
- * it too. This row is one of three holding that property, not its sole keeper.
+ * What this row uniquely holds is not writability — four other rows catch a
+ * frozen control copy, two here and two in `hitl-conclusion-review.test.mjs`.
+ * It is the `challengeCalls` assertion: no other test checks that the MANDATORY
+ * CHALLENGE still runs after a node has tried to zero the reserve. Under the
+ * drop-fields mutation this row fails exactly there, on `challengeCalls` being
+ * 0, which is what its name promises.
  */
 test('restores graph-owned control after in-place mutation and still performs mandatory challenge', async () => {
   const createInvestigationGraph = requireGraphFactory();
@@ -489,8 +490,6 @@ test('restores graph-owned control after in-place mutation and still performs ma
     trace.push('plan_investigation');
     state.control.challengeRounds = 2;
     state.control.reservedChallengeBudget = 0;
-    // Returned, not merely mutated: the graph hands out a shallow copy, so an
-    // unreturned write reaches nothing and proves nothing.
     return { control: state.control };
   };
   const graph = createInvestigationGraph({ nodes });
