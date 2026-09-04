@@ -1080,18 +1080,74 @@ export function createInvestigationGraph({
       const langGraphConfig = langGraphConfigOf(executionConfig);
       if (
         request.kind === 'resume' &&
-        request.decision.action === 'add_hypothesis' &&
+        executionConfig !== undefined &&
         langGraphConfig !== undefined
       ) {
-        const snapshot = await graph.getState(langGraphConfig);
-        const targetsPendingInterrupt = snapshot.tasks.some(({ interrupts }) =>
-          interrupts.some(({ id }) => id === request.interruptId),
-        );
-        if (targetsPendingInterrupt) {
-          assertHumanHypothesisIdIsAvailable(
-            snapshot.values,
-            request.decision,
-          );
+        // One snapshot read serves both checks below. It is skipped entirely
+        // when this graph was built without a checkpointer, because `getState`
+        // throws `No checkpointer set` there and would replace a refusal that
+        // already names its reason — `Cannot use Command(resume=...) without
+        // checkpointer` — with one about the wrong thing. see
+        // hitl-resume-contract.test.mjs › "still refuses a resume with no
+        // checkpointer for the reason it already gives"
+        if (checkpointer !== undefined) {
+          const snapshot = await graph.getState(langGraphConfig);
+
+          // A thread that has never run answers with an EMPTY snapshot rather
+          // than an error, so resuming a mistyped thread id used to reach
+          // `normalize_incident` with no state at all and die reading
+          // `control.humanReview` off `undefined` — a TypeError from the
+          // graph's insides, telling the caller nothing about which of the two
+          // things went wrong. It also left a checkpoint behind: `getState` on
+          // the ghost id then reported a checkpoint and one pending task at
+          // `normalize_incident` for a thread on which nothing ever ran. That
+          // is the reason this refusal is here rather than inside a node — a
+          // node can name the problem, and the half-started run is written
+          // either way.
+          //
+          // The test is the ABSENCE OF `control`, not an empty task list: a run
+          // that has finished has no pending task either, and resuming one is a
+          // no-op this deliberately leaves alone.
+          //
+          // ⚠ Two limits, each with a row of its own rather than a sentence.
+          //
+          // A checkpoint that EXISTS while its `control` channel does not is
+          // refused by this same message. That state is not the ghost above: it
+          // reports a checkpoint id and a pending task, and its other eight
+          // channels are populated. So the message names the absent CONTROL
+          // rather than claiming the thread has no checkpoint or no state —
+          // both of which would be false about it. see
+          // hitl-resume-contract.test.mjs › "refuses a checkpoint whose control
+          // channel is gone, without calling the thread empty"
+          //
+          // `control` present but MALFORMED — `null` from a hand-edited
+          // checkpoint — is NOT caught here: `null !== undefined`, so it reaches
+          // the identity check and still raises a TypeError. Unchanged from
+          // before this guard existed and out of this item's scope, but pinned
+          // so the gap is a known one. see hitl-resume-contract.test.mjs ›
+          // "leaves a malformed control to the identity check, unrefused here"
+          // see hitl-resume-contract.test.mjs › "refuses a resume under a
+          // thread that has no checkpoint, naming the thread" and › "leaves no
+          // checkpoint behind for the thread whose resume it refused"
+          const values = snapshot.values as Partial<IncidentState> | undefined;
+          if (values?.control === undefined) {
+            throw new Error(
+              `no resumable run on thread ${executionConfig.threadId}: no investigation control was checkpointed for it`,
+            );
+          }
+
+          if (request.decision.action === 'add_hypothesis') {
+            const targetsPendingInterrupt = snapshot.tasks.some(
+              ({ interrupts }) =>
+                interrupts.some(({ id }) => id === request.interruptId),
+            );
+            if (targetsPendingInterrupt) {
+              assertHumanHypothesisIdIsAvailable(
+                snapshot.values,
+                request.decision,
+              );
+            }
+          }
         }
       }
       const graphInput =
