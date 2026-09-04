@@ -10,10 +10,7 @@ import {
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
 
-import {
-  CONCLUSION_REVIEW_ACTIONS,
-  conclusionReviewDecisions,
-} from './fixtures/conclusion-review-decisions.mjs';
+import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
 import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
 
@@ -98,16 +95,15 @@ test('getGraph returns an inert topology projection without runnable node data',
  * suite's: a fourth member that the graph handled left both green — measured,
  * 522/522 — so "every supported decision" was a claim about a list rather than
  * about the schema.
+ *
+ * The table's own emptiness and completeness are not re-asserted here: the
+ * module throws at import on an empty union, and its labels ARE the derived
+ * list, so checking them against it could not fail. Both are covered where they
+ * mean something, in conclusion-review-decision-fixture.test.mjs.
  */
 test('accepts every supported conclusion review decision', () => {
   const schema = graphPackage.ConclusionReviewDecisionSchema;
   assert.equal(typeof schema?.safeParse, 'function');
-
-  assert.equal(
-    CONCLUSION_REVIEW_ACTIONS.length > 0,
-    true,
-    'a union with no members would make this loop vacuous',
-  );
 
   // Built through the table rather than by handing every action a hypothesis:
   // an action that declares none now REFUSES one, because silently dropping it
@@ -117,12 +113,6 @@ test('accepts every supported conclusion review decision', () => {
     statement: 'A human-supplied alternative',
     createdBy: 'initial',
   }));
-
-  assert.deepStrictEqual(
-    table.map(({ label }) => label),
-    [...CONCLUSION_REVIEW_ACTIONS],
-    'the table must carry one entry per action the schema declares',
-  );
 
   for (const { label, decision } of table) {
     assert.equal(
