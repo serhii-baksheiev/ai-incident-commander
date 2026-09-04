@@ -366,14 +366,15 @@ function assertOwnControlFields(control: object): void {
  * resumable run.
  */
 function readOwnControl(values: unknown): object | undefined {
-  // ⚠ Limits, both shared with `assertOwnControlFields` and one of them worse
-  // here. A `Proxy` lying through `getOwnPropertyDescriptor` passes, as it does
-  // there — outside the threat model, since such a caller can supply the value
-  // directly. And the object this returns is NOT the object the run uses:
-  // `graph.invoke` deserializes the checkpoint a second time. see
-  // hitl-resume-contract.test.mjs › "reads the checkpoint twice per resume,
-  // which is why the guard cannot see the object the run uses", and AIC-90 for
-  // the race that follows from it.
+  // ⚠ A `Proxy` lying through `getOwnPropertyDescriptor` passes, as it does for
+  // `assertOwnControlFields` — outside the threat model, since such a caller can
+  // supply the value directly.
+  //
+  // The object this returns is NOT the object the run uses: `graph.invoke`
+  // deserializes the checkpoint a second time. That is why `reviewConclusion`
+  // carries its own ownership check — AIC-90 — rather than trusting this one.
+  // see hitl-resume-contract.test.mjs › "reads the checkpoint twice per resume,
+  // so one guard cannot cover both objects"
 
   if (typeof values !== 'object' || values === null) return undefined;
   const descriptor = Object.getOwnPropertyDescriptor(values, 'control');
@@ -991,6 +992,24 @@ export function createInvestigationGraph({
   };
 
   const reviewConclusion = (state: InvestigationGraphState) => {
+    // The ownership check on the object the RUN uses, not the one `execute`
+    // inspected. `execute` validates what `graph.getState` deserialized;
+    // `graph.invoke` deserializes the checkpoint again and builds this state
+    // from the second copy, so pollution armed between the two reads is unseen
+    // there and lands here. Measured before this call: an accessor armed at any
+    // turn in a 124-turn window completed the resume, skipped the identity
+    // check below, and persisted a control the domain schema rejects.
+    //
+    // It REFUSES rather than repairing, and that is forced rather than
+    // preferred. The field is not merely shadowed — it is GONE: the reviver at
+    // the persistence boundary builds a plain object and assigns into it, so an
+    // inherited setter swallows the value before any code here can see it. The
+    // bytes on disk are intact and unreachable without owning a fork of the
+    // dependency's serde, so the honest answer to "this checkpoint deserialized
+    // wrong" is to say so, not to continue on a value nobody has.
+    // see hitl-resume-contract.test.mjs › "refuses the pollution armed at a
+    // turn inside the measured window"
+    assertOwnControlFields(state.control);
     assertInteractiveRunIdentity(state);
     // This node is where a resumed checkpoint re-enters the graph. The version
     // check runs FIRST so stale state is refused for the reason it is stale,
@@ -1247,11 +1266,13 @@ export function createInvestigationGraph({
           // unparseable control on disk. see hitl-resume-contract.test.mjs ›
           // "leaves no unparseable control on disk when it refuses"
           //
-          // ⚠ This narrows the exposure rather than closing the class. The
-          // control checked here comes from `graph.getState`; `graph.invoke`
-          // deserializes the checkpoint again and runs on a second object, so
-          // pollution armed BETWEEN the two reads is unseen — AIC-90, with the
-          // window measured.
+          // ⚠ This check alone would narrow the exposure rather than close
+          // it: the control checked here comes from `graph.getState`, and
+          // `graph.invoke` deserializes the checkpoint again and runs on a
+          // second object. `reviewConclusion` checks that one (AIC-90). This
+          // call still earns its place — it refuses before a single lifecycle
+          // node runs, where the other refuses after the run has re-entered the
+          // graph.
           assertOwnControlFields(restored);
 
           if (request.decision.action === 'add_hypothesis') {

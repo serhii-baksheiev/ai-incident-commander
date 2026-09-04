@@ -1128,25 +1128,23 @@ test('refuses a malformed control by name instead of leaving it to the identity 
 });
 
 /**
- * The stated limit of the resume ownership guard, pinned by the fact it rests
- * on rather than by the race it enables.
+ * Why this graph needs TWO ownership checks rather than one.
  *
  * `execute` validates the control that `graph.getState` deserialized, and then
  * `graph.invoke` deserializes the checkpoint AGAIN and runs on that second
- * object. The guard therefore checks a different object than the run uses. That
- * is check-then-use, and `security-scanner` measured what it costs: with only
- * microtask scheduling — no instrumentation of the checkpointer — arming an
- * `Object.prototype` accessor between the two reads leaves a 123-turn window in
- * which a resume completes, skips the human-review identity check, and persists
- * a control the domain schema rejects. Filed as AIC-90.
+ * object. One check cannot cover both, and the gap between them is not
+ * theoretical: `security-scanner` measured a 124-turn window in which arming an
+ * `Object.prototype` accessor completed a resume, skipped the human-review
+ * identity check, and persisted a control the domain schema rejects — using
+ * nothing but microtask scheduling. AIC-90 closed it by adding the second check
+ * on the object the run uses, at the top of `reviewConclusion`.
  *
- * A race is not a test. What IS deterministic, and what the window depends on
- * entirely, is that the checkpoint is read twice — so that is what this pins. A
- * fix that validates the object the run actually uses, or rebuilds control at
- * the persistence boundary, will change this count and should: the row going
- * red is the signal to re-measure the limit rather than to restore the number.
+ * The two reads remain, so this row stays green and keeps its job: it pins the
+ * FACT that makes two checks necessary. A change that removes the second
+ * deserialization turns it red, and that is the signal to ask whether the
+ * second check is still earning its place — not to restore the number.
  */
-test('reads the checkpoint twice per resume, which is why the guard cannot see the object the run uses', async () => {
+test('reads the checkpoint twice per resume, so one guard cannot cover both objects', async () => {
   const harness = createHarness({ runId: 'run-two-deserializations' });
 
   try {
@@ -1533,5 +1531,351 @@ test('resumes normally, counting one resume, when nothing is on the prototype', 
     persistedControl.resumeCount,
     1,
     'one human confirm is one resume, and the pollution rows are only meaningful against this',
+  );
+});
+
+/**
+ * AIC-90 — the resume must run on a control the guard actually checked.
+ *
+ * The row above ("reads the checkpoint twice per resume") pins the mechanism:
+ * `execute` validates what `graph.getState` deserialized, and `graph.invoke`
+ * then deserializes the checkpoint AGAIN and runs on a second object. AIC-89's
+ * `assertOwnControlFields` therefore inspects an object the run discards. These
+ * rows pin the CONSEQUENCE — that between the two deserializations there is a
+ * window in which the ownership guard is bypassed and the run persists a
+ * control the domain schema rejects.
+ *
+ * The attack needs nothing but microtask scheduling: no instrumentation of the
+ * checkpointer, no control over its timing, only the ability to run a
+ * self-rescheduling microtask chain concurrently with the resume — which any
+ * code sharing the event loop can do. `createHarness` counts tuple reads and
+ * nothing else here rewrites them.
+ *
+ * Measured on this machine at 226185a, `Object.prototype.humanReview` armed at
+ * microtask turn N of the resume, every turn in 1..400:
+ *
+ * - turns 1-39 — refused, by AIC-89's guard: the accessor is armed before
+ *   `graph.getState` resolves, so the object the guard reads is already the
+ *   polluted one;
+ * - turns 40-163 — the run COMPLETES. The guard saw a clean control, the
+ *   accessor arms afterwards, `graph.invoke`'s deserialization assigns
+ *   `humanReview` into the inherited setter, and the control written back has no
+ *   own `humanReview` at all: `IncidentStateControlSchema.safeParse` rejects it
+ *   with `expected boolean, received undefined`, and the resume counted itself
+ *   as a normal one;
+ * - turns 164-400 — clean: the resume has finished before the chain reaches its
+ *   turn, so nothing is ever armed.
+ *
+ * Identical for an accessor returning `false` and one returning the string
+ * `'inherited'`, and identical across three consecutive scans — the window is
+ * an artifact of the two reads, not of timing noise, which is why it can be a
+ * test at all.
+ */
+
+/** The field the window was measured on; a member of the schema, not a literal
+ * the schema no longer declares — see the assertion in the helper below. */
+const POLLUTED_FIELD = 'humanReview';
+
+/**
+ * A self-rescheduling microtask chain, counted in turns.
+ *
+ * It ALWAYS terminates — at `turns`, or earlier on `cancel()`. That is not
+ * tidiness: microtasks drain to exhaustion before the event loop turns, so a
+ * chain that reschedules forever wedges the process rather than failing a test.
+ *
+ * `onTurn` is invoked once, on the last turn, and never after `cancel()` — the
+ * caller relies on that to guarantee nothing arms the prototype after it has
+ * been restored.
+ */
+function scheduleMicrotaskChain({ turns, onTurn }) {
+  let cancelled = false;
+  let turnsRun = 0;
+  let fired = false;
+
+  const step = () => {
+    if (cancelled) return;
+    turnsRun += 1;
+    if (turnsRun >= turns) {
+      if (onTurn !== undefined) {
+        onTurn();
+        fired = true;
+      }
+      return;
+    }
+    Promise.resolve().then(step);
+  };
+  Promise.resolve().then(step);
+
+  return {
+    cancel() {
+      cancelled = true;
+    },
+    get fired() {
+      return fired;
+    },
+    get turnsRun() {
+      return turnsRun;
+    },
+  };
+}
+
+/**
+ * The scan harness, and it is in the repository on purpose: the finding was
+ * produced by a throwaway script, and a window nobody can re-measure is a
+ * number in a ticket rather than a property of this code.
+ *
+ * One paused interactive run, resumed with a microtask chain racing it, and the
+ * outcome classified into exactly three kinds:
+ *
+ * - `refused` — the resume rejected;
+ * - `corrupt` — the resume COMPLETED and the control left on disk fails
+ *   `IncidentStateControlSchema.safeParse`;
+ * - `clean` — the resume completed and the persisted control still parses.
+ *
+ * Four orderings are load-bearing, three of them for the same reason
+ * `resumeUnderPollutedPrototype` gives above:
+ *
+ * - the run is STARTED under a clean prototype, so what is under test is the
+ *   restored control and not a start state that was already substituted;
+ * - the chain is cancelled and the prototype restored SYNCHRONOUSLY in
+ *   `finally`, never in `t.after` — a hook runs at the end of the PARENT test,
+ *   which would leave the accessor armed across every later row;
+ * - the cancel comes BEFORE the delete. A chain that has not reached its turn
+ *   yet is still pending when the resume settles, and deleting first would let
+ *   it arm the prototype afterwards — pollution outliving the test that owns it;
+ * - the persisted control is read back AFTER the restore, because that read
+ *   deserializes too and an armed accessor would swallow the field on the way
+ *   in, reporting damage on disk that is not there.
+ */
+async function resumeRacedByMicrotaskChain({
+  runId,
+  turn,
+  arm = true,
+  value = INHERITED_VALUE,
+}) {
+  assert.equal(
+    CONTROL_FIELDS.includes(POLLUTED_FIELD),
+    true,
+    `the scan arms ${POLLUTED_FIELD}, which the control schema no longer declares — re-pick the field from CONTROL_FIELDS`,
+  );
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    `the prototype is already carrying ${POLLUTED_FIELD} before this run started: an earlier row leaked it`,
+  );
+
+  const harness = createHarness({ runId });
+
+  try {
+    const interrupted = await harness.start();
+
+    let outcome;
+    let chain;
+    try {
+      chain = scheduleMicrotaskChain({
+        turns: turn,
+        onTurn: arm
+          ? () => armInheritedAccessor(POLLUTED_FIELD, value)
+          : undefined,
+      });
+      outcome = await harness.resume(interrupted, { action: 'confirm' });
+    } finally {
+      chain.cancel();
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    const persistedControl = await harness.control();
+    const parsed = IncidentStateControlSchema.safeParse(persistedControl);
+    const refused = 'error' in outcome;
+
+    return {
+      turn,
+      armed: chain.fired,
+      outcome,
+      persistedControl,
+      kind: refused ? 'refused' : parsed.success ? 'clean' : 'corrupt',
+      issues:
+        parsed.success === true
+          ? ''
+          : parsed.error.issues
+              .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+              .join('; '),
+    };
+  } finally {
+    harness.cleanup();
+  }
+}
+
+/** Compacts scanned turns into ranges, so a failure names the window it found
+ * rather than printing a hundred numbers. */
+function describeTurns(turns) {
+  if (turns.length === 0) return '(none)';
+  const ranges = [];
+  for (const turn of turns) {
+    const last = ranges.at(-1);
+    if (last !== undefined && last.to + SCAN_STRIDE === turn) last.to = turn;
+    else ranges.push({ from: turn, to: turn });
+  }
+  return ranges
+    .map(({ from, to }) => (from === to ? `${from}` : `${from}-${to}`))
+    .join(', ');
+}
+
+/**
+ * ⚠ What this scan can and cannot see, stated because a green run here is easy
+ * to over-read.
+ *
+ * It CAN see: every arming turn from 1 to 200 inclusive, on the `confirm`
+ * route, for an accessor on `humanReview`. The measured window (40-163 on this
+ * machine, 40-162 as reported on the scanner's) sits inside that with 39 turns
+ * of refusal before it and 37 turns of clean completion after it, so both edges
+ * are covered rather than assumed.
+ *
+ * It CANNOT see: an arming turn past 200 — beyond the range, a chain simply
+ * never fires, and 164-400 was measured clean for that reason rather than for a
+ * reassuring one; the other twelve control fields; the `reject` and
+ * `add_hypothesis` routes, whose resumes replay more nodes and therefore have
+ * their own, longer, unmeasured windows; and any window that a future change
+ * opens at a turn this scan happens to step over.
+ *
+ * So this row SAMPLES the absence of a window. It does not prove one. If it
+ * goes red on a turn outside 40-163, the correct response is to re-measure the
+ * whole range, not to widen the stride until it passes.
+ *
+ * Cost, measured: 200 resumes against a real SQLite checkpointer, about 3s on
+ * this machine — the file was 2.2s before it.
+ */
+const SCAN_FIRST_TURN = 1;
+const SCAN_LAST_TURN = 200;
+const SCAN_STRIDE = 1;
+
+test('no arming turn leaves a control the domain schema rejects', async () => {
+  const rows = [];
+  for (
+    let turn = SCAN_FIRST_TURN;
+    turn <= SCAN_LAST_TURN;
+    turn += SCAN_STRIDE
+  ) {
+    rows.push(
+      await resumeRacedByMicrotaskChain({
+        runId: `run-resume-race-turn-${turn}`,
+        turn,
+      }),
+    );
+  }
+
+  const armed = rows.filter((row) => row.armed);
+  assert.ok(
+    armed.length > 0,
+    'no scanned turn armed the prototype during its resume, so this scan proves nothing — re-measure the turn range',
+  );
+
+  const corrupt = rows.filter((row) => row.kind === 'corrupt');
+  assert.deepEqual(
+    corrupt.map((row) => row.turn),
+    [],
+    `a resume racing a microtask chain persisted a control the domain schema rejects at turns ${describeTurns(
+      corrupt.map((row) => row.turn),
+    )} — refused at ${describeTurns(
+      rows.filter((row) => row.kind === 'refused').map((row) => row.turn),
+    )}, clean at ${describeTurns(
+      rows.filter((row) => row.kind === 'clean').map((row) => row.turn),
+    )}; first failure: ${corrupt[0]?.issues ?? ''}`,
+  );
+});
+
+/**
+ * The deterministic row: one turn, well inside the measured window, chosen
+ * because a scan that samples is a poor regression signal on its own.
+ *
+ * 100 is not arbitrary — it sits 60 turns past the refusal edge and 63 turns
+ * short of the clean one, the widest margin the measured window offers. Every
+ * turn in 40-163 corrupted on three consecutive scans of the full range, so
+ * this is a stable choice rather than a lucky one.
+ *
+ * It asserts a REFUSAL, which is the remedy this ticket asks for and the one
+ * every sibling row in this file already spells the same way. A fix that made
+ * the resume immune instead — rebuilding the control at the persistence
+ * boundary so no pollution can reach it — would complete cleanly and redden
+ * this row. That is deliberate: choosing immunity over refusal is a
+ * caller-visible decision about whether an attempted substitution is reported,
+ * and this row is where it gets recorded rather than absorbed.
+ */
+const ARMING_TURN_INSIDE_WINDOW = 100;
+
+test('refuses the pollution armed at a turn inside the measured window', async () => {
+  const raced = await resumeRacedByMicrotaskChain({
+    runId: 'run-resume-race-inside-window',
+    turn: ARMING_TURN_INSIDE_WINDOW,
+  });
+
+  assert.equal(
+    raced.armed,
+    true,
+    `the chain never reached turn ${ARMING_TURN_INSIDE_WINDOW} during the resume, so nothing was under test — the window has moved and needs re-measuring`,
+  );
+  assert.notEqual(
+    raced.kind,
+    'corrupt',
+    `a resume polluted at turn ${ARMING_TURN_INSIDE_WINDOW} completed and left a control on disk that no longer parses: ${raced.issues}`,
+  );
+  assert.equal(
+    raced.kind,
+    'refused',
+    `pollution armed between the guard's read and the run's must be refused, not resumed to a ${raced.kind} completion`,
+  );
+
+  const message = raced.outcome.error.message;
+  assert.doesNotMatch(
+    message,
+    INCIDENTAL_RESUME_REFUSALS,
+    `refusing for a reason that is not the ownership guard is not this defect being fixed: ${message}`,
+  );
+
+  const named = OWN_CONTROL_REFUSAL.exec(message);
+  assert.notEqual(
+    named,
+    null,
+    `the refusal must be the graph's own words about ownership, not: ${message}`,
+  );
+  assert.equal(
+    named[1],
+    POLLUTED_FIELD,
+    `the refusal named ${named?.[1]} while the prototype supplied ${POLLUTED_FIELD}`,
+  );
+});
+
+/**
+ * The control arm, and the reason the two rows above mean what they say.
+ *
+ * The same self-rescheduling chain, interleaved with the same resume at the
+ * same turn, arming NOTHING. It separates "a microtask chain running alongside
+ * the resume perturbs it" from "the pollution corrupts it" — without this, a
+ * red scan could be read as the harness breaking the run, and the fix would be
+ * aimed at the wrong thing.
+ *
+ * It passes before the fix and must pass after it.
+ */
+test('completes a resume interleaved with a microtask chain that arms nothing', async () => {
+  const raced = await resumeRacedByMicrotaskChain({
+    runId: 'run-resume-race-unarmed-chain',
+    turn: ARMING_TURN_INSIDE_WINDOW,
+    arm: false,
+  });
+
+  assert.equal(
+    'error' in raced.outcome,
+    false,
+    `a chain that arms nothing must not disturb the resume: ${raced.outcome.error?.message ?? ''}`,
+  );
+  assert.equal(
+    raced.kind,
+    'clean',
+    'a resume raced by an inert chain must leave a control on disk that parses',
+  );
+  assert.equal(
+    raced.persistedControl.resumeCount,
+    1,
+    'one human confirm is one resume, however the microtasks interleaved',
   );
 });
