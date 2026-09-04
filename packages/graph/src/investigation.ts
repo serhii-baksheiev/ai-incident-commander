@@ -1109,20 +1109,30 @@ export function createInvestigationGraph({
           // that has finished has no pending task either, and resuming one is a
           // no-op this deliberately leaves alone.
           //
-          // ⚠ Two limits. `control` present but MALFORMED — `null` from a
-          // hand-edited checkpoint — still reaches the identity check and still
-          // raises a TypeError; that is unchanged and out of this item's scope.
-          // And a checkpoint that exists while its `control` channel does not
-          // is refused by this message too, which is why the message speaks of
-          // a resumable run rather than claiming the thread has no checkpoint
-          // at all.
+          // ⚠ Two limits, each with a row of its own rather than a sentence.
+          //
+          // A checkpoint that EXISTS while its `control` channel does not is
+          // refused by this same message. That state is not the ghost above: it
+          // reports a checkpoint id and a pending task, and its other eight
+          // channels are populated. So the message names the absent CONTROL
+          // rather than claiming the thread has no checkpoint or no state —
+          // both of which would be false about it. see
+          // hitl-resume-contract.test.mjs › "refuses a checkpoint whose control
+          // channel is gone, without calling the thread empty"
+          //
+          // `control` present but MALFORMED — `null` from a hand-edited
+          // checkpoint — is NOT caught here: `null !== undefined`, so it reaches
+          // the identity check and still raises a TypeError. Unchanged from
+          // before this guard existed and out of this item's scope, but pinned
+          // so the gap is a known one. see hitl-resume-contract.test.mjs ›
+          // "leaves a malformed control to the identity check, unrefused here"
           // see hitl-resume-contract.test.mjs › "refuses a resume under a
           // thread that has no checkpoint, naming the thread" and › "leaves no
           // checkpoint behind for the thread whose resume it refused"
           const values = snapshot.values as Partial<IncidentState> | undefined;
           if (values?.control === undefined) {
             throw new Error(
-              `no resumable run on thread ${executionConfig.threadId}: an interactive resume needs the run it is resuming, and this thread has no investigation state`,
+              `no resumable run on thread ${executionConfig.threadId}: no investigation control was checkpointed for it`,
             );
           }
 

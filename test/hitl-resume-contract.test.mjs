@@ -861,15 +861,19 @@ function attemptResume(execution, config, decision) {
 }
 
 /**
- * What the refusal has to name, kept as INTENT rather than as the wording.
+ * What the refusal has to name, split into its two halves so that neither can
+ * be dropped in silence — as a disjunction over them, either could.
  *
- * Deliberately not `/checkpoint/i`, which is what this started as. The guard
- * fires on two states — a thread nothing ever ran, and a checkpoint that exists
- * without an investigation state — and "no checkpoint" is false about the
- * second. What is true of both, and what a caller needs, is that there is no
- * run here to resume.
+ * Deliberately not `/checkpoint/i`, which is what this started as: that matched
+ * `Cannot use Command(resume=...) without checkpointer` and `No checkpointer
+ * set` too, the wrong refusals this change exists to stop displacing. And not
+ * "no investigation state" either, which is false of the second state the guard
+ * fires on — a checkpoint whose `control` is gone still carries its other eight
+ * channels. What is true of both is that there is no run to resume and no
+ * control to resume it from.
  */
-const namesTheMissingRun = /no resumable run|no investigation state/i;
+const namesTheMissingRun = /no resumable run/i;
+const namesTheAbsentControl = /no investigation control/i;
 const namesTheForeignCheckpoint = /interactive runId must match LangGraph thread_id/;
 
 test('refuses a resume under a thread that has no checkpoint, naming the thread', async () => {
@@ -904,6 +908,11 @@ test('refuses a resume under a thread that has no checkpoint, naming the thread'
       namesTheMissingRun,
       'the refusal must name what was missing, not merely that something was',
     );
+    assert.match(
+      outcome.error.message,
+      namesTheAbsentControl,
+      'the refusal must name the control it could not find, not only that a run is missing',
+    );
     assert.deepEqual(
       harness.trace,
       [],
@@ -918,8 +927,13 @@ test('refuses a resume under a thread that has no checkpoint, naming the thread'
  * The refusal has to land BEFORE the graph is invoked, and the message alone
  * does not prove that. Measured at bc51808: the refused resume above still
  * writes a checkpoint for the thread it failed on — `next: ['normalize_incident']`,
- * one pending task, a checkpoint id — so a mistyped thread id leaves a
- * half-started run behind that a later resume would read as real state.
+ * one pending task, a checkpoint id — so `getState` reports a started run on a
+ * thread where nothing ran.
+ *
+ * That is the whole of the measured consequence. An earlier draft of this
+ * comment added "which a later resume would read as real state", and that is
+ * false: at bc51808 a second resume returns the identical TypeError and a later
+ * `start` under the ghost id resolves normally.
  */
 test('leaves no checkpoint behind for the thread whose resume it refused', async () => {
   const harness = createHarness({ runId: neverRunThreadId });
@@ -1004,6 +1018,11 @@ test('tells a missing checkpoint apart from a mismatched one', async () => {
       namesTheMissingRun,
       'an absent checkpoint must be named as absent, not left for the caller to guess',
     );
+    assert.match(
+      missingOutcome.error.message,
+      namesTheAbsentControl,
+      'the refusal must name the control it could not find, not only that a run is missing',
+    );
     assert.doesNotMatch(
       missingOutcome.error.message,
       namesTheForeignCheckpoint,
@@ -1021,20 +1040,97 @@ test('tells a missing checkpoint apart from a mismatched one', async () => {
 });
 
 /**
+ * Limit one of the guard, with a row instead of a sentence.
+ *
+ * A checkpoint can EXIST while its `control` channel does not — a partial write,
+ * or a checkpoint from before the channel existed. That state is not the ghost
+ * thread: `getState` reports a checkpoint id and a pending task, and the other
+ * eight channels are populated. The guard refuses it with the same message, and
+ * the message has to be true about it: not "no checkpoint" and not "no state",
+ * but no CONTROL to resume from.
+ *
+ * Without this row the guard can be narrowed to "the snapshot is empty" and
+ * nothing goes red — measured, and it is what put this row here.
+ */
+test('refuses a checkpoint whose control channel is gone, without calling the thread empty', async () => {
+  const harness = createHarness({ runId: 'run-checkpoint-without-control' });
+
+  try {
+    const interrupted = await harness.start();
+    harness.rewriteEveryPersistedControl(() => undefined);
+
+    const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a checkpoint carrying no control has nothing to resume from',
+    );
+    assert.match(outcome.error.message, namesTheMissingRun);
+    assert.match(
+      outcome.error.message,
+      namesTheAbsentControl,
+      'the message must name the control, because this thread does have a checkpoint and does have state',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /Cannot read properties of undefined/,
+      'this state must not fall through to the identity check either',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * Limit two, and this one is a gap rather than a guarantee — pinned so it is a
+ * known gap rather than a surprise.
+ *
+ * `control` present but MALFORMED — `null` — is not caught: the guard tests for
+ * `undefined`, and `null !== undefined`. It reaches `assertInteractiveRunIdentity`
+ * and raises the same raw TypeError this ticket removed for the absent case.
+ * Unchanged from before the guard existed. If someone widens the guard to catch
+ * it, this row goes red and they can delete it deliberately.
+ */
+test('leaves a malformed control to the identity check, unrefused here', async () => {
+  const harness = createHarness({ runId: 'run-checkpoint-with-null-control' });
+
+  try {
+    const interrupted = await harness.start();
+    harness.rewriteEveryPersistedControl(() => null);
+
+    const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+    assert.equal('error' in outcome, true);
+    assert.match(
+      outcome.error.message,
+      /Cannot read properties of null/,
+      'a malformed control is a gap in this guard, and the gap is pinned rather than described',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      namesTheMissingRun,
+      'the guard must not be claiming to have handled a case it did not see',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
  * A graph built without a checkpointer already refuses a resume for a reason of
  * its own, and that reason names the missing MECHANISM rather than a missing
  * checkpoint. A guard that reads the snapshot on the resume path must not reach
  * it — `getState` throws `GraphValueError: No checkpointer set` there — and must
- * not restate it as a thread-level complaint. This row passes at bc51808 and has
- * to keep passing.
- */
-/**
- * All three decisions, not just `confirm`: the guard skips the snapshot read
- * for every one of them, and `add_hypothesis` is the route that USED to read it
- * first — at `main` that decision answered `No checkpointer set` from `getState`
- * while the other two answered LangGraph's resume refusal. Pinning only
- * `confirm` would have left the one route whose message this change moved
- * uncovered.
+ * not restate it as a thread-level complaint.
+ *
+ * All three decisions, and they do NOT all pass at bc51808. Measured there:
+ * `confirm` and `reject` answer `Cannot use Command(resume=...) without
+ * checkpointer`, while `add_hypothesis` answers `GraphValueError: No
+ * checkpointer set` — because that decision is the one that read the snapshot
+ * first. So two of these rows are regression pins and the third is the row that
+ * caught this change moving a caller-visible message. Pinning `confirm` alone,
+ * as the first draft did, would have left exactly that route uncovered.
  */
 for (const { label, decision } of resumeDecisions) {
   test(`still refuses a ${label} resume with no checkpointer for the reason it already gives`, async () => {
