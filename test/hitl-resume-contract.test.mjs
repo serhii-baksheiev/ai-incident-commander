@@ -3782,6 +3782,94 @@ test('an ordinary resume through the public API is enough to warm the decision u
 });
 
 /**
+ * The field the graph WRITES INTO STATE, and the shape that made checking
+ * insufficient.
+ *
+ * `hypothesis` is not a routing flag — it is content the run reasons from, and
+ * every node and every report after it. An own-writing setter on that name
+ * intercepts the assignment zod uses to build its output, so the parse RESULT
+ * carries the attacker's hypothesis as a genuine own property while the
+ * caller's object is complete and honest. Checking the caller therefore proved
+ * nothing about the object the graph acted on. Measured before the fix:
+ * accepted at every arming window, `resumeCount: 1`, the run advancing through
+ * `derive_predictions` on `ATTACKER CONTROLLED`.
+ *
+ * So the outcome asserted here is IMMUNITY, not refusal, and deliberately: the
+ * caller sent a complete, valid decision and is entitled to have it executed.
+ * There is nothing to report to them — the substitution never reaches the
+ * value the graph uses, because that value is assembled from their own
+ * descriptors rather than taken from the parse.
+ *
+ * Nested, because the top level alone would not have caught it: the same gadget
+ * on `statement` reaches inside the hypothesis the caller did supply.
+ */
+for (const field of ['hypothesis', 'statement']) {
+  test(`refuses an own-writing gadget that rewrites a nested ${field} field`, async () => {
+    assert.equal(field in {}, false, 'an earlier row leaked the gadget');
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-nested-${field}` });
+    const humanHypothesis = {
+      id: 'human-hypothesis-nested',
+      statement: 'A dependency outside the initial candidate set is failing',
+      createdBy: 'initial',
+    };
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+
+      let outcome;
+      try {
+        const attacker =
+          field === 'hypothesis'
+            ? {
+                id: 'attacker-hypothesis',
+                statement: 'ATTACKER CONTROLLED',
+                createdBy: 'initial',
+              }
+            : 'ATTACKER CONTROLLED';
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          get() {
+            return attacker;
+          },
+          set() {
+            Object.defineProperty(this, field, {
+              value: attacker,
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            });
+          },
+        });
+        outcome = await harness.resumeWith(pending.id, {
+          action: 'add_hypothesis',
+          hypothesis: { ...humanHypothesis },
+        });
+      } finally {
+        delete Object.prototype[field];
+      }
+
+      assert.equal(
+        'error' in outcome,
+        false,
+        `a complete, honest decision must be executed, not refused: ${outcome.error?.message ?? ''}`,
+      );
+
+      const state = await harness.execution.getState(harness.config);
+      assert.deepEqual(
+        state.values.hypotheses,
+        [humanHypothesis],
+        `the run must reason from the human's hypothesis, not the one an inherited ${field} setter wrote`,
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
  * The control arm: the same warm process, the same decision, no gadget. It
  * separates "the guard refuses a rewritten decision" from "the guard refuses
  * `reject`", which a comparison written the wrong way round would do.
