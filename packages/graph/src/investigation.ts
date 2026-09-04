@@ -323,6 +323,12 @@ const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
  * silent. Requiring `data === undefined` separates "may be absent" from "has a
  * value of its own when absent".
  *
+ * ⚠ Uncovered today, and stated here rather than only in a pull request: no
+ * control field carries a `.default()` or `.catch()`, so the strict and loose
+ * forms classify the same single field and dropping `data === undefined`
+ * reddens no row. It is protection against a schema change, and the row that
+ * would back it does not exist until such a field does.
+ *
  * see graph-owned-control-contract.test.mjs › "classifies every control field
  * the schema declares as graph-owned or node-writable" for the sibling
  * partition this mirrors.

@@ -2776,11 +2776,16 @@ for (const { label, decision } of resumeDecisions) {
  * the row that keeps it from being deleted as redundant.
  *
  * `assertRestoredControlFieldsPresent` runs right after it and refuses every
- * REQUIRED field it would have caught, so this row is the ONLY thing that
- * reddens when the ownership call is removed — measured at HEAD: 609 of 610,
- * and this is the one. Two guards where one appears to do the work is exactly
- * how the surviving one gets deleted next year, so the residual is written down
- * and pinned rather than assumed.
+ * REQUIRED field it would have caught, so this row is the ONLY row that reddens
+ * when the ownership call is removed. Two guards where one appears to do the
+ * work is exactly how the surviving one gets deleted next year, so the residual
+ * is written down and pinned rather than assumed.
+ *
+ * ⚠ Deliberately no suite total here. Three rounds running, this file carried a
+ * pass count that a later commit's new rows made wrong, each time in a sentence
+ * whose POINT was still true — the shape of the mutation and the name of the
+ * row that answers it are what a reader needs, and they do not go stale when
+ * the file grows.
  *
  * The residual is an OPTIONAL graph-owned field on the `confirm` route:
  * `stopKind` is skipped by the presence check because absence is legitimate for
@@ -3131,9 +3136,9 @@ test('refuses an own accessor at the wrapped node, where no later check runs', a
  * downstream has anything to refuse and the run would complete on a control
  * that was fabricated when it was inspected.
  *
- * Without this row that call reddens nothing at all — measured, 610/610 with it
- * removed — which by this repository's own rule makes it a guess rather than a
- * guard.
+ * Without this row that call reddens nothing at all — every other guard sees
+ * only the second read — which by this repository's own rule makes it a guess
+ * rather than a guard.
  */
 test('refuses pollution that is gone by the second checkpoint read', async () => {
   const harness = createHarness({ runId: 'run-polluted-first-read-only' });
