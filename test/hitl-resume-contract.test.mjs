@@ -13,7 +13,7 @@ import * as graphPackage from '@aic/graph';
 
 import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
-import { INTERRUPT, isInterrupted } from '@langchain/langgraph';
+import { INTERRUPT, interrupt, isInterrupted } from '@langchain/langgraph';
 
 const lifecycleNodes = [
   'normalize_incident',
@@ -99,6 +99,7 @@ function createHarness({
   runId,
   terminationCheck = stalledTermination,
   control = {},
+  nodes,
 }) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-hitl-resume-'));
   const checkpointer = createSqliteCheckpointer(
@@ -121,7 +122,7 @@ function createHarness({
 
   const trace = [];
   const execution = graphPackage.createInvestigationGraph({
-    nodes: reviewedRunNodes(trace, terminationCheck),
+    nodes: nodes?.(trace) ?? reviewedRunNodes(trace, terminationCheck),
     checkpointer,
   });
   const config = { threadId: runId };
@@ -135,6 +136,20 @@ function createHarness({
     },
     rewriteEveryPersistedControl(rewrite) {
       rewritePersistedControl = rewrite;
+    },
+    startRaw() {
+      return execution.execute(
+        { kind: 'start', state: initialState(runId, control) },
+        config,
+      );
+    },
+    resumeWith(interruptId, decision) {
+      return execution
+        .execute({ kind: 'resume', interruptId, decision }, config)
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
     },
     async start() {
       const interrupted = await execution.execute(
@@ -1764,12 +1779,24 @@ function describeTurns(turns) {
  * of refusal before it and 37 turns of clean completion after it, so both edges
  * are covered rather than assumed.
  *
- * It CANNOT see: an arming turn past 200 — beyond the range, a chain simply
- * never fires, and 164-400 was measured clean for that reason rather than for a
- * reassuring one; the other twelve control fields; the `reject` and
- * `add_hypothesis` routes, whose resumes replay more nodes and therefore have
- * their own, longer, unmeasured windows; and any window that a future change
- * opens at a turn this scan happens to step over.
+ * It CANNOT see: an arming turn past 200; the other twelve control fields; and
+ * any window a future change opens at a turn this scan steps over.
+ *
+ * ⚠ What it cannot see past 200 is NOT "a chain that never fires", which is what
+ * this paragraph claimed until AIC-92 measured it. Re-measured on this machine,
+ * the chain arms at every turn through **329** and stops only at 330, where the
+ * resume settles in fewer microtask turns than the chain needs. So 164-329 are
+ * clean because both deserializations are already past by the time the accessor
+ * lands — not because nothing was armed. The old sentence understated the
+ * coverage in the safe direction while misstating the mechanism, in the
+ * paragraph a reader trusts about the scan's reach; a limits block that is
+ * wrong about WHY is the shape that survives review, because the conclusion
+ * still reads right.
+ *
+ * The `reject` and `add_hypothesis` routes replay more nodes and had their own,
+ * longer window. That is no longer unmeasured: the stale-retry scan further
+ * down this file covers the `reject` retry route, and it is where the 34-175
+ * window AIC-92 closed was measured.
  *
  * So this row SAMPLES the absence of a window. It does not prove one. If it
  * goes red on a turn outside 40-163, the correct response is to re-measure the
@@ -1923,4 +1950,579 @@ test('completes a resume interleaved with a microtask chain that arms nothing', 
     1,
     'one human confirm is one resume, however the microtasks interleaved',
   );
+});
+
+/**
+ * AIC-92 — the laundering primitive, and the two routes that reach it.
+ *
+ * AIC-87, 89 and 90 each closed a refusal SITE. None of them touched the thing
+ * that makes a substituted value survive a refusal site: `pickGraphOwnedControl`
+ * read each graph-owned field with a plain `[[Get]]` and re-defined it as an own
+ * property, so a value the prototype supplied came out of that function owned,
+ * carrying the substitution, and every ownership check downstream then passed.
+ *
+ * The two routes measured to reach it, both entirely through
+ * `createInvestigationGraph`'s own API:
+ *
+ * 1. **A stale `interruptId`.** `execute` computed `targetsPendingInterrupt`
+ *    and used it only to decide whether to run one extra assertion, so a resume
+ *    whose interrupt is no longer pending replayed the thread's pending task —
+ *    a WRAPPED lifecycle node — and `preserveGraphOwnedControl` ran before
+ *    `reviewConclusion` ever did. What a CLI does after a transient failure:
+ *    pause, reject, a node throws, retry the same id.
+ * 2. **A caller-supplied node that calls `interrupt()`.** Resuming it re-enters
+ *    at that node, which is wrapped, with the same result and a PENDING id — so
+ *    the stale-id refusal below does not cover it. `InvestigationNode` does not
+ *    declare `interrupt()`, but nothing refuses a node that calls it, and a
+ *    contract gap a caller can walk through is a route.
+ *
+ * Measured on `main` (d8bdea1) for route 1, arming
+ * `Object.prototype.humanReview` as an accessor returning `false` at each turn
+ * of a microtask chain racing the retry: turns 1-33 refused, **34-175
+ * substituted** — the retry completed, `humanReview: false` reached disk, the
+ * control PARSED, and the run never paused for review again — 176 and past it
+ * clean, the accessor arriving after both deserializations. That range is this
+ * scan's own output on `main`, not a figure carried from the ticket: a
+ * standalone probe of the same route reported 34-174, one turn narrower,
+ * because the harness below takes an extra `getState` to prove the id is stale
+ * before it retries. Route 2 is
+ * deterministic rather than raced and is measured by checkpoint read below.
+ *
+ * The severity is the parse: a corrupt control is at least visible to anything
+ * that reads it back, and this one is not. So every row here classifies on
+ * VALUE FIDELITY, never on `safeParse` alone.
+ */
+
+/** The control the graph must be running on, and therefore what has to be on
+ * disk after any resume these rows call clean. The accessor supplies `false`,
+ * which is schema-valid — that is the whole point. */
+const RETRY_EXPECTED_HUMAN_REVIEW = true;
+
+/** The refusal route 1 must produce, in the graph's own words. */
+const STALE_INTERRUPT_REFUSAL = /no longer pending/;
+
+/**
+ * Lifecycle nodes with one arming hook: `armFailure(name)` makes that node
+ * throw ONCE, the next time it runs.
+ *
+ * Once, not always, because the sequence under test is a TRANSIENT failure — a
+ * node that kept throwing would make the retry fail for its own reason and the
+ * row would pass without ever exercising the replay.
+ */
+function nodesWithTransientFailure() {
+  let armed;
+  const armFailure = (name) => {
+    armed = name;
+  };
+  return {
+    armFailure,
+    nodes: (trace) =>
+      Object.fromEntries(
+        lifecycleNodes.map((name) => [
+          name,
+          async (state) => {
+            trace.push(name);
+            if (armed === name) {
+              armed = undefined;
+              throw new Error('transient model failure');
+            }
+            if (name === 'termination_check') return stalledTermination(state);
+            if (name === 'propose_conclusion') {
+              return { conclusion: proposedConclusion };
+            }
+            return {};
+          },
+        ]),
+      ),
+  };
+}
+
+/**
+ * Route 1, end to end: pause, reject, a node fails transiently, retry the same
+ * interrupt id — with the prototype armed for exactly the window of the retry.
+ *
+ * The orderings `resumeRacedByMicrotaskChain` documents above are load-bearing
+ * here for the same reasons, and one more: the failure is armed BETWEEN the
+ * start and the reject, because `derive_predictions` also runs on the way to
+ * the first pause and a failure armed at construction would break the start.
+ */
+async function retryStaleInterruptRacedByMicrotaskChain({
+  runId,
+  turn,
+  arm = true,
+}) {
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    `the prototype is already carrying ${POLLUTED_FIELD} before this run started: an earlier row leaked it`,
+  );
+
+  const { nodes, armFailure } = nodesWithTransientFailure();
+  const harness = createHarness({ runId, nodes });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    armFailure('derive_predictions');
+    const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in failed,
+      true,
+      'the transient failure must reject the first resume, or the retry under test is not a retry',
+    );
+
+    const stranded = await harness.execution.getState(harness.config);
+    const pendingInterruptIds = stranded.tasks.flatMap(({ interrupts }) =>
+      interrupts.map(({ id }) => id),
+    );
+    assert.equal(
+      pendingInterruptIds.includes(pending.id),
+      false,
+      'the id under test must be stale after the failure, or this row proves nothing',
+    );
+    assert.ok(
+      stranded.tasks.length > 0,
+      'the thread must still have pending work, or this is the finished-run no-op rather than a stale retry',
+    );
+
+    let outcome;
+    let chain;
+    try {
+      chain = scheduleMicrotaskChain({
+        turns: turn,
+        onTurn: arm
+          ? () => armInheritedAccessor(POLLUTED_FIELD, false)
+          : undefined,
+      });
+      outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+    } finally {
+      chain.cancel();
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    const persistedControl = await harness.control();
+    const parsed = IncidentStateControlSchema.safeParse(persistedControl);
+    const refused = 'error' in outcome;
+    const substituted =
+      !refused &&
+      parsed.success &&
+      persistedControl[POLLUTED_FIELD] !== RETRY_EXPECTED_HUMAN_REVIEW;
+
+    return {
+      turn,
+      armed: chain.fired,
+      outcome,
+      persistedControl,
+      pausedAgain: !refused && isInterrupted(outcome.value),
+      kind: refused
+        ? 'refused'
+        : substituted
+          ? 'substituted'
+          : parsed.success
+            ? 'clean'
+            : 'corrupt',
+      issues:
+        parsed.success === true
+          ? ''
+          : parsed.error.issues
+              .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+              .join('; '),
+    };
+  } finally {
+    harness.cleanup();
+  }
+}
+
+/**
+ * ⚠ What this scan sees, and what it does not — the same shape as the confirm
+ * route's block above, because a green run here is just as easy to over-read.
+ *
+ * It CAN see every arming turn from 1 to 200 on the `reject` retry route, for
+ * an accessor on `humanReview`. The measured window on `main` (34-175 on this
+ * machine) sits inside that with 33 turns of refusal before it and 25 turns of
+ * clean completion after it, so both edges are covered rather than assumed.
+ *
+ * It CANNOT see the other twelve control fields, the `confirm` and
+ * `add_hypothesis` retry routes, or a window a future change opens at a turn it
+ * steps over. It SAMPLES the absence of a window; it does not prove one.
+ *
+ * The deterministic rows below are what carry the regression signal. This one
+ * is what would catch the window MOVING.
+ */
+const RETRY_SCAN_FIRST_TURN = 1;
+const RETRY_SCAN_LAST_TURN = 200;
+const RETRY_SCAN_STRIDE = 1;
+
+test('no arming turn launders a value into the control a stale retry persists', async () => {
+  const rows = [];
+  for (
+    let turn = RETRY_SCAN_FIRST_TURN;
+    turn <= RETRY_SCAN_LAST_TURN;
+    turn += RETRY_SCAN_STRIDE
+  ) {
+    rows.push(
+      await retryStaleInterruptRacedByMicrotaskChain({
+        runId: `run-stale-retry-turn-${turn}`,
+        turn,
+      }),
+    );
+  }
+
+  assert.ok(
+    rows.some((row) => row.armed),
+    'no scanned turn armed the prototype during its retry, so this scan proves nothing — re-measure the turn range',
+  );
+
+  const corrupt = rows.filter((row) => row.kind === 'corrupt');
+  assert.deepEqual(
+    corrupt.map((row) => row.turn),
+    [],
+    `a stale retry persisted a control the domain schema rejects at turns ${describeTurns(
+      corrupt.map((row) => row.turn),
+    )}; first failure: ${corrupt[0]?.issues ?? ''}`,
+  );
+
+  const substituted = rows.filter((row) => row.kind === 'substituted');
+  assert.deepEqual(
+    substituted.map((row) => row.turn),
+    [],
+    `a stale retry persisted a PARSEABLE control carrying the accessor's ${POLLUTED_FIELD} at turns ${describeTurns(
+      substituted.map((row) => row.turn),
+    )} — the review gate is disarmed and the checkpoint records nothing about it`,
+  );
+});
+
+/**
+ * The deterministic row for route 1, at a turn well inside the measured window:
+ * 100 sits 66 turns past the substitution edge and 75 short of the clean one,
+ * the widest margin 34-175 offers.
+ *
+ * It asserts the STALE-ID refusal by name rather than any refusal. Ten other
+ * refusals are already reachable on this path — `INCIDENTAL_RESUME_REFUSALS` —
+ * and "it threw" would be green for every one of them.
+ */
+const RETRY_TURN_INSIDE_WINDOW = 100;
+
+test('refuses a retry of an interrupt the run has already moved past', async () => {
+  const raced = await retryStaleInterruptRacedByMicrotaskChain({
+    runId: 'run-stale-retry-inside-window',
+    turn: RETRY_TURN_INSIDE_WINDOW,
+  });
+
+  assert.equal(
+    raced.armed,
+    true,
+    `the chain never reached turn ${RETRY_TURN_INSIDE_WINDOW} during the retry, so nothing was under test — the window has moved and needs re-measuring`,
+  );
+  assert.equal(
+    raced.kind,
+    'refused',
+    `a retry of a stale interrupt id must be refused, not resumed to a ${raced.kind} completion`,
+  );
+
+  const message = raced.outcome.error.message;
+  assert.doesNotMatch(
+    message,
+    INCIDENTAL_RESUME_REFUSALS,
+    `refusing for a reason that is not the stale id is not this defect being fixed: ${message}`,
+  );
+  assert.match(
+    message,
+    STALE_INTERRUPT_REFUSAL,
+    `the refusal must say the interrupt is no longer pending, not: ${message}`,
+  );
+  assert.equal(
+    raced.persistedControl[POLLUTED_FIELD],
+    RETRY_EXPECTED_HUMAN_REVIEW,
+    'a refused retry must leave the run still under human review',
+  );
+});
+
+/**
+ * Route 1 without any pollution at all — the contract half, and the reason the
+ * refusal is a fix rather than a side effect of the guard above.
+ *
+ * A stale retry was a silent no-op: it resolved, replayed the pending task, and
+ * told the caller nothing about the id it ignored. All three decisions, because
+ * `add_hypothesis` is the one that read the snapshot on its own before this
+ * change and could refuse for a different reason.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`refuses a stale ${label} retry by name, with nothing on the prototype`, async () => {
+    const { nodes, armFailure } = nodesWithTransientFailure();
+    const harness = createHarness({
+      runId: `run-stale-retry-${label}`,
+      nodes,
+    });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+
+      armFailure('derive_predictions');
+      const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+      assert.equal(
+        'error' in failed,
+        true,
+        'the transient failure must reject the first resume',
+      );
+
+      const outcome = await harness.resumeWith(pending.id, decision(1));
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a retry of an interrupt the run has moved past must be refused, not silently replayed',
+      );
+      assert.match(
+        outcome.error.message,
+        STALE_INTERRUPT_REFUSAL,
+        `the refusal must name the stale interrupt: ${outcome.error.message}`,
+      );
+      assert.equal(
+        outcome.error.message.includes(pending.id),
+        true,
+        'the refusal must name the id the caller sent, so a CLI can tell which retry it was',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * Route 2 — the same primitive, reached with a PENDING id, which is why the
+ * stale-id refusal above cannot be what closes it.
+ *
+ * Deterministic rather than raced: the harness rewrites the control the
+ * checkpointer hands back, from a chosen read onward, so the pollution lands
+ * between `execute`'s validation and the object `graph.invoke` builds the run
+ * from. That is the same two-read gap "reads the checkpoint twice per resume"
+ * measures, exercised here on a node that is WRAPPED — so
+ * `preserveGraphOwnedControl` sees the polluted control before `reviewConclusion`
+ * would, and on `main` re-owns the substituted value rather than refusing it.
+ *
+ * Measured on `main` (d8bdea1) at each read: read 1 refused by the guard
+ * `execute` already had; read 2 **substituted** — the run completed, the control
+ * parsed, `humanReview: false` reached disk and the review node never ran; read
+ * 3 clean, the pollution arriving after both deserializations.
+ */
+const POLLUTED_FROM_SECOND_READ = 2;
+
+/** The same own fields the checkpoint carried, minus one the prototype now
+ * supplies — the shape a deserializer's plain assignment leaves behind when an
+ * inherited setter swallows the write. */
+function withInheritedField(control, field, value) {
+  const descriptors = Object.getOwnPropertyDescriptors(control);
+  delete descriptors[field];
+  return Object.create({ [field]: value }, descriptors);
+}
+
+/** Lifecycle nodes where `collect_baseline` pauses the run once, off-contract. */
+function nodesPausingOffContract() {
+  return (trace) =>
+    Object.fromEntries(
+      lifecycleNodes.map((name) => [
+        name,
+        async (state) => {
+          trace.push(name);
+          if (
+            name === 'collect_baseline' &&
+            trace.filter((entry) => entry === 'collect_baseline').length === 1
+          ) {
+            interrupt({ kind: 'off-contract-pause' });
+          }
+          if (name === 'termination_check') return stalledTermination(state);
+          if (name === 'propose_conclusion') {
+            return { conclusion: proposedConclusion };
+          }
+          return {};
+        },
+      ]),
+    );
+}
+
+async function resumeOffContractPause({ runId, pollutedFromRead }) {
+  const harness = createHarness({ runId, nodes: nodesPausingOffContract() });
+
+  try {
+    const interrupted = await harness.startRaw();
+    assert.equal(
+      isInterrupted(interrupted),
+      true,
+      'a lifecycle node calling interrupt() must pause the run',
+    );
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    if (pollutedFromRead !== undefined) {
+      harness.rewriteEveryPersistedControl((persisted) => {
+        reads += 1;
+        return reads >= pollutedFromRead
+          ? withInheritedField(persisted, POLLUTED_FIELD, false)
+          : persisted;
+      });
+    }
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    const persistedControl = await harness.control();
+    const parsed = IncidentStateControlSchema.safeParse(persistedControl);
+    const refused = 'error' in outcome;
+    const substituted =
+      !refused &&
+      parsed.success &&
+      persistedControl[POLLUTED_FIELD] !== RETRY_EXPECTED_HUMAN_REVIEW;
+
+    return {
+      outcome,
+      persistedControl,
+      trace: [...harness.trace],
+      kind: refused
+        ? 'refused'
+        : substituted
+          ? 'substituted'
+          : parsed.success
+            ? 'clean'
+            : 'corrupt',
+    };
+  } finally {
+    harness.cleanup();
+  }
+}
+
+test('refuses a control the prototype supplies to a wrapped node, on a pending interrupt', async () => {
+  const resumed = await resumeOffContractPause({
+    runId: 'run-off-contract-pause-polluted',
+    pollutedFromRead: POLLUTED_FROM_SECOND_READ,
+  });
+
+  assert.equal(
+    resumed.kind,
+    'refused',
+    `a wrapped node must refuse a graph-owned field it does not own, not run on it to a ${resumed.kind} completion`,
+  );
+
+  const message = resumed.outcome.error.message;
+  assert.doesNotMatch(
+    message,
+    INCIDENTAL_RESUME_REFUSALS,
+    `refusing for an unrelated reason is not this guard: ${message}`,
+  );
+  assert.doesNotMatch(
+    message,
+    STALE_INTERRUPT_REFUSAL,
+    `this id IS pending, so the stale-id refusal must not be what answers here: ${message}`,
+  );
+
+  const named = OWN_CONTROL_REFUSAL.exec(message);
+  assert.notEqual(
+    named,
+    null,
+    `the refusal must be the graph's own words about ownership, not: ${message}`,
+  );
+  assert.equal(
+    named[1],
+    POLLUTED_FIELD,
+    `the refusal named ${named?.[1]} while the prototype supplied ${POLLUTED_FIELD}`,
+  );
+  assert.equal(
+    resumed.persistedControl[POLLUTED_FIELD],
+    RETRY_EXPECTED_HUMAN_REVIEW,
+    'a refused resume must leave the run still under human review',
+  );
+});
+
+/**
+ * The control arm for route 2, and it is what stops the guard above from being
+ * satisfied by a graph that refuses this route outright.
+ *
+ * Same off-contract pause, same resume, nothing rewritten: the run must
+ * complete, and it must complete having gone THROUGH the wrapped node twice —
+ * once before the pause and once on the replay — which is what puts
+ * `pickGraphOwnedControl` on the polluted path in the row above.
+ */
+test('completes a resume of an off-contract pause when nothing is polluted', async () => {
+  const resumed = await resumeOffContractPause({
+    runId: 'run-off-contract-pause-clean',
+  });
+
+  assert.equal(
+    'error' in resumed.outcome,
+    false,
+    `a resume of a node that paused itself must complete: ${resumed.outcome.error?.message ?? ''}`,
+  );
+  assert.equal(
+    resumed.kind,
+    'clean',
+    'the completed run must leave a parseable control carrying its own humanReview',
+  );
+  assert.equal(
+    resumed.trace.filter((entry) => entry === 'collect_baseline').length,
+    2,
+    'the replay must re-enter the wrapped node that paused, or the polluted row above tests nothing',
+  );
+});
+
+/**
+ * The absent-field branch of the same guard, which is the one that must NOT
+ * refuse.
+ *
+ * `stopKind` is graph-owned and legitimately absent on a run that has not
+ * stopped, so a guard deciding on "not an own property" without separating
+ * ABSENT from INHERITED would refuse every healthy run at its first wrapped
+ * node. The whole suite would go red on that, but not by name — this row says
+ * which branch broke, and proves the field really was absent where the guard
+ * read it rather than inferring it from a green run.
+ */
+test('accepts a graph-owned field that is absent rather than inherited', async () => {
+  const seen = [];
+  const harness = createHarness({
+    runId: 'run-absent-stop-kind',
+    nodes: (trace) =>
+      Object.fromEntries(
+        lifecycleNodes.map((name) => [
+          name,
+          async (state) => {
+            trace.push(name);
+            seen.push({
+              name,
+              own: Object.hasOwn(state.control, 'stopKind'),
+              reachable: 'stopKind' in state.control,
+            });
+            if (name === 'termination_check') return stalledTermination(state);
+            if (name === 'propose_conclusion') {
+              return { conclusion: proposedConclusion };
+            }
+            return {};
+          },
+        ]),
+      ),
+  });
+
+  try {
+    const interrupted = await harness.start();
+
+    const before = seen[0];
+    assert.equal(
+      before?.name,
+      'normalize_incident',
+      'the first wrapped node must be the one this row inspects',
+    );
+    assert.equal(
+      before.reachable,
+      false,
+      'the first node must see no stopKind at all, or this row is not testing the absent branch',
+    );
+
+    const resumed = await harness.resume(interrupted, { action: 'confirm' });
+    assert.equal(
+      'error' in resumed,
+      false,
+      `an absent graph-owned field must not be refused as inherited: ${resumed.error?.message ?? ''}`,
+    );
+  } finally {
+    harness.cleanup();
+  }
 });
