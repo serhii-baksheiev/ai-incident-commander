@@ -105,8 +105,10 @@ function createHarness({
     join(temporaryRoot, 'checkpoints.sqlite'),
   );
   const readTuple = checkpointer.getTuple.bind(checkpointer);
+  let tupleReads = 0;
   let rewritePersistedControl;
   checkpointer.getTuple = async (config) => {
+    tupleReads += 1;
     const tuple = await readTuple(config);
     const persisted = tuple?.checkpoint?.channel_values?.control;
     if (rewritePersistedControl !== undefined && persisted !== undefined) {
@@ -128,6 +130,9 @@ function createHarness({
     trace,
     config,
     execution,
+    tupleReads() {
+      return tupleReads;
+    },
     rewriteEveryPersistedControl(rewrite) {
       rewritePersistedControl = rewrite;
     },
@@ -1116,6 +1121,49 @@ test('refuses a malformed control by name instead of leaving it to the identity 
       outcome.error.message,
       /Cannot read properties of null/,
       'the refusal must be the graph deciding, not a property read on a value it did not check',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The stated limit of the resume ownership guard, pinned by the fact it rests
+ * on rather than by the race it enables.
+ *
+ * `execute` validates the control that `graph.getState` deserialized, and then
+ * `graph.invoke` deserializes the checkpoint AGAIN and runs on that second
+ * object. The guard therefore checks a different object than the run uses. That
+ * is check-then-use, and `security-scanner` measured what it costs: with only
+ * microtask scheduling — no instrumentation of the checkpointer — arming an
+ * `Object.prototype` accessor between the two reads leaves a 123-turn window in
+ * which a resume completes, skips the human-review identity check, and persists
+ * a control the domain schema rejects. Filed as AIC-90.
+ *
+ * A race is not a test. What IS deterministic, and what the window depends on
+ * entirely, is that the checkpoint is read twice — so that is what this pins. A
+ * fix that validates the object the run actually uses, or rebuilds control at
+ * the persistence boundary, will change this count and should: the row going
+ * red is the signal to re-measure the limit rather than to restore the number.
+ */
+test('reads the checkpoint twice per resume, which is why the guard cannot see the object the run uses', async () => {
+  const harness = createHarness({ runId: 'run-two-deserializations' });
+
+  try {
+    const interrupted = await harness.start();
+    const readsBeforeResume = harness.tupleReads();
+
+    const resumed = await harness.resume(interrupted, { action: 'confirm' });
+    assert.equal(
+      'error' in resumed,
+      false,
+      `the clean resume must succeed for its read count to mean anything: ${resumed.error?.message ?? ''}`,
+    );
+
+    assert.equal(
+      harness.tupleReads() - readsBeforeResume,
+      2,
+      'one read is execute validating the control, the other is graph.invoke deserializing it again for the run',
     );
   } finally {
     harness.cleanup();
