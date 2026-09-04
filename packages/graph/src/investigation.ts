@@ -1000,13 +1000,22 @@ export function createInvestigationGraph({
     // turn in a 124-turn window completed the resume, skipped the identity
     // check below, and persisted a control the domain schema rejects.
     //
-    // It REFUSES rather than repairing, and that is forced rather than
-    // preferred. The field is not merely shadowed — it is GONE: the reviver at
-    // the persistence boundary builds a plain object and assigns into it, so an
-    // inherited setter swallows the value before any code here can see it. The
-    // bytes on disk are intact and unreachable without owning a fork of the
-    // dependency's serde, so the honest answer to "this checkpoint deserialized
-    // wrong" is to say so, not to continue on a value nobody has.
+    // It REFUSES rather than repairing, and that is a TRADE rather than the
+    // only option. An earlier version of this comment claimed the value was
+    // "unreachable without owning a fork of the dependency's serde"; that was
+    // measurably false and is corrected here rather than softened. `JSON.parse`
+    // uses define semantics and preserves the own value — the loss is one
+    // assignment in `JsonPlusSerializer._reviver`, AFTER the parse — and the
+    // serde is an injection point, not a fork: `BaseCheckpointSaver` takes one
+    // and `.serde` is public. A define-semantics serde was measured to give
+    // zero refusals and zero substitutions at every turn on all three resume
+    // routes.
+    //
+    // Refusal is kept for now because it is cheap and REPORTS the attempt,
+    // where repair absorbs it silently; repair costs a second parse per load
+    // and makes this repository own behaviour the dependency may change. They
+    // are not exclusive — repair at the boundary would leave this as a tripwire
+    // that should then never fire. AIC-92 carries that decision.
     // see hitl-resume-contract.test.mjs › "refuses the pollution armed at a
     // turn inside the measured window"
     assertOwnControlFields(state.control);
@@ -1266,13 +1275,17 @@ export function createInvestigationGraph({
           // unparseable control on disk. see hitl-resume-contract.test.mjs ›
           // "leaves no unparseable control on disk when it refuses"
           //
-          // ⚠ This check alone would narrow the exposure rather than close
-          // it: the control checked here comes from `graph.getState`, and
-          // `graph.invoke` deserializes the checkpoint again and runs on a
-          // second object. `reviewConclusion` checks that one (AIC-90). This
-          // call still earns its place — it refuses before a single lifecycle
-          // node runs, where the other refuses after the run has re-entered the
-          // graph.
+          // ⚠ Two checks, and TOGETHER THEY STILL DO NOT CLOSE THE CLASS.
+          // This one refuses before a single lifecycle node runs;
+          // `reviewConclusion` refuses on the object `graph.invoke` built
+          // (AIC-90). What neither covers: a resume whose `interruptId` is no
+          // longer pending replays some other node first, and
+          // `pickGraphOwnedControl` reads that field THROUGH the prototype and
+          // re-defines it as own — so ownership is restored carrying the
+          // substituted value and both checks pass. Measured in-contract, and
+          // the result is worse than what AIC-90 fixed: the run completes, the
+          // review gate is disarmed, and the control PARSES, so nothing on disk
+          // records it. AIC-92.
           assertOwnControlFields(restored);
 
           if (request.decision.action === 'add_hypothesis') {

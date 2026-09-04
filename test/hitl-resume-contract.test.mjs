@@ -1563,8 +1563,12 @@ test('resumes normally, counting one resume, when nothing is on the prototype', 
  *   own `humanReview` at all: `IncidentStateControlSchema.safeParse` rejects it
  *   with `expected boolean, received undefined`, and the resume counted itself
  *   as a normal one;
- * - turns 164-400 — clean: the resume has finished before the chain reaches its
- *   turn, so nothing is ever armed.
+ * - turns 164-400 — clean, and NOT because nothing armed. Measured: a `confirm`
+ *   resume spans 331 microtask turns, so turns 164-331 do arm during it; only
+ *   332+ never fire. They are clean because both deserializations are already
+ *   past by then. The first version of this line said "nothing is ever armed",
+ *   which understated the coverage in the safe direction while misstating the
+ *   mechanism — in the paragraph a reader trusts about how far the scan sees.
  *
  * Identical for an accessor returning `false` and one returning the string
  * `'inherited'`, and identical across three consecutive scans — the window is
@@ -1575,6 +1579,17 @@ test('resumes normally, counting one resume, when nothing is on the prototype', 
 /** The field the window was measured on; a member of the schema, not a literal
  * the schema no longer declares — see the assertion in the helper below. */
 const POLLUTED_FIELD = 'humanReview';
+
+/**
+ * What an honest interactive run carries in that field, and therefore what must
+ * be on disk after any resume the scan calls clean.
+ *
+ * The accessor supplies `false`, which is schema-valid — so without this the
+ * scan's oracle cannot tell "the run kept its own value" from "the run adopted
+ * the attacker's and the review gate is off". That distinction is the whole
+ * severity of the defect.
+ */
+const EXPECTED_POLLUTED_VALUE = true;
 
 /**
  * A self-rescheduling microtask chain, counted in turns.
@@ -1688,12 +1703,30 @@ async function resumeRacedByMicrotaskChain({
     const parsed = IncidentStateControlSchema.safeParse(persistedControl);
     const refused = 'error' in outcome;
 
+    // Parse alone is the WRONG oracle, and measuring only it hid the worst
+    // outcome: a control that parses cleanly while carrying the value the
+    // attacker supplied. On `main` the reject and add_hypothesis routes produce
+    // exactly that — `humanReview: false`, schema-valid, review gate disarmed,
+    // nothing on disk recording it — so a parse-only scan reports those routes
+    // as having no window at all. Value fidelity is the assertion that sees it.
+    const substituted =
+      !refused &&
+      parsed.success &&
+      persistedControl[POLLUTED_FIELD] !== EXPECTED_POLLUTED_VALUE;
+
     return {
       turn,
       armed: chain.fired,
       outcome,
       persistedControl,
-      kind: refused ? 'refused' : parsed.success ? 'clean' : 'corrupt',
+      substituted,
+      kind: refused
+        ? 'refused'
+        : substituted
+          ? 'substituted'
+          : parsed.success
+            ? 'clean'
+            : 'corrupt',
       issues:
         parsed.success === true
           ? ''
@@ -1781,6 +1814,18 @@ test('no arming turn leaves a control the domain schema rejects', async () => {
     )}, clean at ${describeTurns(
       rows.filter((row) => row.kind === 'clean').map((row) => row.turn),
     )}; first failure: ${corrupt[0]?.issues ?? ''}`,
+  );
+
+  // The severe outcome, and the one a parse-only oracle scores as clean: the
+  // control is schema-valid and carries the value the accessor supplied, with
+  // the review gate off and nothing on disk saying so.
+  const substituted = rows.filter((row) => row.kind === 'substituted');
+  assert.deepEqual(
+    substituted.map((row) => row.turn),
+    [],
+    `a resume racing a microtask chain persisted a PARSEABLE control carrying the accessor's ${POLLUTED_FIELD} at turns ${describeTurns(
+      substituted.map((row) => row.turn),
+    )} — the review gate is disarmed and the checkpoint records nothing about it`,
   );
 });
 
