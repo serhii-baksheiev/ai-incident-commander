@@ -1798,9 +1798,11 @@ function describeTurns(turns) {
  *
  * ⚠ The `reject` and `add_hypothesis` limit above stays, and a reader comparing
  * this block with the stale-retry scan further down should not read that scan
- * as closing it. That one covers the `reject` route only, and only on a
- * SUPERSEDED interrupt id — a different replay from the ordinary in-contract
- * `reject` resume this block is about. `add_hypothesis` gains nothing from it;
+ * as closing it. That one covers the `reject` route only, and only on a retry
+ * of a run whose node THREW — a thread waiting on no interrupt at all, which is
+ * a different replay from the ordinary in-contract `reject` resume this block
+ * is about. It is deliberately NOT the `SUPERSEDED_INTERRUPT_REFUSAL` case
+ * either; that scan asserts it is not. `add_hypothesis` gains nothing from it;
  * that scan's own limits block says so.
  *
  * So this row SAMPLES the absence of a window. It does not prove one. If it
@@ -2696,7 +2698,7 @@ test('refuses a required control field erased before a wrapped node runs on it',
  *
  * A `confirm` reaches END from `reviewConclusion` without entering a single
  * wrapped node, so `pickGraphOwnedControl` never sees the control. Measured
- * before `assertRestoredControlIsWhole` existed: the run COMPLETED and wrote a
+ * before `assertRestoredControlFieldsPresent` existed: the run COMPLETED and wrote a
  * control with no `humanReview` at all — `IncidentStateControlSchema` rejects
  * it, so the damage is at least visible, but the run finished on it and the
  * checkpoint is unusable.
@@ -2768,6 +2770,205 @@ for (const { label, decision } of resumeDecisions) {
     }
   });
 }
+
+/**
+ * What `reviewConclusion`'s own `assertOwnControlFields` still covers alone, and
+ * the row that keeps it from being deleted as redundant.
+ *
+ * `assertRestoredControlFieldsPresent` runs right after it and refuses every
+ * REQUIRED field it would have caught, so removing the ownership call reddens
+ * nothing else in this suite — measured, 226/226 with it gone. Two guards where
+ * one appears to do the work is exactly how the surviving one gets deleted next
+ * year, so the residual is written down and pinned rather than assumed.
+ *
+ * The residual is an OPTIONAL graph-owned field on the `confirm` route:
+ * `stopKind` is skipped by the presence check because absence is legitimate for
+ * it, and a `confirm` reaches END without entering a wrapped node, so
+ * `pickGraphOwnedControl` never sees it either. Measured with the ownership
+ * call removed: the run COMPLETES and the terminal stop kind is silently
+ * dropped from disk — the optional field's damage is quiet, which is what AIC-89
+ * recorded about `stopKind` and why it needs a row rather than an argument.
+ */
+test('refuses an inherited stopKind on the route where no wrapped node runs', async () => {
+  const harness = createHarness({ runId: 'run-inherited-stop-kind-on-confirm' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      return reads >= POLLUTED_FROM_SECOND_READ
+        ? withInheritedField(persisted, 'stopKind', 'budget-exhausted')
+        : persisted;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'an inherited stopKind must be refused, not completed with the terminal stop kind silently dropped',
+    );
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], 'stopKind', `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      Object.hasOwn(persistedControl, 'stopKind'),
+      true,
+      'the refusal must leave the run its own terminal stop kind',
+    );
+    assert.equal(
+      persistedControl.stopKind,
+      'stalled',
+      'the stop kind on disk must be the one the graph decided, not the prototype\'s',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * ⚠⚠ THE LIMIT OF EVERY OWNERSHIP CHECK IN THIS FILE, and it is a row rather
+ * than a sentence because this repository's rule is that a claim about what a
+ * mechanism does — or cannot do — is either generated or a pointer.
+ *
+ * All of these guards ask one question: *is this field the run's own data
+ * property?* A prototype gadget can make the answer honestly YES and still
+ * choose the value, by defining it ON THE TARGET from its setter:
+ *
+ * ```js
+ * Object.defineProperty(Object.prototype, 'humanReview', {
+ *   configurable: true,
+ *   get() { return false; },
+ *   set() { Object.defineProperty(this, 'humanReview', { value: false, ... }); },
+ * });
+ * ```
+ *
+ * `JsonPlusSerializer._reviver` assigns the checkpointed `true`; the inherited
+ * setter takes the assignment and defines `false` as the target's own data
+ * property. From that point the control is indistinguishable from an honest
+ * one, and `pickGraphOwnedControl` reading a descriptor sees exactly what an
+ * uncorrupted run would.
+ *
+ * So this row asserts the CURRENT, UNSAFE outcome on purpose. It is not an
+ * endorsement and it is not a test of a feature: it is the limit, pinned, so
+ * that the sentences elsewhere claiming the class is closed at the primitive
+ * stay honest, and so that whoever closes it is told by a red row to update
+ * them. Measured identically on `main` (d8bdea1) and here, so it is
+ * pre-existing rather than introduced by AIC-92.
+ *
+ * The remedy is not another ownership check — there is nothing left to detect.
+ * `JSON.parse` uses define semantics and is immune to this gadget where plain
+ * assignment is not, which is measured by the first half of this row. That
+ * makes a define-semantics serde the only remedy for this shape, and it is
+ * filed rather than folded in here, because it lives in `packages/persistence`
+ * and is a different layer's responsibility: AIC-93.
+ */
+test('documents the limit: an inherited setter that writes an own property is not refused', async () => {
+  // First, the semantics the remedy would rest on, measured rather than
+  // asserted from the specification.
+  try {
+    Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
+      configurable: true,
+      get() {
+        return false;
+      },
+      set() {
+        Object.defineProperty(this, POLLUTED_FIELD, {
+          value: false,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      },
+    });
+
+    const parsed = JSON.parse(`{"${POLLUTED_FIELD}":true}`);
+    assert.equal(
+      parsed[POLLUTED_FIELD],
+      true,
+      'JSON.parse must define rather than assign, or the remedy this row names would not work either',
+    );
+
+    const assigned = {};
+    assigned[POLLUTED_FIELD] = true;
+    assert.equal(
+      assigned[POLLUTED_FIELD],
+      false,
+      'plain assignment must be the half that loses the value, or the gadget below is not the one described',
+    );
+    assert.equal(
+      Object.hasOwn(assigned, POLLUTED_FIELD),
+      true,
+      'the substituted value must be an OWN property, or an ownership check would still catch it',
+    );
+  } finally {
+    delete Object.prototype[POLLUTED_FIELD];
+  }
+
+  // Then the end-to-end consequence, against a real checkpointer.
+  const harness = createHarness({ runId: 'run-own-writing-setter-limit' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let outcome;
+    try {
+      Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
+        configurable: true,
+        get() {
+          return false;
+        },
+        set() {
+          Object.defineProperty(this, POLLUTED_FIELD, {
+            value: false,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+      outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    } finally {
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    assert.equal(
+      'error' in outcome,
+      false,
+      'if this now refuses, the limit has been closed — update the claims in investigation.ts and the decision record, and close AIC-93',
+    );
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      IncidentStateControlSchema.safeParse(persistedControl).success,
+      true,
+      'the substituted control parses, which is what makes this outcome invisible on disk',
+    );
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      false,
+      'if this is no longer the gadget\'s value, the limit has moved — re-measure before editing the claims',
+    );
+    assert.equal(
+      Object.hasOwn(persistedControl, POLLUTED_FIELD),
+      true,
+      'the substituted field is genuinely own, which is why no ownership check can see it',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
 
 /**
  * The absent-field branch of the same guard, which is the one that must NOT
