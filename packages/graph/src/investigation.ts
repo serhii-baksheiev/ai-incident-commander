@@ -419,6 +419,137 @@ function missingControlFieldError(field: string): Error {
 }
 
 /**
+ * Reads one field of a caller's object as an OWN DATA PROPERTY, or `undefined`.
+ *
+ * The narrow sibling of `readExactOwnDataProperties`, for the case where the
+ * shape is not fixed and only one field matters.
+ */
+function readOwnDataValue(source: unknown, key: string): unknown {
+  if (typeof source !== 'object' || source === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
+    ? descriptor.value
+    : undefined;
+}
+
+/**
+ * Does this object carry `key` as an OWN DATA PROPERTY at all — as distinct from
+ * carrying `undefined` there, which `readOwnDataValue` cannot tell apart.
+ */
+function hasOwnDataProperty(source: unknown, key: string): boolean {
+  if (typeof source !== 'object' || source === null) return false;
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  return descriptor !== undefined && Object.hasOwn(descriptor, 'value');
+}
+
+
+/**
+ * Which fields a decision of this action declares — asked of the schema, never
+ * listed here.
+ *
+ * ⚠ It cannot be taken from the PARSED object, which is the mistake that made
+ * the first version of this miss `hypothesis` entirely. Measured: with
+ * `Object.prototype.hypothesis` armed and a caller sending
+ * `{ action: 'add_hypothesis' }` alone, the parse SUCCEEDS and
+ * `Object.keys(parsed)` is `['action']` — zod reads the missing field off the
+ * prototype and never makes it own, so a loop over the result's own keys sees
+ * nothing to check while `parsed.hypothesis` hands the graph the attacker's
+ * value, which then enters persisted state.
+ *
+ * The variant is located by asking each option's own `action` schema whether it
+ * accepts this discriminant — the union's public surface, not its internals.
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a hypothesis the caller never
+ * supplied"
+ */
+function decisionFieldsFor(action: unknown): readonly string[] {
+  for (const option of ConclusionReviewDecisionSchema.options) {
+    if (option.shape.action.safeParse(action).success) {
+      return Object.keys(option.shape);
+    }
+  }
+  return [];
+}
+
+/**
+ * Parses a conclusion-review decision from what the caller OWNS, and reports an
+ * attempted substitution instead of absorbing it.
+ *
+ * It REFUSES rather than repairing, which is this project's standing trade
+ * (AIC-92): a repaired input is indistinguishable from one that was never
+ * attacked, so the attempt is surfaced rather than silently corrected.
+ *
+ * The two failure shapes, both measured:
+ *
+ * - **the discriminant** — an accessor named `action` makes the union return
+ *   `confirm` for a caller who wrote `reject`; the run then resolves at END,
+ *   `review_conclusion` never runs again, zero nodes replay, and the checkpoint
+ *   records a completed, reviewed run.
+ * - **an omitted field** — with `Object.prototype.hypothesis` armed, a caller
+ *   sending `{ action: 'add_hypothesis' }` and nothing else PARSES, because the
+ *   strict object reads the missing field off the prototype, and the attacker's
+ *   hypothesis enters persisted state. The own-only parse refuses it, and the
+ *   own-field check refuses it by name.
+ *
+ * 🔴 The first version compared an own-data read against `parsed.action` — a
+ * plain `[[Get]]` — so a getter answering honestly ONCE and attacker-side
+ * afterwards satisfied the guard and then decided the route. Two reads of one
+ * property through one getter compare whatever the getter feels like. Both
+ * sides are own-data reads now, and `undefined` on the caller's side is refused
+ * rather than compared, so two absences cannot agree.
+ *
+ * ⚠ It narrows what a caller may send. A decision whose `action` is the
+ * caller's OWN accessor, or lives on a class prototype, no longer reaches the
+ * graph — the same own-data convention `readExactOwnDataProperties` already
+ * imposes on the input around it. Nothing in this repository builds one.
+ *
+ * ⚠ The precondition for the attack is WARMTH, and the cold path is not a
+ * defence: zod builds the union's `propValues` lookup lazily, and armed at
+ * construction the gadget makes zod's own builder throw. One ordinary decision
+ * parse removes that. see hitl-resume-contract.test.mjs › "an ordinary resume
+ * through the public API is enough to warm the decision union"
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a read-accessor gadget rewriting
+ * reject into confirm", › "refuses a read-accessor getter that answers honestly
+ * once and attacker-side afterwards" and › "refuses a hypothesis the caller
+ * never supplied"
+ */
+function parseCallerOwnedDecision(
+  supplied: unknown,
+): ConclusionReviewDecision | undefined {
+  const parsed = ConclusionReviewDecisionSchema.safeParse(supplied);
+  if (!parsed.success) return undefined;
+
+  // BOTH sides are own-data reads. The first version of this guard compared an
+  // own read against `parsed.action` — a plain `[[Get]]` — and a getter that
+  // answered honestly once and attacker-side afterwards satisfied it and then
+  // decided the route.
+  const suppliedAction = readOwnDataValue(supplied, 'action');
+  if (
+    suppliedAction === undefined ||
+    suppliedAction !== readOwnDataValue(parsed.data, 'action')
+  ) {
+    // The caller's OWN value is what the message names — never a fresh read of
+    // the parsed one, which an accessor controls in content and length alike
+    // and which reaches operator output verbatim.
+    throw new Error(
+      `conclusion review decision must carry its own action: the caller supplied ${String(suppliedAction)}, which is not what parsing their object produced`,
+    );
+  }
+
+  for (const field of decisionFieldsFor(suppliedAction)) {
+    if (field === 'action') continue;
+    if (!hasOwnDataProperty(supplied, field)) {
+      throw new Error(
+        `conclusion review decision must carry its own ${field}: the decision parses only by reading that field off the prototype`,
+      );
+    }
+  }
+
+  return parsed.data;
+}
+
+/**
  * Every required control field is present, as the run's OWN value — the half
  * `assertOwnControlFields` cannot ask.
  *
@@ -446,62 +577,6 @@ function missingControlFieldError(field: string): Error {
  * see hitl-resume-contract.test.mjs › "refuses a ${label} whose restored
  * control lost a required field, leaving the checkpoint intact"
  */
-/**
- * Reads one field of a caller's object as an OWN DATA PROPERTY, or `undefined`.
- *
- * The narrow sibling of `readExactOwnDataProperties`, for the case where the
- * shape is not fixed and only one field matters.
- */
-function readOwnDataValue(source: unknown, key: string): unknown {
-  if (typeof source !== 'object' || source === null) return undefined;
-  const descriptor = Object.getOwnPropertyDescriptor(source, key);
-  return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
-    ? descriptor.value
-    : undefined;
-}
-
-/**
- * The parsed decision says what the CALLER's own object said.
- *
- * ⚠ This is not an ownership check, and the difference is the whole reason it
- * exists. `ConclusionReviewDecisionSchema` is a discriminated union; with an
- * accessor named `action` on `Object.prototype`, the parse returns a decision
- * whose `action` is the attacker's — and under a setter that DEFINES on its
- * target, that field is genuinely OWN, so `Object.hasOwn` passes it. Measured:
- * a human `reject` resolves the run at END, `review_conclusion` never runs
- * again, zero nodes replay, and the checkpoint records a completed, reviewed
- * run. AIC-102.
- *
- * So the question asked is not "does the parsed decision own its action" but
- * "is it the action the caller wrote". An object literal uses
- * `CreateDataProperty`, so `{ action: 'reject' }` keeps its own `'reject'`
- * under either gadget shape, and the comparison discriminates both.
- *
- * ⚠ Both parse sites need it. The boundary parse and `reviewConclusion`'s parse
- * of the interrupt value are two separate reads of two separate objects — the
- * pattern AIC-90 established — so validating one leaves the other free to
- * substitute what the first just accepted.
- *
- * ⚠ WHAT THIS CANNOT DO. It compares two reads; it does not make the parse
- * immune. A caller whose OWN object already carries the attacker's value is
- * indistinguishable from a caller who meant it, which is correct — that is the
- * caller's own decision, not a substitution.
- *
- * see hitl-resume-contract.test.mjs › "refuses a human reject that a
- * read-accessor gadget rewrites into a confirm" and › "refuses a human reject
- * that a own-writing gadget rewrites into a confirm"
- */
-function assertDecisionIsTheCallersOwn(
-  supplied: unknown,
-  parsed: ConclusionReviewDecision,
-): void {
-  if (readOwnDataValue(supplied, 'action') !== parsed.action) {
-    throw new Error(
-      `conclusion review decision must carry its own action: the parsed decision reads ${parsed.action}, which is not the value the caller supplied as its own`,
-    );
-  }
-}
-
 function assertRestoredControlFieldsPresent(control: object): void {
   for (const field of CONTROL_FIELD_NAMES) {
     if (OPTIONAL_CONTROL_FIELDS.has(field)) continue;
@@ -577,15 +652,12 @@ function parseInvestigationExecutionInput(
     typeof resume.interruptId === 'string' &&
     /^[0-9a-f]{32}$/.test(resume.interruptId)
   ) {
-    const decision = ConclusionReviewDecisionSchema.safeParse(resume.decision);
-    if (decision.success) {
-      // AFTER the parse, because the parse is what performs the substitution —
-      // the same ordering the start branch above uses for the control.
-      assertDecisionIsTheCallersOwn(resume.decision, decision.data);
+    const decision = parseCallerOwnedDecision(resume.decision);
+    if (decision !== undefined) {
       return {
         kind: 'resume',
         interruptId: resume.interruptId,
-        decision: decision.data,
+        decision,
       };
     }
   }
@@ -1294,15 +1366,22 @@ export function createInvestigationGraph({
     assertRestoredControlFieldsPresent(state.control);
     assertLogicalBudgetCounters(state.control);
     assertChallengeCounters(state.control);
-    // The value the human supplied, kept before it is parsed: the parse is
-    // where a prototype gadget substitutes, so the comparison needs both sides.
+    // The value the resume delivered here — the boundary-parsed copy, not the
+    // caller's raw object, which is precisely why this parse needs its own
+    // protection: `parseInvestigationExecutionInput` runs synchronously before
+    // `execute`'s first await, so a gadget armed one microtask later is
+    // invisible to it and lands HERE. The AIC-90 two-read shape, on the
+    // decision. see hitl-resume-contract.test.mjs › "refuses a read-accessor
+    // gadget armed after the boundary has already read the decision"
     const suppliedDecision = interrupt({
       kind: 'conclusion-review',
       runId: state.control.runId,
       conclusion: state.conclusion,
     });
-    const decision = ConclusionReviewDecisionSchema.parse(suppliedDecision);
-    assertDecisionIsTheCallersOwn(suppliedDecision, decision);
+    const decision = parseCallerOwnedDecision(suppliedDecision);
+    if (decision === undefined) {
+      throw new Error('invalid conclusion review decision');
+    }
 
     // Reaching here means the run was RESUMED: `interrupt()` throws on the
     // first pass, so everything below it executes once per resume and never on
