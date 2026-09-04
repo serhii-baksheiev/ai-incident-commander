@@ -412,10 +412,220 @@ function ownControlFieldError(field: string): Error {
   );
 }
 
+function decisionFieldError(field: string, detail: string): Error {
+  return new Error(
+    `conclusion review decision must carry its own ${field}: ${detail}`,
+  );
+}
+
 function missingControlFieldError(field: string): Error {
   return new Error(
     `investigation control must carry its own ${field}: the restored control has no value of its own for it`,
   );
+}
+
+/**
+ * Reads one field of a caller's object as an OWN DATA PROPERTY, or `undefined`.
+ *
+ * The narrow sibling of `readExactOwnDataProperties`, for the case where the
+ * shape is not fixed and only one field matters.
+ */
+function readOwnDataValue(source: unknown, key: string): unknown {
+  if (typeof source !== 'object' || source === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
+    ? descriptor.value
+    : undefined;
+}
+
+
+
+/**
+ * A caller's value, rebuilt from OWN DATA PROPERTIES ONLY, with no prototype.
+ *
+ * 🔴 The reason this exists rather than a check: zod builds its output by
+ * ASSIGNING into a fresh object, so an own-writing `Object.prototype` setter
+ * intercepts that assignment and defines the attacker's value as a genuine own
+ * property of the result. Checking the caller's object then constrains nothing
+ * about the object the graph acts on. Measured on an honest, complete
+ * `add_hypothesis` resume with `Object.prototype.hypothesis` armed: accepted at
+ * every arming window, `resumeCount: 1`, and the attacker's hypothesis in
+ * persisted state, steering every node after it.
+ *
+ * So the decision the graph acts on is assembled here, never taken from the
+ * parse. `Object.create(null)` has nothing behind it, and the copy is written
+ * with `defineProperty` rather than assignment, so neither read nor write can
+ * be intercepted.
+ *
+ * ⚠ The cap bounds DEPTH, not total work, and the difference is worth stating
+ * because an earlier version of this sentence claimed boundedness outright.
+ * Recursion stops at `OWN_COPY_MAX_DEPTH`, and anything deeper is carried by
+ * reference rather than dropped — a decision is two levels deep by schema, so
+ * the cap is slack, and keeping the value intact means the parse still judges
+ * it. But the walk runs BEFORE the parse, so a caller's object with many shared
+ * references costs more than the parse would have: measured, 802 own properties
+ * reachable through sharing take ~1.75s, growing as k⁴, where `main`'s strict
+ * parse rejected the unknown top-level key without descending at all. Not
+ * reachable from JSON, which cannot express sharing, so this is an in-process
+ * caller's own foot.
+ *
+ * ⚠ A `Proxy`, or an array carrying its own `map`, is outside the threat model
+ * here as it is for `readOwnControl` and `assertOwnControlFields` — and here the
+ * reason is specific rather than inherited. This function walks the caller's
+ * object TWICE, once for the copy that is validated and once for the copy that
+ * is returned, so an object that answers differently per walk can have one
+ * validated and the other returned. Measured: a `Proxy` flipping on its third
+ * trap pass had the boundary validate a `confirm` and return an
+ * `add_hypothesis`. Two things contain it — `reviewConclusion` re-validates
+ * whatever the boundary assembled, so only a decision the schema accepts can
+ * survive, which is a decision the caller could have sent outright; and no
+ * JSON-sourced caller can express either shape, so it takes an in-process
+ * caller who could have called with the value directly.
+ *
+ * If a decision field ever becomes an ARRAY, `value.map` below is the
+ * interception point, and the array in the validated copy keeps
+ * `Array.prototype` where every other node in that copy has none.
+ *
+ * see hitl-resume-contract.test.mjs › "refuses an own-writing gadget that
+ * rewrites a nested hypothesis field"
+ */
+const OWN_COPY_MAX_DEPTH = 4;
+
+function ownDataCopy(
+  value: unknown,
+  prototype: object | null,
+  depth = 0,
+): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (depth >= OWN_COPY_MAX_DEPTH) return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => ownDataCopy(entry, prototype, depth + 1));
+  }
+  const rebuilt = Object.create(prototype) as Record<string, unknown>;
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined && Object.hasOwn(descriptor, 'value')) {
+      Object.defineProperty(rebuilt, key, {
+        value: ownDataCopy(descriptor.value, prototype, depth + 1),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  return rebuilt;
+}
+
+
+/**
+ * Parses a conclusion-review decision from what the caller OWNS, and reports an
+ * attempted substitution instead of absorbing it.
+ *
+ * It REFUSES rather than repairing, which is this project's standing trade
+ * (AIC-92): a repaired input is indistinguishable from one that was never
+ * attacked, so the attempt is surfaced rather than silently corrected.
+ *
+ * Three failure shapes, all measured, and the third is why checking was
+ * replaced by assembling:
+ *
+ * - **the discriminant** — an accessor named `action` makes the union return
+ *   `confirm` for a caller who wrote `reject`; the run then resolves at END,
+ *   `review_conclusion` never runs again, zero nodes replay, and the checkpoint
+ *   records a completed, reviewed run.
+ * - **an omitted field** — with `Object.prototype.hypothesis` armed, a caller
+ *   sending `{ action: 'add_hypothesis' }` and nothing else PARSES, because the
+ *   strict object reads the missing field off the prototype, and the attacker's
+ *   hypothesis enters persisted state. The own-only parse refuses it, and the
+ *   own-only parse refuses it by name.
+ * - **the parse output itself** — zod builds its result by ASSIGNING into a
+ *   fresh object, so an own-writing setter defines the attacker's value as a
+ *   genuine own property of that result. A caller sending a complete, honest
+ *   `add_hypothesis` then had the attacker's hypothesis enter persisted state
+ *   at every arming window. No check on the CALLER's object can see this; only
+ *   not using the parse output as the value can.
+ *
+ * 🔴 The first version compared an own-data read against `parsed.action` — a
+ * plain `[[Get]]` — so a getter answering honestly ONCE and attacker-side
+ * afterwards satisfied the guard and then decided the route. Two reads of one
+ * property through one getter compare whatever the getter feels like. That is
+ * why the value the graph acts on is ASSEMBLED from the caller's own
+ * descriptors rather than read out of anything the parse produced — the
+ * comparison that remains only reports the attempt.
+ *
+ * ⚠ It narrows what a caller may send. A decision whose `action` is the
+ * caller's OWN accessor, or lives on a class prototype, no longer reaches the
+ * graph — the same own-data convention `readExactOwnDataProperties` already
+ * imposes on the input around it. Nothing in this repository builds one.
+ *
+ * ⚠ The precondition for the attack is WARMTH, and the cold path is not a
+ * defence: zod builds the union's `propValues` lookup lazily, and armed at
+ * construction the gadget makes zod's own builder throw. One ordinary decision
+ * parse removes that. see hitl-resume-contract.test.mjs › "an ordinary resume
+ * through the public API is enough to warm the decision union"
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a read-accessor gadget rewriting
+ * reject into confirm", › "refuses a read-accessor getter that answers honestly
+ * once and attacker-side afterwards" and › "refuses a hypothesis the caller
+ * never supplied"
+ */
+function parseCallerOwnedDecision(
+  supplied: unknown,
+): ConclusionReviewDecision | undefined {
+  // TWO copies, and the prototypes are the whole difference between them.
+  //
+  // The one that is VALIDATED has none: a field the caller omitted then finds
+  // nothing to read, so the schema refuses it instead of the prototype filling
+  // it in.
+  //
+  // The one that is RETURNED has the ordinary prototype, because a null-prototype
+  // object is observably different downstream — `deepStrictEqual` compares
+  // prototypes, so one reaching persisted state changes what callers and tests
+  // see. Both are written with `defineProperty`, which no inherited setter can
+  // intercept, so the returned copy carries the caller's values either way.
+  const ownOnly = ownDataCopy(supplied, null);
+  const parsed = ConclusionReviewDecisionSchema.safeParse(ownOnly);
+  if (!parsed.success) {
+    // Told apart from an ordinary invalid decision: if the caller's object
+    // parses while what they own does not, the difference IS the substitution,
+    // and this project reports an attempt rather than absorbing it (AIC-92).
+    if (ConclusionReviewDecisionSchema.safeParse(supplied).success) {
+      throw new Error(
+        'conclusion review decision must be built from fields the caller owns as data: it parses only with a field the caller does not own as a plain value',
+      );
+    }
+    return undefined;
+  }
+
+  // What remains is DETECTION. Correctness is already settled above: the parse
+  // ran on a copy with no prototype, so `ownOnly` carries the caller's own
+  // action and nothing else could have supplied it. This asks the separate
+  // question of whether an attempt was made, so it can be reported rather than
+  // absorbed (AIC-92).
+  //
+  // An earlier version also refused an `undefined` caller action and checked
+  // every declared field against the caller's object. Both became unreachable
+  // when the validated copy lost its prototype — measured, neutering either
+  // reddened nothing — so they are deleted rather than pinned. A guard that
+  // cannot fail is not a guard; it is a comment that costs a branch.
+  const suppliedAction = readOwnDataValue(ownOnly, 'action');
+  const asSent = ConclusionReviewDecisionSchema.safeParse(supplied);
+  if (
+    asSent.success &&
+    suppliedAction !== readOwnDataValue(asSent.data, 'action')
+  ) {
+    // The caller's OWN value is what the message names — never a fresh read of
+    // the parsed one, which an accessor controls in content and length alike
+    // and which reaches operator output verbatim.
+    throw decisionFieldError(
+      'action',
+      `the caller supplied ${String(suppliedAction)}, which is not what parsing their object produced`,
+    );
+  }
+
+  // NOT `parsed.data`: zod assembles that by assignment, which an own-writing
+  // setter intercepts. The caller's own copy is what the graph acts on, and the
+  // parse above is what proved it valid.
+  return ownDataCopy(supplied, Object.prototype) as ConclusionReviewDecision;
 }
 
 /**
@@ -521,12 +731,12 @@ function parseInvestigationExecutionInput(
     typeof resume.interruptId === 'string' &&
     /^[0-9a-f]{32}$/.test(resume.interruptId)
   ) {
-    const decision = ConclusionReviewDecisionSchema.safeParse(resume.decision);
-    if (decision.success) {
+    const decision = parseCallerOwnedDecision(resume.decision);
+    if (decision !== undefined) {
       return {
         kind: 'resume',
         interruptId: resume.interruptId,
-        decision: decision.data,
+        decision,
       };
     }
   }
@@ -1235,13 +1445,22 @@ export function createInvestigationGraph({
     assertRestoredControlFieldsPresent(state.control);
     assertLogicalBudgetCounters(state.control);
     assertChallengeCounters(state.control);
-    const decision = ConclusionReviewDecisionSchema.parse(
-      interrupt({
-        kind: 'conclusion-review',
-        runId: state.control.runId,
-        conclusion: state.conclusion,
-      }),
-    );
+    // The value the resume delivered here — the boundary-parsed copy, not the
+    // caller's raw object, which is precisely why this parse needs its own
+    // protection: `parseInvestigationExecutionInput` runs synchronously before
+    // `execute`'s first await, so a gadget armed one microtask later is
+    // invisible to it and lands HERE. The AIC-90 two-read shape, on the
+    // decision. see hitl-resume-contract.test.mjs › "refuses a read-accessor
+    // gadget armed after the boundary has already read the decision"
+    const suppliedDecision = interrupt({
+      kind: 'conclusion-review',
+      runId: state.control.runId,
+      conclusion: state.conclusion,
+    });
+    const decision = parseCallerOwnedDecision(suppliedDecision);
+    if (decision === undefined) {
+      throw new Error('invalid conclusion review decision');
+    }
 
     // Reaching here means the run was RESUMED: `interrupt()` throws on the
     // first pass, so everything below it executes once per resume and never on

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  ConclusionReviewDecisionSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   IncidentStateControlSchema,
   STATUS_RULES_VERSION,
@@ -3265,6 +3266,694 @@ test('documents the limit on the crashed-run retry route the refusal lets throug
       true,
       'the substituted control parses, which is what makes this outcome invisible on disk',
     );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * AIC-102 — the human's DECISION, not a control field: a prototype gadget on
+ * `action` turns a `reject` into a `confirm`.
+ *
+ * Every guard above this point protects the control the graph owns. This
+ * protects the one value the graph does not own and must not second-guess — what
+ * the human said. Substituted, the run resolves at END, `review_conclusion`
+ * never runs again, zero nodes replay, and the checkpoint records a completed,
+ * reviewed-looking run.
+ *
+ * ⚠ THE PRECONDITION IS WARMTH, and it is armed here explicitly rather than
+ * inherited from whatever ran before in this file. `ConclusionReviewDecisionSchema`
+ * is a discriminated union whose `propValues` lookup zod builds LAZILY and then
+ * memoises. Built while the gadget is armed, `propValues['action']` reads
+ * `'confirm'` through the getter — not nullish — so the `Set` is never created
+ * and `.add` throws. That COLD failure looks like a defence and is not one: it
+ * is zod crashing on the pollution, and it evaporates the moment the process has
+ * parsed one decision. A row that relied on test ordering to supply the warmth
+ * would pass or fail by accident.
+ *
+ * Both gadget shapes are covered because an ownership check separates them and
+ * is not sufficient for both: the read accessor leaves `action` NOT own, while
+ * the own-writing setter leaves it own, with the attacker's value. What
+ * discriminates both is the caller's own raw `action` — an object literal uses
+ * `CreateDataProperty`, so `{ action: 'reject' }` keeps its own `'reject'` under
+ * either gadget.
+ */
+const DECISION_ACTION_REFUSAL = /decision must carry its own action/;
+
+/** One ordinary decision parse, so the union's lazy lookup is built with a
+ * clean prototype — the state a long-lived process is in after its first
+ * review, and the state this row is about. */
+function warmDecisionSchema() {
+  const parsed = ConclusionReviewDecisionSchema.safeParse({ action: 'confirm' });
+  assert.equal(
+    parsed.success,
+    true,
+    'the warm-up parse must succeed, or the rows below are measuring the cold path instead',
+  );
+}
+
+function armDecisionGadget(shape, substituted = 'confirm') {
+  Object.defineProperty(Object.prototype, 'action', {
+    configurable: true,
+    get() {
+      return substituted;
+    },
+    set:
+      shape === 'own-writing'
+        ? function () {
+            Object.defineProperty(this, 'action', {
+              value: substituted,
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            });
+          }
+        : () => {},
+  });
+}
+
+/** A decision the caller genuinely owns, for each action the union declares. */
+function ownDecision(action) {
+  if (action !== 'add_hypothesis') return { action };
+  return {
+    action,
+    hypothesis: {
+      id: 'human-hypothesis-own',
+      statement: 'A dependency outside the initial candidate set is failing',
+      createdBy: 'initial',
+    },
+  };
+}
+
+for (const shape of ['read-accessor', 'own-writing']) {
+  test(`refuses a human reject that a ${shape} gadget rewrites into a confirm`, async () => {
+    assert.equal(
+      'action' in {},
+      false,
+      'the prototype is already carrying action before this run started: an earlier row leaked it',
+    );
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-decision-gadget-${shape}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+      const traceBefore = harness.trace.length;
+
+      let outcome;
+      try {
+        armDecisionGadget(shape);
+        outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+      } finally {
+        delete Object.prototype.action;
+      }
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        `a human reject rewritten into a confirm must be refused, not executed: the run ${
+          'error' in outcome ? '' : 'completed'
+        }`,
+      );
+      assert.match(
+        outcome.error.message,
+        DECISION_ACTION_REFUSAL,
+        `the refusal must name the decision's own action: ${outcome.error.message}`,
+      );
+
+      assert.equal(
+        harness.trace.length,
+        traceBefore,
+        'a refused decision must not advance the run by a single node',
+      );
+
+      const persistedControl = await harness.control();
+      assert.equal(
+        persistedControl.resumeCount,
+        0,
+        'a refused decision is not a resume the human spent',
+      );
+      assert.equal(
+        persistedControl[POLLUTED_FIELD],
+        RETRY_EXPECTED_HUMAN_REVIEW,
+        'the run must still be under human review after the refusal',
+      );
+
+      const stillPending = await harness.execution.getState(harness.config);
+      assert.equal(
+        stillPending.tasks[0]?.interrupts[0]?.id,
+        pending.id,
+        'the review the human was answering must still be pending',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * The window only `reviewConclusion`'s parse can see, and the reason the
+ * boundary check is not enough on its own.
+ *
+ * `parseInvestigationExecutionInput` runs SYNCHRONOUSLY, at the top of
+ * `execute`, before the first await. A gadget armed one microtask later is
+ * therefore invisible to it — the caller's object was clean when the boundary
+ * read it — and the substitution lands on the second parse, of the value
+ * `interrupt()` hands back inside the node. That is the same two-read shape
+ * AIC-90 found for the control, on the decision.
+ *
+ * Measured with the node-side check removed: every turn from 1 to 10, on both
+ * gadget shapes, the human's `reject` is EXECUTED AS A CONFIRM — the run
+ * resolves, `resumeCount` reaches 1, and nothing records it. Turn 1 is enough
+ * and is deterministic: the boundary is already past by the first microtask, so
+ * there is no window to search for.
+ */
+for (const shape of ['read-accessor', 'own-writing']) {
+  test(`refuses a ${shape} gadget armed after the boundary has already read the decision`, async () => {
+    assert.equal(
+      'action' in {},
+      false,
+      'the prototype is already carrying action before this run started: an earlier row leaked it',
+    );
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-decision-late-${shape}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+      const traceBefore = harness.trace.length;
+
+      let outcome;
+      let chain;
+      try {
+        chain = scheduleMicrotaskChain({
+          turns: 1,
+          onTurn: () => armDecisionGadget(shape),
+        });
+        outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+      } finally {
+        chain.cancel();
+        delete Object.prototype.action;
+      }
+
+      assert.equal(
+        chain.fired,
+        true,
+        'the chain never armed during the resume, so the boundary may simply have caught it — this row would then prove nothing',
+      );
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a decision substituted after the boundary read it must still be refused, at the node',
+      );
+      assert.match(
+        outcome.error.message,
+        DECISION_ACTION_REFUSAL,
+        `the refusal must name the decision's own action: ${outcome.error.message}`,
+      );
+      assert.equal(
+        harness.trace.length,
+        traceBefore,
+        'a refused decision must not advance the run by a single node',
+      );
+
+      const persistedControl = await harness.control();
+      assert.equal(
+        persistedControl.resumeCount,
+        0,
+        'a refused decision is not a resume the human spent',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * The full substitution matrix the item asks for: every action the union
+ * declares, replaced by every other one, on both gadget shapes.
+ *
+ * The first rows of this section cover `reject` → `confirm`, which is the
+ * severe direction — a rejection executed as an approval. These cover the rest,
+ * including `confirm` → `reject` (an approval turned into more work, which
+ * wastes budget rather than skipping review) and both directions through
+ * `add_hypothesis`, whose parse produces a second field.
+ *
+ * Cheap enough to be exhaustive: one resume each, and being exhaustive is what
+ * stops the guard from being written for one discriminant value.
+ */
+const DECISION_ACTIONS = ['confirm', 'reject', 'add_hypothesis'];
+
+for (const sent of DECISION_ACTIONS) {
+  for (const substituted of DECISION_ACTIONS) {
+    if (sent === substituted) continue;
+    for (const shape of ['read-accessor', 'own-writing']) {
+      test(`refuses a ${shape} gadget rewriting ${sent} into ${substituted}`, async () => {
+        assert.equal('action' in {}, false, 'an earlier row leaked the gadget');
+        warmDecisionSchema();
+
+        const harness = createHarness({
+          runId: `run-matrix-${sent}-${substituted}-${shape}`,
+        });
+
+        try {
+          const interrupted = await harness.start();
+          const [pending] = interrupted[INTERRUPT];
+          const traceBefore = harness.trace.length;
+
+          let outcome;
+          try {
+            armDecisionGadget(shape, substituted);
+            outcome = await harness.resumeWith(pending.id, ownDecision(sent));
+          } finally {
+            delete Object.prototype.action;
+          }
+
+          assert.equal(
+            'error' in outcome,
+            true,
+            `a ${sent} rewritten into a ${substituted} must be refused, not executed`,
+          );
+          assert.match(
+            outcome.error.message,
+            DECISION_ACTION_REFUSAL,
+            `the refusal must name the decision's own action: ${outcome.error.message}`,
+          );
+          assert.equal(
+            harness.trace.length,
+            traceBefore,
+            'a refused decision must not advance the run by a single node',
+          );
+          assert.equal(
+            (await harness.control()).resumeCount,
+            0,
+            'a refused decision is not a resume the human spent',
+          );
+        } finally {
+          harness.cleanup();
+        }
+      });
+    }
+  }
+}
+
+/**
+ * The shape a constant getter cannot express, and the one the first version of
+ * this guard shipped defeated.
+ *
+ * That version compared `readOwnDataValue(supplied, 'action')` against
+ * `parsed.action` — an own-data read on the left, a plain `[[Get]]` on the
+ * right. When the parse leaves no own `action` behind, the right-hand read goes
+ * through the attacker's getter, and so does the routing test further down. A
+ * getter that answers HONESTLY ONCE and attacker-side afterwards therefore
+ * satisfied the guard and then decided the route: measured 3/3, a human
+ * `reject` resolved the run at END with zero nodes replayed and `resumeCount`
+ * at 1.
+ *
+ * Every other row here arms a CONSTANT getter, and no constant getter can
+ * express this: it is the difference between the two reads that carries the
+ * attack. Found by `security-scanner`.
+ */
+for (const shape of ['read-accessor', 'own-writing']) {
+  test(`refuses a ${shape} getter that answers honestly once and attacker-side afterwards`, async () => {
+    assert.equal('action' in {}, false, 'an earlier row leaked the gadget');
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-stateful-getter-${shape}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+      const traceBefore = harness.trace.length;
+
+      let reads = 0;
+      let outcome;
+      let chain;
+      try {
+        chain = scheduleMicrotaskChain({
+          turns: 1,
+          onTurn: () => {
+            Object.defineProperty(Object.prototype, 'action', {
+              configurable: true,
+              get() {
+                reads += 1;
+                return reads === 1 ? 'reject' : 'confirm';
+              },
+              set:
+                shape === 'own-writing'
+                  ? function () {
+                      Object.defineProperty(this, 'action', {
+                        value: 'confirm',
+                        writable: true,
+                        enumerable: true,
+                        configurable: true,
+                      });
+                    }
+                  : () => {},
+            });
+          },
+        });
+        outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+      } finally {
+        chain.cancel();
+        delete Object.prototype.action;
+      }
+
+      assert.equal(
+        chain.fired,
+        true,
+        'the chain never armed during the resume, so this row proves nothing',
+      );
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a getter that varies between reads must not be able to satisfy the guard and then decide the route',
+      );
+      assert.match(
+        outcome.error.message,
+        DECISION_ACTION_REFUSAL,
+        `the refusal must name the decision's own action: ${outcome.error.message}`,
+      );
+      assert.equal(
+        harness.trace.length,
+        traceBefore,
+        'a refused decision must not advance the run by a single node',
+      );
+      assert.equal(
+        (await harness.control()).resumeCount,
+        0,
+        'a refused decision is not a resume the human spent',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * The second field, and the reason this guard checks every field the parse
+ * produced rather than the discriminant alone.
+ *
+ * `add_hypothesis` carries a `hypothesis` the graph writes into persisted
+ * state. With `Object.prototype.hypothesis` armed, the strict object PARSES by
+ * reading the missing field off the prototype — so a caller who supplied no
+ * hypothesis at all had the attacker's put into the run. Measured before this
+ * check: accepted, `resumeCount: 1`, and `hypotheses` carried the attacker's
+ * entry.
+ *
+ * The check is PRESENCE rather than equality for fields other than `action`:
+ * zod rebuilds nested objects, so comparing values would refuse honest callers,
+ * while presence is exactly what a prototype cannot fake.
+ */
+test('refuses a hypothesis the caller never supplied', async () => {
+  assert.equal('hypothesis' in {}, false, 'an earlier row leaked the gadget');
+  warmDecisionSchema();
+
+  const harness = createHarness({ runId: 'run-hypothesis-injected' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+    const traceBefore = harness.trace.length;
+
+    let outcome;
+    try {
+      Object.defineProperty(Object.prototype, 'hypothesis', {
+        configurable: true,
+        get() {
+          return {
+            id: 'attacker-hypothesis',
+            statement: 'ATTACKER CONTROLLED',
+            createdBy: 'initial',
+          };
+        },
+        set() {},
+      });
+      // The caller sends the action and NOTHING else.
+      outcome = await harness.resumeWith(pending.id, {
+        action: 'add_hypothesis',
+      });
+    } finally {
+      delete Object.prototype.hypothesis;
+    }
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a hypothesis the caller never supplied must not enter the run',
+    );
+    assert.match(
+      outcome.error.message,
+      /must be built from fields the caller owns/,
+      `the refusal must say the decision parses only by reading the prototype: ${outcome.error.message}`,
+    );
+    assert.equal(
+      harness.trace.length,
+      traceBefore,
+      'a refused decision must not advance the run by a single node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The reachability premise this whole ticket rests on, measured rather than
+ * asserted: **an ordinary resume warms the union**.
+ *
+ * Cold, the gadget makes the parse throw — which looks like a defence and is
+ * zod crashing on the pollution. If warming needed privileged access the finding
+ * would be far less reachable, so the claim "the steady state of any long-lived
+ * process after its first review" has to be a row rather than a sentence.
+ *
+ * It warms through the PUBLIC API only: one complete run, resumed with an
+ * ordinary `confirm`, prototype clean throughout.
+ */
+test('an ordinary resume through the public API is enough to warm the decision union', async () => {
+  assert.equal('action' in {}, false, 'an earlier row leaked the gadget');
+
+  const warmer = createHarness({ runId: 'run-warming-by-ordinary-resume' });
+  try {
+    const interrupted = await warmer.start();
+    const [pending] = interrupted[INTERRUPT];
+    const confirmed = await warmer.resumeWith(pending.id, {
+      action: 'confirm',
+    });
+    assert.equal(
+      'error' in confirmed,
+      false,
+      `the warming resume must be an ordinary success: ${confirmed.error?.message ?? ''}`,
+    );
+  } finally {
+    warmer.cleanup();
+  }
+
+  // Cold, this parse throws rather than substituting. Reaching a REFUSAL here
+  // proves the union is warm and that the guard — not zod's crash — is what
+  // answers.
+  const harness = createHarness({ runId: 'run-warmed-by-ordinary-resume' });
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let outcome;
+    try {
+      armDecisionGadget('read-accessor');
+      outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+    } finally {
+      delete Object.prototype.action;
+    }
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'the substitution must be refused',
+    );
+    assert.match(
+      outcome.error.message,
+      DECISION_ACTION_REFUSAL,
+      `a warm union must reach the guard, not zod's lookup builder: ${outcome.error.message}`,
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The field the graph WRITES INTO STATE, and the shape that made checking
+ * insufficient.
+ *
+ * `hypothesis` is not a routing flag — it is content the run reasons from, and
+ * every node and every report after it. An own-writing setter on that name
+ * intercepts the assignment zod uses to build its output, so the parse RESULT
+ * carries the attacker's hypothesis as a genuine own property while the
+ * caller's object is complete and honest. Checking the caller therefore proved
+ * nothing about the object the graph acted on. Measured before the fix:
+ * accepted at every arming window, `resumeCount: 1`, the run advancing through
+ * `derive_predictions` on `ATTACKER CONTROLLED`.
+ *
+ * So the outcome asserted here is IMMUNITY, not refusal, and deliberately: the
+ * caller sent a complete, valid decision and is entitled to have it executed.
+ * There is nothing to report to them — the substitution never reaches the
+ * value the graph uses, because that value is assembled from their own
+ * descriptors rather than taken from the parse.
+ *
+ * Nested, because the top level alone would not have caught it: the same gadget
+ * on `statement` reaches inside the hypothesis the caller did supply.
+ */
+for (const field of ['hypothesis', 'statement']) {
+  test(`refuses an own-writing gadget that rewrites a nested ${field} field`, async () => {
+    assert.equal(field in {}, false, 'an earlier row leaked the gadget');
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-nested-${field}` });
+    const humanHypothesis = {
+      id: 'human-hypothesis-nested',
+      statement: 'A dependency outside the initial candidate set is failing',
+      createdBy: 'initial',
+    };
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+
+      let outcome;
+      try {
+        const attacker =
+          field === 'hypothesis'
+            ? {
+                id: 'attacker-hypothesis',
+                statement: 'ATTACKER CONTROLLED',
+                createdBy: 'initial',
+              }
+            : 'ATTACKER CONTROLLED';
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          get() {
+            return attacker;
+          },
+          set() {
+            Object.defineProperty(this, field, {
+              value: attacker,
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            });
+          },
+        });
+        outcome = await harness.resumeWith(pending.id, {
+          action: 'add_hypothesis',
+          hypothesis: { ...humanHypothesis },
+        });
+      } finally {
+        delete Object.prototype[field];
+      }
+
+      assert.equal(
+        'error' in outcome,
+        false,
+        `a complete, honest decision must be executed, not refused: ${outcome.error?.message ?? ''}`,
+      );
+
+      const state = await harness.execution.getState(harness.config);
+      assert.deepEqual(
+        state.values.hypotheses,
+        [humanHypothesis],
+        `the run must reason from the human's hypothesis, not the one an inherited ${field} setter wrote`,
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * The one shape every other row here is missing: a decision that does not own
+ * its `action` AT ALL, so the prototype supplies the discriminant outright.
+ *
+ * Every row above sends `{ action: … }` or `ownDecision(action)`, both of which
+ * own the field — so the caller's side of the comparison was never `undefined`,
+ * and two of the guard's elements were unpinned: the own-data read on the LEFT
+ * side, and the `undefined` refusal. Measured with either reverted, a caller
+ * sending `{}` under the matching gadget was ACCEPTED — run resolved at END,
+ * zero nodes replayed, `resumeCount: 1`. Found by `code-reviewer`.
+ *
+ * "Two absences must not agree with each other" is what this row is for: an
+ * absent caller value must be refused rather than compared, or it matches an
+ * equally absent parsed one.
+ */
+for (const shape of ['read-accessor', 'own-writing']) {
+  test(`refuses a decision whose action the ${shape} prototype supplies outright`, async () => {
+    assert.equal('action' in {}, false, 'an earlier row leaked the gadget');
+    warmDecisionSchema();
+
+    const harness = createHarness({ runId: `run-no-own-action-${shape}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+      const traceBefore = harness.trace.length;
+
+      let outcome;
+      try {
+        armDecisionGadget(shape);
+        // The caller owns NOTHING. Every field of this decision is the
+        // prototype's.
+        outcome = await harness.resumeWith(pending.id, {});
+      } finally {
+        delete Object.prototype.action;
+      }
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a decision whose action the caller does not own must be refused, not executed',
+      );
+      assert.equal(
+        harness.trace.length,
+        traceBefore,
+        'a refused decision must not advance the run by a single node',
+      );
+      assert.equal(
+        (await harness.control()).resumeCount,
+        0,
+        'a refused decision is not a resume the human spent',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
+
+/**
+ * The control arm: the same warm process, the same decision, no gadget. It
+ * separates "the guard refuses a rewritten decision" from "the guard refuses
+ * `reject`", which a comparison written the wrong way round would do.
+ */
+test('executes an ordinary reject in the same warm process', async () => {
+  warmDecisionSchema();
+  const harness = createHarness({ runId: 'run-decision-ordinary-reject' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in outcome,
+      false,
+      `an ordinary reject must be executed: ${outcome.error?.message ?? ''}`,
+    );
+    assert.equal(
+      isInterrupted(outcome.value),
+      true,
+      'a reject sends the run back for another conclusion, so it must pause again',
+    );
+
+    const control = await harness.control();
+    assert.equal(control.resumeCount, 1, 'the human spent one resume');
   } finally {
     harness.cleanup();
   }

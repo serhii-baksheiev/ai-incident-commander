@@ -265,3 +265,93 @@ interrupt — the shape a thrown lifecycle node or a dead process leaves — is
 still resumable, because a resume is the only way to advance it; and a
 **finished** run's resume stays a no-op that resolves, since refusing it would
 be a false statement about a thread that has a checkpoint and a real state.
+
+
+## The decision is not control, and needed a different question (AIC-102)
+
+Everything above protects the control the **graph owns**. The human's decision
+is the opposite: the one value the graph does not own and must not second-guess.
+It needed its own answer, and the ownership idiom this record is built on is not
+it.
+
+A prototype gadget on `action` makes `ConclusionReviewDecisionSchema` return
+`confirm` for a caller who wrote `reject`. The run then resolves at END,
+`review_conclusion` never runs again, zero nodes replay, and the checkpoint
+records a completed, reviewed-looking run.
+
+**An ownership check does not separate the two shapes.** Under a read accessor
+the parsed `action` is not own, so `Object.hasOwn` would catch it; under a setter
+that *defines* on its target the field is genuinely own and carries the
+attacker's value, so it would not. What discriminates both is a **comparison**:
+the caller's own raw `action`, read as an own data property. An object literal
+uses `CreateDataProperty`, so a literal decision keeps its own value under either
+gadget.
+
+🔴 **Two things about that comparison were wrong on the first attempt, and both
+are the same mistake in different clothes: trusting a read the attacker controls.**
+
+*The right-hand side was a plain `[[Get]]`.* It compared an own read against
+`parsed.action`, and when the parse leaves no own `action` behind that goes
+through the getter — as does the routing test further down. A getter answering
+honestly ONCE and attacker-side afterwards satisfied the guard and then decided
+the route. Measured 3/3: a human `reject` resolved the run at END. Two reads of
+one property through one getter compare whatever the getter feels like.
+
+*The field list came from the result.* `add_hypothesis` carries a `hypothesis`
+the graph writes into state, and with `Object.prototype.hypothesis` armed a
+caller sending `{ action: 'add_hypothesis' }` alone PARSES — the strict object
+reads the missing field off the prototype. Looping over `Object.keys(parsed)`
+sees nothing, because zod never makes that field own: the result's own keys are
+`['action']` while `parsed.hypothesis` still hands the graph the attacker's
+value. The list has to come from the **schema**, asked through its own options
+rather than its internals.
+
+*And the parse output was the third.* Checking the caller's object constrained
+nothing about the object the graph acted on: zod builds its result by
+**assigning** into a fresh object, which an own-writing setter intercepts, so a
+caller sending a complete and honest `add_hypothesis` had the attacker's
+hypothesis enter persisted state. That is what ended the checking approach. The
+decision the graph acts on is now ASSEMBLED from the caller's own descriptors
+with `defineProperty` — which no inherited setter can intercept — and validated
+against a copy with no prototype, so an omitted field is refused rather than
+filled in.
+
+Two consequences worth recording. The remaining comparison is **detection only**;
+correctness is settled by the assembly, which is why removing the comparison
+reddens rows about *reporting* rather than about substitution. And the earlier
+declared-field loop and `undefined` refusal became unreachable and were deleted
+rather than pinned — measured, neutering either reddened nothing. A guard that
+cannot fail is not a guard.
+
+⚠ **What the assembly gives up, stated because this record otherwise reads as
+though every attempt is reported.** Only the discriminant is compared, so a
+substitution aimed at a non-discriminant field — an own-writing
+`Object.prototype.hypothesis` against a caller who supplied a complete, honest
+one — now proceeds silently with the caller's value. Correct value, no report.
+That is a step back from AIC-92's convention and a large step forward from
+`main`, which took the attacker's value and reported nothing; the declared-field
+check that would have reported it was deleted because, once the validated copy
+lost its prototype, it could no longer fail.
+
+A guard that reads its subject the way the subject wants to be read is not a
+guard. That is the same sentence as "a guard that normalises its input defeats
+the guards downstream of it", from the top of this record, arrived at from the
+other direction.
+
+WARNING — **the precondition is warmth, and the cold path is not a defence.**
+`ConclusionReviewDecisionSchema` is a discriminated union whose `propValues`
+lookup zod builds lazily and memoises. Built while the gadget is armed,
+`propValues['action']` reads `'confirm'` through the getter — not nullish — so
+the `Set` is never created and `.add` throws. That looks protective and is zod
+crashing on the pollution; one ordinary prior decision parse removes it, which
+is the steady state of any long-lived process after its first review. A test
+that relied on file ordering to supply that warmth would pass or fail by
+accident, so the rows arm it explicitly.
+
+**Both parse sites are guarded, and neither is redundant** —
+`parseInvestigationExecutionInput` runs synchronously before `execute`'s first
+await, so a gadget armed one microtask later is invisible to it and lands on
+`reviewConclusion`'s parse instead. Measured with the node-side check removed:
+every turn from 1 to 10, on both shapes, executes the human's rejection as a
+confirm. That is the AIC-90 two-read shape again, on the decision rather than
+the control, and it is why the guard is duplicated rather than centralised.
