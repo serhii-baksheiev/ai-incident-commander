@@ -12,7 +12,7 @@ import * as graphPackage from '@aic/graph';
 
 import {
   CONCLUSION_REVIEW_ACTIONS,
-  decisionFixtureFor,
+  conclusionReviewDecisions,
 } from './fixtures/conclusion-review-decisions.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
 import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
@@ -109,18 +109,26 @@ test('accepts every supported conclusion review decision', () => {
     'a union with no members would make this loop vacuous',
   );
 
-  for (const action of CONCLUSION_REVIEW_ACTIONS) {
-    const decision = decisionFixtureFor(action, {
-      hypothesis: {
-        id: 'human-hypothesis',
-        statement: 'A human-supplied alternative',
-        createdBy: 'initial',
-      },
-    });
+  // Built through the table rather than by handing every action a hypothesis:
+  // an action that declares none now REFUSES one, because silently dropping it
+  // would let a caller believe it had been used.
+  const table = conclusionReviewDecisions(() => ({
+    id: 'human-hypothesis',
+    statement: 'A human-supplied alternative',
+    createdBy: 'initial',
+  }));
+
+  assert.deepStrictEqual(
+    table.map(({ label }) => label),
+    [...CONCLUSION_REVIEW_ACTIONS],
+    'the table must carry one entry per action the schema declares',
+  );
+
+  for (const { label, decision } of table) {
     assert.equal(
-      schema.safeParse(decision).success,
+      schema.safeParse(decision()).success,
       true,
-      `the fixture for ${action} must be a decision the schema accepts`,
+      `the fixture for ${label} must be a decision the schema accepts`,
     );
   }
 });

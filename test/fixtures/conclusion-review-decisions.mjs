@@ -5,87 +5,126 @@
  * held either list against `ConclusionReviewDecisionSchema`. Measured before
  * AIC-77, on this repository: adding a fourth member and handling it in
  * `reviewConclusion` left the whole suite green at 522/522. The compiler does
- * catch a member the graph has not handled yet — so the silence begins exactly
- * when someone finishes the graph work and looks to the tests for what else to
- * update.
+ * catch a member the graph has not handled yet — a fourth member added to the
+ * schema alone fails the build at `investigation.ts` — so the silence begins
+ * exactly when someone finishes the graph work and looks to the tests for what
+ * else to update.
  *
- * `decisionFixtureFor` is the forcing function: it throws on an action it has
- * no fixture for, so a fourth member reddens every file that builds its table
- * through here, and the failure names the action rather than a count.
+ * This module refuses rather than guesses. Every shape it does not already know
+ * how to build throws BY NAME, so a new union member reddens every file that
+ * builds its table through here and the failure says which member and why.
  */
 import { ConclusionReviewDecisionSchema } from '@aic/domain';
 
 /**
- * Every `action` the schema declares, read off the discriminated union's own
- * options. Not a copy: if the union changes, this changes with it.
+ * The `action` literal of one union option.
+ *
+ * `.values` rather than `.value`: zod 4 annotates the singular as `@legacy`,
+ * and the plural is a `Set` carrying the same single literal for these options.
  */
-export const CONCLUSION_REVIEW_ACTIONS = Object.freeze(
-  ConclusionReviewDecisionSchema.options.map(
-    (option) => option.shape.action.value,
+function actionOf(option) {
+  const [action] = [...option.shape.action.values];
+  return action;
+}
+
+/** The shape this module knows how to build a fixture for, by its keys. */
+const KNOWN_SHAPES = Object.freeze({
+  'action': ({ action }) => ({ action }),
+  'action,hypothesis': ({ action, hypothesis }) => {
+    if (hypothesis === undefined) {
+      throw new Error(
+        `conclusion review action ${action} carries a hypothesis, so this fixture needs one`,
+      );
+    }
+    return { action, hypothesis };
+  },
+});
+
+const shapeKeyOf = (option) => Object.keys(option.shape).sort().join(',');
+
+const OPTIONS_BY_ACTION = Object.freeze(
+  Object.fromEntries(
+    ConclusionReviewDecisionSchema.options.map((option) => [
+      actionOf(option),
+      option,
+    ]),
   ),
 );
 
 /**
- * The one action that carries a payload, also read from the schema rather than
- * remembered — an option whose shape has keys beyond the discriminant needs a
- * fixture that supplies them.
+ * Every `action` the schema declares, read off the discriminated union's own
+ * options. Not a copy: if the union changes, this changes with it.
+ *
+ * Empty would make every loop over it vacuous while staying green — measured,
+ * an empty list silently drops `hitl-resume-contract.test.mjs` from 47 tests to
+ * 26 — so it is refused HERE, once, rather than guarded in each caller.
  */
-const ACTIONS_CARRYING_A_PAYLOAD = Object.freeze(
-  ConclusionReviewDecisionSchema.options
-    .filter((option) => Object.keys(option.shape).length > 1)
-    .map((option) => option.shape.action.value),
+export const CONCLUSION_REVIEW_ACTIONS = Object.freeze(
+  Object.keys(OPTIONS_BY_ACTION),
 );
 
+if (CONCLUSION_REVIEW_ACTIONS.length === 0) {
+  throw new Error(
+    'ConclusionReviewDecisionSchema declares no actions: every table derived from it would be vacuous',
+  );
+}
+
 /**
- * A valid decision for `action`, or a throw naming the action when this file
- * has not been taught about it.
+ * A valid decision for `action`, or a throw naming the action.
  *
- * `hypothesis` is required for the payload-carrying actions and refused for the
- * others, so a caller cannot quietly hand a payload to a member that would
- * reject it under `strictObject`.
+ * Two refusals, and both are the point rather than defensive noise:
+ *
+ *   - an action the schema does not declare;
+ *   - an action whose OPTION SHAPE this module has never seen. A member added
+ *     with a payload under some other name — `{ action, assignee }` — would
+ *     otherwise be handed a `hypothesis` it does not declare and rejected by
+ *     `strictObject` deep inside a graph run, surfacing as the opaque
+ *     `invalid investigation execution input` rather than as a missing fixture.
+ *
+ * A payload passed for an action that declares none is refused too, rather than
+ * dropped: silently discarding it would let a caller believe it was used.
  */
 export function decisionFixtureFor(action, { hypothesis } = {}) {
-  if (!CONCLUSION_REVIEW_ACTIONS.includes(action)) {
+  const option = OPTIONS_BY_ACTION[action];
+  if (option === undefined) {
     throw new Error(
       `unknown conclusion review action: ${String(action)} — the schema declares ${CONCLUSION_REVIEW_ACTIONS.join(', ')}`,
     );
   }
 
-  if (ACTIONS_CARRYING_A_PAYLOAD.includes(action)) {
-    if (hypothesis === undefined) {
-      throw new Error(
-        `conclusion review action ${action} carries a payload, so this fixture needs a hypothesis`,
-      );
-    }
-    return { action, hypothesis };
+  const shapeKey = shapeKeyOf(option);
+  const build = KNOWN_SHAPES[shapeKey];
+  if (build === undefined) {
+    throw new Error(
+      `conclusion review action ${action} has an unfamiliar shape {${shapeKey}}: teach this fixture how to build it`,
+    );
   }
 
-  if (action === 'confirm' || action === 'reject') {
-    return { action };
+  if (shapeKey === 'action' && hypothesis !== undefined) {
+    throw new Error(
+      `conclusion review action ${action} declares no hypothesis, so passing one would be discarded rather than used`,
+    );
   }
 
-  // A member that carries no payload and is neither confirm nor reject is one
-  // this file has never seen. Refusing here is the point: the alternative is
-  // silently treating it as a bare `{ action }` that may not be valid.
-  throw new Error(
-    `conclusion review action ${action} has no fixture: add one when the schema gains a member`,
-  );
+  return build({ action, hypothesis });
 }
 
 /**
  * The full decision table, one entry per action the schema declares.
  *
- * `makeHypothesis(round)` supplies the payload for the actions that need one;
- * pass it only if the caller exercises those.
+ * `makeHypothesis(round)` supplies the payload. Every caller that iterates the
+ * whole table needs it while the schema has a payload-carrying member, and
+ * `decisionFixtureFor` says so by name if it is missing.
  */
 export function conclusionReviewDecisions(makeHypothesis) {
   return CONCLUSION_REVIEW_ACTIONS.map((action) => ({
     label: action,
     decision: (round = 1) =>
       decisionFixtureFor(action, {
-        hypothesis: ACTIONS_CARRYING_A_PAYLOAD.includes(action)
-          ? makeHypothesis?.(round)
-          : undefined,
+        hypothesis:
+          shapeKeyOf(OPTIONS_BY_ACTION[action]) === 'action,hypothesis'
+            ? makeHypothesis?.(round)
+            : undefined,
       }),
   }));
 }
