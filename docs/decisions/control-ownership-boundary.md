@@ -323,6 +323,16 @@ declared-field loop and `undefined` refusal became unreachable and were deleted
 rather than pinned — measured, neutering either reddened nothing. A guard that
 cannot fail is not a guard.
 
+⚠ **What the assembly gives up, stated because this record otherwise reads as
+though every attempt is reported.** Only the discriminant is compared, so a
+substitution aimed at a non-discriminant field — an own-writing
+`Object.prototype.hypothesis` against a caller who supplied a complete, honest
+one — now proceeds silently with the caller's value. Correct value, no report.
+That is a step back from AIC-92's convention and a large step forward from
+`main`, which took the attacker's value and reported nothing; the declared-field
+check that would have reported it was deleted because, once the validated copy
+lost its prototype, it could no longer fail.
+
 A guard that reads its subject the way the subject wants to be read is not a
 guard. That is the same sentence as "a guard that normalises its input defeats
 the guards downstream of it", from the top of this record, arrived at from the

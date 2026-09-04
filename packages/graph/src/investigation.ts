@@ -457,11 +457,34 @@ function readOwnDataValue(source: unknown, key: string): unknown {
  * with `defineProperty` rather than assignment, so neither read nor write can
  * be intercepted.
  *
- * ⚠ Bounded, because a fail-open guard must do provably bounded work
- * (`.claude/rules/invariants.md`): recursion stops at `OWN_COPY_MAX_DEPTH`, and
- * anything deeper is carried by reference rather than dropped — a decision is
- * two levels deep by schema, so the cap is slack, and keeping the value intact
- * means the parse still judges it.
+ * ⚠ The cap bounds DEPTH, not total work, and the difference is worth stating
+ * because an earlier version of this sentence claimed boundedness outright.
+ * Recursion stops at `OWN_COPY_MAX_DEPTH`, and anything deeper is carried by
+ * reference rather than dropped — a decision is two levels deep by schema, so
+ * the cap is slack, and keeping the value intact means the parse still judges
+ * it. But the walk runs BEFORE the parse, so a caller's object with many shared
+ * references costs more than the parse would have: measured, 802 own properties
+ * reachable through sharing take ~1.75s, growing as k⁴, where `main`'s strict
+ * parse rejected the unknown top-level key without descending at all. Not
+ * reachable from JSON, which cannot express sharing, so this is an in-process
+ * caller's own foot.
+ *
+ * ⚠ A `Proxy`, or an array carrying its own `map`, is outside the threat model
+ * here as it is for `readOwnControl` and `assertOwnControlFields` — and here the
+ * reason is specific rather than inherited. This function walks the caller's
+ * object TWICE, once for the copy that is validated and once for the copy that
+ * is returned, so an object that answers differently per walk can have one
+ * validated and the other returned. Measured: a `Proxy` flipping on its third
+ * trap pass had the boundary validate a `confirm` and return an
+ * `add_hypothesis`. Two things contain it — `reviewConclusion` re-validates
+ * whatever the boundary assembled, so only a decision the schema accepts can
+ * survive, which is a decision the caller could have sent outright; and no
+ * JSON-sourced caller can express either shape, so it takes an in-process
+ * caller who could have called with the value directly.
+ *
+ * If a decision field ever becomes an ARRAY, `value.map` below is the
+ * interception point, and the array in the validated copy keeps
+ * `Array.prototype` where every other node in that copy has none.
  *
  * see hitl-resume-contract.test.mjs › "refuses an own-writing gadget that
  * rewrites a nested hypothesis field"
@@ -567,7 +590,7 @@ function parseCallerOwnedDecision(
     // and this project reports an attempt rather than absorbing it (AIC-92).
     if (ConclusionReviewDecisionSchema.safeParse(supplied).success) {
       throw new Error(
-        'conclusion review decision must be built from fields the caller owns: it parses only by reading a field off the prototype',
+        'conclusion review decision must be built from fields the caller owns as data: it parses only with a field the caller does not own as a plain value',
       );
     }
     return undefined;
