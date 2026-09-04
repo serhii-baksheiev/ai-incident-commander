@@ -312,9 +312,16 @@ const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
  * listed here — a field that gains or loses its optionality carries this set
  * with it, and a hand-written copy is the one that goes stale.
  *
- * The question asked is "does this field's schema accept no value at all",
- * which is exactly what makes absence legitimate, and it is asked by parsing
- * rather than through a version-specific `isOptional` accessor.
+ * The question is asked by parsing rather than through a version-specific
+ * `isOptional` accessor — and it asks for the PARSED VALUE, not merely that the
+ * parse succeeded. `safeParse(undefined).success` alone is true for `.default(x)`,
+ * `.catch(x)`, `z.any()` and `z.unknown()` as well as for `.optional()`. A
+ * graph-owned field that gained a default would then stop being refused and
+ * instead land `undefined`, be dropped by JSON, and be re-read as the default —
+ * for `humanReview` that is the review gate quietly resetting itself, which is
+ * the exact outcome this guard exists to prevent, downgraded from loud to
+ * silent. Requiring `data === undefined` separates "may be absent" from "has a
+ * value of its own when absent".
  *
  * see graph-owned-control-contract.test.mjs › "classifies every control field
  * the schema declares as graph-owned or node-writable" for the sibling
@@ -322,7 +329,10 @@ const CONTROL_FIELD_NAMES: readonly string[] = Object.freeze(
  */
 const OPTIONAL_CONTROL_FIELDS: ReadonlySet<string> = new Set(
   Object.entries(IncidentStateControlSchema.shape)
-    .filter(([, fieldSchema]) => fieldSchema.safeParse(undefined).success)
+    .filter(([, fieldSchema]) => {
+      const parsed = fieldSchema.safeParse(undefined);
+      return parsed.success && parsed.data === undefined;
+    })
     .map(([field]) => field),
 );
 
@@ -378,14 +388,62 @@ function assertOwnControlFields(control: object): void {
 }
 
 /**
- * The one wording of the ownership refusal, because two guards raise it and a
- * caller should not have to learn two spellings of the same invariant — the
- * rule this repository states as one mechanism, one implementation.
+ * The one wording of the ownership refusal, because several guards raise it and
+ * a caller should not have to learn a spelling per guard — the rule this
+ * repository states as one mechanism, one implementation.
+ *
+ * Two causes, one invariant, and the shared PREFIX is the load-bearing part: a
+ * caller matches "must carry its own <field>" and does not care which way the
+ * field stopped being theirs.
  */
 function ownControlFieldError(field: string): Error {
   return new Error(
     `investigation control must carry its own ${field}: an inherited or accessor-supplied field is not the caller's state`,
   );
+}
+
+function missingControlFieldError(field: string): Error {
+  return new Error(
+    `investigation control must carry its own ${field}: the restored control has no value of its own for it`,
+  );
+}
+
+/**
+ * Every required control field is present, as the run's OWN value — the half
+ * `assertOwnControlFields` cannot ask.
+ *
+ * That check asks only that a field which is PRESENT be own, which is the right
+ * question for a `kind: 'start'` state: a field missing there must produce the
+ * schema's parse error rather than an ownership one. A restored control has
+ * already been parsed once, so a required field missing from it is not an
+ * omission — it is damage, and it is the shape a swallowed write leaves behind
+ * once the setter that swallowed it is gone.
+ *
+ * Left to `pickGraphOwnedControl` it is still refused, but only once a wrapped
+ * node runs, and a `confirm` reaches END from `reviewConclusion` without
+ * entering one. Measured before this call, on a control whose `humanReview` was
+ * erased between the two deserializations: the run COMPLETED and wrote a
+ * control `IncidentStateControlSchema` rejects.
+ *
+ * ⚠ Called after `assertPersistedStateVersion` and never before it: "required"
+ * is a fact about the current schema, so an older checkpoint is missing fields
+ * legitimately and must be refused for being stale instead.
+ *
+ * It also closes what `assertOwnControlFields` leaves: `Object.hasOwn` is true
+ * for an own ACCESSOR, so that check's message overstates it. Here the
+ * descriptor must carry a value.
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a ${label} whose restored
+ * control lost a required field, leaving the checkpoint intact"
+ */
+function assertRestoredControlFieldsPresent(control: object): void {
+  for (const field of CONTROL_FIELD_NAMES) {
+    if (OPTIONAL_CONTROL_FIELDS.has(field)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(control, field);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+      throw missingControlFieldError(field);
+    }
+  }
 }
 
 /**
@@ -603,16 +661,33 @@ function defineOwnValue(
  * genuinely different situations:
  *
  * - a field the schema REQUIRES cannot legitimately be missing from a control
- *   the graph is running on. Absent-as-own while reachable on the prototype is
- *   the substitution itself, so it is REFUSED, in the same words the entry
- *   points use.
+ *   the graph is running on, so absent-as-own is REFUSED — in the same words
+ *   the entry points use, and **without asking whether the prototype is still
+ *   carrying it**. That condition was in the first version of this guard and it
+ *   fails open: the mechanism is a swallowed WRITE, so a setter that takes the
+ *   deserializer's one assignment and then deletes itself leaves the field
+ *   absent with a pristine prototype. `field in control` is then false, and the
+ *   field would land as an own `undefined` — which for `humanReview` is falsy at
+ *   the `propose_conclusion` edge, makes `assertInteractiveRunIdentity` return
+ *   early, and SHADOWS the prototype so nothing downstream can see anything
+ *   wrong. The invariant is presence-as-an-own-data-property, not reachability
+ *   at the moment the guard happens to look.
+ *   see hitl-resume-contract.test.mjs › "refuses a required control field
+ *   erased before a wrapped node runs on it"
  * - a field the schema lets be ABSENT — `stopKind`, on a run that has not
  *   stopped — is legitimately missing, and there is no way to tell "the caller
  *   omitted it" from "the caller omitted it and someone armed the prototype".
- *   So the prototype is simply not consulted: the field lands `undefined` and
- *   the wrapper below restores it only when it carries a value. The attacker's
- *   value does not reach the control either way; the difference is that this
- *   half is IMMUNE rather than loud.
+ *   So the prototype is simply not consulted and the field lands `undefined`.
+ *   The attacker's value does not reach the control either way; the difference
+ *   is that this half is IMMUNE rather than loud.
+ *
+ *   ⚠ What happens to that `undefined` afterwards is `stopKind`-specific and
+ *   NOT derived: the wrapper below destructures `stopKind` by name and restores
+ *   it only when it carries a value. So the classification here is general and
+ *   the handling downstream is not. A second optional graph-owned field would
+ *   land `undefined` here and be spread into the control as `undefined` there,
+ *   which the schema accepts and JSON then drops — survivable, but not what
+ *   this docstring would have promised. Whoever adds one owns that line too.
  *
  * That second half is not a concession to make a test pass — it is the
  * wrapper's existing contract, pinned since AIC-73 in
@@ -634,9 +709,7 @@ function pickGraphOwnedControl(
   for (const field of GRAPH_OWNED_CONTROL_FIELDS) {
     const descriptor = Object.getOwnPropertyDescriptor(control, field);
     if (descriptor === undefined) {
-      if (field in control && !OPTIONAL_CONTROL_FIELDS.has(field)) {
-        throw ownControlFieldError(field);
-      }
+      if (!OPTIONAL_CONTROL_FIELDS.has(field)) throw ownControlFieldError(field);
       defineOwnValue(picked, field, undefined);
       continue;
     }
@@ -1115,9 +1188,19 @@ export function createInvestigationGraph({
     // that route; an unasserted value would be read for the first time by
     // whoever receives the finished control. `reject` and `add_hypothesis`
     // re-enter at wrapped nodes and are covered twice over.
-    // see hitl-resume-contract.test.mjs › "refuses a current-version checkpoint
-    // carrying a negative challenge round counter, and names the counter"
+    // see hitl-resume-contract.test.mjs › "refuses a negative challenge round
+    // counter before a resumed ${label} executes another node"
     assertPersistedStateVersion(state.control);
+    // AFTER the version check, and the order is the whole of why this call is
+    // here rather than beside the ownership one above. "Required" is a fact
+    // about the CURRENT schema, so a checkpoint written by an older one is
+    // missing fields legitimately — it has to be refused for being stale, not
+    // for being incomplete. Moving this one line up replaces six version-
+    // boundary refusals with an ownership complaint about the first counter
+    // that schema had not invented yet.
+    // see hitl-resume-contract.test.mjs › "resuming ${persisted.label} with
+    // ${label} fails loudly at the schema version boundary"
+    assertRestoredControlFieldsPresent(state.control);
     assertLogicalBudgetCounters(state.control);
     assertChallengeCounters(state.control);
     const decision = ConclusionReviewDecisionSchema.parse(
@@ -1295,8 +1378,8 @@ export function createInvestigationGraph({
         // throws `No checkpointer set` there and would replace a refusal that
         // already names its reason — `Cannot use Command(resume=...) without
         // checkpointer` — with one about the wrong thing. see
-        // hitl-resume-contract.test.mjs › "still refuses a resume with no
-        // checkpointer for the reason it already gives"
+        // hitl-resume-contract.test.mjs › "still refuses a ${label} resume
+        // with no checkpointer for the reason it already gives"
         if (checkpointer !== undefined) {
           const snapshot = await graph.getState(langGraphConfig);
 
@@ -1332,7 +1415,8 @@ export function createInvestigationGraph({
           // the identity check and still raises a TypeError. Unchanged from
           // before this guard existed and out of this item's scope, but pinned
           // so the gap is a known one. see hitl-resume-contract.test.mjs ›
-          // "leaves a malformed control to the identity check, unrefused here"
+          // "refuses a malformed control by name instead of leaving it to the
+          // identity check"
           // see hitl-resume-contract.test.mjs › "refuses a resume under a
           // thread that has no checkpoint, naming the thread" and › "leaves no
           // checkpoint behind for the thread whose resume it refused"
@@ -1371,32 +1455,49 @@ export function createInvestigationGraph({
           // rather than a second copy of the same one.
           assertOwnControlFields(restored);
 
-          // A resume names the interrupt it answers. When that id is no
-          // longer pending while the thread still has work, the caller is
-          // answering a question the run has already moved past — the shape a
-          // CLI produces when it retries after a transient node failure — and
-          // LangGraph's answer was to replay the pending task with the resume
-          // map unmatched. Silently: the caller learned nothing about the id it
-          // sent, and the replay re-entered a WRAPPED lifecycle node, which is
-          // how a resume reached `preserveGraphOwnedControl` without
-          // `reviewConclusion` ever running. AIC-92.
+          // A resume names the interrupt it answers, and this refuses the one
+          // case where that name is WRONG rather than merely stale: the thread
+          // is waiting on an interrupt, and it is not this one. The caller is
+          // answering a question that has already been replaced by a different
+          // question, and LangGraph's answer was to replay the pending task
+          // with the resume map unmatched — silently, so a caller who did not
+          // compare interrupt ids read it as success. AIC-92.
           //
-          // The condition is `tasks.length > 0`, and the second half is not
-          // decoration. A FINISHED run has no pending task and no pending
-          // interrupt either, and resuming one is a no-op that resolves —
-          // deliberately, because refusing it would be a false statement about
-          // a thread that has a checkpoint and a real state. Refusing on the id
-          // alone would turn that contract into an error.
-          // see hitl-resume-contract.test.mjs › "refuses a stale ${label} retry
-          // by name, with nothing on the prototype" and › "resolves a resume of
-          // a run that already finished, rather than calling it a missing
-          // checkpoint"
-          const targetsPendingInterrupt = snapshot.tasks.some(({ interrupts }) =>
-            interrupts.some(({ id }) => id === request.interruptId),
+          // ⚠ It deliberately does NOT refuse when the thread is waiting on
+          // NOTHING, and that half is the one worth reading twice. A run whose
+          // lifecycle node threw — or whose process died mid-superstep — leaves
+          // a pending TASK with zero pending interrupts, and a resume is the
+          // only way to advance it: `execute` exposes no replay that carries no
+          // interrupt id, `getState` is read-only, and `kind: 'start'`
+          // overwrites the control. Refusing on `tasks.length > 0` instead, as
+          // the first version of this did, makes every id a caller can send an
+          // error and a crashed run UNRESUMABLE. That is a recovery path this
+          // change has no business removing, and it was removed by accident
+          // rather than chosen.
+          //
+          // Nothing is given up by allowing it. The substitution that route
+          // reached is closed in `pickGraphOwnedControl`, at the primitive,
+          // which is where a class gets closed rather than a route.
+          // see hitl-resume-contract.test.mjs › "advances a run past a
+          // transient node failure when the caller retries the same id" and ›
+          // "refuses a stale ${label} decision while the run waits on a
+          // different interrupt"
+          //
+          // A FINISHED run is the same shape for a different reason — nothing
+          // pending at all — and resuming one stays the no-op that resolves.
+          // see hitl-resume-contract.test.mjs › "resolves a resume of a run
+          // that already finished, rather than calling it a missing checkpoint"
+          const pendingInterruptIds = new Set(
+            snapshot.tasks.flatMap(({ interrupts }) =>
+              interrupts.map(({ id }) => id),
+            ),
           );
-          if (!targetsPendingInterrupt && snapshot.tasks.length > 0) {
+          const targetsPendingInterrupt = pendingInterruptIds.has(
+            request.interruptId,
+          );
+          if (pendingInterruptIds.size > 0 && !targetsPendingInterrupt) {
             throw new Error(
-              `resume targets interrupt ${request.interruptId}, which is no longer pending on thread ${executionConfig.threadId}: the run has moved on and this decision would answer nothing`,
+              `resume targets interrupt ${request.interruptId}, which is not the interrupt thread ${executionConfig.threadId} is waiting on: answering a superseded review would decide nothing`,
             );
           }
 

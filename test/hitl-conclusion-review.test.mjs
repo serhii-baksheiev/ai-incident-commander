@@ -930,8 +930,8 @@ test('a stale interrupt id cannot complete a newer review', async () => {
     );
     assert.match(
       staleReplay.error.message,
-      /no longer pending/,
-      `the refusal must say the interrupt is stale: ${staleReplay.error.message}`,
+      /not the interrupt thread .* is waiting on/,
+      `the refusal must say the run is waiting on a different interrupt: ${staleReplay.error.message}`,
     );
     assert.equal(
       staleReplay.error.message.includes(firstInterrupt.id),

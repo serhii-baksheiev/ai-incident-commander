@@ -1,11 +1,18 @@
 # Where the graph refuses a control field it does not own — and why not at the serde
 
-The rule this serves is in `.claude/rules/autonomy.md` ("Never" — a run must not
-complete with the human-review gate disarmed) and the mechanism is in
-`packages/graph/src/investigation.ts`. This file is the part that is a
-*decision* rather than a mechanism: AIC-92 had three candidate remedies, two of
-them were taken and one was not, and the one that was not is the interesting
-one. It is not loaded into any session.
+The invariant this serves is a **product** one, not a process rule, and it is
+worth saying where it actually lives: `humanReview` is what the
+`propose_conclusion` edge routes on and what `assertInteractiveRunIdentity`
+gates, `IncidentStateControlSchema` in `packages/domain` declares it required,
+and `test/hitl-conclusion-review.test.mjs` is where "a run under review does not
+finish without one" is pinned. Nothing in `.claude/rules/` says it; the rulebook
+governs how work is done here, not what this graph guarantees.
+
+The mechanism is in `packages/graph/src/investigation.ts`. This file is the part
+that is a *decision* rather than a mechanism: AIC-92 had several candidate
+remedies, some were taken and one was not, and two of the ones taken were wrong
+on their first attempt in ways worth recording. It is not loaded into any
+session.
 
 ## What was actually wrong
 
@@ -18,7 +25,7 @@ Four tickets, in order, and the shape of the mistake they share:
 | AIC-90 | the same call in `reviewConclusion` | what `graph.invoke` deserialized, second copy |
 | AIC-92 | an own-property read inside `pickGraphOwnedControl` | the value, wherever it came from |
 
-The first three are **refusal sites**. Each one asks "does this object own its
+The first three are **refusal sites**. Each asks "does this object own its
 fields" of one object, at one moment. `pickGraphOwnedControl` sat downstream of
 all of them doing this:
 
@@ -27,41 +34,73 @@ defineOwnValue(picked, field, control[field]);   // [[Get]] in, own property out
 ```
 
 A value the prototype supplied went in unowned and came out **owned**. So a
-route that reached a wrapped lifecycle node without passing a refusal site did
-not merely evade one check — it manufactured a control that satisfied every
-check after it. Three sites, and the class stayed open, because the sites were
-never the thing that decided ownership.
+route reaching a wrapped lifecycle node without passing a refusal site did not
+merely evade one check — it manufactured a control that satisfied every check
+after it. Three sites, and the class stayed open, because the sites were never
+what decided ownership.
 
-That is the general lesson worth carrying: **a guard that normalises its input
-defeats the guards downstream of it.** Adding a fourth site would have been the
-fourth instance of the same mistake.
+The general lesson worth carrying: **a guard that normalises its input defeats
+the guards downstream of it.** A fourth site would have been the fourth instance
+of the same mistake.
 
-## The routes, and why the primitive was the fix rather than the routes
+## The routes, and why the primitive was the fix
 
 Two reached it, both through `createInvestigationGraph`'s own API:
 
-1. **A stale `interruptId`.** `execute` computed `targetsPendingInterrupt` and
-   used it only to gate one extra assertion, so a resume naming an interrupt the
-   run had moved past replayed the thread's pending task — a wrapped node — with
-   `reviewConclusion` never running. Measured on `d8bdea1`: pause, reject, a node
-   fails transiently, retry the same id with `Object.prototype.humanReview`
+1. **A stale `interruptId`.** A resume naming an interrupt the run had moved
+   past replayed the thread's pending task — a wrapped node — with
+   `reviewConclusion` never running. Measured on `d8bdea1`: pause, reject, a
+   node fails transiently, retry the same id with `Object.prototype.humanReview`
    armed as an accessor returning `false` at each microtask turn — turns 1-33
    refused, **34-175 substituted**, 176+ clean.
 2. **A caller-supplied node calling `interrupt()`.** Resuming it re-enters at
-   that node, which is wrapped, with a **pending** id — so remedy 1 does not
-   touch it. `InvestigationNode` does not declare `interrupt()`; nothing refused
-   a node that called it.
+   that node, which is wrapped, with a **pending** id.
 
 "Substituted" is the outcome worth naming precisely, because a parse-based
 oracle scores it as clean: the run completes, `humanReview: false` reaches disk,
 the control **parses**, and the review node never runs again. AIC-90 fixed a
-*corrupt* control, which at least anything reading it back can see. This one
+*corrupt* control, which anything reading it back can at least see. This one
 leaves nothing behind.
 
-Route 2 is why the fix went into the primitive. Closing route 1 alone would have
-left the same laundering reachable by a caller who writes a node that pauses
-itself; closing the primitive closes both, and closes the third route nobody has
-found yet.
+Route 2 is why the fix went into the primitive rather than onto route 1.
+Closing route 1 alone leaves the same laundering reachable by a caller who
+writes a node that pauses itself — and closes nothing about the third route
+nobody has found yet.
+
+## Two mistakes made on the way, both found by the gates
+
+Recorded because each is easy to make again and neither is visible from the
+finished code.
+
+**The refusal was first conditioned on the value still being reachable.** The
+guard read `if (field in control && !OPTIONAL_CONTROL_FIELDS.has(field))`. That
+fails open, and `security-scanner` demonstrated it end to end: the mechanism is
+a swallowed *write*, so a setter that takes the deserializer's one assignment
+and then deletes itself leaves the field **absent with a pristine prototype**.
+`field in control` is then false, the field lands as an own `undefined`, and for
+`humanReview` that is what the attacker wanted — falsy at the routing edge, an
+early return out of the identity check, and now OWN, so it shadows anything the
+prototype could still carry. The invariant is presence as an own data property,
+full stop; reachability at the moment the guard happens to look is not part of
+it.
+
+**The stale-`interruptId` refusal first made crashed runs unresumable.** The
+first version refused whenever the named interrupt was not pending and the
+thread had any pending task. `code-reviewer` probed the consequence: a run whose
+lifecycle node threw — or whose process died mid-superstep — has a pending task
+and **zero** pending interrupts, so every id a caller could send was refused,
+and `execute` exposes no replay that carries no interrupt id, `getState` is
+read-only, and `kind: 'start'` overwrites the control. On `main` that same call
+recovered the run. A recovery path was being removed as a side effect, and
+nothing in the change recorded it — which is the part that made it a defect
+rather than a trade.
+
+The narrower rule is about answering the **wrong** question rather than about
+ownership: a decision naming an interrupt while the run waits on a *different*
+one is refused, because it answers a question that has already been replaced. A
+run waiting on **no** interrupt is still resumable, and a finished run's resume
+stays the no-op that resolves. Nothing is given up, because the substitution
+that route reached is closed at the primitive.
 
 ## The remedy that was not taken: a define-semantics serde
 
@@ -78,71 +117,97 @@ its constructor and `.serde` is a public assignable field — so injecting one i
 it was measured to work: zero refusals and zero substitutions at every arming
 turn on all three resume routes.
 
-**It was rejected, and on three grounds, in descending order of weight:**
+**It was rejected, on three grounds in descending order of weight:**
 
 1. **It absorbs the attempt where refusal reports it.** A repaired control is
    indistinguishable from one that was never attacked. This repository's own
-   test says so out loud, in the header of
-   hitl-resume-contract.test.mjs › "refuses the pollution armed at a turn inside
-   the measured window": a fix that made the resume immune instead "would
-   complete cleanly and redden this row… choosing immunity over refusal is a
-   caller-visible decision about whether an attempted substitution is reported."
-   Taking the serde would have meant deleting that assertion — which is exactly
-   the shape this project refuses to call a fix.
+   test says so, in the header of hitl-resume-contract.test.mjs › "refuses the
+   pollution armed at a turn inside the measured window": a fix that made the
+   resume immune instead "would complete cleanly and redden this row… choosing
+   immunity over refusal is a caller-visible decision about whether an attempted
+   substitution is reported." Taking the serde meant deleting that assertion.
 2. **It puts the check on the wrong side of a boundary.** Ownership of
    graph-owned control is the graph's invariant. Enforcing it in
    `packages/persistence` makes the graph's guarantee depend on which
    checkpointer a caller wired up, and a caller passing their own
    `BaseCheckpointSaver` would silently lose it.
 3. **It makes this repository own behaviour the dependency may change**, plus a
-   second `JSON.parse` per load. A minor upgrade to the reviver — the fix is
-   obvious enough that upstream may well make it — would leave a module here
-   compensating for something that no longer happens, and nothing would say so.
+   second `JSON.parse` per load. The fix is obvious enough that upstream may
+   well make it, leaving a module here compensating for something that no longer
+   happens, with nothing to say so.
 
-The two are not mutually exclusive, and the door is left open: if a future
-version of this system needs the substitution to be *unrepresentable* rather
-than *refused*, the serde is where that goes, and the ownership checks stay as
-tripwires that should then never fire. What must not happen is the serde landing
-quietly and the refusal rows being deleted to make room for it.
+The two are not exclusive, and the door is left open: if this system ever needs
+the substitution to be *unrepresentable* rather than *refused*, the serde is
+where that goes, and the ownership checks stay as tripwires that should never
+fire. What must not happen is the serde landing quietly and the refusal rows
+being deleted to make room for it.
 
-## The one place the fix is immunity rather than refusal, and why
+## Two checks on the resume path, and why they are not one
 
-`pickGraphOwnedControl` refuses a field that is reachable on the prototype chain
-but not own — **unless the schema lets that field be absent**. Today that is
+`assertOwnControlFields` asks only that a field which is **present** be own.
+That is the right question for a `kind: 'start'` state, where a field missing
+entirely must produce the schema's parse error rather than an ownership
+complaint. A restored control has been parsed once already, so a required field
+missing from it is not an omission — it is damage.
+
+`assertRestoredControlFieldsPresent` is therefore a second, resume-only check.
+It matters because `pickGraphOwnedControl` alone is not enough on every route: a
+`confirm` reaches END from `reviewConclusion` without entering a single wrapped
+node, and before this check a `confirm` on a control whose `humanReview` had
+been erased **completed the run** and wrote a control the domain schema rejects.
+
+It runs **after** `assertPersistedStateVersion` and must never move above it.
+"Required" is a fact about the *current* schema, so a checkpoint written by an
+older one is missing fields legitimately and has to be refused for being stale.
+Moving that one line up replaces six version-boundary refusals with an ownership
+complaint about the first counter the older schema had not invented yet.
+
+## The one place the fix is immunity rather than refusal
+
+`pickGraphOwnedControl` refuses a required graph-owned field that is not an own
+data property — **unless the schema lets that field be absent**. Today that is
 `stopKind` and only `stopKind`, but the set is asked of
-`IncidentStateControlSchema` rather than written down, so a field that gains or
-loses optionality carries the classification with it.
+`IncidentStateControlSchema` rather than written down.
 
-The asymmetry is real rather than cosmetic. For a required field, "absent as an
-own property while reachable through the prototype" cannot describe a healthy
-control — it *is* the substitution. For an optional one, absence is the normal
-shape of a run that has not stopped, and nothing can distinguish "the caller
-omitted it" from "the caller omitted it and someone armed the prototype". So the
-prototype is not consulted, the field lands `undefined`, and the wrapper
-restores it only when it carries a value. The attacker's value reaches the
-control in neither case; the difference is only whether the attempt is reported.
+The question it asks is deliberately narrower than "does the parse succeed". A
+schema accepts `undefined` for `.default(x)`, `.catch(x)`, `z.any()` and
+`z.unknown()` as well as for `.optional()`, so the classification also requires
+the parse to *yield* `undefined`. Without that, a graph-owned field gaining a
+default would stop being refused and instead land `undefined`, be dropped by
+JSON, and be re-read as the default — for `humanReview`, the review gate quietly
+resetting itself, which is this ticket's own failure mode downgraded from loud
+to silent.
 
-Refusing the optional half would also have broken a contract that predates this
-work: graph-owned-control-contract.test.mjs › "keeps graph-owned control intact
-while Object.prototype carries a setter of that name" requires a run to survive
-an inherited accessor on **every** graph-owned field and write the control it
-would have written anyway. That row was written for AIC-73 and is about the
-wrapper, not about resumes; on the start path, where every required field
-carries its own value, nothing is being substituted and there is nothing to
-report.
+The asymmetry is real rather than cosmetic. For a required field, missing as an
+own data property cannot describe a healthy control. For an optional one,
+absence is the normal shape of a run that has not stopped, and nothing can
+distinguish "the caller omitted it" from "the caller omitted it and someone
+armed the prototype". So the prototype is not consulted and the field lands
+`undefined`. The attacker's value reaches the control in neither case; the
+difference is only whether the attempt is reported.
+
+Refusing the optional half would also break a contract that predates this work:
+graph-owned-control-contract.test.mjs › "keeps graph-owned control intact while
+Object.prototype carries a setter of that name" requires a run to survive an
+inherited accessor on **every** graph-owned field and write the control it would
+have written anyway.
+
+⚠ One thing here is general and one is not. The classification is derived; the
+handling downstream is not — `preserveGraphOwnedControl` destructures `stopKind`
+by name and restores it only when it carries a value. A second optional
+graph-owned field would land `undefined` here and be spread as `undefined`
+there. Survivable, and not what the derivation would lead a reader to expect;
+whoever adds one owns that line too.
 
 ## What changed for callers
 
-A resume naming an interrupt that is no longer pending, on a thread that still
-has pending work, is now **refused by name** instead of resolving. It used to
-replay the pending task with the resume map unmatched and hand back whatever
-interrupt was already there, which a caller who did not compare interrupt ids
-read as success.
+A resume naming an interrupt while the thread waits on a **different** one is
+now refused by name. It used to replay the pending task with the resume map
+unmatched and hand back whatever interrupt was already there, which a caller not
+comparing interrupt ids read as success.
 
-The condition carries `tasks.length > 0` deliberately. A **finished** run has no
-pending task and no pending interrupt either, and resuming one stays a no-op
-that resolves — refusing it would be a false statement about a thread that has a
-checkpoint and a real state. That contract is pinned in
-hitl-resume-contract.test.mjs › "resolves a resume of a run that already
-finished, rather than calling it a missing checkpoint", and it is the row that
-stops the refusal from being widened into it.
+Unchanged, deliberately, and each pinned by a row: a run waiting on **no**
+interrupt — the shape a thrown lifecycle node or a dead process leaves — is
+still resumable, because a resume is the only way to advance it; and a
+**finished** run's resume stays a no-op that resolves, since refusing it would
+be a false statement about a thread that has a checkpoint and a real state.

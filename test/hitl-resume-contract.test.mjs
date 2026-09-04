@@ -1779,24 +1779,29 @@ function describeTurns(turns) {
  * of refusal before it and 37 turns of clean completion after it, so both edges
  * are covered rather than assumed.
  *
- * It CANNOT see: an arming turn past 200; the other twelve control fields; and
- * any window a future change opens at a turn this scan steps over.
+ * It CANNOT see: an arming turn past 200; the other twelve control fields; the
+ * `reject` and `add_hypothesis` resumes, whose replays are longer and have
+ * their own unmeasured windows; and any window a future change opens at a turn
+ * this scan steps over.
  *
- * ⚠ What it cannot see past 200 is NOT "a chain that never fires", which is what
- * this paragraph claimed until AIC-92 measured it. Re-measured on this machine,
- * the chain arms at every turn through **329** and stops only at 330, where the
- * resume settles in fewer microtask turns than the chain needs. So 164-329 are
- * clean because both deserializations are already past by the time the accessor
- * lands — not because nothing was armed. The old sentence understated the
+ * ⚠ Why it cannot see past 200 is the RANGE, not "a chain that never fires" —
+ * which is what this paragraph claimed until AIC-92 checked it. A chain still
+ * arms the prototype well beyond turn 163, and turns there are clean because
+ * both deserializations are already past by the time the accessor lands, not
+ * because nothing was armed. That is a claim about a mechanism, so it is a row
+ * rather than a sentence: see › "arms the prototype well past the scan's range,
+ * and lands after both deserializations". The old wording understated the
  * coverage in the safe direction while misstating the mechanism, in the
- * paragraph a reader trusts about the scan's reach; a limits block that is
+ * paragraph a reader trusts about the scan's reach — a limits block that is
  * wrong about WHY is the shape that survives review, because the conclusion
  * still reads right.
  *
- * The `reject` and `add_hypothesis` routes replay more nodes and had their own,
- * longer window. That is no longer unmeasured: the stale-retry scan further
- * down this file covers the `reject` retry route, and it is where the 34-175
- * window AIC-92 closed was measured.
+ * ⚠ The `reject` and `add_hypothesis` limit above stays, and a reader comparing
+ * this block with the stale-retry scan further down should not read that scan
+ * as closing it. That one covers the `reject` route only, and only on a
+ * SUPERSEDED interrupt id — a different replay from the ordinary in-contract
+ * `reject` resume this block is about. `add_hypothesis` gains nothing from it;
+ * that scan's own limits block says so.
  *
  * So this row SAMPLES the absence of a window. It does not prove one. If it
  * goes red on a turn outside 40-163, the correct response is to re-measure the
@@ -1918,6 +1923,42 @@ test('refuses the pollution armed at a turn inside the measured window', async (
 });
 
 /**
+ * The mechanism behind the limits block's "past 200 is the range, not a chain
+ * that never fires", so that sentence is a pointer rather than a claim.
+ *
+ * One turn well past the scan's last, chosen inside the region the old wording
+ * called unarmed. Both halves are asserted, and neither is enough alone: the
+ * chain DID reach its turn during the resume, and the resume was clean anyway —
+ * which is the corrected mechanism, a late accessor rather than an absent one.
+ *
+ * It does not pin the exact turn the chain stops firing at. That number moves
+ * with the machine, and a row asserting it would be a flake rather than a
+ * limit; what has to be true is that arming continues past the range this scan
+ * covers.
+ *
+ * Cost, measured: one resume, ~30ms.
+ */
+const TURN_PAST_SCAN_RANGE = 250;
+
+test("arms the prototype well past the scan's range, and lands after both deserializations", async () => {
+  const raced = await resumeRacedByMicrotaskChain({
+    runId: 'run-resume-race-past-range',
+    turn: TURN_PAST_SCAN_RANGE,
+  });
+
+  assert.equal(
+    raced.armed,
+    true,
+    `the chain did not reach turn ${TURN_PAST_SCAN_RANGE} during the resume, so turns past the scan's range really are unarmed and the limits block above is wrong the other way`,
+  );
+  assert.equal(
+    raced.kind,
+    'clean',
+    `a turn past the scan's range must land after both deserializations, not produce a ${raced.kind} outcome`,
+  );
+});
+
+/**
  * The control arm, and the reason the two rows above mean what they say.
  *
  * The same self-rescheduling chain, interleaved with the same resume at the
@@ -1964,17 +2005,26 @@ test('completes a resume interleaved with a microtask chain that arms nothing', 
  * The two routes measured to reach it, both entirely through
  * `createInvestigationGraph`'s own API:
  *
- * 1. **A stale `interruptId`.** `execute` computed `targetsPendingInterrupt`
- *    and used it only to decide whether to run one extra assertion, so a resume
- *    whose interrupt is no longer pending replayed the thread's pending task —
- *    a WRAPPED lifecycle node — and `preserveGraphOwnedControl` ran before
- *    `reviewConclusion` ever did. What a CLI does after a transient failure:
- *    pause, reject, a node throws, retry the same id.
+ * 1. **A stale `interruptId`.** A resume whose interrupt is no longer pending
+ *    replays the thread's pending task — a WRAPPED lifecycle node — so
+ *    `preserveGraphOwnedControl` runs before `reviewConclusion` ever does. What
+ *    a CLI does after a transient failure: pause, reject, a node throws, retry
+ *    the same id.
  * 2. **A caller-supplied node that calls `interrupt()`.** Resuming it re-enters
- *    at that node, which is wrapped, with the same result and a PENDING id — so
- *    the stale-id refusal below does not cover it. `InvestigationNode` does not
- *    declare `interrupt()`, but nothing refuses a node that calls it, and a
- *    contract gap a caller can walk through is a route.
+ *    at that node, which is wrapped, with the same result and a PENDING id.
+ *    `InvestigationNode` does not declare `interrupt()`, but nothing refuses a
+ *    node that calls it, and a contract gap a caller can walk through is a
+ *    route.
+ *
+ * ⚠ Both are closed at the PRIMITIVE, and no row here is satisfied by a route
+ * refusal. An earlier version of this change also refused the stale id in
+ * `execute`, which would have made route 1's rows green without
+ * `pickGraphOwnedControl` doing anything — and, worse, made a run whose node
+ * threw unresumable, since such a thread has a pending task and zero pending
+ * interrupts and `execute` offers no replay that carries no id. What survives
+ * of that idea is narrower and is about answering the wrong question rather
+ * than about ownership: a decision naming an interrupt while the run waits on a
+ * DIFFERENT one is refused, and a run waiting on none is still resumable.
  *
  * Measured on `main` (d8bdea1) for route 1, arming
  * `Object.prototype.humanReview` as an accessor returning `false` at each turn
@@ -1998,8 +2048,9 @@ test('completes a resume interleaved with a microtask chain that arms nothing', 
  * which is schema-valid — that is the whole point. */
 const RETRY_EXPECTED_HUMAN_REVIEW = true;
 
-/** The refusal route 1 must produce, in the graph's own words. */
-const STALE_INTERRUPT_REFUSAL = /no longer pending/;
+/** The refusal a decision aimed at a SUPERSEDED interrupt must produce, in the
+ * graph's own words. */
+const SUPERSEDED_INTERRUPT_REFUSAL = /not the interrupt thread .* is waiting on/;
 
 /**
  * Lifecycle nodes with one arming hook: `armFailure(name)` makes that node
@@ -2149,6 +2200,16 @@ async function retryStaleInterruptRacedByMicrotaskChain({
  *
  * The deterministic rows below are what carry the regression signal. This one
  * is what would catch the window MOVING.
+ *
+ * ⚠ Under the shipped code every row here is the same ownership refusal, so it
+ * is a weak signal on its own — reverting `pickGraphOwnedControl` alone is what
+ * reddens it, and that is the mutation this scan exists for.
+ *
+ * Cost, measured on this machine, as two figures rather than a difference:
+ * this row run alone reports 5.2s, and the whole file reports 9.3s. 200
+ * sequences of a start, a failed resume and a retry against a real SQLite
+ * checkpointer. Both include the runner's own startup, which the row below
+ * puts at about 0.5s.
  */
 const RETRY_SCAN_FIRST_TURN = 1;
 const RETRY_SCAN_LAST_TURN = 200;
@@ -2195,16 +2256,21 @@ test('no arming turn launders a value into the control a stale retry persists', 
 
 /**
  * The deterministic row for route 1, at a turn well inside the measured window:
- * 100 sits 66 turns past the substitution edge and 75 short of the clean one,
- * the widest margin 34-175 offers.
+ * 100 sits 66 turns past the substitution edge and 75 short of the clean one.
  *
- * It asserts the STALE-ID refusal by name rather than any refusal. Ten other
- * refusals are already reachable on this path — `INCIDENTAL_RESUME_REFUSALS` —
- * and "it threw" would be green for every one of them.
+ * ⚠ It asserts the OWNERSHIP refusal, and that is the point of the row rather
+ * than a detail of it. An earlier version of this change also refused the stale
+ * id in `execute`, which closed this route before a node ran — and made this row
+ * green for a reason that had nothing to do with the primitive. The refusal here
+ * has to come from `pickGraphOwnedControl`, or the class is not what is closed.
+ *
+ * Ten other refusals are already reachable on this path —
+ * `INCIDENTAL_RESUME_REFUSALS` — so "it threw" would be green for every one of
+ * them.
  */
 const RETRY_TURN_INSIDE_WINDOW = 100;
 
-test('refuses a retry of an interrupt the run has already moved past', async () => {
+test('refuses the value a stale retry launders into a wrapped node', async () => {
   const raced = await retryStaleInterruptRacedByMicrotaskChain({
     runId: 'run-stale-retry-inside-window',
     turn: RETRY_TURN_INSIDE_WINDOW,
@@ -2218,19 +2284,31 @@ test('refuses a retry of an interrupt the run has already moved past', async () 
   assert.equal(
     raced.kind,
     'refused',
-    `a retry of a stale interrupt id must be refused, not resumed to a ${raced.kind} completion`,
+    `a retry carrying a laundered graph-owned field must be refused, not resumed to a ${raced.kind} completion`,
   );
 
   const message = raced.outcome.error.message;
   assert.doesNotMatch(
     message,
     INCIDENTAL_RESUME_REFUSALS,
-    `refusing for a reason that is not the stale id is not this defect being fixed: ${message}`,
+    `refusing for an unrelated reason is not this defect being fixed: ${message}`,
   );
-  assert.match(
+  assert.doesNotMatch(
     message,
-    STALE_INTERRUPT_REFUSAL,
-    `the refusal must say the interrupt is no longer pending, not: ${message}`,
+    SUPERSEDED_INTERRUPT_REFUSAL,
+    `this route must be closed by the ownership guard, not by a refusal that never lets it run: ${message}`,
+  );
+
+  const named = OWN_CONTROL_REFUSAL.exec(message);
+  assert.notEqual(
+    named,
+    null,
+    `the refusal must be the graph's own words about ownership, not: ${message}`,
+  );
+  assert.equal(
+    named[1],
+    POLLUTED_FIELD,
+    `the refusal named ${named?.[1]} while the prototype supplied ${POLLUTED_FIELD}`,
   );
   assert.equal(
     raced.persistedControl[POLLUTED_FIELD],
@@ -2240,49 +2318,121 @@ test('refuses a retry of an interrupt the run has already moved past', async () 
 });
 
 /**
- * Route 1 without any pollution at all — the contract half, and the reason the
- * refusal is a fix rather than a side effect of the guard above.
+ * The recovery path, and it is here because closing route 1 at the ROUTE would
+ * have silently taken it away.
  *
- * A stale retry was a silent no-op: it resolved, replayed the pending task, and
- * told the caller nothing about the id it ignored. All three decisions, because
- * `add_hypothesis` is the one that read the snapshot on its own before this
- * change and could refuse for a different reason.
+ * A lifecycle node that throws — or a process that dies mid-superstep — leaves
+ * a thread with a pending TASK and **zero** pending interrupts. A resume is the
+ * only way to advance it: `execute` has no replay that carries no interrupt id,
+ * `getState` is read-only, and `kind: 'start'` overwrites the control. An
+ * earlier version of this change refused on `tasks.length > 0`, which made
+ * every id a caller could send an error and a crashed run unresumable. Nothing
+ * asked for that, and nothing would have recorded it.
+ *
+ * So the row asserts the recovery, and the sibling below asserts that the
+ * refusal still fires where it belongs. Neither is safe to have alone.
+ */
+test('advances a run past a transient node failure when the caller retries the same id', async () => {
+  const { nodes, armFailure } = nodesWithTransientFailure();
+  const harness = createHarness({ runId: 'run-transient-failure-recovery', nodes });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    armFailure('derive_predictions');
+    const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in failed,
+      true,
+      'the transient failure must reject the first resume, or there is nothing to recover from',
+    );
+
+    const stranded = await harness.execution.getState(harness.config);
+    assert.ok(
+      stranded.tasks.length > 0,
+      'the crashed run must still have pending work',
+    );
+    assert.deepEqual(
+      stranded.tasks.flatMap(({ interrupts }) => interrupts.map(({ id }) => id)),
+      [],
+      'the crashed run must be waiting on no interrupt at all — that is the shape this row is about',
+    );
+
+    const recovered = await harness.resumeWith(pending.id, { action: 'reject' });
+    assert.equal(
+      'error' in recovered,
+      false,
+      `a retry must advance a run whose node threw, not strand it: ${recovered.error?.message ?? ''}`,
+    );
+    assert.equal(
+      isInterrupted(recovered.value),
+      true,
+      'the recovered run must reach its next human review rather than completing unreviewed',
+    );
+
+    const control = await harness.control();
+    assert.equal(
+      control[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'recovery must leave the run under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The refusal where it does belong: the thread IS waiting on an interrupt, and
+ * the caller named a different one — a decision aimed at a question that has
+ * already been replaced.
+ *
+ * All three decisions, because `add_hypothesis` is the one that reads the
+ * snapshot on its own and could refuse for an unrelated reason.
  */
 for (const { label, decision } of resumeDecisions) {
-  test(`refuses a stale ${label} retry by name, with nothing on the prototype`, async () => {
-    const { nodes, armFailure } = nodesWithTransientFailure();
-    const harness = createHarness({
-      runId: `run-stale-retry-${label}`,
-      nodes,
-    });
+  test(`refuses a stale ${label} decision while the run waits on a different interrupt`, async () => {
+    const harness = createHarness({ runId: `run-superseded-${label}` });
 
     try {
       const interrupted = await harness.start();
-      const [pending] = interrupted[INTERRUPT];
+      const [first] = interrupted[INTERRUPT];
 
-      armFailure('derive_predictions');
-      const failed = await harness.resumeWith(pending.id, { action: 'reject' });
+      const reopened = await harness.resume(interrupted, { action: 'reject' });
       assert.equal(
-        'error' in failed,
-        true,
-        'the transient failure must reject the first resume',
+        'error' in reopened,
+        false,
+        `the reject must reopen the review: ${reopened.error?.message ?? ''}`,
+      );
+      const [second] = reopened.value[INTERRUPT];
+      assert.notEqual(
+        second.id,
+        first.id,
+        'the reopened review must carry a new interrupt id, or nothing here is superseded',
       );
 
-      const outcome = await harness.resumeWith(pending.id, decision(1));
+      const outcome = await harness.resumeWith(first.id, decision(1));
       assert.equal(
         'error' in outcome,
         true,
-        'a retry of an interrupt the run has moved past must be refused, not silently replayed',
+        'a decision aimed at a superseded interrupt must be refused, not replayed into a resolved-looking answer',
       );
       assert.match(
         outcome.error.message,
-        STALE_INTERRUPT_REFUSAL,
-        `the refusal must name the stale interrupt: ${outcome.error.message}`,
+        SUPERSEDED_INTERRUPT_REFUSAL,
+        `the refusal must say the run is waiting on a different interrupt: ${outcome.error.message}`,
       );
       assert.equal(
-        outcome.error.message.includes(pending.id),
+        outcome.error.message.includes(first.id),
         true,
-        'the refusal must name the id the caller sent, so a CLI can tell which retry it was',
+        'the refusal must name the id the caller sent, so a CLI can tell which decision it was',
+      );
+
+      const stillPending = await harness.execution.getState(harness.config);
+      assert.equal(
+        stillPending.tasks[0].interrupts[0].id,
+        second.id,
+        'the refusal must leave the newer review exactly where it was',
       );
     } finally {
       harness.cleanup();
@@ -2412,8 +2562,8 @@ test('refuses a control the prototype supplies to a wrapped node, on a pending i
   );
   assert.doesNotMatch(
     message,
-    STALE_INTERRUPT_REFUSAL,
-    `this id IS pending, so the stale-id refusal must not be what answers here: ${message}`,
+    SUPERSEDED_INTERRUPT_REFUSAL,
+    `this id IS the one the run waits on, so the superseded-interrupt refusal must not be what answers here: ${message}`,
   );
 
   const named = OWN_CONTROL_REFUSAL.exec(message);
@@ -2464,6 +2614,160 @@ test('completes a resume of an off-contract pause when nothing is polluted', asy
     'the replay must re-enter the wrapped node that paused, or the polluted row above tests nothing',
   );
 });
+
+/**
+ * The half the first version of this guard left open, and the reason the
+ * refusal does not ask whether the prototype is still carrying the value.
+ *
+ * The mechanism is a swallowed WRITE. A setter that takes the deserializer's
+ * one assignment and then deletes itself leaves the field **absent, with a
+ * pristine prototype** — so a guard conditioned on `field in control` sees
+ * nothing and defines the field as an own `undefined`. For `humanReview` that
+ * is the value the attacker wants: falsy at the `propose_conclusion` edge, an
+ * early return out of `assertInteractiveRunIdentity`, and — because it is now
+ * OWN — a shadow that hides anything the prototype could still carry.
+ *
+ * This row models the state such a gadget leaves rather than the gadget: the
+ * restored control simply has no `humanReview`, on an ordinary prototype. That
+ * is deterministic, needs no timing, and is the same input the self-erasing
+ * setter produces. Found by `security-scanner` on the first version of this
+ * change, where it completed the run with the review gate disarmed.
+ */
+function withoutOwnField(control, field) {
+  const descriptors = Object.getOwnPropertyDescriptors(control);
+  delete descriptors[field];
+  return Object.create(Object.prototype, descriptors);
+}
+
+test('refuses a required control field erased before a wrapped node runs on it', async () => {
+  const harness = createHarness({
+    runId: 'run-field-erased-by-a-swallowed-write',
+    nodes: nodesPausingOffContract(),
+  });
+
+  try {
+    const interrupted = await harness.startRaw();
+    const [pending] = interrupted[INTERRUPT];
+
+    let reads = 0;
+    harness.rewriteEveryPersistedControl((persisted) => {
+      reads += 1;
+      return reads >= POLLUTED_FROM_SECOND_READ
+        ? withoutOwnField(persisted, POLLUTED_FIELD)
+        : persisted;
+    });
+
+    const outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    harness.rewriteEveryPersistedControl(undefined);
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a required graph-owned field that is absent must be refused however it went missing, not defined as an own undefined',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+    );
+
+    const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+    assert.notEqual(
+      named,
+      null,
+      `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+    );
+    assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+    const persistedControl = await harness.control();
+    assert.equal(
+      persistedControl[POLLUTED_FIELD],
+      RETRY_EXPECTED_HUMAN_REVIEW,
+      'the refused run must still be under human review',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The same damage on the route where NO wrapped node runs, which is why the
+ * primitive cannot be the only thing that refuses it.
+ *
+ * A `confirm` reaches END from `reviewConclusion` without entering a single
+ * wrapped node, so `pickGraphOwnedControl` never sees the control. Measured
+ * before `assertRestoredControlIsWhole` existed: the run COMPLETED and wrote a
+ * control with no `humanReview` at all — `IncidentStateControlSchema` rejects
+ * it, so the damage is at least visible, but the run finished on it and the
+ * checkpoint is unusable.
+ *
+ * `assertOwnControlFields` cannot be the check that catches this: it asks only
+ * that a PRESENT field be own, which is the right question for a caller's
+ * `kind: 'start'` state, where a missing field must produce the schema's parse
+ * error rather than an ownership one. A restored control has been parsed once
+ * already, so a required field missing from it is damage rather than an
+ * omission.
+ *
+ * All three decisions, because they reach the check through different routes —
+ * `confirm` through `reviewConclusion` alone, the other two with wrapped nodes
+ * behind them.
+ */
+for (const { label, decision } of resumeDecisions) {
+  test(`refuses a ${label} whose restored control lost a required field, leaving the checkpoint intact`, async () => {
+    const harness = createHarness({ runId: `run-erased-field-${label}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+
+      let reads = 0;
+      harness.rewriteEveryPersistedControl((persisted) => {
+        reads += 1;
+        return reads >= POLLUTED_FROM_SECOND_READ
+          ? withoutOwnField(persisted, POLLUTED_FIELD)
+          : persisted;
+      });
+
+      const outcome = await harness.resumeWith(pending.id, decision(1));
+      harness.rewriteEveryPersistedControl(undefined);
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        'a restored control missing a required field must be refused, not run on',
+      );
+      assert.doesNotMatch(
+        outcome.error.message,
+        INCIDENTAL_RESUME_REFUSALS,
+        `refusing for an unrelated reason is not this guard: ${outcome.error.message}`,
+      );
+
+      const named = OWN_CONTROL_REFUSAL.exec(outcome.error.message);
+      assert.notEqual(
+        named,
+        null,
+        `the refusal must be the graph's own words about ownership, not: ${outcome.error.message}`,
+      );
+      assert.equal(named[1], POLLUTED_FIELD, `the refusal named ${named?.[1]}`);
+
+      // The property AIC-89 established and this route would otherwise lose:
+      // a refusal must not leave behind a control the domain schema rejects.
+      const persistedControl = await harness.control();
+      assert.equal(
+        IncidentStateControlSchema.safeParse(persistedControl).success,
+        true,
+        'the refusal must land before anything writes a control the schema rejects',
+      );
+      assert.equal(
+        persistedControl[POLLUTED_FIELD],
+        RETRY_EXPECTED_HUMAN_REVIEW,
+        'the refused run must still be under human review',
+      );
+    } finally {
+      harness.cleanup();
+    }
+  });
+}
 
 /**
  * The absent-field branch of the same guard, which is the one that must NOT
