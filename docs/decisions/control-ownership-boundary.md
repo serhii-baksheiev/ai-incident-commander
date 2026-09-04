@@ -287,6 +287,32 @@ the caller's own raw `action`, read as an own data property. An object literal
 uses `CreateDataProperty`, so a literal decision keeps its own value under either
 gadget.
 
+🔴 **Two things about that comparison were wrong on the first attempt, and both
+are the same mistake in different clothes: trusting a read the attacker controls.**
+
+*The right-hand side was a plain `[[Get]]`.* It compared an own read against
+`parsed.action`, and when the parse leaves no own `action` behind that goes
+through the getter — as does the routing test further down. A getter answering
+honestly ONCE and attacker-side afterwards satisfied the guard and then decided
+the route. Measured 3/3: a human `reject` resolved the run at END. Two reads of
+one property through one getter compare whatever the getter feels like, so both
+sides are own-data reads now, and `undefined` on the caller's side is refused
+rather than compared — two absences must not agree with each other.
+
+*The field list came from the result.* `add_hypothesis` carries a `hypothesis`
+the graph writes into state, and with `Object.prototype.hypothesis` armed a
+caller sending `{ action: 'add_hypothesis' }` alone PARSES — the strict object
+reads the missing field off the prototype. Looping over `Object.keys(parsed)`
+sees nothing, because zod never makes that field own: the result's own keys are
+`['action']` while `parsed.hypothesis` still hands the graph the attacker's
+value. The list has to come from the **schema**, asked through its own options
+rather than its internals.
+
+A guard that reads its subject the way the subject wants to be read is not a
+guard. That is the same sentence as "a guard that normalises its input defeats
+the guards downstream of it", from the top of this record, arrived at from the
+other direction.
+
 WARNING — **the precondition is warmth, and the cold path is not a defence.**
 `ConclusionReviewDecisionSchema` is a discriminated union whose `propValues`
 lookup zod builds lazily and memoises. Built while the gadget is armed,
