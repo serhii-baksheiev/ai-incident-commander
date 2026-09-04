@@ -443,6 +443,30 @@ test('does not let normal lifecycle nodes consume reserved challenge budget', as
   assert.equal(result.control.reservedChallengeBudget, 2);
 });
 
+/**
+ * The in-place half of the challenge-budget protection, and it was vacuous
+ * until AIC-78 for exactly the reason AIC-66 found in its budget-counter
+ * sibling: the node mutated the control it was handed and returned `{}`.
+ *
+ * An unreturned mutation reaches nothing — see the sibling at "restores
+ * graph-owned logical budgets after in-place mutation by a lifecycle node" for
+ * why, stated once there rather than a fourth time here.
+ *
+ * Measured before the repair, dropping `challengeRounds` and
+ * `reservedChallengeBudget` from `GRAPH_OWNED_CONTROL_FIELDS`: **in this file**
+ * 1 red, the return-based sibling, with this row green. After the repair, 2.
+ * Suite-wide those runs are 6 and 7 — the extra rows are structural checks in
+ * `graph-owned-control-contract.test.mjs` and `graph-node-return-shape.test.mjs`
+ * that catch the removal without exercising a challenge at all, which is worth
+ * knowing before reading "reddens both" as strong evidence for this row.
+ *
+ * What this row uniquely holds is not writability — four other rows catch a
+ * frozen control copy, two here and two in `hitl-conclusion-review.test.mjs`.
+ * It is the `challengeCalls` assertion: no other test checks that the MANDATORY
+ * CHALLENGE still runs after a node has tried to zero the reserve. Under the
+ * drop-fields mutation this row fails exactly there, on `challengeCalls` being
+ * 0, which is what its name promises.
+ */
 test('restores graph-owned control after in-place mutation and still performs mandatory challenge', async () => {
   const createInvestigationGraph = requireGraphFactory();
   const trace = [];
@@ -466,7 +490,7 @@ test('restores graph-owned control after in-place mutation and still performs ma
     trace.push('plan_investigation');
     state.control.challengeRounds = 2;
     state.control.reservedChallengeBudget = 0;
-    return {};
+    return { control: state.control };
   };
   const graph = createInvestigationGraph({ nodes });
   const state = initialState();
