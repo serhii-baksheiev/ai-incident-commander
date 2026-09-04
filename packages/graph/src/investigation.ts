@@ -446,6 +446,62 @@ function missingControlFieldError(field: string): Error {
  * see hitl-resume-contract.test.mjs › "refuses a ${label} whose restored
  * control lost a required field, leaving the checkpoint intact"
  */
+/**
+ * Reads one field of a caller's object as an OWN DATA PROPERTY, or `undefined`.
+ *
+ * The narrow sibling of `readExactOwnDataProperties`, for the case where the
+ * shape is not fixed and only one field matters.
+ */
+function readOwnDataValue(source: unknown, key: string): unknown {
+  if (typeof source !== 'object' || source === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
+    ? descriptor.value
+    : undefined;
+}
+
+/**
+ * The parsed decision says what the CALLER's own object said.
+ *
+ * ⚠ This is not an ownership check, and the difference is the whole reason it
+ * exists. `ConclusionReviewDecisionSchema` is a discriminated union; with an
+ * accessor named `action` on `Object.prototype`, the parse returns a decision
+ * whose `action` is the attacker's — and under a setter that DEFINES on its
+ * target, that field is genuinely OWN, so `Object.hasOwn` passes it. Measured:
+ * a human `reject` resolves the run at END, `review_conclusion` never runs
+ * again, zero nodes replay, and the checkpoint records a completed, reviewed
+ * run. AIC-102.
+ *
+ * So the question asked is not "does the parsed decision own its action" but
+ * "is it the action the caller wrote". An object literal uses
+ * `CreateDataProperty`, so `{ action: 'reject' }` keeps its own `'reject'`
+ * under either gadget shape, and the comparison discriminates both.
+ *
+ * ⚠ Both parse sites need it. The boundary parse and `reviewConclusion`'s parse
+ * of the interrupt value are two separate reads of two separate objects — the
+ * pattern AIC-90 established — so validating one leaves the other free to
+ * substitute what the first just accepted.
+ *
+ * ⚠ WHAT THIS CANNOT DO. It compares two reads; it does not make the parse
+ * immune. A caller whose OWN object already carries the attacker's value is
+ * indistinguishable from a caller who meant it, which is correct — that is the
+ * caller's own decision, not a substitution.
+ *
+ * see hitl-resume-contract.test.mjs › "refuses a human reject that a
+ * read-accessor gadget rewrites into a confirm" and › "refuses a human reject
+ * that a own-writing gadget rewrites into a confirm"
+ */
+function assertDecisionIsTheCallersOwn(
+  supplied: unknown,
+  parsed: ConclusionReviewDecision,
+): void {
+  if (readOwnDataValue(supplied, 'action') !== parsed.action) {
+    throw new Error(
+      `conclusion review decision must carry its own action: the parsed decision reads ${parsed.action}, which is not the value the caller supplied as its own`,
+    );
+  }
+}
+
 function assertRestoredControlFieldsPresent(control: object): void {
   for (const field of CONTROL_FIELD_NAMES) {
     if (OPTIONAL_CONTROL_FIELDS.has(field)) continue;
@@ -523,6 +579,9 @@ function parseInvestigationExecutionInput(
   ) {
     const decision = ConclusionReviewDecisionSchema.safeParse(resume.decision);
     if (decision.success) {
+      // AFTER the parse, because the parse is what performs the substitution —
+      // the same ordering the start branch above uses for the control.
+      assertDecisionIsTheCallersOwn(resume.decision, decision.data);
       return {
         kind: 'resume',
         interruptId: resume.interruptId,
@@ -1235,13 +1294,15 @@ export function createInvestigationGraph({
     assertRestoredControlFieldsPresent(state.control);
     assertLogicalBudgetCounters(state.control);
     assertChallengeCounters(state.control);
-    const decision = ConclusionReviewDecisionSchema.parse(
-      interrupt({
-        kind: 'conclusion-review',
-        runId: state.control.runId,
-        conclusion: state.conclusion,
-      }),
-    );
+    // The value the human supplied, kept before it is parsed: the parse is
+    // where a prototype gadget substitutes, so the comparison needs both sides.
+    const suppliedDecision = interrupt({
+      kind: 'conclusion-review',
+      runId: state.control.runId,
+      conclusion: state.conclusion,
+    });
+    const decision = ConclusionReviewDecisionSchema.parse(suppliedDecision);
+    assertDecisionIsTheCallersOwn(suppliedDecision, decision);
 
     // Reaching here means the run was RESUMED: `interrupt()` throws on the
     // first pass, so everything below it executes once per resume and never on
