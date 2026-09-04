@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   INCIDENT_STATE_SCHEMA_VERSION,
+  IncidentStateControlSchema,
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
@@ -104,8 +105,10 @@ function createHarness({
     join(temporaryRoot, 'checkpoints.sqlite'),
   );
   const readTuple = checkpointer.getTuple.bind(checkpointer);
+  let tupleReads = 0;
   let rewritePersistedControl;
   checkpointer.getTuple = async (config) => {
+    tupleReads += 1;
     const tuple = await readTuple(config);
     const persisted = tuple?.checkpoint?.channel_values?.control;
     if (rewritePersistedControl !== undefined && persisted !== undefined) {
@@ -127,6 +130,9 @@ function createHarness({
     trace,
     config,
     execution,
+    tupleReads() {
+      return tupleReads;
+    },
     rewriteEveryPersistedControl(rewrite) {
       rewritePersistedControl = rewrite;
     },
@@ -1080,16 +1086,22 @@ test('refuses a checkpoint whose control channel is gone, without calling the th
 });
 
 /**
- * Limit two, and this one is a gap rather than a guarantee — pinned so it is a
- * known gap rather than a surprise.
+ * What was AIC-74's limit two, closed by AIC-89 — and this row is the reason the
+ * closing was noticed rather than silent.
  *
- * `control` present but MALFORMED — `null` — is not caught: the guard tests for
- * `undefined`, and `null !== undefined`. It reaches `assertInteractiveRunIdentity`
- * and raises the same raw TypeError this ticket removed for the absent case.
- * Unchanged from before the guard existed. If someone widens the guard to catch
- * it, this row goes red and they can delete it deliberately.
+ * AIC-74 left `control` present but MALFORMED (`null`) uncaught: its check was
+ * `values?.control === undefined`, and `null !== undefined`, so the value
+ * reached `assertInteractiveRunIdentity` and raised a raw TypeError. That row
+ * said in as many words: "if someone widens the guard to catch it, this row
+ * goes red and they can delete it deliberately."
+ *
+ * AIC-89 widened it. `readOwnControl` returns a control or nothing, and `null`
+ * is nothing — so a malformed control is now refused by name, on the same
+ * message as an absent one, which is true of it: there is no run to resume.
+ * The row is kept, inverted, rather than deleted: it is the only coverage of a
+ * malformed control, and without it the behaviour would be unpinned again.
  */
-test('leaves a malformed control to the identity check, unrefused here', async () => {
+test('refuses a malformed control by name instead of leaving it to the identity check', async () => {
   const harness = createHarness({ runId: 'run-checkpoint-with-null-control' });
 
   try {
@@ -1101,13 +1113,57 @@ test('leaves a malformed control to the identity check, unrefused here', async (
     assert.equal('error' in outcome, true);
     assert.match(
       outcome.error.message,
-      /Cannot read properties of null/,
-      'a malformed control is a gap in this guard, and the gap is pinned rather than described',
+      namesTheMissingRun,
+      'a malformed control is no run to resume, and must be refused as one',
     );
+    assert.match(outcome.error.message, namesTheAbsentControl);
     assert.doesNotMatch(
       outcome.error.message,
-      namesTheMissingRun,
-      'the guard must not be claiming to have handled a case it did not see',
+      /Cannot read properties of null/,
+      'the refusal must be the graph deciding, not a property read on a value it did not check',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The stated limit of the resume ownership guard, pinned by the fact it rests
+ * on rather than by the race it enables.
+ *
+ * `execute` validates the control that `graph.getState` deserialized, and then
+ * `graph.invoke` deserializes the checkpoint AGAIN and runs on that second
+ * object. The guard therefore checks a different object than the run uses. That
+ * is check-then-use, and `security-scanner` measured what it costs: with only
+ * microtask scheduling — no instrumentation of the checkpointer — arming an
+ * `Object.prototype` accessor between the two reads leaves a 123-turn window in
+ * which a resume completes, skips the human-review identity check, and persists
+ * a control the domain schema rejects. Filed as AIC-90.
+ *
+ * A race is not a test. What IS deterministic, and what the window depends on
+ * entirely, is that the checkpoint is read twice — so that is what this pins. A
+ * fix that validates the object the run actually uses, or rebuilds control at
+ * the persistence boundary, will change this count and should: the row going
+ * red is the signal to re-measure the limit rather than to restore the number.
+ */
+test('reads the checkpoint twice per resume, which is why the guard cannot see the object the run uses', async () => {
+  const harness = createHarness({ runId: 'run-two-deserializations' });
+
+  try {
+    const interrupted = await harness.start();
+    const readsBeforeResume = harness.tupleReads();
+
+    const resumed = await harness.resume(interrupted, { action: 'confirm' });
+    assert.equal(
+      'error' in resumed,
+      false,
+      `the clean resume must succeed for its read count to mean anything: ${resumed.error?.message ?? ''}`,
+    );
+
+    assert.equal(
+      harness.tupleReads() - readsBeforeResume,
+      2,
+      'one read is execute validating the control, the other is graph.invoke deserializing it again for the run',
     );
   } finally {
     harness.cleanup();
@@ -1158,3 +1214,324 @@ for (const { label, decision } of resumeDecisions) {
     );
   });
 }
+
+/**
+ * AIC-89 — a `kind: 'resume'` must run on the control the CHECKPOINT owns,
+ * never on one `Object.prototype` supplied.
+ *
+ * AIC-87 closed this on the `kind: 'start'` path with `assertOwnControlFields`,
+ * called from `parseInvestigationExecutionInput`. A resume never passes through
+ * that function's start branch and never through `IncidentStateSchema` at all:
+ * its control comes back off disk, and the deserializer builds that object by
+ * ASSIGNING each field. With an accessor of the same name on `Object.prototype`
+ * the assignment lands on the inherited setter, no own property is created, and
+ * every later read — the graph's guards, the node's, the spread that writes the
+ * control back — falls through to the getter.
+ *
+ * That makes the resume path the worse half of the same defect, because the
+ * corruption is DURABLE. `{ ...state.control }` copies own enumerable
+ * properties, so a field the setter swallowed is not merely misread, it is
+ * dropped from what gets checkpointed.
+ *
+ * Measured at 286b45f against the real SQLite checkpointer, one accessor per
+ * control field armed on a run genuinely paused at `review_conclusion`, resumed
+ * with `confirm`:
+ *
+ * - ten of the thirteen fields are refused, every one of them for a reason that
+ *   has nothing to do with noticing the substitution — an inherited STRING fails
+ *   that field's own validator, or `runId` stops matching the thread;
+ * - `phase`, `stopKind` and `humanReview` are not refused at all. The run
+ *   completes, counts its resume, and writes back a control missing that field:
+ *   `humanReview` and `phase` leave a control on disk that
+ *   `IncidentStateControlSchema.safeParse` then rejects with `expected boolean,
+ *   received undefined` and `expected string, received undefined`; `stopKind`
+ *   loses the terminal stop kind silently, since the field is optional and the
+ *   damaged control still parses.
+ *
+ * The value the accessor hands out is deliberately one string for every field
+ * rather than a type-plausible substitute per field: ownership is what the guard
+ * has to decide on, and a per-field value list is the hand-written copy that goes
+ * stale. Type-plausible values were measured too and change nothing that matters
+ * here — an accessor returning `false` for `humanReview` and one returning `99`
+ * for `resumeCount` both complete, the first losing `humanReview` from disk
+ * exactly as the string does, the second persisting `resumeCount: 100`.
+ */
+
+/** What the polluted prototype hands out; distinct from every fixture value. */
+const INHERITED_VALUE = 'inherited';
+
+/**
+ * Derived, never hand-listed: a field added to the control schema is covered
+ * here the day it is declared.
+ */
+const CONTROL_FIELDS = Object.keys(IncidentStateControlSchema.shape);
+
+/**
+ * The refusal this ticket asks for — the graph's own, naming the offending
+ * field. Same wording as the start path's, because it is the same invariant and
+ * a caller should not have to learn two spellings of it.
+ */
+const OWN_CONTROL_REFUSAL = /investigation control must carry its own (\w+)/;
+
+/**
+ * Every refusal the polluted resume already produces today for a reason that is
+ * not the guard. Ten distinct messages, measured at 286b45f as described above;
+ * `invalid investigation execution input` is the eleventh member and this path
+ * did not produce it — it is here because every other block in this file guards
+ * against the opaque refusal displacing a specific one.
+ *
+ * Without this set, "it threw, so the guard works" passes for a guard nobody
+ * wrote: ten of the thirteen subtests below would be green on an unchanged tree.
+ */
+const INCIDENTAL_RESUME_REFUSALS = new RegExp(
+  [
+    namesTheForeignCheckpoint.source,
+    'incompatible persisted state',
+    'invalid iteration budget',
+    'invalid llm call budget',
+    'invalid reserved challenge budget',
+    'invalid challenge round counter',
+    'invalid logical iteration counter',
+    'invalid llm call counter',
+    'invalid resume counter',
+    'invalid investigation execution input',
+  ].join('|'),
+);
+
+/**
+ * Arms the hazardous shape: an accessor, not a data property. A plain inherited
+ * data property is shadowed by the value the checkpoint carries and is harmless;
+ * the accessor is what removes ownership. The setter swallows instead of
+ * throwing, which is the quiet shape — a getter-only property would make the
+ * deserializer's assignment throw a `TypeError` in strict mode, and the resume
+ * would then fail on the assignment rather than on the substitution.
+ */
+function armInheritedAccessor(field, value = INHERITED_VALUE) {
+  Object.defineProperty(Object.prototype, field, {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set() {},
+  });
+}
+
+/**
+ * One paused interactive run, resumed with the prototype armed for exactly the
+ * window of the resume, and the control that ended up on disk read back
+ * afterwards.
+ *
+ * Two things about the ordering are load-bearing:
+ *
+ * - the run is STARTED under a clean prototype, so what is under test is the
+ *   restored control and not a start state that was already substituted;
+ * - the prototype is restored SYNCHRONOUSLY in `finally`, and before the
+ *   persisted control is read back. `t.after` would not do: a subtest's hooks
+ *   run at the end of the PARENT, so the accessor would stay armed for every
+ *   later subtest, which would then fail on each other's pollution. And the read
+ *   has to happen after the restore because the read deserializes too — an armed
+ *   accessor swallows the field on the way back in and would report damage on
+ *   disk that is not there.
+ */
+async function resumeUnderPollutedPrototype({ runId, field, value }) {
+  const harness = createHarness({ runId });
+
+  try {
+    const interrupted = await harness.start();
+    const traceBeforeResume = [...harness.trace];
+
+    let outcome;
+    try {
+      if (field !== undefined) armInheritedAccessor(field, value);
+      outcome = await harness.resume(interrupted, { action: 'confirm' });
+    } finally {
+      if (field !== undefined) delete Object.prototype[field];
+    }
+
+    return {
+      outcome,
+      traceBeforeResume,
+      trace: [...harness.trace],
+      persistedControl: await harness.control(),
+    };
+  } finally {
+    harness.cleanup();
+  }
+}
+
+test('refuses a resume whose restored control field is supplied by an accessor on the prototype', async (t) => {
+  assert.equal(
+    CONTROL_FIELDS.length > 0,
+    true,
+    'an empty control schema would make every subtest below vacuous',
+  );
+
+  for (const field of CONTROL_FIELDS) {
+    await t.test(`refuses an inherited ${field} accessor`, async () => {
+      const { outcome } = await resumeUnderPollutedPrototype({
+        runId: `run-resume-own-control-${field}`,
+        field,
+      });
+
+      assert.equal(
+        'error' in outcome,
+        true,
+        `a resume whose ${field} is supplied by the prototype must be refused, not run to completion`,
+      );
+
+      const message = outcome.error.message;
+      assert.doesNotMatch(
+        message,
+        INCIDENTAL_RESUME_REFUSALS,
+        `refusing ${field} because an inherited string fails its validator is not the guard working: ${message}`,
+      );
+
+      const named = OWN_CONTROL_REFUSAL.exec(message);
+      assert.notEqual(
+        named,
+        null,
+        `refusing an inherited ${field} must say so in the graph's own words, not: ${message}`,
+      );
+      assert.equal(
+        named[1],
+        field,
+        `the refusal named ${named?.[1]} while the prototype supplied ${field}`,
+      );
+    });
+  }
+});
+
+/**
+ * The durable half, and the reason this ranks above AIC-87.
+ *
+ * A start-path substitution costs a run. A resume-path one costs the
+ * CHECKPOINT: the run completes, the damaged control is written back, and every
+ * later reader of that thread — including a resume under a perfectly clean
+ * prototype — finds a control that no longer satisfies its own schema.
+ *
+ * `safeParse` is a floor rather than the whole claim. It is blind to `stopKind`
+ * going missing, because the field is optional; the test above is what covers
+ * that field, and this one is what covers the two that leave state on disk no
+ * reader can parse.
+ */
+test('leaves no unparseable control on disk when it refuses', async (t) => {
+  for (const field of CONTROL_FIELDS) {
+    await t.test(`persists a parseable control despite an inherited ${field} accessor`, async () => {
+      const { persistedControl } = await resumeUnderPollutedPrototype({
+        runId: `run-resume-durable-control-${field}`,
+        field,
+      });
+
+      const parsed = IncidentStateControlSchema.safeParse(persistedControl);
+      assert.equal(
+        parsed.success,
+        true,
+        `a resume polluted at ${field} must not leave a control on disk that no longer parses: ${
+          parsed.error?.issues
+            .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+            .join('; ') ?? ''
+        }`,
+      );
+    });
+  }
+});
+
+/**
+ * `control` is not one of the thirteen field names, so the loops above never
+ * arm it — and it is the worst shape of all: the prototype supplies the WHOLE
+ * control, so a thread with no checkpoint appears to have one.
+ *
+ * Measured at 286b45f: `values?.control === undefined` resolves up the chain to
+ * the fabricated object, the AIC-74 ghost-thread refusal never fires, the graph
+ * is invoked on a thread that never ran, and the caller receives `TypeError:
+ * channels[chan].get is not a function` from inside LangGraph's channel map —
+ * which the pollution has also displaced. That is a refusal by collision, not by
+ * check, and it says nothing about the thread the caller mistyped.
+ */
+test('refuses a fabricated control supplied entirely by the prototype', async () => {
+  const harness = createHarness({ runId: neverRunThreadId });
+  const fabricated = Object.freeze(initialState('run-nobody-started').control);
+
+  try {
+    let outcome;
+    try {
+      armInheritedAccessor('control', fabricated);
+      outcome = await attemptResume(harness.execution, harness.config, {
+        action: 'confirm',
+      });
+    } finally {
+      delete Object.prototype.control;
+    }
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a thread with no checkpoint must be refused however convincing the prototype is',
+    );
+    assert.equal(
+      outcome.error instanceof TypeError,
+      false,
+      `a caller-facing refusal is not an internal type error: ${outcome.error?.message ?? ''}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /is not a function|Cannot read properties/,
+      'a fabricated control must be refused by a check, not by LangGraph colliding with the same pollution',
+    );
+    assert.ok(
+      outcome.error.message.includes(neverRunThreadId),
+      `the refusal must name the thread it could not resume: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheMissingRun,
+      'a control nobody checkpointed is still no resumable run',
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheAbsentControl,
+      'the refusal must name the control it could not find, exactly as it does with a clean prototype',
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      namesTheForeignCheckpoint,
+      'a thread with no checkpoint must not be reported as a run identity mismatch',
+    );
+    assert.deepEqual(
+      harness.trace,
+      [],
+      'a thread with nothing to resume must not execute a lifecycle node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The clean-prototype arm of the two loops above, run through the same helper
+ * so that a guard written too broadly — one that refuses on the mere PRESENCE of
+ * a field rather than on its ownership — goes red here.
+ *
+ * It passes today and must keep passing.
+ */
+test('resumes normally, counting one resume, when nothing is on the prototype', async () => {
+  const { outcome, persistedControl } = await resumeUnderPollutedPrototype({
+    runId: 'run-resume-clean-prototype',
+  });
+
+  assert.equal(
+    'error' in outcome,
+    false,
+    `an unpolluted resume must complete: ${outcome.error?.message ?? ''}`,
+  );
+  assert.equal(
+    IncidentStateControlSchema.safeParse(persistedControl).success,
+    true,
+    'an unpolluted resume must leave a control on disk that parses',
+  );
+  assert.equal(
+    persistedControl.resumeCount,
+    1,
+    'one human confirm is one resume, and the pollution rows are only meaningful against this',
+  );
+});

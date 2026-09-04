@@ -357,6 +357,33 @@ function assertOwnControlFields(control: object): void {
   }
 }
 
+/**
+ * Reads the `control` a checkpoint restored, as an OWN DATA PROPERTY or not at
+ * all.
+ *
+ * `values.control` would consult the prototype chain, which is the whole hazard:
+ * a polluted `Object.prototype.control` makes an empty snapshot look like a
+ * resumable run.
+ */
+function readOwnControl(values: unknown): object | undefined {
+  // ⚠ Limits, both shared with `assertOwnControlFields` and one of them worse
+  // here. A `Proxy` lying through `getOwnPropertyDescriptor` passes, as it does
+  // there — outside the threat model, since such a caller can supply the value
+  // directly. And the object this returns is NOT the object the run uses:
+  // `graph.invoke` deserializes the checkpoint a second time. see
+  // hitl-resume-contract.test.mjs › "reads the checkpoint twice per resume,
+  // which is why the guard cannot see the object the run uses", and AIC-90 for
+  // the race that follows from it.
+
+  if (typeof values !== 'object' || values === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(values, 'control');
+  if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+    return undefined;
+  }
+  const control = descriptor.value;
+  return typeof control === 'object' && control !== null ? control : undefined;
+}
+
 function parseInvestigationExecutionInput(
   input: unknown,
 ): InvestigationExecutionInput {
@@ -1198,12 +1225,34 @@ export function createInvestigationGraph({
           // see hitl-resume-contract.test.mjs › "refuses a resume under a
           // thread that has no checkpoint, naming the thread" and › "leaves no
           // checkpoint behind for the thread whose resume it refused"
-          const values = snapshot.values as Partial<IncidentState> | undefined;
-          if (values?.control === undefined) {
+          // An OWN read, not `values?.control`: a polluted
+          // `Object.prototype.control` satisfies the optional chain and hands
+          // this check a fabricated control, so the refusal below never fires
+          // and `graph.invoke` runs on it. see hitl-resume-contract.test.mjs ›
+          // "refuses a fabricated control supplied entirely by the prototype"
+          const restored = readOwnControl(snapshot.values);
+          if (restored === undefined) {
             throw new Error(
               `no resumable run on thread ${executionConfig.threadId}: no investigation control was checkpointed for it`,
             );
           }
+
+          // The same ownership rule the start path applies, on the control the
+          // CHECKPOINTER handed back. It has to run here — before the identity
+          // check and before `graph.invoke` — because anything further on reads
+          // the restored control and writes one back: a field the prototype is
+          // supplying is already absent from the object that gets checkpointed,
+          // and the run then persists a control the domain schema rejects.
+          // Measured before this guard: `humanReview` and `phase` each left an
+          // unparseable control on disk. see hitl-resume-contract.test.mjs ›
+          // "leaves no unparseable control on disk when it refuses"
+          //
+          // ⚠ This narrows the exposure rather than closing the class. The
+          // control checked here comes from `graph.getState`; `graph.invoke`
+          // deserializes the checkpoint again and runs on a second object, so
+          // pollution armed BETWEEN the two reads is unseen — AIC-90, with the
+          // window measured.
+          assertOwnControlFields(restored);
 
           if (request.decision.action === 'add_hypothesis') {
             const targetsPendingInterrupt = snapshot.tasks.some(
