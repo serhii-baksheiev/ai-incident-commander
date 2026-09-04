@@ -438,15 +438,6 @@ function readOwnDataValue(source: unknown, key: string): unknown {
     : undefined;
 }
 
-/**
- * Does this object carry `key` as an OWN DATA PROPERTY at all — as distinct from
- * carrying `undefined` there, which `readOwnDataValue` cannot tell apart.
- */
-function hasOwnDataProperty(source: unknown, key: string): boolean {
-  if (typeof source !== 'object' || source === null) return false;
-  const descriptor = Object.getOwnPropertyDescriptor(source, key);
-  return descriptor !== undefined && Object.hasOwn(descriptor, 'value');
-}
 
 
 /**
@@ -502,40 +493,6 @@ function ownDataCopy(
   return rebuilt;
 }
 
-/**
- * Which fields a decision of this action declares — asked of the schema, never
- * listed here.
- *
- * ⚠ It cannot be taken from the PARSED object, which is the mistake that made
- * the first version of this miss `hypothesis` entirely. Measured: with
- * `Object.prototype.hypothesis` armed and a caller sending
- * `{ action: 'add_hypothesis' }` alone, the parse SUCCEEDS and
- * `Object.keys(parsed)` is `['action']` — zod reads the missing field off the
- * prototype and never makes it own, so a loop over the result's own keys sees
- * nothing to check while `parsed.hypothesis` hands the graph the attacker's
- * value, which then enters persisted state.
- *
- * The variant is located by asking each option's own `action` schema whether it
- * accepts this discriminant — the union's public surface, not its internals.
- *
- * see hitl-resume-contract.test.mjs › "refuses a hypothesis the caller never
- * supplied"
- */
-function decisionFieldsFor(action: unknown): readonly string[] {
-  for (const option of ConclusionReviewDecisionSchema.options) {
-    if (option.shape.action.safeParse(action).success) {
-      return Object.keys(option.shape);
-    }
-  }
-  // Unreachable while every option's discriminant is a bare literal, which is
-  // what makes `suppliedAction` one of three known strings by the time this is
-  // called. It THROWS rather than returning nothing, because the alternative is
-  // a security guard whose field loop silently does nothing the day someone
-  // gives the union an option this cannot classify.
-  throw new Error(
-    `conclusion review decision declares no fields for action ${String(action)}`,
-  );
-}
 
 /**
  * Parses a conclusion-review decision from what the caller OWNS, and reports an
@@ -615,11 +572,22 @@ function parseCallerOwnedDecision(
   // own read against `parsed.action` — a plain `[[Get]]` — and a getter that
   // answered honestly once and attacker-side afterwards satisfied it and then
   // decided the route.
+  // What remains is DETECTION. Correctness is already settled above: the parse
+  // ran on a copy with no prototype, so `ownOnly` carries the caller's own
+  // action and nothing else could have supplied it. This asks the separate
+  // question of whether an attempt was made, so it can be reported rather than
+  // absorbed (AIC-92).
+  //
+  // An earlier version also refused an `undefined` caller action and checked
+  // every declared field against the caller's object. Both became unreachable
+  // when the validated copy lost its prototype — measured, neutering either
+  // reddened nothing — so they are deleted rather than pinned. A guard that
+  // cannot fail is not a guard; it is a comment that costs a branch.
   const suppliedAction = readOwnDataValue(ownOnly, 'action');
   const asSent = ConclusionReviewDecisionSchema.safeParse(supplied);
   if (
-    suppliedAction === undefined ||
-    (asSent.success && suppliedAction !== readOwnDataValue(asSent.data, 'action'))
+    asSent.success &&
+    suppliedAction !== readOwnDataValue(asSent.data, 'action')
   ) {
     // The caller's OWN value is what the message names — never a fresh read of
     // the parsed one, which an accessor controls in content and length alike
@@ -628,16 +596,6 @@ function parseCallerOwnedDecision(
       'action',
       `the caller supplied ${String(suppliedAction)}, which is not what parsing their object produced`,
     );
-  }
-
-  for (const field of decisionFieldsFor(suppliedAction)) {
-    if (field === 'action') continue;
-    if (!hasOwnDataProperty(supplied, field)) {
-      throw decisionFieldError(
-        field,
-        'the decision parses only by reading that field off the prototype',
-      );
-    }
   }
 
   // NOT `parsed.data`: zod assembles that by assignment, which an own-writing
