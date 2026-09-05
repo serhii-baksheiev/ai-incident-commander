@@ -114,6 +114,70 @@ evaluation that carries no resource evidence at all", › "refuses resource
 evidence at an unknown schema version before any run is created", and ›
 "refuses resource evidence missing ${field} before any run is created".
 
+## Reference model roles and the live evaluation lane
+
+Three investigation roles — `generate_hypotheses`,
+`interpret_residual_evidence` and `challenge_hypothesis` — have model-backed
+implementations in `packages/roles`, written against a provider-neutral
+`ModelPort`. The scripted nodes remain the path for every deterministic unit and
+regression test; the model-backed roles are used only by the live lane below.
+
+One reference provider and model are configured explicitly, through
+`ANTHROPIC_API_KEY` and the optional `AIC_REFERENCE_MODEL_ID` override.
+`resolveModelConfig` takes the environment as an argument and **never returns
+the credential**: it reports whether the lane can run and under which model, and
+the key is read once, at the executable edge. No provider SDK is installed — the
+adapter issues one plain `fetch` with an injected transport, so the whole path
+is unit-testable with no network. The graph and domain layers stay
+provider-independent, and that is now mechanical on both sides: the
+`graph-and-domain-do-not-import-model-providers` rule in
+`dependency-cruiser.config.mjs` refuses the import, proven by
+`test/repository-scaffold.test.mjs` › "lint rejects a graph import of the model
+role package" and › "lint rejects a graph import of a provider sdk". The
+provider host and wire format live in exactly one file, held there by
+`test/roles-boundary.test.mjs` › "reaches the model provider from exactly one
+file in the workspace".
+
+```bash
+npm run eval:live-model
+npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./lane-report.json
+```
+
+The lane runs two arms over the accepted hold-out corpus, at one commit, in one
+process: a scripted control arm and a model arm that differ only in those three
+roles. They are reported separately and per metric, with no composite anywhere.
+If the control arm moves against its declared baseline, the regression is in the
+harness and the model arm's numbers are marked unreportable; with no declared
+baseline the model arm is unreportable for the same reason. Both arms are
+bounded by an explicit run cap and completion cap, published in the report.
+
+Two things the lane deliberately does not do. It **withholds
+`evidence_coverage`** from both arms with the reason attached: that evaluator
+compares a hand-written ground-truth predicate against an evidence statement as
+an exact fingerprint, so any graph-executed run scores zero for a harness reason
+rather than a model one — a pre-existing evaluator defect, filed separately, and
+publishing the zero would be exactly the confound this lane exists to prevent.
+And it **never retries a publication refusal**: LangSmith ingestion can refuse a
+write — an exhausted tenant quota is one way — and a refused publication fails
+the command rather than being smoothed into a success. Publication is opt-in; without `--publish` the
+lane produces its per-metric evidence locally with no ingestion at all.
+
+With no credential the command exits non-zero with a named
+`MissingModelCredentialError` and touches nothing — no dataset, no project, no
+run, no model call. Executable proof: `test/live-model-lane.test.mjs` ›
+"exits non-zero naming the variable when the command is run with no credential"
+and › "refuses the lane with the named variable and touches nothing when no
+credential is set".
+
+Run identity records what produced it: `modelId` and `modelProvider` are
+optional run-metadata fields, and `inputTokensUsed` / `outputTokensUsed` are
+optional resource axes at resource schema version 2. All four are optional
+because a run with no model has nothing to declare, and a published zero would
+be a measured-zero claim rather than an absent measurement. The correspondence
+between those types and the persistence allowlists is computed in both
+directions by `test/model-run-identity-correspondence.test.mjs`, because a field
+added to a type but not to an allowlist is dropped without a word.
+
 ## Project status
 
 | Area | Status |
@@ -142,7 +206,7 @@ The architecture freeze means structural changes must be justified by benchmark 
 apps/cli                  command-line entrypoint
 packages/domain           framework-free domain contracts
 packages/graph            LangGraph state, nodes, edges, and routing
-packages/roles            semantic roles and prompts
+packages/roles            semantic roles, prompts, and the reference model port
 packages/tools            live and replay tool adapters
 packages/persistence      checkpointing and recovery
 packages/evals            deterministic and LangSmith evaluation gates
