@@ -1386,7 +1386,10 @@ for (const regression of behaviorRegressions) {
 
     await assert.rejects(
       () => compareControlledExperiments({ baseline, mutation }),
-      new RegExp(`mutation.*${regression.metricKey}`, 'i'),
+      // Deliberately the undeclared-metric sentence rather than
+      // /mutation.*<key>/, which the presence-asymmetry refusal also matches —
+      // this must fail for the reason the item is about, not merely fail.
+      /must keep undeclared metric/i,
     );
   });
 }
@@ -1518,8 +1521,9 @@ test('refuses a dropped behavior metric that only the prototype declares', async
 test('refuses a behavior metric recorded under the wrong key or an impossible score', async () => {
   const baseline = await getBehaviorBaseline();
 
-  for (const [note, replace, expected] of [
+  for (const [slug, note, replace, expected] of [
     [
+      'wrong-key',
       'a metric filed under another key',
       (metrics) => ({
         ...metrics,
@@ -1528,6 +1532,7 @@ test('refuses a behavior metric recorded under the wrong key or an impossible sc
       /missing metric: challenge_effect/i,
     ],
     [
+      'impossible-score',
       'a score outside the unit interval',
       (metrics) => ({
         ...metrics,
@@ -1537,7 +1542,7 @@ test('refuses a behavior metric recorded under the wrong key or an impossible sc
     ],
   ]) {
     const declared = await runBehaviorExperiment(
-      `aic-81-invalid-behavior-metric-${expected.source.length}-v0.2`,
+      `aic-81-invalid-behavior-metric-${slug}-v0.2`,
       { mutateOutcome: dropRequiredFingerprint() },
     );
     const mutation = withBehaviorMetrics(

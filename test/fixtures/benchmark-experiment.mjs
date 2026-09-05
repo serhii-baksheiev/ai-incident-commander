@@ -79,10 +79,15 @@ export function perfectOutcomeFor(scenario) {
  * A perfect outcome on EVERY metric the gate compares, not only the v0.1 three.
  *
  * `perfectOutcomeFor` above reports no misleading evidence, no root cause and
- * no challenge observation, so every behavior metric a scenario declares scores
- * 0 against it. That was invisible while the regression gate compared the v0.1
- * metrics alone; once it compares the union, a baseline has to be green on all
- * of them before a mutation's behavior regression means anything.
+ * no challenge observation, so TWO of the three behavior metrics score 0
+ * against it — `misleading_evidence_handling` and `challenge_effect`.
+ * `false_alert_correctness` is the exception and scores 1, because
+ * `evaluateFalseAlertOutcome` reads only stopKind, conclusionKind and
+ * evidenceFingerprints, all of which that outcome already sets correctly.
+ *
+ * Those two zeroes were invisible while the regression gate compared the v0.1
+ * metrics alone; once it compares the union, a baseline has to be green on
+ * every metric before a mutation's behavior regression means anything.
  *
  * Kept separate from `perfectOutcomeFor` rather than folded into it: every
  * other caller uses that one to exercise the v0.1 surface, and widening it
