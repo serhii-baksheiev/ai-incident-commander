@@ -418,11 +418,17 @@ merged head, and these are ALL of the rows it reddens rather than a sample:
 * `checkpoint-serde-own-values.test.mjs` › "leaves a swallowed write for the
   graph to refuse rather than repairing it"
 
-Four rows, seventeen subtests. An earlier draft of this section said "five rows,
-including …" and cited three of them; the count was never measured and the word
-"including" conceded that the list was partial, which is the shape a later
-reader cannot check. The list above is the whole answer, so a rerun that returns
-anything else means the guard moved.
+Four rows, seventeen subtests — and here is how to get that number back, because
+a count with no recipe is a count the next reader cannot check. Make
+`restoreSlot` repair regardless of `slot.present` (drop the `present` guard on
+the leaf branch), rebuild, and run the whole suite: exactly these four rows go
+red, seventeen subtests among them. Re-measured at the AIC-93 gate by
+`code-reviewer` against the full suite, and it reproduced exactly.
+
+An earlier draft of this section said "five rows, including …" and cited three of
+them; that count was never measured and the word "including" conceded the list
+was partial, which is the shape a later reader cannot check. The list above is
+the whole answer, so a rerun that returns anything else means the guard moved.
 
 That is exactly the outcome the ordering paragraph above forbids: the serde
 arriving and the refusal rows being deleted to make room for it.
@@ -442,25 +448,33 @@ shape rather than by preference:
 Narrowness is what pinned it: with the condition in place, the ONLY rows that
 changed in the whole suite were the two that asserted the limit on purpose.
 
-### Stated plainly: the run is made immune, not refused
+### Stated plainly: on a leaf the run is made immune, not refused
 
-No new refusal reaches an operator on this shape, and **nothing on disk records
-the attempt**. A run resumed with the gadget armed completes on the control the
+**This section is about the LEAF shapes only.** Where the serialized form
+declares a container and the loaded side offers nothing to check it against,
+the module refuses instead — limit 9 in the module's header, added at the
+AIC-93 gate after a container-key accessor was shown carrying
+`humanReview:false` through a real `confirm` resume, parse-clean. The reason
+the two halves differ is that the graph's refusal sites cover the leaf fields
+and cover no container at all.
+
+For a leaf, then: no new refusal reaches an operator on that shape, and
+**nothing on disk records the attempt**. A run resumed with the gadget armed completes on the control the
 checkpoint bytes declare, and looks exactly like a run nobody attacked. That is
 a genuine step back from this record's own convention that an attempt should be
 reported, and it is taken because the alternative was not reporting — it was the
 substitution succeeding.
 
-### Two further limits, both in the module's header and both tested
+### The module's limits are NOT restated here
 
-The walk is bounded — 64 levels and 100 000 nodes, counted across one load — and
-crossing either **fails closed**, because the alternative is handing back a
-value whose own properties were never verified. Both directions are pinned, the
-refusal and the acceptance just inside, so the bound cannot be satisfied by
-refusing everything.
+They live in one place — the numbered list in the header of
+`packages/persistence/src/own-value-serde.ts`, each entry ending in the test row
+that pins it. An earlier version of this section enumerated "two further
+limits"; the module then grew to nine, and this copy went stale without anything
+going red, which is the exact failure mode a second spelling of one fact
+produces. Read the header.
 
-And a polluted key on an object stored inside a `Map` or `Set` is not repaired:
-the walk stops at the revived collection, because rebuilding one to reach its
-members risks reordering it or collapsing keys the checkpoint distinguished — a
-worse failure than the one being repaired. Nothing in
-`IncidentStateControlSchema` is stored that way today.
+Two of them matter enough to this record's argument to name **as pointers**,
+because the reasoning above depends on them: the walk is bounded and crossing
+either bound fails closed, and a polluted key inside a revived `Map` or `Set` is
+not repaired. Nothing in `IncidentStateControlSchema` is stored that way today.

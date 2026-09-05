@@ -14,6 +14,17 @@ export const DESERIALIZATION_MAX_NODES = 100_000;
 /** Thrown instead of returning a value the walk could not finish verifying. */
 export class DeserializationBudgetError extends Error {}
 
+/**
+ * Thrown when the serialized form declares a CONTAINER and the loaded side
+ * offers nothing the walk can verify it against.
+ *
+ * Separate from `DeserializationBudgetError` because the cause is different: a
+ * budget refusal means the payload was too large to finish checking, this one
+ * means the payload was checkable and the loaded counterpart was not there.
+ * Both fail closed, and neither is the raw `TypeError` limit 7 names.
+ */
+export class UnverifiableContainerError extends Error {}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
@@ -36,6 +47,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * own-only, but its prototype is still `Object.prototype`, so a `[[Get]]` here
  * would let a gadget supply `lc` for every node and steer this decision — which
  * is the class of mistake this module exists to close.
+ *
+ * 🔴 This is the whole guard, and it was measured surviving its own removal.
+ * At the AIC-93 gate `code-reviewer` replaced these two lines with
+ * `const lc = value.lc;` and the ENTIRE suite stayed green, while
+ * `Object.prototype.lc = 1` — inert to the dependency's reviver, which also
+ * requires `type === "constructor"` and an array `id` — then made every
+ * declared node answer "revived", stopping the walk before it repaired
+ * anything and reopening the bypass in full. The row below exists so that
+ * mutation can never be silent again.
+ * see checkpoint-serde-own-values.test.mjs › "reads the lc marker as an own
+ * property, so an inherited lc cannot make every declared node look like a
+ * revived record"
  */
 function isRevivedRecord(value: Record<string, unknown>): boolean {
   if (!Object.hasOwn(value, 'lc')) return false;
@@ -87,9 +110,9 @@ function readOwnDataValue(
 }
 
 /**
- * 🔴 THE ONE CONDITION, and it is narrow on purpose.
+ * 🔴 THE ONE CONDITION — and it answers differently for a LEAF and a CONTAINER.
  *
- * A slot is repaired only when the reviver left it as an OWN DATA PROPERTY
+ * A LEAF slot is repaired only when the reviver left it as an OWN DATA PROPERTY
  * whose value diverged from the serialized form. Absent stays absent and an own
  * accessor stays an accessor, because those two are the shapes the graph's own
  * refusal sites in `packages/graph` fire on — `assertOwnControlFields`,
@@ -104,6 +127,20 @@ function readOwnDataValue(
  * graph to refuse rather than repairing it"
  * see hitl-resume-contract.test.mjs › "refuses a resume whose restored control
  * field is supplied by an accessor on the prototype"
+ *
+ * A CONTAINER slot in the same shape is REFUSED instead, and the difference is
+ * not a preference. The justification above is that the graph refuses what this
+ * module leaves — and that is true only where the graph looks, which is the
+ * leaf control fields. At a container key it looks nowhere: `channel_values` is
+ * the reachable parent in a real checkpoint and is not a LangGraph channel
+ * name, so leaving an unverifiable container hands back a whole subtree neither
+ * side ever checked. Measured before this branch closed it: an own getter
+ * planted at `control` under such a parent carried `humanReview:false` and
+ * `stopKind:'budget-exhausted'` through a real `confirm` resume, parse-clean,
+ * with the run completing. The refusal is in `restoreSlot` below.
+ * see checkpoint-serde-own-values.test.mjs › "refuses the load when the slot
+ * under a declared container key is not an own data property, and names that
+ * key"
  */
 function restoreSlot(
   loaded: object,
@@ -114,7 +151,57 @@ function restoreSlot(
 ): void {
   if (typeof declaredValue === 'object' && declaredValue !== null) {
     const slot = readOwnDataValue(loaded, key);
-    if (slot.present) restoreDeclared(slot.value, declaredValue, budget, depth + 1);
+    // 🔴 A declared CONTAINER whose loaded slot is not an own data property is
+    // refused, where a declared LEAF in the same shape is left alone.
+    //
+    // The asymmetry is the whole point. For a leaf, `absent` and `own accessor`
+    // are the shapes the graph's own refusal sites fire on, so leaving them is
+    // what keeps those refusals reachable. At a container key there is no graph
+    // refusal site at all — `channel_values` is the reachable parent in a real
+    // checkpoint — so the same "leave it" would hand back an entire subtree
+    // nobody verified, which is exactly the substitution this module exists to
+    // stop.
+    // see checkpoint-serde-own-values.test.mjs › "refuses the load when the
+    // slot under a declared container key is not an own data property, and
+    // names that key" and › "repairs a declared container whose loaded slot the
+    // gadget planted as an own data property"
+    //
+    // ⚠ `__proto__` is the one key exempt from that refusal, and the exemption
+    // is about the LANGUAGE, not about trust. `JSON.parse` gives the declared
+    // tree an own `__proto__` data property; the reviver's assignment of the
+    // same key RE-PARENTS the target instead of defining one, so the loaded
+    // side legitimately has no own slot there. Refusing on it would fail every
+    // checkpoint whose bytes carry the key, and it buys nothing: assignment put
+    // the value on the prototype rather than into an own property, which is the
+    // shape the graph's ownership sites already refuse. The siblings around it
+    // are still repaired, which is what the row below pins.
+    // see checkpoint-serde-own-values.test.mjs › "repairs the siblings of a
+    // __proto__ key, which the reviver re-parents on assignment"
+    if (!slot.present) {
+      if (key === '__proto__') return;
+      throw new UnverifiableContainerError(
+        `checkpoint key ${JSON.stringify(key)} declares a container and the loaded slot is not an own data property: refusing to deserialize it rather than handing back a subtree whose own values were never verified`,
+      );
+    }
+    // A declared ARRAY answered by a non-array is the one shape mismatch that
+    // silently skipped the whole subtree: `restoreDeclared`'s array branch
+    // needs both sides to be arrays, and an array `declared` then falls through
+    // `isPlainObject(declared)` and returns. Refused here, where the key is
+    // still in scope to name.
+    // ⚠ Only the DECLARED side's array-ness is a gate. When the declaration is
+    // a plain object the loaded counterpart may still be an Array or a
+    // function — those belong to the attacker and are walked, not rejected.
+    // see checkpoint-serde-own-values.test.mjs › "refuses the load when a
+    // declared array is answered by a non-array counterpart, and names that
+    // key", › "repairs a declared array element-wise when the loaded
+    // counterpart is a genuine array" and › "keeps the own value when the
+    // gadget hands back an Array as the container"
+    if (Array.isArray(declaredValue) && !Array.isArray(slot.value)) {
+      throw new UnverifiableContainerError(
+        `checkpoint key ${JSON.stringify(key)} declares an array and the loaded counterpart is not one: refusing to deserialize it rather than skipping the subtree it declares`,
+      );
+    }
+    restoreDeclared(slot.value, declaredValue, budget, depth + 1);
     return;
   }
   const slot = readOwnDataValue(loaded, key);
@@ -250,9 +337,11 @@ function restoreDeclared(
  * see checkpoint-serde-own-values.test.mjs › "keeps the own value the
  * serialized form declares when an inherited setter writes another"
  *
- * The run is made IMMUNE, not refused: no new refusal reaches an operator on
- * this shape, and nothing on disk records the attempt. That trade, and why it
- * was reversed from AIC-92's answer, is in
+ * On a LEAF the run is made IMMUNE rather than refused: no new refusal reaches
+ * an operator on that shape, and nothing on disk records the attempt. On a
+ * CONTAINER the answer is the opposite — limit 9 below refuses, because there
+ * the alternative is not immunity but an unchecked subtree. That trade, and why
+ * the leaf half was reversed from AIC-92's answer, is in
  * `docs/decisions/control-ownership-boundary.md`.
  *
  * ## Limits — each one measured, each one pinned
@@ -336,13 +425,33 @@ function restoreDeclared(
  *    it is recorded here as a limit of this module rather than inherited as
  *    covered. Found by `security-scanner` at the AIC-93 gate; identical before
  *    this module existed, so it is a limit rather than a regression.
+ *    see checkpoint-serde-own-values.test.mjs › "states its limit: a Proxy that
+ *    lies through getOwnPropertyDescriptor is not repaired"
  *
- * ⚠ Limit 6's raw-`TypeError` edge widened with the walk. A loaded value
- * carrying a NON-CONFIGURABLE own data property under a declared key now makes
- * `Object.defineProperty` throw where the walk used to skip the value for its
- * shape. That is fail-closed — the load throws, the resume is refused and the
- * checkpoint on disk is untouched — but the error is a raw `TypeError` and not
- * this module's own refusal type.
+ * 9. **A declared container the walk cannot verify is REFUSED, not skipped.**
+ *    When the loaded slot under a declared container key is not an own data
+ *    property, or a declared ARRAY is answered by a non-array counterpart, the
+ *    load throws `UnverifiableContainerError` naming the key. This is the one
+ *    place the module refuses rather than repairing, and limit 1 explains why
+ *    the leaf and the container answer differently.
+ *    ⚠ `__proto__` is exempt: the reviver's assignment of that key re-parents
+ *    the target instead of defining an own slot, so its absence is the
+ *    language's doing rather than a substitution, and refusing on it would fail
+ *    every checkpoint whose bytes carry the key.
+ *    see checkpoint-serde-own-values.test.mjs › "refuses the load when the slot
+ *    under a declared container key is not an own data property, and names that
+ *    key", › "refuses the load when a declared array is answered by a non-array
+ *    counterpart, and names that key" and › "repairs the siblings of a
+ *    __proto__ key, which the reviver re-parents on assignment"
+ *
+ * ⚠ The repair in limit 1 has a raw-`TypeError` edge. A loaded value carrying a
+ * NON-CONFIGURABLE own data property under a declared key makes
+ * `Object.defineProperty` throw. That is fail-closed at this module's boundary
+ * — `loadsTyped` throws rather than returning an unverified value — but the
+ * error is a raw `TypeError`, not one of this module's own refusal types.
+ * see checkpoint-serde-own-values.test.mjs › "states its limit: a
+ * non-configurable own data property under a declared key throws a raw
+ * TypeError"
  *
  * The revived non-plain values the reviver builds — `Set`, `Map`, `Uint8Array`,
  * `RegExp`, `Error`, `DeltaSnapshot`, a LangChain `lc: 1` object — are handed

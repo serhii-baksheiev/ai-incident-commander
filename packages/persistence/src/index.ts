@@ -6,6 +6,7 @@ export {
   DESERIALIZATION_MAX_DEPTH,
   DESERIALIZATION_MAX_NODES,
   DeserializationBudgetError,
+  UnverifiableContainerError,
   withDeclaredOwnValues,
 } from './own-value-serde.js';
 

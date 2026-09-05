@@ -131,6 +131,154 @@ function armReparentingGadget(field = POLLUTED_FIELD) {
   });
 }
 
+/**
+ * The gadget that answers the write by defining a NON-CONFIGURABLE own data
+ * property: the one shape the repair cannot write back over, because
+ * `Object.defineProperty` refuses to redefine it.
+ */
+function armNonConfigurableWritingGadget(field = POLLUTED_FIELD) {
+  Object.defineProperty(Object.prototype, field, {
+    configurable: true,
+    get() {
+      return SUBSTITUTED_VALUE;
+    },
+    set() {
+      Object.defineProperty(this, field, {
+        value: SUBSTITUTED_VALUE,
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      });
+    },
+  });
+}
+
+/** The container key a real checkpoint carries the whole state under, and the
+ * one an inherited setter can intercept: unlike `control` it is not a LangGraph
+ * channel name, so nothing else stops it. */
+const CONTAINER_KEY = 'channel_values';
+
+/** What the bytes declare under that container: the honest control, one level
+ * down, exactly as a checkpoint stores it. */
+const DECLARED_CONTAINER = {
+  [CONTAINER_KEY]: { control: { [POLLUTED_FIELD]: DECLARED_VALUE } },
+};
+
+/**
+ * A setter on the CONTAINER key that hands back a subtree of the gadget's own
+ * making, carrying the substituted control.
+ *
+ * `plant` is the one thing the rows below vary: it decides the DESCRIPTOR the
+ * attacker's subtree sits under — an own accessor, which `readOwnDataValue`
+ * reports as absent, or an own data property, which it reports as present. Two
+ * rows over one gadget is what isolates that descriptor as the discriminator;
+ * a second hand-written gadget would let them drift apart and prove nothing.
+ */
+function armContainerGadget(plant) {
+  return (field) => {
+    Object.defineProperty(Object.prototype, field, {
+      configurable: true,
+      get() {
+        return undefined;
+      },
+      set(honest) {
+        plant(this, field, {
+          control: { ...honest.control, [POLLUTED_FIELD]: SUBSTITUTED_VALUE },
+        });
+      },
+    });
+  };
+}
+
+/** Plants the attacker's subtree as an own ACCESSOR at the container key
+ * itself, so the slot the walk reads under a declared container is not a data
+ * property. */
+function plantAccessorAtContainer(target, field, substituted) {
+  Object.defineProperty(target, field, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return substituted;
+    },
+  });
+}
+
+/** Plants an honest-looking own data property at the container key whose
+ * `control` is the accessor, so the non-data slot sits one level further in. */
+function plantAccessorUnderContainer(target, field, substituted) {
+  const shim = {};
+  Object.defineProperty(shim, 'control', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return substituted.control;
+    },
+  });
+  Object.defineProperty(target, field, {
+    value: shim,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/** The discriminating half: the same substituted subtree, planted as own DATA
+ * properties the whole way down. */
+function plantDataUnderContainer(target, field, substituted) {
+  Object.defineProperty(target, field, {
+    value: substituted,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/** A key a real checkpoint carries an ARRAY under, and the second shape a
+ * setter can intercept. */
+const ARRAY_KEY = 'messages';
+
+/** What the bytes declare under it: one element, carrying the field the whole
+ * ownership boundary was measured on. */
+const DECLARED_ARRAY = { [ARRAY_KEY]: [{ [POLLUTED_FIELD]: DECLARED_VALUE }] };
+
+/**
+ * A setter on an ARRAY key that hands back a counterpart of the gadget's
+ * choosing, holding the substituted element at index 0.
+ *
+ * `makeCounterpart` is the one thing the two rows below vary: an array-LIKE
+ * object, which `Array.isArray` answers no for, against a genuine array. The
+ * element it carries is identical either way, so the counterpart's kind is
+ * isolated as the discriminator.
+ */
+function armArrayGadget(makeCounterpart) {
+  return (field) => {
+    Object.defineProperty(Object.prototype, field, {
+      configurable: true,
+      get() {
+        return undefined;
+      },
+      set(honest) {
+        Object.defineProperty(this, field, {
+          value: makeCounterpart({
+            ...honest[0],
+            [POLLUTED_FIELD]: SUBSTITUTED_VALUE,
+          }),
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      },
+    });
+  };
+}
+
+/** The counterpart the walk cannot pair with an array declaration: an object
+ * carrying the same indices. */
+const arrayLikeObject = (element) => ({ 0: element, length: 1 });
+
+/** The counterpart it can: a genuine array. */
+const genuineArray = (element) => [element];
+
 async function loadUnder(arm, value, field = POLLUTED_FIELD) {
   assert.equal(
     field in {},
@@ -178,6 +326,61 @@ test('hands a revived LangChain lc:1 instance back exactly as the reviver built 
     loaded.message.getType(),
     'human',
     "if this is 'constructor' the walk entered the instance and overwrote its own `type`",
+  );
+});
+
+test('reads the lc marker as an own property, so an inherited lc cannot make every declared node look like a revived record', async () => {
+  // `isRevivedRecord` is the walk's one EARLY RETURN over declared data, so
+  // whatever answers it decides whether anything is repaired at all. Reading
+  // `lc` with `[[Get]]` hands that decision to the prototype chain — the exact
+  // mistake this module exists to undo — and one inherited `lc` then makes
+  // every declared node look like a record the reviver consumed, so the walk
+  // returns before repairing a single slot and the whole AIC-93 bypass is back.
+  //
+  // The decoy is inert to the dependency: `jsonplus.js` needs
+  // `type === "constructor"` with an array `id` for `lc: 1`, and `lc === 2` for
+  // its undefined record, so an inherited `lc` changes nothing about what is
+  // revived — which is what makes this a silent total bypass rather than a
+  // visible breakage.
+  const [type, data] = await serde.dumpsTyped({
+    control: { [POLLUTED_FIELD]: DECLARED_VALUE },
+  });
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    'an earlier row leaked the gadget onto the prototype',
+  );
+  assert.equal('lc' in {}, false, 'an earlier row leaked lc onto the prototype');
+
+  let loaded;
+  try {
+    Object.defineProperty(Object.prototype, 'lc', {
+      value: 1,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    armOwnWritingGadget();
+    loaded = await serde.loadsTyped(type, data);
+  } finally {
+    delete Object.prototype[POLLUTED_FIELD];
+    delete Object.prototype.lc;
+  }
+
+  assert.equal(
+    Object.hasOwn(loaded.control, 'lc'),
+    false,
+    'the decoy must stay inherited — an own lc would be a different row',
+  );
+  assert.deepEqual(
+    ownDescriptor(loaded.control, POLLUTED_FIELD),
+    {
+      value: DECLARED_VALUE,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    'the marker must be read as an OWN property: an inherited lc that answers for every node stops the walk before it repairs anything',
   );
 });
 
@@ -308,6 +511,124 @@ test('keeps the own value when the gadget hands back an Array as the container',
       `${label}: a container the gadget chose must not take its subtree out of the repair`,
     );
   }
+});
+
+test('refuses the load when the slot under a declared container key is not an own data property, and names that key', async () => {
+  // The fourth bypass of the same class, measured end to end through a real
+  // `confirm` resume: `outcome: COMPLETED`, a persisted control carrying
+  // `humanReview:false` that `IncidentStateControlSchema` accepts, and a
+  // `humanReview` descriptor on disk that is a genuine own data property.
+  //
+  // `restoreSlot`'s object-valued branch reads the loaded slot with
+  // `readOwnDataValue`, which answers `present: false` for an own ACCESSOR —
+  // and then returns. On a LEAF that is the deliberate carve-out: the shape is
+  // left for `assertRestoredControlFieldsPresent` and `pickGraphOwnedControl`
+  // to refuse. At a CONTAINER key there is no graph refusal site at all, so the
+  // whole subtree under it is neither repaired here nor refused there, and the
+  // gadget's control is handed back whole.
+  //
+  // A container therefore fails CLOSED, in the same spirit as the bound
+  // refusals: the load throws rather than returning a subtree whose own values
+  // were never verified, and the message names the key it refused on so an
+  // operator reading it knows where the substitution was attempted.
+  for (const [where, plant, offendingKey] of [
+    ['at the container key itself', plantAccessorAtContainer, CONTAINER_KEY],
+    ['one level under the container', plantAccessorUnderContainer, 'control'],
+  ]) {
+    await assert.rejects(
+      () =>
+        loadUnder(armContainerGadget(plant), DECLARED_CONTAINER, CONTAINER_KEY),
+      (error) => {
+        assert.ok(
+          error instanceof Error,
+          `${where}: the refusal must be an Error, not: ${error}`,
+        );
+        assert.ok(
+          error.message.includes(offendingKey),
+          `${where}: the refusal must name the key it refused on — got: ${error.message}`,
+        );
+        return true;
+      },
+      `${where}: a declared container whose loaded slot is an own accessor must be refused, not handed back as the gadget built it`,
+    );
+  }
+});
+
+test('repairs a declared container whose loaded slot the gadget planted as an own data property', async () => {
+  // The discriminating half of the row above: the same gadget, the same
+  // substituted subtree, the same container key — only the DESCRIPTOR differs.
+  // Here the slot is an own data property, `readOwnDataValue` reports it
+  // present, the walk enters and the declared value goes back. Without this row
+  // the refusal above is satisfied by refusing every container, which is the
+  // failure mode a fail-closed guard has and the one this pair exists to catch.
+  const loaded = await loadUnder(
+    armContainerGadget(plantDataUnderContainer),
+    DECLARED_CONTAINER,
+    CONTAINER_KEY,
+  );
+
+  assert.deepEqual(
+    ownDescriptor(loaded[CONTAINER_KEY].control, POLLUTED_FIELD),
+    {
+      value: DECLARED_VALUE,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    'a container the walk can read must still be repaired to the value the bytes declare',
+  );
+});
+
+test('refuses the load when a declared array is answered by a non-array counterpart, and names that key', async () => {
+  // The same family as the row above, on the other container kind, and live at
+  // this head: `restoreDeclared` pairs arrays with
+  // `Array.isArray(declared) && Array.isArray(loaded)`, and when the loaded
+  // side is not an array it falls through to `if (!isPlainObject(declared))
+  // return` — which an array declaration satisfies, so the whole subtree is
+  // skipped. An array-LIKE object carrying the same indices therefore keeps the
+  // gadget's element, as own data properties, with nothing downstream to refuse
+  // it.
+  //
+  // Skipping is the wrong answer for a container either way: no repair here and
+  // no refusal anywhere. It fails closed instead, naming the key.
+  await assert.rejects(
+    () => loadUnder(armArrayGadget(arrayLikeObject), DECLARED_ARRAY, ARRAY_KEY),
+    (error) => {
+      assert.ok(
+        error instanceof Error,
+        `the refusal must be an Error, not: ${error}`,
+      );
+      assert.ok(
+        error.message.includes(ARRAY_KEY),
+        `the refusal must name the key it refused on — got: ${error.message}`,
+      );
+      return true;
+    },
+    'a declared array answered by a non-array counterpart must be refused, not skipped',
+  );
+});
+
+test('repairs a declared array element-wise when the loaded counterpart is a genuine array', async () => {
+  // The discriminating half: same gadget, same substituted element, and the
+  // counterpart is an array — so the walk pairs the two and the declared value
+  // goes back. Without this row the refusal above is satisfied by refusing
+  // every array.
+  const loaded = await loadUnder(
+    armArrayGadget(genuineArray),
+    DECLARED_ARRAY,
+    ARRAY_KEY,
+  );
+
+  assert.deepEqual(
+    ownDescriptor(loaded[ARRAY_KEY][0], POLLUTED_FIELD),
+    {
+      value: DECLARED_VALUE,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    'an element inside a paired array must be repaired to the value the bytes declare',
+  );
 });
 
 test('states its limit: a Proxy that lies through getOwnPropertyDescriptor is not repaired', async () => {
@@ -473,6 +794,48 @@ test('states its limit: a declared object whose loaded slot is a primitive is le
   );
 });
 
+test('states its limit: a non-configurable own data property under a declared key throws a raw TypeError', async () => {
+  assert.match(
+    readFileSync(
+      new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
+      'utf8',
+    ),
+    /NON-CONFIGURABLE own data property under a declared key/,
+    'the guard must state this limit in the file, per .claude/rules/invariants.md',
+  );
+
+  // The limit stated, presented rather than described. `restoreSlot` writes the
+  // declared value back with `Object.defineProperty`, which refuses a
+  // non-configurable slot — so the load fails CLOSED, which is the half of this
+  // that matters, but with the platform's error rather than this module's own
+  // refusal type. Pinned as it behaves today: if the module grows a refusal for
+  // this shape, this row is where the change surfaces.
+  await assert.rejects(
+    () =>
+      loadUnder(armNonConfigurableWritingGadget, {
+        [POLLUTED_FIELD]: DECLARED_VALUE,
+      }),
+    (error) => {
+      assert.ok(
+        error instanceof TypeError,
+        `the limit still holds: the throw is the platform's TypeError, not: ${error}`,
+      );
+      assert.equal(
+        error instanceof DeserializationBudgetError,
+        false,
+        "the limit still holds: it is not this module's refusal type. If it now is, the limit has closed — update the comment and this row",
+      );
+      assert.match(
+        error.message,
+        /Cannot redefine property/,
+        'the throw must be the redefinition refusal, not some other TypeError on the way there',
+      );
+      return true;
+    },
+    'a non-configurable own data property under a declared key must still make the load throw rather than hand the value back',
+  );
+});
+
 test('keeps the own value the serialized form declares when an inherited setter writes another', async () => {
   const loaded = await loadUnder(armOwnWritingGadget, {
     [POLLUTED_FIELD]: DECLARED_VALUE,
@@ -554,6 +917,28 @@ test('leaves a swallowed write for the graph to refuse rather than repairing it'
     Object.hasOwn(descriptor, 'value'),
     false,
     'an own ACCESSOR must stay an accessor, so the presence check still refuses it',
+  );
+
+  // The same leaf shape, one level down under a declared CONTAINER the walk
+  // does read. The refusal a container's non-data slot earns must not reach
+  // this far in: a leaf control field is the graph's to refuse, and turning it
+  // into a serde-level throw takes the four refusal rows
+  // `docs/decisions/control-ownership-boundary.md` enumerates with it. Reaching
+  // this assertion at all is half of what it measures — a load that threw would
+  // fail here instead.
+  const nested = await loadUnder(armAccessorWritingGadget, {
+    control: { [POLLUTED_FIELD]: DECLARED_VALUE },
+  });
+  const nestedDescriptor = ownDescriptor(nested.control, POLLUTED_FIELD);
+  assert.notEqual(
+    nestedDescriptor,
+    undefined,
+    'the gadget must leave an own property one level down, or this half is not measuring that shape',
+  );
+  assert.equal(
+    Object.hasOwn(nestedDescriptor, 'value'),
+    false,
+    'a leaf accessor inside a walked container must stay an accessor, and must not be escalated into a load-time throw',
   );
 });
 
