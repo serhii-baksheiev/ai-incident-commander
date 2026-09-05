@@ -6,10 +6,13 @@ import test, { after } from 'node:test';
 
 import { MemorySaver } from '@langchain/langgraph-checkpoint';
 
+import { IncidentStateSchema } from '@aic/domain';
+
 import {
   DESERIALIZATION_MAX_DEPTH,
   DESERIALIZATION_MAX_NODES,
   DeserializationBudgetError,
+  UnverifiableContainerError,
   createSqliteCheckpointer,
 } from '@aic/persistence';
 
@@ -543,6 +546,21 @@ test('refuses the load when the slot under a declared container key is not an ow
           error instanceof Error,
           `${where}: the refusal must be an Error, not: ${error}`,
         );
+        // The TYPE, not only the message. The class exists so a caller can tell
+        // an unverifiable container from a bound the walk crossed, and until
+        // this assertion existed it had none: measured at 5b3444f, replacing
+        // both `new UnverifiableContainerError(` with
+        // `new DeserializationBudgetError(` left the whole suite green, so the
+        // exported class ended with zero construction sites and nothing said so.
+        assert.ok(
+          error instanceof UnverifiableContainerError,
+          `${where}: the refusal must be this module's container refusal, not a ${error.constructor?.name}: ${error.message}`,
+        );
+        assert.equal(
+          error instanceof DeserializationBudgetError,
+          false,
+          `${where}: a container the walk could not verify is not a bound it crossed, and the two must stay tellable apart`,
+        );
         assert.ok(
           error.message.includes(offendingKey),
           `${where}: the refusal must name the key it refused on — got: ${error.message}`,
@@ -597,6 +615,19 @@ test('refuses the load when a declared array is answered by a non-array counterp
       assert.ok(
         error instanceof Error,
         `the refusal must be an Error, not: ${error}`,
+      );
+      // The same type assertion as the container row above, and for the same
+      // reason: this is the second of the module's two container refusal sites,
+      // so a swap that reddened only one of them would still leave the class
+      // half-unpinned.
+      assert.ok(
+        error instanceof UnverifiableContainerError,
+        `the refusal must be this module's container refusal, not a ${error.constructor?.name}: ${error.message}`,
+      );
+      assert.equal(
+        error instanceof DeserializationBudgetError,
+        false,
+        'a declared array answered by a non-array is not a bound the walk crossed, and the two must stay tellable apart',
       );
       assert.ok(
         error.message.includes(ARRAY_KEY),
@@ -743,11 +774,15 @@ test('states its limit: a declared object whose loaded slot is a primitive is le
   // that slot. Found by `code-reviewer` at the AIC-93 gate. Unreachable for a
   // control field today; a second optional graph-owned field would make it live.
   assert.match(
+    // Comment continuations collapsed before matching, so a re-wrap of the same
+    // sentence does not redden this row while a deletion still does. The earlier
+    // form pinned the line break itself (`\s+\*\s+`) and went red on a wording
+    // fix at the AIC-93 gate that left the claim intact.
     readFileSync(
       new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
       'utf8',
-    ),
-    /and the load left as a\s+\*\s+primitive, is skipped/,
+    ).replace(/\n\s*\*\s*/g, ' '),
+    /and the load left as a primitive, is skipped/,
     'the guard must state this limit in the file, per .claude/rules/invariants.md',
   );
 
@@ -791,6 +826,73 @@ test('states its limit: a declared object whose loaded slot is a primitive is le
     loaded[FIELD],
     'budget-exhausted',
     'the limit still holds: a declared object whose load left a primitive is skipped, so the substitution survives. If this is now undefined the limit has closed — update the comment and this row',
+  );
+});
+
+/**
+ * The two lines that make limit 7 say "skipped" rather than "refused" — and
+ * they became load-bearing at the commit that added the container refusal, with
+ * nothing pinning them.
+ *
+ * `restoreDeclared` returns when the loaded side is a primitive (`loaded ===
+ * null`, then the `typeof` test). Remove them and the walk iterates the
+ * DECLARED keys against a primitive: a declared child that is itself an object
+ * reaches `readOwnDataValue`, which answers absent for every key of a
+ * primitive, and the container refusal then throws. Limit 7's "skipped" quietly
+ * becomes "refused" for every checkpoint carrying that shape.
+ *
+ * The row that states limit 7 cannot see this. Its fixture is the
+ * `{"lc":2,"type":"undefined"}` record, and `isRevivedRecord` returns on that
+ * before the guard is ever reached — so it stays green either way.
+ *
+ * What discriminates here is the NESTED OBJECT in the declaration. With a flat
+ * declaration every child is a leaf, `restoreSlot` finds nothing on the
+ * primitive and returns, and removing the guard changes nothing at all. The
+ * premise assertions below are what keep that property from being edited away
+ * by accident.
+ *
+ * Measured with both lines removed, rebuilt in a scratch clone at 5b3444f: this
+ * row throws `UnverifiableContainerError` naming `"control"`, and it is the only
+ * row in the suite that reddens.
+ */
+test('skips a declared object whose loaded slot is a primitive, even when the declaration nests another object', async () => {
+  const fixture = {
+    [POLLUTED_FIELD]: { control: { [POLLUTED_FIELD]: DECLARED_VALUE } },
+    sibling: 'untouched',
+  };
+
+  const [, bytes] = await serde.dumpsTyped(fixture);
+  const declaredText = new TextDecoder().decode(bytes);
+  assert.match(
+    declaredText,
+    /"control":\{/,
+    'the declaration must nest an object under the polluted key, or removing the guard changes nothing and this row cannot discriminate it',
+  );
+  assert.doesNotMatch(
+    declaredText,
+    /"lc":2/,
+    'the declaration must be a plain object rather than the undefined record the limit-7 row uses, or the walk returns at isRevivedRecord and never reaches the guard',
+  );
+
+  // The own-writing gadget answers the reviver's assignment with a PRIMITIVE,
+  // so the loaded slot under a declared object is `false` — limit 7's shape,
+  // arrived at through the file's canonical gadget rather than a new one.
+  const loaded = await loadUnder(armOwnWritingGadget, fixture);
+
+  assert.equal(
+    loaded[POLLUTED_FIELD],
+    SUBSTITUTED_VALUE,
+    'the limit still holds: a declared object whose load left a primitive is skipped, so the substitution survives. If this is now an object the limit has closed — update limit 7 and this row',
+  );
+  assert.equal(
+    Object.hasOwn(loaded, POLLUTED_FIELD),
+    true,
+    'the skipped slot must be left exactly as the load left it, not deleted or replaced',
+  );
+  assert.equal(
+    loaded.sibling,
+    'untouched',
+    'the load must return a whole value: a skipped slot ends that subtree, not the walk',
   );
 });
 
@@ -1097,6 +1199,132 @@ test('states its limit: a polluted key inside a Map member is not repaired', asy
     loaded.get('member')[POLLUTED_FIELD],
     SUBSTITUTED_VALUE,
     'the limit still holds: if this is now the declared value the limit has closed — update the comment and this row',
+  );
+});
+
+/** A key whose serialized form is an `lc` record rather than a plain object.
+ * `tags` is not a channel this repository has — which is the reachability half
+ * of the limit, asserted below rather than assumed. */
+const LC_RECORD_KEY = 'tags';
+
+/**
+ * The zod kinds `IncidentStateSchema` DECLARES, read out of the parsed schema
+ * tree rather than listed here, so a channel added tomorrow arrives on its own.
+ *
+ * The walk follows every own value of a schema node and of its `_def`, with a
+ * seen-set, which is enough to reach the whole finite tree without knowing
+ * which key each wrapper stores its inner schema under.
+ */
+function declaredSchemaKinds(schema) {
+  const seen = new Set();
+  const kinds = new Set();
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    const def = node._def;
+    if (def !== undefined && typeof def.type === 'string') kinds.add(def.type);
+    for (const value of Object.values(node)) walk(value);
+    if (def !== undefined) for (const value of Object.values(def)) walk(value);
+  };
+  walk(schema);
+  return kinds;
+}
+
+/**
+ * Limit 10, which is limit 9's family with the refusal deliberately not there.
+ *
+ * `isRevivedRecord(declared)` is an early return over DECLARED data, taken
+ * before anything looks at the counterpart — so where the serialized form says
+ * `lc:1` / `lc:2`, whatever the load left under that key is handed back
+ * unexamined. A gadget that plants its own object there is not repaired, not
+ * refused, and not compared with the record that says a `Set` belongs in that
+ * slot.
+ *
+ * It is left open rather than closed because closing it means deciding, per
+ * constructor record, what "is what it says" means, and the row above
+ * ("hands a revived LangChain lc:1 instance back exactly as the reviver built
+ * it") is what that decision has already cost twice.
+ *
+ * ⚠ This row asserts the CURRENT unverified passthrough, exactly as its
+ * siblings do. It goes red when the gap closes, and that is the signal to
+ * rewrite limit 10 rather than to restore the behaviour.
+ *
+ * The reachability half is asserted, not stated, because it is the whole reason
+ * this is a limit rather than a live defect: nothing writes an `lc` record into
+ * a checkpoint while no channel declares a value the serializer stores as one.
+ *
+ * ⚠ Measured at 5b3444f, and narrower than "no channel can ever hold one":
+ * three declared fields are `z.unknown()` —
+ * `predictions[].expectedIfTrue[]`, `tests[].input` and `trials[].input` — so a
+ * caller storing a `Set` in one of those makes this limit live with no schema
+ * change at all, exactly as adding a channel would. What the assertion below
+ * covers is the DECLARED kinds.
+ *
+ * Found by `security-scanner` at the AIC-93 gate, round 5.
+ */
+test("states its limit: a declared lc record's loaded counterpart is handed back unverified", async () => {
+  const source = readFileSync(
+    new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
+    'utf8',
+  );
+  // The same docblock with its comment continuations collapsed. Matching the
+  // sentence rather than the line break keeps a re-wrap from reddening a row
+  // whose claim is unchanged, while a deleted or reworded claim still does.
+  const collapsed = source.replace(/\n\s*\*\s*/g, ' ');
+  assert.match(
+    collapsed,
+    /is walked past without checking that the loaded side is what the record says the reviver built/,
+    'the guard must state this limit in the file, per .claude/rules/invariants.md',
+  );
+  assert.match(
+    collapsed,
+    // DECLARES, not "holds": the limit was corrected at the AIC-93 gate after
+    // `test-writer` measured that the schema's three `z.unknown()` slots let a
+    // caller store a `Set` with no schema change, so "holds" overstated it.
+    // This asserts the narrower, true claim the schema assertion below backs.
+    /no channel in `IncidentStateSchema` DECLARES a `Set`, a `Map` or a LangChain `lc:1` value/,
+    'the limit must keep saying what the schema does and does not declare, because that is what the schema assertion below backs',
+  );
+
+  // The premise: these bytes really do declare a record the reviver turns into
+  // a Set, so what the polluted load hands back is measurably not it.
+  const revived = await roundTrip({ [LC_RECORD_KEY]: new Set(['a', 'b']) });
+  assert.ok(
+    revived[LC_RECORD_KEY] instanceof Set,
+    'the declared record must revive as a Set, or this row is not about an lc record at all',
+  );
+
+  const loaded = await loadUnder(
+    armContainerGadget(plantDataUnderContainer),
+    { [LC_RECORD_KEY]: new Set(['a', 'b']) },
+    LC_RECORD_KEY,
+  );
+
+  assert.equal(
+    loaded[LC_RECORD_KEY] instanceof Set,
+    false,
+    'the limit still holds: if the loaded side is a Set again the gap has closed — rewrite limit 10 and this row',
+  );
+  assert.equal(
+    loaded[LC_RECORD_KEY].control[POLLUTED_FIELD],
+    SUBSTITUTED_VALUE,
+    "the limit still holds: the gadget's own object comes back verbatim, checked against nothing",
+  );
+
+  // And why that is a limit rather than a defect: no channel declares a value
+  // the serializer writes as an lc record, so nothing puts one in a checkpoint.
+  const kinds = declaredSchemaKinds(IncidentStateSchema);
+  assert.deepEqual(
+    ['object', 'array', 'string', 'boolean'].filter((kind) => !kinds.has(kind)),
+    [],
+    'the schema walk found none of the kinds every version of this schema has, so its answer below would be vacuous — zod internals moved',
+  );
+  assert.deepEqual(
+    ['map', 'set', 'date', 'promise', 'custom'].filter((kind) =>
+      kinds.has(kind),
+    ),
+    [],
+    'a channel now declares a value the serializer stores as an lc record, which makes limit 10 live: close it or rewrite it',
   );
 });
 

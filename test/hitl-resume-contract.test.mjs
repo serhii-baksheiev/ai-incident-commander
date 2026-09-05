@@ -14,7 +14,10 @@ import {
 import * as graphPackage from '@aic/graph';
 
 import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
-import { createSqliteCheckpointer } from '@aic/persistence';
+import {
+  UnverifiableContainerError,
+  createSqliteCheckpointer,
+} from '@aic/persistence';
 import { INTERRUPT, interrupt, isInterrupted } from '@langchain/langgraph';
 
 const lifecycleNodes = [
@@ -3137,6 +3140,173 @@ test("keeps the graph's own stopKind under an inherited setter that writes an ow
       Object.getOwnPropertyDescriptor(persistedControl, 'stopKind'),
       ownValueDescriptor('stalled'),
       "the stop kind on disk must be the one the graph decided, not the prototype's",
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The CONTAINER half of the same repair, and the one shape where it REFUSES
+ * instead of making the run immune.
+ *
+ * The two rows above arm a LEAF: the gadget answers the reviver's assignment of
+ * one control field, the serde puts the checkpoint's own value back, and the
+ * resume completes. A gadget armed at a container KEY is not that shape.
+ * `channel_values` is the reachable parent of `control` in a real checkpoint and
+ * is not a LangGraph channel name, so a setter there is handed the whole subtree
+ * and can answer with a shim whose `control` is an own GETTER — a value no
+ * descriptor read can verify and no graph guard ever looks at, because none of
+ * the ownership sites in `packages/graph` sits above `control`.
+ *
+ * So the serde refuses, naming the key it could not verify, and this row is what
+ * the module's limit 9 and `docs/decisions/control-ownership-boundary.md` point
+ * at from the resume side: a real graph, a real SQLite checkpointer, a real
+ * `confirm`, and the checkpoint read back afterwards.
+ *
+ * Measured with that refusal removed — `restoreSlot`'s `if (key === '__proto__')
+ * return;` widened to `if (true) return;`, rebuilt in a scratch clone at
+ * 5b3444f: this resume COMPLETES, `humanReview: false` and
+ * `stopKind: 'budget-exhausted'` reach disk, the control still parses, and the
+ * run is no longer under human review. That is the outcome this row exists to
+ * keep unreachable, and it is why the row asserts what is on DISK rather than
+ * the refusal alone.
+ */
+
+/** What the gadget substitutes: schema-valid, so nothing reading the control
+ * back could tell it from the run's own. */
+const CONTAINER_SUBSTITUTED_HUMAN_REVIEW = false;
+const CONTAINER_SUBSTITUTED_STOP_KIND = 'budget-exhausted';
+
+/**
+ * The container-key gadget: an inherited setter at `channel_values` that answers
+ * the reviver's assignment by defining, ON THE TARGET, a shim carrying the
+ * honest siblings and an own GETTER at `control` returning a modified copy of
+ * the run's own control.
+ *
+ * Three things about it are deliberate:
+ *
+ * - the substituted control is DERIVED from the honest one the setter is handed,
+ *   not written out here, so it stays schema-valid as the control schema grows
+ *   and this row keeps failing for the reason it names;
+ * - the siblings are copied with `defineProperty` rather than assignment, so a
+ *   channel named `__proto__` could not re-parent the shim and quietly change
+ *   what the row is testing;
+ * - a written value that is not an object carries no control to substitute and
+ *   is defined verbatim. The setter is on `Object.prototype` for the whole
+ *   window and must not fail for a reason of its own.
+ */
+function armContainerAccessorGadget() {
+  Object.defineProperty(Object.prototype, 'channel_values', {
+    configurable: true,
+    get() {
+      return undefined;
+    },
+    set(written) {
+      const defineOwn = (value) => {
+        Object.defineProperty(this, 'channel_values', {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      };
+
+      if (written === null || typeof written !== 'object') {
+        defineOwn(written);
+        return;
+      }
+
+      const shim = {};
+      for (const key of Object.keys(written)) {
+        if (key === 'control') continue;
+        Object.defineProperty(shim, key, {
+          value: written[key],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+
+      const honestControl = written.control;
+      if (honestControl !== null && typeof honestControl === 'object') {
+        const substituted = {
+          ...honestControl,
+          [POLLUTED_FIELD]: CONTAINER_SUBSTITUTED_HUMAN_REVIEW,
+          stopKind: CONTAINER_SUBSTITUTED_STOP_KIND,
+        };
+        Object.defineProperty(shim, 'control', {
+          enumerable: true,
+          configurable: true,
+          get() {
+            return substituted;
+          },
+        });
+      }
+
+      defineOwn(shim);
+    },
+  });
+}
+
+test("refuses a resume when a container key hides the control behind an own accessor, and leaves the checkpoint the run's own values", async () => {
+  assert.equal(
+    'channel_values' in {},
+    false,
+    'the prototype is already carrying channel_values before this run started: an earlier row leaked it',
+  );
+
+  const harness = createHarness({ runId: 'run-container-key-accessor' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let outcome;
+    try {
+      armContainerAccessorGadget();
+      outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    } finally {
+      delete Object.prototype.channel_values;
+    }
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a checkpoint whose control the walk cannot verify must be refused, not resumed to completion on it',
+    );
+    assert.equal(
+      outcome.error instanceof UnverifiableContainerError,
+      true,
+      `the refusal must be the persistence layer's own, not: ${outcome.error?.constructor?.name} ${outcome.error?.message ?? ''}`,
+    );
+    assert.ok(
+      outcome.error.message.includes(JSON.stringify('control')),
+      `the refusal must name the key whose subtree it would not hand back: ${outcome.error.message}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for a reason that is not the unverifiable container is not this guard: ${outcome.error.message}`,
+    );
+
+    // The disk, which is the half a refusal alone does not give: with the
+    // container refusal removed every one of these is the gadget's value.
+    const persistedControl = await harness.control();
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(persistedControl, POLLUTED_FIELD),
+      ownValueDescriptor(RETRY_EXPECTED_HUMAN_REVIEW),
+      'the refused run must still be under human review, by its own value from the checkpoint bytes',
+    );
+    assert.equal(
+      persistedControl.stopKind,
+      'stalled',
+      "the stop kind on disk must be the one the graph decided, not the gadget's",
+    );
+    assert.equal(
+      persistedControl.resumeCount,
+      0,
+      'a refused resume is not a resume the human spent',
     );
   } finally {
     harness.cleanup();

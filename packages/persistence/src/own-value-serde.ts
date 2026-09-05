@@ -21,7 +21,8 @@ export class DeserializationBudgetError extends Error {}
  * Separate from `DeserializationBudgetError` because the cause is different: a
  * budget refusal means the payload was too large to finish checking, this one
  * means the payload was checkable and the loaded counterpart was not there.
- * Both fail closed, and neither is the raw `TypeError` limit 7 names.
+ * Both fail closed, and neither is the raw `TypeError` that limit 1's repair
+ * can raise.
  */
 export class UnverifiableContainerError extends Error {}
 
@@ -33,7 +34,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** The wire shape `JsonPlusSerializer` writes for a `DeltaSnapshot`. */
 /**
  * Is this declared node a record the reviver turns into something else?
  *
@@ -66,6 +66,7 @@ function isRevivedRecord(value: Record<string, unknown>): boolean {
   return lc === 1 || lc === 2;
 }
 
+/** The wire shape `JsonPlusSerializer` writes for a `DeltaSnapshot`. */
 function isDeltaSnapshotRecord(value: unknown): value is { value: unknown } {
   return (
     isPlainObject(value) &&
@@ -140,7 +141,8 @@ function readOwnDataValue(
  * with the run completing. The refusal is in `restoreSlot` below.
  * see checkpoint-serde-own-values.test.mjs › "refuses the load when the slot
  * under a declared container key is not an own data property, and names that
- * key"
+ * key" — and, for the end-to-end half this paragraph actually claims,
+ * see hitl-resume-contract.test.mjs › "refuses a resume when a container key hides the control behind an own accessor, and leaves the checkpoint the run's own values"
  */
 function restoreSlot(
   loaded: object,
@@ -397,15 +399,28 @@ function restoreDeclared(
  *    gadget that answers one field's write by ALSO defining a second, undeclared
  *    field leaves that second field standing. It is not repaired because there
  *    is nothing declared to repair it to, and deleting an undeclared key would
- *    be this module inventing a refusal the graph is the right place for.
- *    Found by `code-reviewer` at the AIC-93 gate.
+ *    be this module inventing a refusal.
+ *    🔴 Do NOT read the graph as the place that refuses it instead — an earlier
+ *    wording said so and `security-scanner` measured otherwise at the AIC-93
+ *    gate. `stopKind` is an OPTIONAL graph-owned field, so honest bytes that
+ *    omit it plus an own-writing gadget at `control` leave
+ *    `stopKind: 'budget-exhausted'` standing as a genuine own data property,
+ *    and `pickGraphOwnedControl` reads it straight out of that descriptor.
+ *    Nothing refuses it today. `humanReview` is declared and therefore repaired,
+ *    so the human-review gate is not reachable this way.
+ *    Found by `code-reviewer` and re-measured by `security-scanner`, both at the
+ *    AIC-93 gate.
  *    see checkpoint-serde-own-values.test.mjs › "states its limit: an own key
  *    the serialized form does not declare is never examined"
  *
- * 7. **A slot the serialized form declares as an object, and the load left as a
- *    primitive, is skipped.** `restoreSlot` recurses on an object-valued
+ * 7. **A slot the serialized form declares as a PLAIN OBJECT, and the load left
+ *    as a primitive, is skipped.** `restoreSlot` recurses on an object-valued
  *    declaration and never falls through to the comparison, so the shapes
- *    disagreeing ends the walk for that slot rather than repairing it. This
+ *    disagreeing ends the walk for that slot rather than repairing it.
+ *    ⚠ Read "plain object" strictly: an array is an object too, and a declared
+ *    ARRAY answered by a primitive is REFUSED, not skipped — that half belongs
+ *    to limit 9. This entry said "an object" until `prose-reviewer` measured the
+ *    two halves apart at the AIC-93 gate. This
  *    includes the `{"lc":2,"type":"undefined"}` record, which means a gadget
  *    substituting a value for a serialized `undefined` survives.
  *    ⚠ Unreachable for control today only because the graph drops an undefined
@@ -431,18 +446,48 @@ function restoreDeclared(
  * 9. **A declared container the walk cannot verify is REFUSED, not skipped.**
  *    When the loaded slot under a declared container key is not an own data
  *    property, or a declared ARRAY is answered by a non-array counterpart, the
- *    load throws `UnverifiableContainerError` naming the key. This is the one
- *    place the module refuses rather than repairing, and limit 1 explains why
- *    the leaf and the container answer differently.
+ *    load throws `UnverifiableContainerError` naming the key. It is the only
+ *    place where a repair was available and refusal was chosen instead — NOT
+ *    the module's only throw site, which limit 2's bounds also are, and those
+ *    raise `DeserializationBudgetError`. Limit 1 explains why the leaf and the
+ *    container answer differently.
  *    ⚠ `__proto__` is exempt: the reviver's assignment of that key re-parents
  *    the target instead of defining an own slot, so its absence is the
  *    language's doing rather than a substitution, and refusing on it would fail
- *    every checkpoint whose bytes carry the key.
+ *    every checkpoint whose bytes carry the key. What the exemption routes into
+ *    a prototype is refused by the graph's ownership sites — but only at a LEAF,
+ *    and above `control` there is no graph site at all. It is safe there for a
+ *    different reason, which is worth stating rather than assuming: a channel
+ *    cannot BE named `__proto__`, because the channel names come from
+ *    `IncidentStateSchema`, a `z.strictObject`. Measured by `security-scanner`
+ *    at the AIC-93 gate over six `__proto__` shapes, none of which produced an
+ *    own attacker value.
  *    see checkpoint-serde-own-values.test.mjs › "refuses the load when the slot
  *    under a declared container key is not an own data property, and names that
  *    key", › "refuses the load when a declared array is answered by a non-array
  *    counterpart, and names that key" and › "repairs the siblings of a
  *    __proto__ key, which the reviver re-parents on assignment"
+ *
+ * 10. **A declared `lc:1` / `lc:2` record is walked past without checking that
+ *     the loaded side is what the record says the reviver built.**
+ *     `isRevivedRecord(declared)` returns before anything looks at the
+ *     counterpart, so an own-writing gadget at such a key hands back its own
+ *     object verbatim. This is the SAME family limit 9 closes — the declared
+ *     side describes a value nobody verified the loaded side against — and it
+ *     is left open rather than closed because closing it means deciding, per
+ *     constructor record, what "is what it says" means, and getting that wrong
+ *     re-breaks the `instanceof` regression rounds 1 and 2 already paid for.
+ *     ⚠ Not reached by anything this repository writes TODAY, and the reason is
+ *     a property of the state schema rather than of this module: no channel in
+ *     `IncidentStateSchema` DECLARES a `Set`, a `Map` or a LangChain `lc:1`
+ *     value, so nothing in-repo writes an `lc` record into a checkpoint.
+ *     🔴 That is weaker than "unreachable", and the difference matters: the
+ *     schema declares three `z.unknown()` slots — `predictions[].expectedIfTrue[]`,
+ *     `tests[].input` and `trials[].input` — and a caller who stores a `Set` in
+ *     one of them makes this live with **no schema change at all**. An earlier
+ *     draft of this entry said a new channel would be needed; `test-writer`
+ *     measured otherwise at the AIC-93 gate.
+ *     Found by `security-scanner` at the AIC-93 gate, round 5.
  *
  * ⚠ The repair in limit 1 has a raw-`TypeError` edge. A loaded value carrying a
  * NON-CONFIGURABLE own data property under a declared key makes

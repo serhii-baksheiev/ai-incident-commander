@@ -445,8 +445,11 @@ shape rather than by preference:
 | slot absent | the graph's refusal sites | a refusal naming the field |
 | own accessor | the graph's refusal sites | a refusal naming the field |
 
-Narrowness is what pinned it: with the condition in place, the ONLY rows that
-changed in the whole suite were the two that asserted the limit on purpose.
+Narrowness is what pinned it: with the condition in place, the only rows that
+changed were ones that asserted a limit on purpose. That was two when this
+paragraph was written; the branch has since added rows for `stopKind` and for
+the off-contract pause route, so read the count from the suite rather than from
+here — `code-reviewer` measured this sentence stale at the AIC-93 gate.
 
 ### Stated plainly: on a leaf the run is made immune, not refused
 
@@ -454,9 +457,11 @@ changed in the whole suite were the two that asserted the limit on purpose.
 declares a container and the loaded side offers nothing to check it against,
 the module refuses instead — limit 9 in the module's header, added at the
 AIC-93 gate after a container-key accessor was shown carrying
-`humanReview:false` through a real `confirm` resume, parse-clean. The reason
-the two halves differ is that the graph's refusal sites cover the leaf fields
-and cover no container at all.
+`humanReview:false` through a real `confirm` resume, parse-clean.
+see `hitl-resume-contract.test.mjs` › "refuses a resume when a container key hides the control behind an own accessor, and leaves the checkpoint the run's own values"
+
+The reason the two halves differ is that the graph's refusal sites cover the
+leaf fields and cover no container at all.
 
 For a leaf, then: no new refusal reaches an operator on that shape, and
 **nothing on disk records the attempt**. A run resumed with the gadget armed completes on the control the
@@ -474,7 +479,14 @@ limits"; the module then grew to nine, and this copy went stale without anything
 going red, which is the exact failure mode a second spelling of one fact
 produces. Read the header.
 
-Two of them matter enough to this record's argument to name **as pointers**,
-because the reasoning above depends on them: the walk is bounded and crossing
-either bound fails closed, and a polluted key inside a revived `Map` or `Set` is
-not repaired. Nothing in `IncidentStateControlSchema` is stored that way today.
+Two of them matter enough to this record's argument to name, and naming them
+means pointing at the rows rather than restating what they do:
+
+* `checkpoint-serde-own-values.test.mjs` › "refuses a checkpoint value nested
+  deeper than DESERIALIZATION_MAX_DEPTH" and › "accepts a value just inside both
+  bounds" — the bound, pinned in both directions, so it cannot be satisfied by
+  refusing everything.
+* `checkpoint-serde-own-values.test.mjs` › "states its limit: a polluted key
+  inside a Map member is not repaired".
+
+Nothing in `IncidentStateControlSchema` is stored inside a `Map` or `Set` today.
