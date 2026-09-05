@@ -456,12 +456,13 @@ function restoreDeclared(
  *    language's doing rather than a substitution, and refusing on it would fail
  *    every checkpoint whose bytes carry the key. What the exemption routes into
  *    a prototype is refused by the graph's ownership sites — but only at a LEAF,
- *    and above `control` there is no graph site at all. It is safe there for a
- *    different reason, which is worth stating rather than assuming: a channel
- *    cannot BE named `__proto__`, because the channel names come from
- *    `IncidentStateSchema`, a `z.strictObject`. Measured by `security-scanner`
- *    at the AIC-93 gate over six `__proto__` shapes, none of which produced an
- *    own attacker value.
+ *    and above `control` there is no graph site at all.
+ *    ⚠ So this entry does NOT claim the exemption is unreachable at a container
+ *    key. An earlier draft argued it from the state schema; the channel names
+ *    are not governed by that schema, so the argument was wrong and is deleted
+ *    rather than replaced. What the exemption guarantees is only what the
+ *    language guarantees: assignment puts the value on a prototype, never into
+ *    an own slot.
  *    see checkpoint-serde-own-values.test.mjs › "refuses the load when the slot
  *    under a declared container key is not an own data property, and names that
  *    key", › "refuses the load when a declared array is answered by a non-array
@@ -481,12 +482,12 @@ function restoreDeclared(
  *     a property of the state schema rather than of this module: no channel in
  *     `IncidentStateSchema` DECLARES a `Set`, a `Map` or a LangChain `lc:1`
  *     value, so nothing in-repo writes an `lc` record into a checkpoint.
- *     🔴 That is weaker than "unreachable", and the difference matters: the
- *     schema declares three `z.unknown()` slots — `predictions[].expectedIfTrue[]`,
- *     `tests[].input` and `trials[].input` — and a caller who stores a `Set` in
- *     one of them makes this live with **no schema change at all**. An earlier
- *     draft of this entry said a new channel would be needed; `test-writer`
- *     measured otherwise at the AIC-93 gate.
+ *     🔴 That is weaker than "unreachable", and the difference matters. The row
+ *     below checks the schema's DECLARED kinds and nothing else, so it cannot
+ *     see a value reaching an unknown-typed or unvalidated slot. Read it as
+ *     "nothing in this repository writes such a record", never as "no caller
+ *     can". How many such slots exist is deliberately not counted here: an
+ *     earlier draft counted them and was wrong.
  *     Found by `security-scanner` at the AIC-93 gate, round 5.
  *
  * ⚠ The repair in limit 1 has a raw-`TypeError` edge. A loaded value carrying a

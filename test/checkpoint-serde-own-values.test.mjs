@@ -1253,12 +1253,11 @@ function declaredSchemaKinds(schema) {
  * this is a limit rather than a live defect: nothing writes an `lc` record into
  * a checkpoint while no channel declares a value the serializer stores as one.
  *
- * ⚠ Measured at 5b3444f, and narrower than "no channel can ever hold one":
- * three declared fields are `z.unknown()` —
- * `predictions[].expectedIfTrue[]`, `tests[].input` and `trials[].input` — so a
- * caller storing a `Set` in one of those makes this limit live with no schema
- * change at all, exactly as adding a channel would. What the assertion below
- * covers is the DECLARED kinds.
+ * ⚠ Narrower than "no channel can ever hold one", and deliberately not
+ * quantified. The assertion below walks the schema's DECLARED kinds; it cannot
+ * see a value that reaches an unknown-typed or unvalidated slot, and this file
+ * does not enumerate those — an earlier draft enumerated them and undercounted.
+ * Read the assertion as "nothing in this repository writes such a record".
  *
  * Found by `security-scanner` at the AIC-93 gate, round 5.
  */
@@ -1278,10 +1277,9 @@ test("states its limit: a declared lc record's loaded counterpart is handed back
   );
   assert.match(
     collapsed,
-    // DECLARES, not "holds": the limit was corrected at the AIC-93 gate after
-    // `test-writer` measured that the schema's three `z.unknown()` slots let a
-    // caller store a `Set` with no schema change, so "holds" overstated it.
-    // This asserts the narrower, true claim the schema assertion below backs.
+    // DECLARES, not "holds": "holds" overstated it, because a caller can put a
+    // `Set` into a slot the schema does not constrain. This asserts only the
+    // narrower claim the schema walk below actually backs.
     /no channel in `IncidentStateSchema` DECLARES a `Set`, a `Map` or a LangChain `lc:1` value/,
     'the limit must keep saying what the schema does and does not declare, because that is what the schema assertion below backs',
   );

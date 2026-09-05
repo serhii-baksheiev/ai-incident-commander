@@ -445,11 +445,6 @@ shape rather than by preference:
 | slot absent | the graph's refusal sites | a refusal naming the field |
 | own accessor | the graph's refusal sites | a refusal naming the field |
 
-Narrowness is what pinned it: with the condition in place, the only rows that
-changed were ones that asserted a limit on purpose. That was two when this
-paragraph was written; the branch has since added rows for `stopKind` and for
-the off-contract pause route, so read the count from the suite rather than from
-here — `code-reviewer` measured this sentence stale at the AIC-93 gate.
 
 ### Stated plainly: on a leaf the run is made immune, not refused
 
