@@ -7,10 +7,13 @@
  * else in the model path is unreachable here — see the run report — so the
  * refusal is the part that has to be mechanical.
  *
- * The environment is an ARGUMENT everywhere in this file, never `process.env`:
- * `packages/` reads the process environment zero times, which is what makes
- * `resolveTracingConfig` in `packages/observability` decidable in a test, and the
- * model configuration follows the same convention.
+ * The environment is an ARGUMENT everywhere in this file, never `process.env`,
+ * which is what makes `resolveTracingConfig` in `packages/observability`
+ * decidable in a test and is the convention the model configuration follows.
+ * That no workspace package reads the process environment is a check rather
+ * than a sentence:
+ * see roles-boundary.test.mjs › "keeps every process-environment read out of the
+ * workspace packages"
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -236,6 +239,103 @@ test('returns the completion text and the usage a node can declare', async () =>
     outputTokens: 4,
   });
   assert.equal(seen.length, 1, 'one completion is one request');
+});
+
+test('counts a reservation before the request, so concurrent calls cannot share one slot', async () => {
+  // `reserve` used to only READ the completed-call count, which nothing
+  // incremented until a response came back — so the cap held for a sequential
+  // caller and for no other. Found by `security-scanner` at the AIC-94 gate.
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  const ModelCallBudgetExceededError = requireExport('ModelCallBudgetExceededError');
+  const ledger = createModelUsageLedger({ maxCalls: 2 });
+
+  let release;
+  const inFlight = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started = 0;
+
+  const port = createReferenceModelPort({
+    apiKey: fakeApiKey(),
+    modelId: 'claude-under-test',
+    ledger,
+    async fetchImpl() {
+      started += 1;
+      await inFlight;
+      return completionResponse({ text: '{"ok":true}' });
+    },
+  });
+
+  const request = { system: 's', prompt: 'p', maxOutputTokens: 16 };
+  const first = port.complete(request);
+  const second = port.complete(request);
+  // A third, started while neither of the first two has answered, must be
+  // refused: two slots are already reserved even though nothing was recorded.
+  await assert.rejects(() => port.complete(request), ModelCallBudgetExceededError);
+  assert.equal(started, 2, 'only the two reserved requests reached the transport');
+
+  release();
+  await Promise.all([first, second]);
+  assert.equal(ledger.read().calls, 2);
+});
+
+test('gives the provider request a deadline the caller can override', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  const seen = [];
+
+  const port = createReferenceModelPort({
+    apiKey: fakeApiKey(),
+    modelId: 'claude-under-test',
+    ledger: createModelUsageLedger({ maxCalls: 2 }),
+    async fetchImpl(url, init) {
+      seen.push(init);
+      return completionResponse({ text: '{"ok":true}' });
+    },
+  });
+
+  await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 16 });
+  assert.ok(
+    seen[0].signal instanceof AbortSignal,
+    'a hung provider must not stall a bounded run: the request carries a deadline',
+  );
+
+  const caller = new AbortController();
+  await port.complete({
+    system: 's',
+    prompt: 'p',
+    maxOutputTokens: 16,
+    signal: caller.signal,
+  });
+  assert.equal(seen[1].signal, caller.signal, "the caller's own signal wins");
+});
+
+test('refuses to follow a redirect, because the credential header would travel with it', async () => {
+  // `x-api-key` is a CUSTOM header, so the fetch spec's cross-origin redirect
+  // stripping — which covers `Authorization` — does not apply to it. Found by
+  // `security-scanner` at the AIC-94 gate.
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  const seen = [];
+
+  const port = createReferenceModelPort({
+    apiKey: fakeApiKey(),
+    modelId: 'claude-under-test',
+    ledger: createModelUsageLedger({ maxCalls: 1 }),
+    async fetchImpl(url, init) {
+      seen.push(init);
+      return completionResponse({ text: '{"ok":true}' });
+    },
+  });
+
+  await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 16 });
+
+  assert.equal(
+    seen[0].redirect,
+    'error',
+    'a redirect must fail rather than carry x-api-key to another origin',
+  );
 });
 
 test('never puts the credential anywhere but the request it authenticates', async () => {

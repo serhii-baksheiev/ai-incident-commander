@@ -147,6 +147,54 @@ test('produces hypotheses the domain schema accepts and declares the call it mad
   );
 });
 
+test('refuses a hypothesis id the run already carries, rather than overwriting it', async () => {
+  // The graph's reducer is `upsertById`, which REPLACES at a matching id rather
+  // than merging, so a model naming an existing id overwrites that hypothesis
+  // outright — including one a human added. A human `reject` on conclusion
+  // review routes back through this node with state populated, and the prompt
+  // shows the model every existing id, so incident text an attacker can
+  // influence is enough to aim it. Found by `security-scanner` at the AIC-94
+  // gate; both sibling producers already refused this shape.
+  const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const state = initialState();
+  const existing = {
+    id: 'h-existing',
+    statement: 'the hypothesis already under investigation',
+    createdBy: 'initial',
+  };
+  state.hypotheses = [...state.hypotheses, existing];
+
+  const { port } = fakePort([
+    { hypotheses: [{ id: 'h-existing', statement: 'hijacked' }] },
+  ]);
+  const node = createModelGenerateHypotheses({ port, at });
+
+  await assert.rejects(
+    () => node(state),
+    (error) =>
+      error instanceof ModelRoleOutputError &&
+      /already carries: h-existing/.test(error.message),
+    'the refusal must name the id it refused on',
+  );
+});
+
+test('refuses two hypotheses the model gave the same id', async () => {
+  const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      hypotheses: [
+        { id: 'h-1', statement: 'the first' },
+        { id: 'h-1', statement: 'the second, which would replace the first' },
+      ],
+    },
+  ]);
+  const node = createModelGenerateHypotheses({ port, at });
+
+  await assert.rejects(() => node(initialState()), ModelRoleOutputError);
+});
+
 test('refuses a hypothesis set the domain schema does not accept', async () => {
   const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
   const ModelRoleOutputError = requireExport('ModelRoleOutputError');

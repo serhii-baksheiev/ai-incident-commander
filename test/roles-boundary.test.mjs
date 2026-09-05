@@ -93,6 +93,99 @@ test('performs the provider request in the adapter and nowhere else', () => {
   );
 });
 
+test('spells the own-property read the same way as the two copies it names', async () => {
+  // `code-reviewer` measured the third copy diverging from both siblings in
+  // exactly the hardening they carry: it read `descriptor.value` without first
+  // asking whether the descriptor OWNS `value`. For an ACCESSOR descriptor it
+  // does not, so that read walks the prototype chain — the defect this whole
+  // family of reads exists to prevent, in the function written to prevent it.
+  //
+  // Proving the three agree by comparing their source would break on
+  // whitespace, so this compares BEHAVIOUR on the shape that separated them.
+  // `.claude/rules/invariants.md` ("one mechanism, one implementation") asks for
+  // a check rather than a note wherever a second copy has to stay, and the
+  // reason this one stays is in own-value.ts's own limit.
+  // `ownValue` is private to each package on purpose, so it is reached the way
+  // this repository already reaches an off-surface symbol: through the built
+  // module by path (`benchmark-regression-gate.js` is the precedent).
+  const roles = await import('../packages/roles/dist/own-value.js');
+
+  // The correspondence the behaviour probe cannot see on its own: all three
+  // spellings must carry the guard, so a fourth copy or a weakened one is
+  // caught by name rather than by whether this row's fixture happens to reach
+  // it.
+  for (const path of [
+    'packages/roles/src/own-value.ts',
+    'packages/observability/src/index.ts',
+    'packages/graph/src/investigation.ts',
+  ]) {
+    assert.match(
+      readFileSync(resolve(projectRoot, path), 'utf8'),
+      /Object\.hasOwn\(descriptor, 'value'\)/,
+      `${path} must guard the descriptor read with Object.hasOwn(descriptor, 'value'): without it, an accessor descriptor's missing 'value' is read off the prototype chain`,
+    );
+  }
+
+  const planted = {};
+  Object.defineProperty(planted, 'token', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return 'from-the-accessor';
+    },
+  });
+
+  assert.equal(
+    roles.ownValue(planted, 'token'),
+    undefined,
+    'an accessor must read as absent rather than being invoked',
+  );
+
+  Object.defineProperty(Object.prototype, 'value', {
+    configurable: true,
+    value: 'POLLUTED',
+    writable: true,
+  });
+  try {
+    assert.equal(
+      roles.ownValue(planted, 'token'),
+      undefined,
+      "a planted Object.prototype.value must not become the accessor descriptor's value",
+    );
+  } finally {
+    delete Object.prototype.value;
+  }
+});
+
+test('keeps every process-environment read out of the workspace packages', () => {
+  // Three places asserted "packages/ reads process.env zero times" — a counted,
+  // repository-wide invariant with nothing behind it, which
+  // `.claude/rules/invariants.md` treats as the copy that goes stale. It is the
+  // reason `resolveModelConfig` takes the environment as an argument, so it is
+  // worth a check rather than three sentences.
+  const offenders = [];
+  for (const packageName of ['domain', 'graph', 'roles', 'tools', 'evals', 'observability', 'persistence']) {
+    const directory = resolve(projectRoot, `packages/${packageName}`);
+    for (const path of sourceFiles(directory)) {
+      const source = readFileSync(path, 'utf8');
+      // Comments may DISCUSS process.env — that is what these sentences do —
+      // so only a read outside a comment counts.
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+      if (/\bprocess\s*\.\s*env\b/.test(code)) {
+        offenders.push(path.slice(projectRoot.length + 1));
+      }
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'a workspace package read the process environment: the credential and the tracing config enter at the executable edge and are passed in as arguments, which is what lets a caller test either without touching the real environment',
+  );
+});
+
 test('keeps one own-property read for the whole roles package', () => {
   const defining = sourceFiles(resolve(projectRoot, 'packages/roles')).filter(
     (path) => /export function ownValue\b/.test(readFileSync(path, 'utf8')),

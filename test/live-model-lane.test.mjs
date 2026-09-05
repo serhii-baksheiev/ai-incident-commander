@@ -48,33 +48,35 @@ function fakeApiKey() {
  * policy is the one already accepted in `BENCHMARK_SCENARIO_PARTITIONS` and this
  * lane never builds a second partition.
  */
-function scriptedExperiment(experimentId, scoreFor) {
+function scriptedExperiment(experimentId, scoreFor, { omitMetrics = [] } = {}) {
   const records = evals.createFinalEvaluationBenchmarkPlan({
     experimentId,
     runsPerScenario: 3,
     metadata: benchmarkVersions,
   });
-  const results = records.map((record) => ({
-    experimentId: record.experimentId,
-    exampleId: record.exampleId,
-    runId: record.runId,
-    actualStopKind: 'sufficient',
-    metrics: {
-      unsupported_claim_rate: {
-        key: 'unsupported_claim_rate',
-        score: scoreFor('unsupported_claim_rate', record),
-      },
-      evidence_coverage: {
-        key: 'evidence_coverage',
-        score: scoreFor('evidence_coverage', record),
-      },
-      termination_correctness: {
-        key: 'termination_correctness',
-        score: scoreFor('termination_correctness', record),
-      },
-    },
-    behaviorMetrics: {},
-  }));
+  const omitted = new Set(omitMetrics);
+  const results = records.map((record) => {
+    const metrics = {};
+    for (const key of [
+      'unsupported_claim_rate',
+      'evidence_coverage',
+      'termination_correctness',
+    ]) {
+      // An arm that STOPS emitting a metric is the shape the lane has to treat
+      // as a move rather than as a match, so the fixture has to be able to
+      // produce it.
+      if (omitted.has(key)) continue;
+      metrics[key] = { key, score: scoreFor(key, record) };
+    }
+    return {
+      experimentId: record.experimentId,
+      exampleId: record.exampleId,
+      runId: record.runId,
+      actualStopKind: 'sufficient',
+      metrics,
+      behaviorMetrics: {},
+    };
+  });
   return { records, results, stopKindDistribution: { sufficient: results.length } };
 }
 
@@ -86,9 +88,11 @@ function laneOptions(overrides = {}) {
     experimentId: 'aic-94-live-model',
     headSha: HEAD_SHA,
     metadata: benchmarkVersions,
+    // `evidence_coverage` is deliberately absent: the lane withholds it, so a
+    // baseline pinning it would pin a number nothing ever compares — which the
+    // lane now refuses by name rather than ignoring.
     controlBaseline: {
       unsupported_claim_rate: 0,
-      evidence_coverage: 1,
       termination_correctness: 1,
     },
     async runControlArm() {
@@ -279,6 +283,65 @@ test('reports a moved control arm as a harness regression and withholds the mode
   );
 });
 
+test('treats a declared control metric the arm stopped emitting as a move, not as a match', async () => {
+  // The cheapest way past a comparison is to stop emitting the metric, so that
+  // absence reads as "not applicable" and the moved value leaves the comparison
+  // entirely. `benchmark-regression-gate.ts` refuses exactly this for behavior
+  // metrics — AIC-81 made it a refusal rather than a skip — and the first
+  // version of THIS lane reintroduced the skip one ticket later, because it
+  // compared only the keys the control arm happened to produce.
+  //
+  // `code-reviewer` measured it: a control arm that dropped a declared metric
+  // returned verdict 'model-quality' with movedMetrics [] and reportable true —
+  // a harness regression published as model quality, which is the one thing
+  // this lane exists to make impossible.
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(
+    laneOptions({
+      async runControlArm() {
+        return scriptedExperiment(
+          'aic-94-live-model-control',
+          (key) => perfect(key),
+          { omitMetrics: ['termination_correctness'] },
+        );
+      },
+    }),
+  );
+
+  assert.equal(
+    report.verdict,
+    'harness-regression',
+    'a metric the baseline declares and the control arm no longer emits is a move',
+  );
+  assert.equal(report.arms.model.reportable, false);
+  assert.ok(
+    report.arms.control.movedMetrics.includes('termination_correctness'),
+    'the report must name the metric that vanished, not merely refuse',
+  );
+});
+
+test('refuses a control baseline naming a metric this lane does not compare', async () => {
+  // The mirror of the row above: a typo or a renamed metric in the declared
+  // baseline used to be ignored, so a baseline that pinned nothing read as a
+  // baseline that was met.
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        laneOptions({
+          controlBaseline: {
+            unsupported_claim_rate: 1,
+            not_a_metric_this_lane_knows: 1,
+          },
+        }),
+      ),
+    /not_a_metric_this_lane_knows/,
+    'an undeclared key in the control baseline must be refused by name',
+  );
+});
+
 test('reports model quality only when the control arm matches its declared baseline', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
 
@@ -464,5 +527,47 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
     ),
     false,
     'the ground-truth predicate is prose and the evidence statement is a different sentence: the fingerprints cannot match, which is the defect',
+  );
+
+  // 🔴 The control arm's sensitivity, measured rather than enumerated by hand.
+  //
+  // An earlier version of the prose said the replay-backed control "sits at
+  // zero on evidence_coverage and termination_correctness" — two of six.
+  // `prose-reviewer` ran the arm and found ALL SIX at 0.0000. Since 1 is the
+  // perfect score for five of them, the control arm is at the INSENSITIVE floor
+  // almost everywhere: a harness change that pushes any of those down cannot
+  // move it, so the lane's control cannot see that direction at all.
+  //
+  // That is a real limit of the evidence this lane produces and the prose now
+  // points here instead of counting. Which metrics sit at the floor is a fact
+  // about the corpus and the scripted nodes, so it is asserted rather than
+  // described — a metric that stops being at the floor reddens this row, which
+  // is the day the prose has to be re-read.
+  const floors = {};
+  for (const result of experiment.results) {
+    for (const [key, metric] of [
+      ...Object.entries(result.metrics),
+      ...Object.entries(result.behaviorMetrics),
+    ]) {
+      if (metric === undefined) continue;
+      floors[key] = (floors[key] ?? new Set()).add(metric.score);
+    }
+  }
+  const atZero = Object.entries(floors)
+    .filter(([, scores]) => scores.size === 1 && scores.has(0))
+    .map(([key]) => key)
+    .sort();
+
+  assert.deepEqual(
+    atZero,
+    [
+      'challenge_effect',
+      'evidence_coverage',
+      'false_alert_correctness',
+      'misleading_evidence_handling',
+      'termination_correctness',
+      'unsupported_claim_rate',
+    ],
+    'every metric the replay-backed control arm emits sits at a single score of zero — so the control arm is at the insensitive floor on all of them except unsupported_claim_rate, where zero is the perfect score',
   );
 });

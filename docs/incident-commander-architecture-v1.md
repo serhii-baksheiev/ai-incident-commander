@@ -829,12 +829,28 @@ Dependency rule:
 
 ```text
 domain imports no LangChain/LangGraph
+domain and graph import no model provider, and no roles package
 graph → domain
 tools → domain
-evals → domain/graph
+roles → domain/graph
+evals → domain/graph/roles
 ```
 
-This direction is mechanically linted.
+Two of these six are mechanically linted, and the block says which because the
+rest are convention: `dependency-cruiser.config.mjs` enforces line 1
+(`domain-does-not-import-orchestration-frameworks`) and line 2
+(`graph-and-domain-do-not-import-model-providers`), both scoped to
+`^packages/(?:domain|graph)/`. The remaining edges are the workspace manifests'
+business and nothing refuses a new one.
+
+`roles` is the package that owns the provider seam (§ the reference-model roles),
+so the second rule is what keeps the frozen provider-independence of `domain` and
+`graph` true rather than merely stated — it refuses a provider SDK **and** an
+import of `packages/roles` from either of them.
+see test/roles-boundary.test.mjs › "declares the model-provider boundary rule for
+graph and domain" and test/repository-scaffold.test.mjs › "lint rejects a graph
+import of the model role package" (declared there as the probe name `rejects a
+graph import of the model role package`, run through ``test(`lint ${probe.name}`)``)
 
 ## 20. Rig integration
 

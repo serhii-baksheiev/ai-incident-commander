@@ -35,15 +35,26 @@
  *                              reported as a completed publication.
  *   --out <path>               Write the JSON report here as well as to stdout.
  *
- * ⚠ **What the control arm can and cannot catch.** It is the replay-backed
- * lifecycle the regression suite runs, so it catches a harness change that moves
- * a metric it is not already at the floor on. It sits at zero on
- * `evidence_coverage` (a known evaluator defect, filed separately) and on
- * `termination_correctness` (its `propose_conclusion` returns `inconclusive` for
- * every scenario), so a harness change that only pushes those further down would
- * not move it. Measured, not assumed:
+ * 🔴 **What the control arm can and cannot catch — and it is less than it
+ * sounds.** It is the replay-backed lifecycle the regression suite runs, and
+ * measured over the final-evaluation corpus it scores a single value of ZERO on
+ * every metric it emits. Zero is the worst score for five of the six. So this
+ * control arm catches a harness change that moves a metric UP, or that stops
+ * emitting one — and it cannot catch one that pushes any metric further down,
+ * because there is no further down. A `harness-regression` verdict from this
+ * command means the first kind; its silence does not mean the second did not
+ * happen.
+ *
+ * An earlier version of this paragraph named two metrics as the exception,
+ * which read as an exhaustive carve-out and was not one. The set is asserted
+ * rather than counted here, so it cannot drift again:
  * see live-model-lane.test.mjs › "measures the harness zero that makes
  * evidence_coverage unreportable"
+ *
+ * ⚠ **What leaves this process when the lane runs.** The prompt carries the
+ * incident, the hypotheses, the predictions, the evidence and the assessments —
+ * the investigation state — to the configured provider's HTTPS endpoint. Nothing
+ * else leaves, and nothing leaves at all without a credential.
  *
  * The scripted nodes come from `test/fixtures/benchmark-experiment.mjs`, which
  * is the ONE implementation of the replay-backed lifecycle in this repository
@@ -71,6 +82,7 @@ import {
 } from '@aic/roles';
 
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
+import { childEnv } from '../test/fixtures/child-env.mjs';
 
 function flag(name) {
   return argv.includes(`--${name}`);
@@ -84,7 +96,17 @@ function option(name) {
 function headSha() {
   return (
     option('head-sha') ??
-    execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+    execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      // The one spawn in this command, and it gets the same allow-listed
+      // environment every spawn in the test tree gets. Without it `git`
+      // inherits ANTHROPIC_API_KEY, LANGSMITH_API_KEY and whatever else the
+      // operator's shell carries — a shadowed `git` would then read them.
+      // `test/child-process-environment.test.mjs` audits `test/` only, so
+      // nothing would have caught this. Found by `security-scanner` at the
+      // AIC-94 gate.
+      env: childEnv(),
+    }).trim()
   );
 }
 

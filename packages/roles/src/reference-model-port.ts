@@ -45,10 +45,24 @@ export const REFERENCE_MODEL_ID = 'claude-opus-5' as const;
 const PROVIDER_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const PROVIDER_API_VERSION = '2023-06-01';
 
+/**
+ * How long one completion may take before the lane gives up on it.
+ *
+ * Stated rather than left to the runtime default, which is minutes: the lane
+ * runs a bounded number of calls and a hung one would stall the whole run with
+ * nothing to read. A caller that needs a different bound passes its own
+ * `signal`.
+ * see roles-port-contract.test.mjs › "gives the provider request a deadline the
+ * caller can override"
+ */
+const PROVIDER_TIMEOUT_MS = 120_000;
+
 export interface ModelCompletionRequest {
   readonly system: string;
   readonly prompt: string;
   readonly maxOutputTokens: number;
+  /** Overrides `PROVIDER_TIMEOUT_MS`; absent means that default applies. */
+  readonly signal?: AbortSignal;
 }
 
 export interface ModelCompletion {
@@ -73,6 +87,14 @@ export type FetchImpl = (
     method: string;
     headers: Readonly<Record<string, string>>;
     body: string;
+    // Both are load-bearing rather than optional niceties: the deadline stops a
+    // hung provider stalling a bounded run, and `redirect: 'error'` keeps the
+    // custom `x-api-key` header — which the fetch spec does NOT strip on a
+    // cross-origin redirect, unlike `Authorization` — from travelling to another
+    // origin. An injected transport that ignores them weakens both, which is
+    // why they are on the type a transport has to satisfy.
+    signal: AbortSignal;
+    redirect: 'error';
   }>,
 ) => Promise<{
   readonly ok: boolean;
@@ -110,8 +132,11 @@ function firstOwnTextBlock(payload: unknown): string {
  *
  * `fetchImpl` defaults to the global `fetch`, so production wiring passes
  * nothing and every test passes a function. `apiKey` arrives as an argument and
- * is never read from the process environment here — `packages/` reads
- * `process.env` zero times, and the credential enters at the executable edge.
+ * is never read from the process environment here. That no workspace package
+ * reads `process.env` at all is checked rather than asserted, which is what
+ * lets a caller test this port without touching the real environment.
+ * see roles-boundary.test.mjs › "keeps every process-environment read out of
+ * the workspace packages"
  */
 export function createReferenceModelPort({
   apiKey,
@@ -137,6 +162,17 @@ export function createReferenceModelPort({
 
       const response = await transport(PROVIDER_MESSAGES_URL, {
         method: 'POST',
+        // A hung provider must not hang the lane: without this the call sits at
+        // the runtime's default, which is minutes.
+        signal: request.signal ?? AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+        // `x-api-key` is a CUSTOM header, so the fetch spec's cross-origin
+        // redirect stripping — which covers `Authorization` — does not apply to
+        // it. A provider-side open redirect would hand the credential to
+        // another origin, so a redirect is an error rather than something to
+        // follow. Found by `security-scanner` at the AIC-94 gate.
+        // see roles-port-contract.test.mjs › "refuses to follow a redirect,
+        // because the credential header would travel with it"
+        redirect: 'error',
         headers: {
           'content-type': 'application/json',
           'x-api-key': apiKey,

@@ -57,12 +57,15 @@ import type { GateMetricKey } from './benchmark-regression-gate.js';
  *     harness move from a model move without one.
  *     see live-model-lane.test.mjs › "refuses to report model quality when no
  *     control baseline was declared"
- *   - **The control arm's sensitivity is the sensitivity of whatever nodes the
- *     caller passes as the control.** This module compares the arm it is given
- *     against the baseline it is given; a control arm whose metrics sit at a
- *     floor moves for fewer harness changes than one that does not. The
- *     replay-backed control the command wires up is at that floor on two of the
- *     three v0.1 metrics, which is measured rather than asserted:
+ *   - 🔴 **The control arm's sensitivity is the sensitivity of whatever nodes
+ *     the caller passes as the control, and the one this repository wires up is
+ *     at the floor on EVERY metric it emits.** Measured, not counted: the
+ *     replay-backed control scores a single value of zero on all six, and zero
+ *     is the worst score for five of them. So the control arm can catch a
+ *     harness change that moves a metric UP or that stops emitting one, and it
+ *     cannot catch one that pushes any metric further down — there is no
+ *     further down. Read every `harness-regression` verdict as covering that
+ *     first direction only.
  *     see live-model-lane.test.mjs › "measures the harness zero that makes
  *     evidence_coverage unreportable"
  */
@@ -248,6 +251,55 @@ function baselineOf(
   return observed;
 }
 
+/**
+ * Which declared control metrics moved — including the ones that vanished.
+ *
+ * 🔴 **Presence is compared before scores are, in both directions.** The first
+ * version of this walked the metrics the control arm HAPPENED TO EMIT and asked
+ * whether the baseline disagreed, so a metric the baseline declares and the arm
+ * stopped producing was never visited: the harness had moved, `movedMetrics`
+ * was empty, and the model arm was published as reportable on that basis.
+ *
+ * That is the same defect `benchmark-regression-gate.ts` refuses one layer
+ * along — "the cheapest way to pass this gate with a behavior regression is to
+ * stop emitting the metric" — which AIC-81 turned from a skip into a refusal.
+ * Reintroducing it in the lane whose whole purpose is telling a harness
+ * regression from a model one would have been the worst place for it.
+ *
+ * A key the baseline declares that this lane does not compare is REFUSED rather
+ * than ignored, because a baseline pinning a metric nobody reads is a baseline
+ * that cannot fail.
+ * see live-model-lane.test.mjs › "treats a declared control metric the arm
+ * stopped emitting as a move, not as a match" and › "refuses a control baseline
+ * naming a metric this lane does not compare"
+ */
+function movesAgainst(
+  declared: Readonly<Partial<Record<GateMetricKey, number>>>,
+  observed: Record<string, number>,
+): GateMetricKey[] {
+  const comparable = new Set<string>(COMPARED_METRIC_KEYS);
+  const unknown = Object.keys(declared).filter(
+    (key) => !comparable.has(key) || key in LIVE_MODEL_LANE_WITHHELD_METRICS,
+  );
+  if (unknown.length > 0) {
+    throw new Error(
+      `the control baseline declares metrics this lane does not compare: ${unknown.sort().join(', ')}`,
+    );
+  }
+
+  const moved: GateMetricKey[] = [];
+  for (const key of Object.keys(declared) as GateMetricKey[]) {
+    const expected = declared[key];
+    if (expected === undefined) continue;
+    if (!Object.hasOwn(observed, key)) {
+      moved.push(key);
+      continue;
+    }
+    if (observed[key] !== expected) moved.push(key);
+  }
+  return moved.sort();
+}
+
 function exampleIdsOf(experiment: BenchmarkExperiment): string[] {
   return experiment.records.map(({ exampleId }) => exampleId).sort();
 }
@@ -309,14 +361,7 @@ export async function runLiveModelLane(
   const observedBaseline = baselineOf(controlMetrics);
   const declaredBaseline = options.controlBaseline;
   const movedMetrics =
-    declaredBaseline === undefined
-      ? []
-      : Object.keys(observedBaseline)
-          .filter((key): key is GateMetricKey => {
-            const expected = declaredBaseline[key as GateMetricKey];
-            return expected !== undefined && expected !== observedBaseline[key];
-          })
-          .sort();
+    declaredBaseline === undefined ? [] : movesAgainst(declaredBaseline, observedBaseline);
 
   let verdict: LiveModelLaneVerdict = 'model-quality';
   let unreportableReason: string | undefined;

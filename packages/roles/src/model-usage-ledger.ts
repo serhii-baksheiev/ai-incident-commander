@@ -65,16 +65,38 @@ export function createModelUsageLedger({
     throw new Error('a model call cap must be a non-negative safe integer');
   }
 
+  // 🔴 TWO counters, and the split is the whole point.
+  //
+  // `reserved` is what the CAP is checked against and `reserve` increments it
+  // BEFORE the request. It used to only read `calls`, which nothing incremented
+  // until after a response came back, so the cap held for a sequential caller
+  // and for no other: N concurrent completions would each see the same
+  // pre-request count and all pass. Today's callers are strictly sequential, so
+  // that was never a live overrun — but a cap whose correctness depends on how
+  // its caller happens to loop is not a cap.
+  // Found by `security-scanner` at the AIC-94 gate.
+  //
+  // `calls` stays what it was: completions this lane may REPORT. A request the
+  // provider refused consumed a reservation — it reached the provider and may
+  // have been billed — and is deliberately not reported as a completion, which
+  // is the distinction the refusal row below pins.
+  // see roles-port-contract.test.mjs › "reports a provider refusal as a failed
+  // completion rather than an empty one" and › "refuses the call past the
+  // declared cap instead of spending it"
+  let reserved = 0;
   let calls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
 
   return {
     reserve() {
-      if (calls >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
+      if (reserved >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
+      reserved += 1;
     },
     record(usage) {
+      // A caller that records without reserving still cannot exceed the cap.
       if (calls >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
+      if (reserved <= calls) reserved = calls + 1;
       calls += 1;
       inputTokens += usage.inputTokens;
       outputTokens += usage.outputTokens;

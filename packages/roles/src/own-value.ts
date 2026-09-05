@@ -25,13 +25,22 @@
  * see roles-boundary.test.mjs › "keeps one own-property read for the whole roles
  * package"
  *
- * An accessor is refused rather than invoked: `descriptor.value` is `undefined`
- * for a getter, so a planted getter reads as absent instead of running.
+ * An accessor is refused rather than invoked, and the `Object.hasOwn` below is
+ * what does it. An ACCESSOR descriptor owns `get`/`set` and no `value`, so
+ * reading `descriptor.value` off it is itself a prototype-chain read — a planted
+ * `Object.prototype.value` then answers for every accessor, which is the exact
+ * defect this function exists to prevent, inside the function. Both copies this
+ * file names carry the same guard; the first version here did not, and
+ * `code-reviewer` measured the divergence at the AIC-94 gate.
+ * see roles-boundary.test.mjs › "spells the own-property read the same way as
+ * the two copies it names"
  */
 export function ownValue(target: unknown, key: string): unknown {
   if (typeof target !== 'object' || target === null) return undefined;
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
-  return descriptor === undefined ? undefined : descriptor.value;
+  return descriptor === undefined || !Object.hasOwn(descriptor, 'value')
+    ? undefined
+    : descriptor.value;
 }
 
 /** The same read, narrowed to a non-empty string. */

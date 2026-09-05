@@ -167,13 +167,41 @@ export function createModelGenerateHypotheses({
     });
 
     const document = parseJsonDocument(role, completion.text);
+    // 🔴 An id already in state is REFUSED, not merged.
+    //
+    // The graph's reducer is `upsertById`, which REPLACES the record at a
+    // matching id rather than merging into it, so a model that emits an
+    // existing id overwrites that hypothesis outright — including one a human
+    // added, or the leader a challenge produced. Both sibling producers already
+    // refuse exactly this: `challenge result reuses an existing hypothesis id`
+    // in the graph, and `assertHumanHypothesisIdIsAvailable` for a human
+    // decision. This role was the third producer and the only one without it.
+    //
+    // The reachable path is not hypothetical: a human `reject` on conclusion
+    // review routes back through this node with state populated, and
+    // `describeState` puts every existing id in the prompt — so incident text an
+    // attacker can influence (a log line, a deployment message) reaches a model
+    // that can then name one of those ids back. Found by `security-scanner` at
+    // the AIC-94 gate.
+    // see roles-model-nodes.test.mjs › "refuses a hypothesis id the run already
+    // carries, rather than overwriting it"
+    const taken = new Set(state.hypotheses.map(({ id }) => id));
     const hypotheses: Hypothesis[] = ownArray(role, document, 'hypotheses').map(
-      (candidate) =>
-        parseWith(role, HypothesisSchema, {
+      (candidate) => {
+        const hypothesis = parseWith(role, HypothesisSchema, {
           id: ownValue(candidate, 'id'),
           statement: ownValue(candidate, 'statement'),
           createdBy: 'initial',
-        }),
+        });
+        if (taken.has(hypothesis.id)) {
+          throw new ModelRoleOutputError(
+            role,
+            `proposed a hypothesis id the run already carries: ${hypothesis.id}`,
+          );
+        }
+        taken.add(hypothesis.id);
+        return hypothesis;
+      },
     );
 
     return { hypotheses, declaredLlmCalls: 1 };
