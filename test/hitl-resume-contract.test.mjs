@@ -410,6 +410,27 @@ test('covers every counter the graph\'s logical budget guard checks, derived fro
   }
 });
 
+test('freezes the exported counter list at both levels, so an importer cannot disarm one counter', () => {
+  const counters = requireLogicalBudgetCounters();
+
+  // `as const` is type-level only and `Object.freeze` is shallow, so the pairs
+  // need their own freeze: rewriting one entry's field would stop that counter
+  // being re-validated on the resume path while every refusal message stayed
+  // correct. Test files are ESM and therefore strict, so a refused write
+  // throws rather than failing silently.
+  assert.throws(() => {
+    counters[0] = ['iterationsUsed', 'logical iteration counter'];
+  }, TypeError);
+  assert.throws(() => {
+    counters[0][0] = 'iterationsUsed';
+  }, TypeError);
+  assert.throws(() => {
+    counters[0][1] = 'something else';
+  }, TypeError);
+
+  assert.equal(counters[0][0], 'maxIterations');
+});
+
 test('leaves no logical-count control field unguarded between the two graph guards', () => {
   const logicalCountFields = Object.entries(IncidentStateControlSchema.shape)
     .filter(([, schema]) => schema === LogicalCountSchema)

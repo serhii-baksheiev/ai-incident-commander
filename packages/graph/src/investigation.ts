@@ -165,21 +165,40 @@ export type GraphOwnedControlField =
  * ("One mechanism, one implementation") tells you to replace with a check, and
  * this pair had already drifted — the table covered three while the guard
  * checked five, which left two counters with no row anywhere and the suite
- * green. A sixth entry added here with no row now goes red instead of going
- * unnoticed.
+ * green.
+ *
+ * What derivation buys, stated as what actually goes red rather than as what it
+ * feels like it prevents: an entry added HERE cannot arrive without its rows,
+ * because the rows are generated from this list. The row that fires is the one
+ * checking an added entry names a field the domain declares a logical count,
+ * and its sibling that no such field is left outside both graph guards.
  * see hitl-resume-contract.test.mjs › "covers every counter the graph's logical
  * budget guard checks, derived from the exported list rather than restated"
+ * and › "leaves no logical-count control field unguarded between the two graph
+ * guards"
  *
  * The labels are the refusal's own words rather than the field names, because
  * the resume rows assert on the message a caller actually sees.
+ *
+ * Frozen at BOTH levels. `as const` is type-level only and `Object.freeze` is
+ * shallow, so freezing the outer array alone leaves each pair writable: an
+ * in-process importer could rewrite one entry's field and silently stop that
+ * counter being re-validated on the resume path while every refusal message
+ * stayed correct. That sits outside this file's stated threat model — a caller
+ * running in this process can supply the control value directly — but the deep
+ * form costs one call and `packages/tools/src/contracts.ts` already uses it.
  */
-export const LOGICAL_BUDGET_COUNTERS = Object.freeze([
-  ['maxIterations', 'iteration budget'],
-  ['llmCallBudget', 'llm call budget'],
-  ['iterationsUsed', 'logical iteration counter'],
-  ['llmCallsUsed', 'llm call counter'],
-  ['resumeCount', 'resume counter'],
-] as const satisfies readonly (readonly [keyof IncidentStateControl, string])[]);
+export const LOGICAL_BUDGET_COUNTERS = Object.freeze(
+  (
+    [
+      ['maxIterations', 'iteration budget'],
+      ['llmCallBudget', 'llm call budget'],
+      ['iterationsUsed', 'logical iteration counter'],
+      ['llmCallsUsed', 'llm call counter'],
+      ['resumeCount', 'resume counter'],
+    ] as const satisfies readonly (readonly [keyof IncidentStateControl, string])[]
+  ).map((entry) => Object.freeze(entry)),
+);
 
 /**
  * The control a lifecycle node may hand back — everything the graph does not
