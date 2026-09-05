@@ -96,6 +96,41 @@ function armAccessorWritingGadget(field = POLLUTED_FIELD) {
   });
 }
 
+/**
+ * The own-writing gadget plus one line: it RE-PARENTS the target from inside
+ * the setter it already controls.
+ *
+ * Found by `security-scanner` during the AIC-93 gate, measured end to end
+ * through a `confirm` resume. The first version of this wrapper decided whether
+ * to walk by asking whether the LOADED object's prototype was exactly
+ * `Object.prototype`, so `Object.setPrototypeOf(this, Object.create(Object.prototype))`
+ * made it answer no and the walk returned without repairing a single slot —
+ * reopening the whole bypass, at no extra cost to an attacker who already owns
+ * the setter body.
+ *
+ * The lesson is the shape of the check, not this gadget: what the walk is
+ * allowed to READ is decided by the serialized form, which the gadget cannot
+ * touch, so the loaded side may only be rejected for being unwalkable — never
+ * for its prototype, which the gadget can choose.
+ */
+function armReparentingGadget(field = POLLUTED_FIELD) {
+  Object.defineProperty(Object.prototype, field, {
+    configurable: true,
+    get() {
+      return SUBSTITUTED_VALUE;
+    },
+    set() {
+      Object.defineProperty(this, field, {
+        value: SUBSTITUTED_VALUE,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+      Object.setPrototypeOf(this, Object.create(Object.prototype));
+    },
+  });
+}
+
 async function loadUnder(arm, value, field = POLLUTED_FIELD) {
   assert.equal(
     field in {},
@@ -119,6 +154,164 @@ async function roundTrip(value) {
 function ownDescriptor(target, key) {
   return Object.getOwnPropertyDescriptor(target, key);
 }
+
+test('keeps the own value when the gadget re-parents the target to escape the walk', async () => {
+  const loaded = await loadUnder(armReparentingGadget, {
+    [POLLUTED_FIELD]: DECLARED_VALUE,
+    control: { [POLLUTED_FIELD]: DECLARED_VALUE },
+    list: [{ [POLLUTED_FIELD]: DECLARED_VALUE }],
+  });
+
+  for (const [where, target] of [
+    ['top level', loaded],
+    ['one level down', loaded.control],
+    ['inside an array', loaded.list[0]],
+  ]) {
+    assert.equal(
+      Object.getPrototypeOf(target) === Object.prototype,
+      false,
+      `${where}: the gadget must actually have re-parented the target, or this row proves nothing`,
+    );
+    assert.deepEqual(
+      ownDescriptor(target, POLLUTED_FIELD),
+      {
+        value: DECLARED_VALUE,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      },
+      `${where}: a re-parented target must still be repaired — the prototype is the attacker's to choose`,
+    );
+  }
+});
+
+test('repairs the siblings of a __proto__ key, which the reviver re-parents on assignment', async () => {
+  // The second route to the same skip, also measured by `security-scanner`.
+  // `_reviver` does `revivedObj['__proto__'] = …`, which is a [[Set]] on the
+  // `__proto__` accessor rather than a new key, so the object is re-parented
+  // with no gadget armed at all. Every sibling key on it must still be
+  // repaired.
+  const [type, data] = await serde.dumpsTyped({
+    control: { [POLLUTED_FIELD]: DECLARED_VALUE },
+  });
+  const text = new TextDecoder().decode(data);
+  const withProtoKeyText = text.replace(
+    '{"control":{',
+    '{"control":{"__proto__":{"polluted":true},',
+  );
+  assert.notEqual(
+    withProtoKeyText,
+    text,
+    'the fixture must actually carry a __proto__ key, or this row proves nothing',
+  );
+  const withProtoKey = new TextEncoder().encode(withProtoKeyText);
+
+  let loaded;
+  try {
+    armOwnWritingGadget();
+    loaded = await serde.loadsTyped(type, withProtoKey);
+  } finally {
+    delete Object.prototype[POLLUTED_FIELD];
+  }
+
+  assert.deepEqual(
+    ownDescriptor(loaded.control, POLLUTED_FIELD),
+    {
+      value: DECLARED_VALUE,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    'a __proto__ key must not take its siblings out of the repair',
+  );
+});
+
+test('states its limit: an own key the serialized form does not declare is never examined', async () => {
+  // The walk iterates Object.keys(declared), so a key that is not in the bytes
+  // has nothing to be repaired TO. Found by `code-reviewer` at the AIC-93 gate.
+  // Recorded as a limit rather than closed: deleting an undeclared key would be
+  // this module inventing a refusal, and the graph is where refusals belong.
+  assert.match(
+    readFileSync(
+      new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
+      'utf8',
+    ),
+    /is never examined/,
+    'the guard must state this limit in the file, per .claude/rules/invariants.md',
+  );
+
+  const FABRICATED = 'stopKind';
+  const loaded = await loadUnder(
+    (field) => {
+      Object.defineProperty(Object.prototype, field, {
+        configurable: true,
+        get() {
+          return SUBSTITUTED_VALUE;
+        },
+        set() {
+          Object.defineProperty(this, field, {
+            value: SUBSTITUTED_VALUE,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+          Object.defineProperty(this, FABRICATED, {
+            value: 'budget-exhausted',
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+    },
+    { [POLLUTED_FIELD]: DECLARED_VALUE },
+  );
+
+  assert.equal(
+    loaded[POLLUTED_FIELD],
+    DECLARED_VALUE,
+    'the declared field is still repaired',
+  );
+  assert.equal(
+    Object.hasOwn(loaded, FABRICATED),
+    true,
+    'the limit: a key the bytes never declared is left standing, because there is nothing to repair it to',
+  );
+});
+
+test('states its limit: a declared object whose loaded slot is a primitive is left alone', async () => {
+  // restoreSlot recurses whenever the DECLARED value is an object and never
+  // falls through to the comparison, so a shape disagreement ends the walk for
+  // that slot. Found by `code-reviewer` at the AIC-93 gate. Unreachable for a
+  // control field today; a second optional graph-owned field would make it live.
+  assert.match(
+    readFileSync(
+      new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
+      'utf8',
+    ),
+    /and the load left as a\s+\*\s+primitive, is skipped/,
+    'the guard must state this limit in the file, per .claude/rules/invariants.md',
+  );
+
+  const [type, data] = await serde.dumpsTyped({ nested: { deeper: true } });
+  const text = new TextDecoder().decode(data);
+  const substituted = new TextEncoder().encode(
+    text.replace('{"deeper":true}', '"a primitive the load will not match"'),
+  );
+  assert.notEqual(
+    new TextDecoder().decode(substituted),
+    text,
+    'the fixture must actually substitute a primitive for the declared object',
+  );
+
+  const loaded = await serde.loadsTyped(type, substituted);
+
+  assert.equal(
+    loaded.nested,
+    'a primitive the load will not match',
+    'the load carries what the bytes say here, so this row pins the walk rather than the load',
+  );
+});
 
 test('keeps the own value the serialized form declares when an inherited setter writes another', async () => {
   const loaded = await loadUnder(armOwnWritingGadget, {
@@ -345,7 +538,7 @@ test('states its limit: a polluted key inside a Map member is not repaired', asy
   );
   assert.match(
     source,
-    /inside a `Map` or `Set` is NOT repaired/,
+    /inside a revived non-plain value is\s+\*\s+NOT repaired/,
     'the guard must state this limit in the file, per .claude/rules/invariants.md',
   );
 

@@ -418,11 +418,15 @@ const OPTIONAL_CONTROL_FIELDS: ReadonlySet<string> = new Set(
  * closed by it. ⚠ Nor is it closed by all four together: an inherited setter
  * that DEFINES the value on the target produces a genuine own data property,
  * which no ownership check can distinguish from an honest one. That shape is
- * closed OUTSIDE the graph, by `withDeclaredOwnValues` in
- * `packages/persistence` — the checkpoint bytes are put back, so the run is
- * IMMUNE rather than warned, and nothing here reports the attempt (AIC-93).
+ * closed OUTSIDE the graph and CONDITIONALLY, by `withDeclaredOwnValues` —
+ * which `createSqliteCheckpointer` in `packages/persistence` wires, and which
+ * a caller passing this graph their own `BaseCheckpointSaver` therefore does
+ * not get. Where it is wired the checkpoint bytes are put back, so the run is
+ * IMMUNE rather than warned and nothing here reports the attempt (AIC-93).
  * see hitl-resume-contract.test.mjs › "keeps the run's own humanReview under
- * an inherited setter that writes an own property"
+ * an inherited setter that writes an own property" and
+ * checkpoint-serde-own-values.test.mjs › "states its limit: a checkpointer
+ * this module did not build keeps the unrepaired serde"
  *
  * ⚠ Two limits of the check itself. It verifies that CONTROL owns its fields,
  * not that `state` owns `control` — a polluted `Object.prototype.control` is
@@ -973,11 +977,19 @@ function defineOwnValue(
  * then returns exactly what an honest run would. Nothing is left to detect, so
  * no ownership check anywhere closes that shape; `JSON.parse` is immune to it
  * where plain assignment is not, which put the remedy at the deserializer and
- * not here. AIC-93 took it: `withDeclaredOwnValues` in `packages/persistence`
- * restores the value the checkpoint bytes declare before this function ever
- * sees the control. It repairs ONLY a diverged own data property, so the two
- * shapes this function refuses — a field the prototype supplies on read, and an
- * own accessor — arrive here exactly as the reviver left them.
+ * not here. AIC-93 took it: `withDeclaredOwnValues` restores the value the
+ * checkpoint bytes declare before this function ever sees the control. It
+ * repairs ONLY a diverged own data property, so the two shapes this function
+ * refuses — a field the prototype supplies on read, and an own accessor —
+ * arrive here exactly as the reviver left them.
+ *
+ * ⚠ That remedy is CONDITIONAL and this function cannot check the condition.
+ * It is wired by `createSqliteCheckpointer`, and `createInvestigationGraph`
+ * accepts any `BaseCheckpointSaver`, so a caller who builds their own
+ * checkpointer runs this function against an unrepaired reviver — where the
+ * own-writing shape is once again undetectable here.
+ * see checkpoint-serde-own-values.test.mjs › "states its limit: a checkpointer
+ * this module did not build keeps the unrepaired serde"
  * see hitl-resume-contract.test.mjs › "keeps the run's own humanReview under
  * that gadget on the off-contract pause route"
  * see checkpoint-serde-own-values.test.mjs › "leaves a swallowed write for the
@@ -1821,11 +1833,15 @@ export function createInvestigationGraph({
           // ⚠ What allowing it cost, and what it costs now. An earlier draft
           // said "nothing is given up"; that was measurably false while the
           // own-writing gadget could ride this route to a substitution nothing
-          // could detect. AIC-93 closed that at the serde, so the route no
-          // longer carries it — the retry advances the crashed run on the
-          // control the checkpoint bytes declare.
+          // could detect. AIC-93 closed that at the serde WHERE THE SERDE IS
+          // WIRED — `createSqliteCheckpointer` installs it and this graph
+          // accepts any `BaseCheckpointSaver` — so on a checkpointer this
+          // repository built the retry advances the crashed run on the control
+          // the checkpoint bytes declare, and on one a caller built it does not.
           // see hitl-resume-contract.test.mjs › "keeps the run's own
-          // humanReview under that gadget on the crashed-run retry route"
+          // humanReview under that gadget on the crashed-run retry route" and
+          // checkpoint-serde-own-values.test.mjs › "states its limit: a
+          // checkpointer this module did not build keeps the unrepaired serde"
           //
           // What is still given up is the REPORT: a resume that names a stale
           // id on a thread waiting on nothing is not refused, so an operator

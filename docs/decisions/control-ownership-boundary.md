@@ -406,13 +406,26 @@ alternatives were immunity and nothing.
 
 An unconditional "make every loaded value match the serialized form" also
 repairs the shapes the graph deliberately refuses — a slot an inherited setter
-SWALLOWED, and an own ACCESSOR a setter defined on the target. Measured: the
-unconditional version turns five rows red, including › "refuses a resume whose
-restored control field is supplied by an accessor on the prototype", › "refuses
-the pollution armed at a turn inside the measured window" and › "refuses the
-value a stale retry launders into a wrapped node". That is exactly the outcome
-the ordering paragraph above forbids: the serde arriving and the refusal rows
-being deleted to make room for it.
+SWALLOWED, and an own ACCESSOR a setter defined on the target. Measured on the
+merged head, and these are ALL of the rows it reddens rather than a sample:
+
+* `hitl-resume-contract.test.mjs` › "refuses a resume whose restored control
+  field is supplied by an accessor on the prototype"
+* `hitl-resume-contract.test.mjs` › "refuses the pollution armed at a turn
+  inside the measured window"
+* `hitl-resume-contract.test.mjs` › "refuses the value a stale retry launders
+  into a wrapped node"
+* `checkpoint-serde-own-values.test.mjs` › "leaves a swallowed write for the
+  graph to refuse rather than repairing it"
+
+Four rows, seventeen subtests. An earlier draft of this section said "five rows,
+including …" and cited three of them; the count was never measured and the word
+"including" conceded that the list was partial, which is the shape a later
+reader cannot check. The list above is the whole answer, so a rerun that returns
+anything else means the guard moved.
+
+That is exactly the outcome the ordering paragraph above forbids: the serde
+arriving and the refusal rows being deleted to make room for it.
 
 So the condition is one line and it is the whole design. A slot is repaired only
 when the reviver left it as an **own data property whose value diverged from the

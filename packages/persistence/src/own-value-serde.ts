@@ -151,7 +151,33 @@ function restoreDeclared(
     }
     return;
   }
-  if (!isPlainObject(declared) || !isPlainObject(loaded)) return;
+  // 🔴 The DECLARED side decides whether to walk, and the loaded side is
+  // rejected only for being unwalkable — never for its prototype.
+  //
+  // This asymmetry is the whole guard. The first version asked
+  // `isPlainObject(loaded)`, which reads the loaded object's prototype — and
+  // the prototype is the ATTACKER'S to choose, because the gadget owns the
+  // setter body that the reviver's assignment invokes. One added line,
+  // `Object.setPrototypeOf(this, Object.create(Object.prototype))`, made that
+  // question answer no, the walk returned without repairing a single slot, and
+  // the whole bypass was back, at no extra cost. A `__proto__` key in the bytes
+  // re-parented the object the same way with no gadget armed at all.
+  //
+  // The serialized form is the one copy the gadget could not touch, so it is
+  // the only safe thing to decide from. What this gives up is nothing: every
+  // write below goes through `restoreSlot`, which touches a key ONLY where the
+  // loaded side already has it as an own DATA property whose value diverged —
+  // so a revived Set, Map, RegExp, Error, Uint8Array or `lc:1` instance, whose
+  // own keys are none of the ones a constructor record declares, is walked past
+  // and left exactly as the reviver built it.
+  // see checkpoint-serde-own-values.test.mjs › "keeps the own value when the
+  // gadget re-parents the target to escape the walk", › "repairs the siblings
+  // of a __proto__ key, which the reviver re-parents on assignment", and ›
+  // "revives Set, Map, Uint8Array, RegExp, Error and DeltaSnapshot unchanged"
+  if (!isPlainObject(declared)) return;
+  if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) {
+    return;
+  }
   for (const key of Object.keys(declared)) {
     restoreSlot(loaded, key, declared[key], budget, depth);
   }
@@ -180,7 +206,13 @@ function restoreDeclared(
  * was reversed from AIC-92's answer, is in
  * `docs/decisions/control-ownership-boundary.md`.
  *
- * ## Limits — each one measured, none of them argued
+ * ## Limits — each one measured, each one pinned
+ *
+ * ⚠ This list is the limits that were FOUND, not a proof that no others exist.
+ * An earlier draft headed it "none of them argued", which read as exhaustive;
+ * the AIC-93 gate then measured two more (6 and 7 below) and a third that was
+ * a live bypass rather than a limit. Read it as what two cold readers could
+ * break, not as a boundary.
  *
  * 1. **Only a diverged own data property is repaired.** The condition is on
  *    `restoreSlot` above, with the reason: repairing the absent and accessor
@@ -191,11 +223,17 @@ function restoreDeclared(
  * 2. **The walk is bounded and fails closed** at `DESERIALIZATION_MAX_DEPTH`
  *    levels and `DESERIALIZATION_MAX_NODES` nodes; both bounds are stated on
  *    `restoreDeclared` above with the rows that pin each direction.
+ *    ⚠ `DESERIALIZATION_MAX_NODES` counts CONTAINERS entered, not keys visited,
+ *    so one object with a million primitive keys is one node and a million
+ *    iterations. The work stays linear in a payload `JSON.parse` has already
+ *    walked, so it is not an amplification — but the bound does not bound the
+ *    loop, and the wording used to imply it did.
  *
- * 3. **A polluted key on an object stored
- *    inside a `Map` or `Set` is NOT repaired.** The walk stops at the revived
- *    collection: its members are not
- *    reachable as own properties, and rebuilding the collection to reach them
+ * 3. **A polluted key on an object stored inside a revived non-plain value is
+ *    NOT repaired** — a `Map` or `Set` member, and equally an `Error`, a
+ *    `RegExp` or a LangChain `lc: 1` instance. The walk stops at the revived
+ *    value: its members are not reachable as own properties under the keys the
+ *    serialized record declares, and rebuilding a collection to reach them
  *    would risk reordering it or collapsing keys the checkpoint distinguished —
  *    a worse failure than the one being repaired. Nothing in
  *    `IncidentStateControlSchema` is stored that way today.
@@ -215,6 +253,28 @@ function restoreDeclared(
  *    would throw.
  *    see checkpoint-serde-own-values.test.mjs › "passes a bytes payload through
  *    untouched"
+ *
+ * 6. **An own key the loaded value has and the serialized form does NOT declare
+ *    is never examined.** The walk iterates `Object.keys(declared)`, so a
+ *    gadget that answers one field's write by ALSO defining a second, undeclared
+ *    field leaves that second field standing. It is not repaired because there
+ *    is nothing declared to repair it to, and deleting an undeclared key would
+ *    be this module inventing a refusal the graph is the right place for.
+ *    Found by `code-reviewer` at the AIC-93 gate.
+ *    see checkpoint-serde-own-values.test.mjs › "states its limit: an own key
+ *    the serialized form does not declare is never examined"
+ *
+ * 7. **A slot the serialized form declares as an object, and the load left as a
+ *    primitive, is skipped.** `restoreSlot` recurses on an object-valued
+ *    declaration and never falls through to the comparison, so the shapes
+ *    disagreeing ends the walk for that slot rather than repairing it. This
+ *    includes the `{"lc":2,"type":"undefined"}` record, which means a gadget
+ *    substituting a value for a serialized `undefined` survives.
+ *    ⚠ Unreachable for control today only because the graph drops an undefined
+ *    `stopKind` before persisting; a second optional graph-owned field would
+ *    make it live. Found by `code-reviewer` at the AIC-93 gate.
+ *    see checkpoint-serde-own-values.test.mjs › "states its limit: a declared
+ *    object whose loaded slot is a primitive is left alone"
  *
  * The revived non-plain values the reviver builds — `Set`, `Map`, `Uint8Array`,
  * `RegExp`, `Error`, `DeltaSnapshot`, a LangChain `lc: 1` object — are handed
