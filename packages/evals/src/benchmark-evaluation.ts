@@ -51,6 +51,23 @@ export interface BenchmarkVersions {
   readonly temperature: number;
   readonly seed?: number;
   readonly docsAvailable?: boolean;
+  /**
+   * Which model produced the run, and whose.
+   *
+   * Optional because the deterministic path has no model: a scripted or replay
+   * run declares neither, and a run that declared `modelId: 'none'` would be
+   * asserting a model identity nobody chose. Absent means "no model executed a
+   * role here", which is the honest reading for every v0.1 record and for the
+   * scripted control arm of the live lane.
+   *
+   * `modelProvider` is separate from `modelId` rather than folded into it: two
+   * providers can serve the same model name, and a comparison across them is
+   * exactly what a reference-model evaluation must not make by accident.
+   * see model-run-identity-correspondence.test.mjs › "carries every declared
+   * run-metadata field in one of the two metadata allowlists"
+   */
+  readonly modelId?: string;
+  readonly modelProvider?: string;
 }
 
 export interface BenchmarkRunMetadata extends BenchmarkVersions {
@@ -112,7 +129,7 @@ export type BehaviorMetrics = Partial<{
  * schema version on purpose: this one describes what a BENCHMARK publishes,
  * which moves for different reasons than what the graph persists.
  */
-export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 1 as const;
+export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 2 as const;
 
 /**
  * What a run SPENT, one axis per field and no axis computed FROM ANOTHER AXIS.
@@ -150,6 +167,27 @@ export interface BenchmarkResourceEvidence {
   readonly wallClockDurationMs: number;
   readonly retryCount: number;
   readonly resumeCount: number;
+  /**
+   * What the model actually consumed, as the provider reported it.
+   *
+   * OPTIONAL, and that is the whole design of these two axes. Every other axis
+   * here is measurable on any run; these two exist only where a model ran, and a
+   * scripted run that published `inputTokensUsed: 0` would be claiming a
+   * measured zero rather than an absent measurement — the reading this evidence
+   * exists to refuse everywhere else in this file. Absent means "no model
+   * executed a role", which is what the deterministic path is.
+   *
+   * ⚠ They come from the usage ledger in `packages/roles`, not from
+   * `declaredLlmCallsUsed`. Those two count different things and neither can be
+   * derived from the other: `declaredLlmCallsUsed` counts only what a WRAPPED
+   * lifecycle node declared, and `challenge_hypothesis` has no declaration
+   * channel at all, so a run whose challenge rounds spent tokens reports them
+   * here and not there.
+   * see roles-model-nodes.test.mjs › "records the challenge role usage in the
+   * ledger while the graph counter cannot see it"
+   */
+  readonly inputTokensUsed?: number;
+  readonly outputTokensUsed?: number;
 }
 
 /**

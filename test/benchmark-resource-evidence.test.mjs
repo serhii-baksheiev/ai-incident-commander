@@ -319,10 +319,102 @@ test('declares a versioned benchmark resource schema', () => {
   );
   assert.equal(
     version,
-    1,
-    'stage B publishes resource schema version 1; bumping it is a decision, not a refactor',
+    2,
+    'bumping the resource schema version is a decision, not a refactor: version 2 is AIC-94 adding the two optional token axes, and a reader at version 1 refuses a record carrying them',
   );
 });
+
+/**
+ * The optional token axes AIC-94 added, and the two properties that make them
+ * safe to add without breaking the deterministic path.
+ *
+ * They are OPTIONAL because a run with no model has nothing to declare, and a
+ * published zero would be a measured-zero claim rather than an absent
+ * measurement — the reading every other axis in this file exists to refuse.
+ * Present-and-malformed is still refused, so "optional" buys absence and not
+ * looseness.
+ */
+test('publishes a token axis only when the record declared one', async () => {
+  const version = requireResourceSchemaVersion();
+  const withoutTokens = capturingClient();
+  const { experiment: scriptedExperiment } = singleRecordExperiment((result) => ({
+    ...result,
+    resources: measuredResources(),
+  }));
+
+  await observability.persistBenchmarkExperiment({
+    client: withoutTokens.client,
+    datasetName: 'resource-evidence-no-token-axis-v0.2',
+    experiment: scriptedExperiment,
+  });
+
+  const [scriptedRun] = withoutTokens.runs;
+  assert.deepEqual(
+    Object.keys(scriptedRun.outputs.resources).sort(),
+    resourceFieldNames,
+    'a run with no model must publish no token axis at all, not a zero',
+  );
+  assert.equal(
+    withoutTokens.feedback.some(({ key }) => key.endsWith('TokensUsed')),
+    false,
+    'an unmeasured axis must not reach the score stream either',
+  );
+
+  const withTokens = capturingClient();
+  const { experiment: modelExperiment } = singleRecordExperiment((result) => ({
+    ...result,
+    resources: measuredResources({ inputTokensUsed: 1234, outputTokensUsed: 56 }),
+  }));
+
+  await observability.persistBenchmarkExperiment({
+    client: withTokens.client,
+    datasetName: 'resource-evidence-token-axis-v0.2',
+    experiment: modelExperiment,
+  });
+
+  const [modelRun] = withTokens.runs;
+  assert.deepEqual(
+    Object.keys(modelRun.outputs.resources).sort(),
+    [...resourceFieldNames, 'inputTokensUsed', 'outputTokensUsed'].sort(),
+  );
+  assert.equal(modelRun.outputs.resources.inputTokensUsed, 1234);
+  assert.equal(modelRun.outputs.resources.outputTokensUsed, 56);
+  assert.equal(modelRun.outputs.resources.schemaVersion, version);
+  assert.deepEqual(
+    withTokens.feedback
+      .filter(({ key }) => key.endsWith('TokensUsed'))
+      .map(({ key, score }) => [key, score])
+      .sort(),
+    [['inputTokensUsed', 1234], ['outputTokensUsed', 56]],
+    'each token axis is its own feedback key: nothing is blended into a composite',
+  );
+});
+
+for (const field of ['inputTokensUsed', 'outputTokensUsed']) {
+  test(`refuses a token axis that is present and is not a count: ${field}`, async () => {
+    const capture = capturingClient();
+    const { experiment } = singleRecordExperiment((result) => ({
+      ...result,
+      resources: measuredResources({ [field]: -1 }),
+    }));
+
+    await assert.rejects(
+      () => observability.persistBenchmarkExperiment({
+        client: capture.client,
+        datasetName: `resource-evidence-token-axis-refusal-${field}-v0.2`,
+        experiment,
+      }),
+      new RegExp(`${field} is not a count`),
+      'an optional axis is allowed to be absent, never allowed to be wrong',
+    );
+    // The same guarantee its sibling above asserts — › "refuses resource
+    // evidence at an unknown schema version before any run is created": this
+    // layer validates the whole experiment before it creates any RUN, while the
+    // dataset and project are created first. Asserting on `runs` rather than on
+    // `calls` states the guarantee the layer actually gives.
+    assert.equal(capture.runs.length, 0, 'no run may be created before the refusal');
+  });
+}
 
 test('sources graph resource evidence from the executed control block and the trials it produced', async () => {
   const { experiment, recorded, observed } = await getGraphResourceExperiment();
