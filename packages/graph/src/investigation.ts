@@ -415,11 +415,20 @@ const OPTIONAL_CONTROL_FIELDS: ReadonlySet<string> = new Set(
  * and `pickGraphOwnedControl`, which is where a value the prototype
  * SUPPLIES ON READ stopped being launderable (AIC-92). Said here because a
  * reader landing on this function would otherwise infer that the class is
- * closed by it. ⚠ It is not closed by anything: an inherited setter that
- * DEFINES the value on the target produces a genuine own data property, which
- * no ownership check can distinguish from an honest one — pinned in
- * hitl-resume-contract.test.mjs › "documents the limit: an inherited setter
- * that writes an own property is not refused", remedy in AIC-93.
+ * closed by it. ⚠ Nor is it closed by all four together: an inherited setter
+ * that DEFINES the value on the target produces a genuine own data property,
+ * which no ownership check can distinguish from an honest one. That shape is
+ * closed OUTSIDE the graph and CONDITIONALLY, by `withDeclaredOwnValues` —
+ * which `createSqliteCheckpointer` in `packages/persistence` wires, and which
+ * a caller passing this graph their own `BaseCheckpointSaver` therefore does
+ * not get. Where it is wired the checkpoint bytes are put back, so the run is
+ * IMMUNE rather than warned and nothing here reports the attempt (AIC-93) —
+ * immune on the shapes that module covers, which it enumerates as numbered
+ * limits in its own header rather than leaving to this sentence.
+ * see hitl-resume-contract.test.mjs › "keeps the run's own humanReview under
+ * an inherited setter that writes an own property" and
+ * checkpoint-serde-own-values.test.mjs › "states its limit: a checkpointer
+ * this module did not build keeps the unrepaired serde"
  *
  * ⚠ Two limits of the check itself. It verifies that CONTROL owns its fields,
  * not that `state` owns `control` — a polluted `Object.prototype.control` is
@@ -969,10 +978,24 @@ function defineOwnValue(
  * value on the target makes the field genuinely own — the descriptor read below
  * then returns exactly what an honest run would. Nothing is left to detect, so
  * no ownership check anywhere closes that shape; `JSON.parse` is immune to it
- * where plain assignment is not, which puts the remedy at the deserializer.
- * Measured, and filed as AIC-93 rather than folded in here.
- * see hitl-resume-contract.test.mjs › "documents the limit: an inherited setter
- * that writes an own property is not refused"
+ * where plain assignment is not, which put the remedy at the deserializer and
+ * not here. AIC-93 took it: `withDeclaredOwnValues` restores the value the
+ * checkpoint bytes declare before this function ever sees the control. It
+ * repairs ONLY a diverged own data property, so the two shapes this function
+ * refuses — a field the prototype supplies on read, and an own accessor —
+ * arrive here exactly as the reviver left them.
+ *
+ * ⚠ That remedy is CONDITIONAL and this function cannot check the condition.
+ * It is wired by `createSqliteCheckpointer`, and `createInvestigationGraph`
+ * accepts any `BaseCheckpointSaver`, so a caller who builds their own
+ * checkpointer runs this function against an unrepaired reviver — where the
+ * own-writing shape is once again undetectable here.
+ * see checkpoint-serde-own-values.test.mjs › "states its limit: a checkpointer
+ * this module did not build keeps the unrepaired serde"
+ * see hitl-resume-contract.test.mjs › "keeps the run's own humanReview under
+ * that gadget on the off-contract pause route"
+ * see checkpoint-serde-own-values.test.mjs › "leaves a swallowed write for the
+ * graph to refuse rather than repairing it"
  *
  * see hitl-resume-contract.test.mjs › "refuses a control the prototype supplies
  * to a wrapped node, on a pending interrupt" and › "accepts a graph-owned field
@@ -1443,16 +1466,24 @@ export function createInvestigationGraph({
     // turn in a 124-turn window completed the resume, skipped the identity
     // check below, and persisted a control the domain schema rejects.
     //
-    // It REFUSES rather than repairing, and AIC-92 decided that rather than
-    // leaving it open. The alternative was real: `JSON.parse` uses define
-    // semantics and preserves the own value — the loss is one assignment in
-    // `JsonPlusSerializer._reviver`, AFTER the parse — and the serde is an
-    // injection point, not a fork, so a define-semantics serde in
-    // `packages/persistence` would have made the substitution unrepresentable.
-    // It was not taken: repair ABSORBS the attempt where refusal reports it,
-    // costs a second parse per load, and makes this repository own behaviour
-    // the dependency may change under an upgrade. The decision and what it
-    // gives up are in docs/decisions/control-ownership-boundary.md.
+    // It REFUSES rather than repairing, and that is still the right division
+    // of labour — but the serde AIC-92 declined has since landed, so the three
+    // reasons it gave no longer read the same way. Two stand as accepted costs:
+    // a second parse per load, and this repository owning behaviour the
+    // dependency may change under an upgrade. The third — "repair ABSORBS the
+    // attempt where refusal reports it" — does not apply to the shape the serde
+    // was taken for, because for THAT shape no refusal was ever available: an
+    // inherited setter that defines on its target leaves a genuine own data
+    // property with nothing left to detect.
+    //
+    // So the two now divide by shape rather than by preference.
+    // `withDeclaredOwnValues` repairs only a slot the reviver left as an own
+    // data property whose value diverged from the checkpoint bytes; this call
+    // keeps refusing the shapes it leaves alone, which is what stops the repair
+    // from silencing the rows below. The decision and what it gives up are in
+    // docs/decisions/control-ownership-boundary.md.
+    // see checkpoint-serde-own-values.test.mjs › "leaves a swallowed write for
+    // the graph to refuse rather than repairing it"
     //
     // ⚠ What this call still covers ALONE, because "the only ownership check
     // standing" was the first draft's answer and measurement says otherwise.
@@ -1763,9 +1794,12 @@ export function createInvestigationGraph({
           // than softened. `reviewConclusion`'s call is the only thing between a
           // `confirm` and an inherited OPTIONAL field — the row is named there.
           // And no arrangement of these checks closes the class: an inherited
-          // setter that DEFINES on the target yields a genuine own property.
-          // see hitl-resume-contract.test.mjs › "documents the limit: an
-          // inherited setter that writes an own property is not refused"
+          // setter that DEFINES on the target yields a genuine own property,
+          // which is why that shape is answered outside the graph entirely, by
+          // the serde `createSqliteCheckpointer` wires (AIC-93). Immunity, not
+          // a refusal: these calls never see it and nothing reports it.
+          // see hitl-resume-contract.test.mjs › "keeps the run's own
+          // humanReview under an inherited setter that writes an own property"
           //
           // What THIS call covers alone: pollution present for the FIRST
           // checkpoint read and gone by the second. Every other guard sees only
@@ -1798,23 +1832,24 @@ export function createInvestigationGraph({
           // change has no business removing, and it was removed by accident
           // rather than chosen.
           //
-          // ⚠ What allowing it costs, stated exactly, because an earlier
-          // draft said "nothing is given up" and that is measurably false.
-          // This route IS a path to that limit, and the row that says so arms
-          // the gadget on this route rather than on a plain `confirm`:
-          // see hitl-resume-contract.test.mjs › "documents the limit on the
-          // crashed-run retry route the refusal lets through"
+          // ⚠ What allowing it cost, and what it costs now. An earlier draft
+          // said "nothing is given up"; that was measurably false while the
+          // own-writing gadget could ride this route to a substitution nothing
+          // could detect. AIC-93 closed that at the serde WHERE THE SERDE IS
+          // WIRED — `createSqliteCheckpointer` installs it and this graph
+          // accepts any `BaseCheckpointSaver` — so on a checkpointer this
+          // repository built the retry advances the crashed run on the control
+          // the checkpoint bytes declare, and on one a caller built it does not.
+          // see hitl-resume-contract.test.mjs › "keeps the run's own
+          // humanReview under that gadget on the crashed-run retry route" and
+          // checkpoint-serde-own-values.test.mjs › "states its limit: a
+          // checkpointer this module did not build keeps the unrepaired serde"
           //
-          // It is not a path the refusal would have closed, which is the whole
-          // of why the trade is taken. The same gadget reaches a plain
-          // `confirm`, which no form of this refusal ever covered — so refusing
-          // here would remove one path to a limit that stays open either way,
-          // and would cost every crashed run its only way forward. What the
-          // primitive does close on this route is the READ-supplied
-          // substitution, and that is closed whether or not the route is
-          // refused.
-          // see hitl-resume-contract.test.mjs › "documents the limit: an
-          // inherited setter that writes an own property is not refused"
+          // What is still given up is the REPORT: a resume that names a stale
+          // id on a thread waiting on nothing is not refused, so an operator
+          // learns nothing from it. That is the price of leaving a crashed run
+          // its only way forward, and it is the trade this call takes
+          // deliberately rather than by accident.
           // see hitl-resume-contract.test.mjs › "advances a run past a
           // transient node failure when the caller retries the same id" and ›
           // "refuses a stale ${label} decision while the run waits on a

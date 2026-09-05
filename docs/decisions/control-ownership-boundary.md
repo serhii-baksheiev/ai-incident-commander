@@ -1,4 +1,8 @@
-# Where the graph refuses a control field it does not own — and why not at the serde
+# Where the graph refuses a control field it does not own — and where the serde repairs instead
+
+⚠ The title said "and why not at the serde" until AIC-93, which took the serde
+after all. The record is kept in order rather than rewritten: read the middle
+sections as the reasoning of the time, and the last section as what replaced it.
 
 The invariant this serves is a **product** one, not a process rule, and it is
 worth saying where it actually lives: `humanReview` is what the
@@ -102,17 +106,24 @@ run waiting on **no** interrupt is still resumable, and a finished run's resume
 stays the no-op that resolves.
 
 ⚠ "Nothing is given up" is what an earlier draft of this paragraph said, and it
-is measurably false: the route is a path to the limit the section below
-describes, and the row that shows it arms the gadget on this route rather than
-on a plain `confirm` — hitl-resume-contract.test.mjs › "documents the limit on
-the crashed-run retry route the refusal lets through". It is not a path the refusal
-would have closed — the same gadget reaches a plain `confirm`, which no form of
+was measurably false: the route was a path to the limit the section below
+describes, and the row that showed it armed the gadget on this route rather than
+on a plain `confirm`. **AIC-93 closed that limit** (last section), so the row now
+asserts the safe outcome on the same route — hitl-resume-contract.test.mjs ›
+"keeps the run's own humanReview under that gadget on the crashed-run retry
+route". What is still given up on this route is the REPORT, not the value. It was
+not a path the refusal would have closed — the same gadget reaches a plain `confirm`, which no form of
 this refusal ever covered — so refusing here would remove one path to a limit
 that stays open regardless, at the price of every crashed run's only way
 forward. What the primitive closes on this route is the READ-supplied
 substitution, and that is closed either way.
 
 ## The remedy that was not taken: a define-semantics serde
+
+⚠ **Superseded by the last section of this record.** It WAS taken, in AIC-93.
+The reasoning below is kept because two of its three objections survived as
+costs and the third turned out to be the interesting one; what changed, and
+why, is at the end.
 
 The substitution survives deserialization because
 `JsonPlusSerializer._reviver` in `@langchain/langgraph-checkpoint` builds
@@ -183,10 +194,12 @@ never invoke the setter. That is **AIC-93**, split out rather than folded in
 because it lives in `packages/persistence` and is a different layer's
 responsibility.
 
-The limit is pinned rather than described: hitl-resume-contract.test.mjs ›
-"documents the limit: an inherited setter that writes an own property is not
-refused" asserts the current unsafe outcome on purpose, so that closing it turns
-a row red and forces the claims here to be updated.
+The limit was pinned rather than described, and that mechanism did its job: the
+row asserting the unsafe outcome went red the moment AIC-93 closed the limit,
+and forced these claims to be rewritten rather than left standing. It now
+asserts the safe outcome under the same gadget — hitl-resume-contract.test.mjs ›
+"keeps the run's own humanReview under an inherited setter that writes an own
+property".
 
 ## Two checks on the resume path, and why they are not one
 
@@ -355,3 +368,120 @@ await, so a gadget armed one microtask later is invisible to it and lands on
 every turn from 1 to 10, on both shapes, executes the human's rejection as a
 confirm. That is the AIC-90 two-read shape again, on the decision rather than
 the control, and it is why the guard is duplicated rather than centralised.
+
+
+## The serde after all, and what reversing the trade actually bought (AIC-93)
+
+The section above named a remedy and declined it. AIC-93 took it.
+`withDeclaredOwnValues` in `packages/persistence` wraps the checkpointer's
+serde, and `createSqliteCheckpointer` — the only place this repository builds a
+checkpointer — wires it, so every call site is covered by one line.
+
+**Why the trade reversed, in one sentence:** the objection that carried it was
+about a choice that does not exist for this shape.
+
+*"It absorbs the attempt where refusal reports it"* was AIC-92's primary
+argument, and it is a real argument wherever a refusal is available. It is not
+available here. An inherited setter that answers the reviver's assignment by
+`Object.defineProperty(this, k, { value })` leaves a genuine own data property
+carrying the attacker's value; every check in `packages/graph` asks whether the
+field is the run's own data property and gets an honest yes. There is nothing
+left to detect, so "immunity versus reporting" is not a choice being made — the
+alternatives were immunity and nothing.
+
+**The other two objections stand, unmodified, as accepted costs.**
+
+1. The check is on the far side of a boundary. Ownership of graph-owned control
+   is the graph's invariant, and enforcing it in `packages/persistence` makes
+   the guarantee depend on which checkpointer a caller wired up. **A caller who
+   passes their own `BaseCheckpointSaver` to `createInvestigationGraph` still
+   loses this entirely** — measured rather than asserted:
+   checkpoint-serde-own-values.test.mjs › "states its limit: a checkpointer this
+   module did not build keeps the unrepaired serde".
+2. This repository now owns behaviour the dependency may change, plus a second
+   parse per load. The fix is obvious enough that upstream may make it, leaving
+   a module here compensating for something that no longer happens.
+
+### The load-bearing part: it repairs only a diverged own data property
+
+An unconditional "make every loaded value match the serialized form" also
+repairs the shapes the graph deliberately refuses — a slot an inherited setter
+SWALLOWED, and an own ACCESSOR a setter defined on the target. Measured on the
+merged head, and these are ALL of the rows it reddens rather than a sample:
+
+* `hitl-resume-contract.test.mjs` › "refuses a resume whose restored control
+  field is supplied by an accessor on the prototype"
+* `hitl-resume-contract.test.mjs` › "refuses the pollution armed at a turn
+  inside the measured window"
+* `hitl-resume-contract.test.mjs` › "refuses the value a stale retry launders
+  into a wrapped node"
+* `checkpoint-serde-own-values.test.mjs` › "leaves a swallowed write for the
+  graph to refuse rather than repairing it"
+
+Four rows, seventeen subtests — and here is how to get that number back, because
+a count with no recipe is a count the next reader cannot check. Make
+`restoreSlot` repair regardless of `slot.present` (drop the `present` guard on
+the leaf branch), rebuild, and run the whole suite: exactly these four rows go
+red, seventeen subtests among them. Re-measured at the AIC-93 gate by
+`code-reviewer` against the full suite, and it reproduced exactly.
+
+An earlier draft of this section said "five rows, including …" and cited three of
+them; that count was never measured and the word "including" conceded the list
+was partial, which is the shape a later reader cannot check. The list above is
+the whole answer, so a rerun that returns anything else means the guard moved.
+
+That is exactly the outcome the ordering paragraph above forbids: the serde
+arriving and the refusal rows being deleted to make room for it.
+
+So the condition is one line and it is the whole design. A slot is repaired only
+when the reviver left it as an **own data property whose value diverged from the
+serialized form**. An absent slot stays absent and an own accessor stays an
+accessor, so the graph keeps refusing them and the two mechanisms divide by
+shape rather than by preference:
+
+| what the reviver left | who answers it | the caller sees |
+| --- | --- | --- |
+| own data property, value diverged | the serde | the run's own value, silently |
+| slot absent | the graph's refusal sites | a refusal naming the field |
+| own accessor | the graph's refusal sites | a refusal naming the field |
+
+
+### Stated plainly: on a leaf the run is made immune, not refused
+
+**This section is about the LEAF shapes only.** Where the serialized form
+declares a container and the loaded side offers nothing to check it against,
+the module refuses instead — limit 9 in the module's header, added at the
+AIC-93 gate after a container-key accessor was shown carrying
+`humanReview:false` through a real `confirm` resume, parse-clean.
+see `hitl-resume-contract.test.mjs` › "refuses a resume when a container key hides the control behind an own accessor, and leaves the checkpoint the run's own values"
+
+The reason the two halves differ is that the graph's refusal sites cover the
+leaf fields and cover no container at all.
+
+For a leaf, then: no new refusal reaches an operator on that shape, and
+**nothing on disk records the attempt**. A run resumed with the gadget armed completes on the control the
+checkpoint bytes declare, and looks exactly like a run nobody attacked. That is
+a genuine step back from this record's own convention that an attempt should be
+reported, and it is taken because the alternative was not reporting — it was the
+substitution succeeding.
+
+### The module's limits are NOT restated here
+
+They live in one place — the numbered list in the header of
+`packages/persistence/src/own-value-serde.ts`, each entry ending in the test row
+that pins it. An earlier version of this section enumerated "two further
+limits"; the module then grew to nine, and this copy went stale without anything
+going red, which is the exact failure mode a second spelling of one fact
+produces. Read the header.
+
+Two of them matter enough to this record's argument to name, and naming them
+means pointing at the rows rather than restating what they do:
+
+* `checkpoint-serde-own-values.test.mjs` › "refuses a checkpoint value nested
+  deeper than DESERIALIZATION_MAX_DEPTH" and › "accepts a value just inside both
+  bounds" — the bound, pinned in both directions, so it cannot be satisfied by
+  refusing everything.
+* `checkpoint-serde-own-values.test.mjs` › "states its limit: a polluted key
+  inside a Map member is not repaired".
+
+Nothing in `IncidentStateControlSchema` is stored inside a `Map` or `Set` today.

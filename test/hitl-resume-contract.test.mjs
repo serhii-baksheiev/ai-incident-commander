@@ -14,7 +14,10 @@ import {
 import * as graphPackage from '@aic/graph';
 
 import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
-import { createSqliteCheckpointer } from '@aic/persistence';
+import {
+  UnverifiableContainerError,
+  createSqliteCheckpointer,
+} from '@aic/persistence';
 import { INTERRUPT, interrupt, isInterrupted } from '@langchain/langgraph';
 
 const lifecycleNodes = [
@@ -2945,13 +2948,13 @@ test('refuses an inherited stopKind on the route where no wrapped node runs', as
 });
 
 /**
- * ⚠⚠ THE LIMIT OF EVERY OWNERSHIP CHECK IN THIS FILE, and it is a row rather
- * than a sentence because this repository's rule is that a claim about what a
- * mechanism does — or cannot do — is either generated or a pointer.
+ * ⚠⚠ THE SHAPE NO OWNERSHIP CHECK IN THIS FILE CAN SEE — and what closes it. A
+ * row rather than a sentence, because this repository's rule is that a claim
+ * about what a mechanism does is either generated or a pointer.
  *
- * All of these guards ask one question: *is this field the run's own data
- * property?* A prototype gadget can make the answer honestly YES and still
- * choose the value, by defining it ON THE TARGET from its setter:
+ * Every guard here asks one question: *is this field the run's own data
+ * property?* A prototype gadget makes the answer honestly YES and still chooses
+ * the value, by defining it ON THE TARGET from its setter:
  *
  * ```js
  * Object.defineProperty(Object.prototype, 'humanReview', {
@@ -2965,46 +2968,70 @@ test('refuses an inherited stopKind on the route where no wrapped node runs', as
  * setter takes the assignment and defines `false` as the target's own data
  * property. From that point the control is indistinguishable from an honest
  * one, and `pickGraphOwnedControl` reading a descriptor sees exactly what an
- * uncorrupted run would.
+ * uncorrupted run would. Through AIC-92 this row asserted that unsafe outcome
+ * on purpose; AIC-93 closed it, so it asserts the safe one instead.
  *
- * So this row asserts the CURRENT, UNSAFE outcome on purpose. It is not an
- * endorsement and it is not a test of a feature: it is the limit, pinned, so
- * that the sentences elsewhere claiming the class is closed at the primitive
- * stay honest, and so that whoever closes it is told by a red row to update
- * them. Measured identically on `main` (d8bdea1) and here, so it is
- * pre-existing rather than introduced by AIC-92.
+ * The remedy was never another ownership check — there was nothing left to
+ * detect. `JSON.parse` uses define semantics and is immune to this gadget where
+ * plain assignment is not, and that premise is still MEASURED in the first half
+ * of this row rather than taken from the specification, because the whole
+ * remedy rests on it. `withDeclaredOwnValues` in `packages/persistence` puts
+ * the declared value back, and `createSqliteCheckpointer` — this harness's
+ * checkpointer, and the only place this repository builds one — wires it.
  *
- * The remedy is not another ownership check — there is nothing left to detect.
- * `JSON.parse` uses define semantics and is immune to this gadget where plain
- * assignment is not, which is measured by the first half of this row. That
- * makes a define-semantics serde the only remedy for this shape, and it is
- * filed rather than folded in here, because it lives in `packages/persistence`
- * and is a different layer's responsibility: AIC-93.
+ * 🔴 IMMUNITY, NOT REFUSAL. The resume SUCCEEDS, no new refusal reaches an
+ * operator on this shape, and nothing on disk records the attempt. That is a
+ * real cost and it is written down in
+ * `docs/decisions/control-ownership-boundary.md`. What must not follow from it
+ * is deleting the refusal rows around this one: they cover the shapes the
+ * repair deliberately leaves alone — an absent slot and an own accessor — and
+ * the serde is narrowed so those keep firing.
+ * see checkpoint-serde-own-values.test.mjs › "leaves a swallowed write for the
+ * graph to refuse rather than repairing it"
+ *
+ * All three decisions, in one loop over the fixture the rest of this file uses,
+ * because they reach the restored control by different routes: `confirm`
+ * through `reviewConclusion` alone, the other two with wrapped nodes behind
+ * them.
  */
-test('documents the limit: an inherited setter that writes an own property is not refused', async () => {
-  // First, the semantics the remedy would rest on, measured rather than
-  // asserted from the specification.
+
+/** The gadget itself: an inherited setter that answers the deserializer's one
+ * assignment by DEFINING the substituted value on the target, so the field ends
+ * up a genuine own data property. */
+function armOwnWritingSetter(field, value) {
+  Object.defineProperty(Object.prototype, field, {
+    configurable: true,
+    get() {
+      return value;
+    },
+    set() {
+      Object.defineProperty(this, field, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    },
+  });
+}
+
+/** The descriptor an honest, unsubstituted field has, so a row can assert the
+ * whole shape rather than the value alone. */
+function ownValueDescriptor(value) {
+  return { value, writable: true, enumerable: true, configurable: true };
+}
+
+test("keeps the run's own humanReview under an inherited setter that writes an own property", async () => {
+  // First, the semantics the remedy rests on, measured rather than asserted
+  // from the specification.
   try {
-    Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
-      configurable: true,
-      get() {
-        return false;
-      },
-      set() {
-        Object.defineProperty(this, POLLUTED_FIELD, {
-          value: false,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
-      },
-    });
+    armOwnWritingSetter(POLLUTED_FIELD, false);
 
     const parsed = JSON.parse(`{"${POLLUTED_FIELD}":true}`);
     assert.equal(
       parsed[POLLUTED_FIELD],
       true,
-      'JSON.parse must define rather than assign, or the remedy this row names would not work either',
+      'JSON.parse must define rather than assign, or the remedy below would not work either',
     );
 
     const assigned = {};
@@ -3024,7 +3051,69 @@ test('documents the limit: an inherited setter that writes an own property is no
   }
 
   // Then the end-to-end consequence, against a real checkpointer.
-  const harness = createHarness({ runId: 'run-own-writing-setter-limit' });
+  for (const { label, decision } of resumeDecisions) {
+    const harness = createHarness({ runId: `run-own-writing-setter-${label}` });
+
+    try {
+      const interrupted = await harness.start();
+      const [pending] = interrupted[INTERRUPT];
+
+      let outcome;
+      try {
+        armOwnWritingSetter(POLLUTED_FIELD, false);
+        outcome = await harness.resumeWith(pending.id, decision(1));
+      } finally {
+        delete Object.prototype[POLLUTED_FIELD];
+      }
+
+      assert.equal(
+        'error' in outcome,
+        false,
+        `a ${label} under this gadget must proceed on the run's own control, not fail: ${
+          outcome.error?.message ?? ''
+        }`,
+      );
+
+      const persistedControl = await harness.control();
+      assert.equal(
+        IncidentStateControlSchema.safeParse(persistedControl).success,
+        true,
+        'the control on disk must still parse',
+      );
+      assert.deepEqual(
+        Object.getOwnPropertyDescriptor(persistedControl, POLLUTED_FIELD),
+        ownValueDescriptor(RETRY_EXPECTED_HUMAN_REVIEW),
+        `${label}: the run must still be under human review, with its own value from the checkpoint bytes`,
+      );
+    } finally {
+      harness.cleanup();
+    }
+  }
+});
+
+/**
+ * Acceptance 2 of AIC-93, and the half a `humanReview` row cannot stand in for:
+ * a GRAPH-OWNED field the run decided for itself.
+ *
+ * `humanReview` arrives in the caller's start state; `stopKind` is written by
+ * `termination_check` during the run and only ever exists in the checkpoint. So
+ * this row proves the repair reaches what the graph owns, not merely what the
+ * caller supplied. The substituted value is schema-valid, which is what makes
+ * the substitution invisible to anything reading the control back — the same
+ * property the sibling row further up relies on for `humanReview`.
+ *
+ * The `confirm` route is deliberate: it reaches END from `reviewConclusion`
+ * without entering a wrapped node, so `pickGraphOwnedControl` never sees the
+ * control and the serde is the only thing standing between the gadget and disk.
+ */
+test("keeps the graph's own stopKind under an inherited setter that writes an own property", async () => {
+  assert.equal(
+    'stopKind' in {},
+    false,
+    'the prototype is already carrying stopKind before this run started: an earlier row leaked it',
+  );
+
+  const harness = createHarness({ runId: 'run-own-writing-setter-stop-kind' });
 
   try {
     const interrupted = await harness.start();
@@ -3032,46 +3121,192 @@ test('documents the limit: an inherited setter that writes an own property is no
 
     let outcome;
     try {
-      Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
-        configurable: true,
-        get() {
-          return false;
-        },
-        set() {
-          Object.defineProperty(this, POLLUTED_FIELD, {
-            value: false,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-          });
-        },
-      });
+      armOwnWritingSetter('stopKind', 'budget-exhausted');
       outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
     } finally {
-      delete Object.prototype[POLLUTED_FIELD];
+      delete Object.prototype.stopKind;
     }
 
     assert.equal(
       'error' in outcome,
       false,
-      'if this now refuses, the limit has been closed — update the claims in investigation.ts and the decision record, and close AIC-93',
+      `a confirm under this gadget must proceed on the graph's own stop kind: ${
+        outcome.error?.message ?? ''
+      }`,
     );
 
     const persistedControl = await harness.control();
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(persistedControl, 'stopKind'),
+      ownValueDescriptor('stalled'),
+      "the stop kind on disk must be the one the graph decided, not the prototype's",
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The CONTAINER half of the same repair, and the one shape where it REFUSES
+ * instead of making the run immune.
+ *
+ * The two rows above arm a LEAF: the gadget answers the reviver's assignment of
+ * one control field, the serde puts the checkpoint's own value back, and the
+ * resume completes. A gadget armed at a container KEY is not that shape.
+ * `channel_values` is the reachable parent of `control` in a real checkpoint and
+ * is not a LangGraph channel name, so a setter there is handed the whole subtree
+ * and can answer with a shim whose `control` is an own GETTER — a value no
+ * descriptor read can verify and no graph guard ever looks at, because none of
+ * the ownership sites in `packages/graph` sits above `control`.
+ *
+ * So the serde refuses, naming the key it could not verify, and this row is what
+ * the module's limit 9 and `docs/decisions/control-ownership-boundary.md` point
+ * at from the resume side: a real graph, a real SQLite checkpointer, a real
+ * `confirm`, and the checkpoint read back afterwards.
+ *
+ * Measured with that refusal removed — `restoreSlot`'s `if (key === '__proto__')
+ * return;` widened to `if (true) return;`, rebuilt in a scratch clone at
+ * 5b3444f: this resume COMPLETES, `humanReview: false` and
+ * `stopKind: 'budget-exhausted'` reach disk, the control still parses, and the
+ * run is no longer under human review. That is the outcome this row exists to
+ * keep unreachable, and it is why the row asserts what is on DISK rather than
+ * the refusal alone.
+ */
+
+/** What the gadget substitutes: schema-valid, so nothing reading the control
+ * back could tell it from the run's own. */
+const CONTAINER_SUBSTITUTED_HUMAN_REVIEW = false;
+const CONTAINER_SUBSTITUTED_STOP_KIND = 'budget-exhausted';
+
+/**
+ * The container-key gadget: an inherited setter at `channel_values` that answers
+ * the reviver's assignment by defining, ON THE TARGET, a shim carrying the
+ * honest siblings and an own GETTER at `control` returning a modified copy of
+ * the run's own control.
+ *
+ * Three things about it are deliberate:
+ *
+ * - the substituted control is DERIVED from the honest one the setter is handed,
+ *   not written out here, so it stays schema-valid as the control schema grows
+ *   and this row keeps failing for the reason it names;
+ * - the siblings are copied with `defineProperty` rather than assignment, so a
+ *   channel named `__proto__` could not re-parent the shim and quietly change
+ *   what the row is testing;
+ * - a written value that is not an object carries no control to substitute and
+ *   is defined verbatim. The setter is on `Object.prototype` for the whole
+ *   window and must not fail for a reason of its own.
+ */
+function armContainerAccessorGadget() {
+  Object.defineProperty(Object.prototype, 'channel_values', {
+    configurable: true,
+    get() {
+      return undefined;
+    },
+    set(written) {
+      const defineOwn = (value) => {
+        Object.defineProperty(this, 'channel_values', {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      };
+
+      if (written === null || typeof written !== 'object') {
+        defineOwn(written);
+        return;
+      }
+
+      const shim = {};
+      for (const key of Object.keys(written)) {
+        if (key === 'control') continue;
+        Object.defineProperty(shim, key, {
+          value: written[key],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+
+      const honestControl = written.control;
+      if (honestControl !== null && typeof honestControl === 'object') {
+        const substituted = {
+          ...honestControl,
+          [POLLUTED_FIELD]: CONTAINER_SUBSTITUTED_HUMAN_REVIEW,
+          stopKind: CONTAINER_SUBSTITUTED_STOP_KIND,
+        };
+        Object.defineProperty(shim, 'control', {
+          enumerable: true,
+          configurable: true,
+          get() {
+            return substituted;
+          },
+        });
+      }
+
+      defineOwn(shim);
+    },
+  });
+}
+
+test("refuses a resume when a container key hides the control behind an own accessor, and leaves the checkpoint the run's own values", async () => {
+  assert.equal(
+    'channel_values' in {},
+    false,
+    'the prototype is already carrying channel_values before this run started: an earlier row leaked it',
+  );
+
+  const harness = createHarness({ runId: 'run-container-key-accessor' });
+
+  try {
+    const interrupted = await harness.start();
+    const [pending] = interrupted[INTERRUPT];
+
+    let outcome;
+    try {
+      armContainerAccessorGadget();
+      outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    } finally {
+      delete Object.prototype.channel_values;
+    }
+
     assert.equal(
-      IncidentStateControlSchema.safeParse(persistedControl).success,
+      'error' in outcome,
       true,
-      'the substituted control parses, which is what makes this outcome invisible on disk',
+      'a checkpoint whose control the walk cannot verify must be refused, not resumed to completion on it',
     );
     assert.equal(
-      persistedControl[POLLUTED_FIELD],
-      false,
-      'if this is no longer the gadget\'s value, the limit has moved — re-measure before editing the claims',
+      outcome.error instanceof UnverifiableContainerError,
+      true,
+      `the refusal must be the persistence layer's own, not: ${outcome.error?.constructor?.name} ${outcome.error?.message ?? ''}`,
+    );
+    assert.ok(
+      outcome.error.message.includes(JSON.stringify('control')),
+      `the refusal must name the key whose subtree it would not hand back: ${outcome.error.message}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      INCIDENTAL_RESUME_REFUSALS,
+      `refusing for a reason that is not the unverifiable container is not this guard: ${outcome.error.message}`,
+    );
+
+    // The disk, which is the half a refusal alone does not give: with the
+    // container refusal removed every one of these is the gadget's value.
+    const persistedControl = await harness.control();
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(persistedControl, POLLUTED_FIELD),
+      ownValueDescriptor(RETRY_EXPECTED_HUMAN_REVIEW),
+      'the refused run must still be under human review, by its own value from the checkpoint bytes',
     );
     assert.equal(
-      Object.hasOwn(persistedControl, POLLUTED_FIELD),
-      true,
-      'the substituted field is genuinely own, which is why no ownership check can see it',
+      persistedControl.stopKind,
+      'stalled',
+      "the stop kind on disk must be the one the graph decided, not the gadget's",
+    );
+    assert.equal(
+      persistedControl.resumeCount,
+      0,
+      'a refused resume is not a resume the human spent',
     );
   } finally {
     harness.cleanup();
@@ -3279,23 +3514,21 @@ test('refuses pollution that is gone by the second checkpoint read', async () =>
 });
 
 /**
- * The same limit on the route AIC-92 deliberately REOPENED, which is the sentence
- * in `execute` that concedes what allowing that route costs.
+ * The same gadget on the route AIC-92 deliberately REOPENED — the crashed-run
+ * retry — which is the sentence in `execute` that concedes what allowing that
+ * route costs.
  *
- * The row above arms the gadget on a plain `confirm`. This one arms it on the
- * crashed-run retry — pause, reject, a node throws, retry the same id against a
- * thread waiting on zero interrupts — because that is the route the narrowed
- * refusal lets through, and a comment that says "this route IS a path to that
- * limit" has to be a pointer rather than a claim.
- *
- * The cost is real and the trade is still the right one: the row above shows
- * the same gadget reaching a plain `confirm`, which no form of that refusal
- * ever covered. Refusing here would remove one path to a limit that stays open
- * regardless, and would cost every crashed run its only way forward — pinned by
- * › "advances a run past a transient node failure when the caller retries the
- * same id". Both halves are rows, so neither can drift into the other's place.
+ * The rows above arm it on an in-contract resume. This one arms it on pause,
+ * reject, a node throws, retry the same id against a thread waiting on ZERO
+ * interrupts, because that is the route the narrowed refusal lets through. The
+ * concession stands: this route is still not refused, and a caller retrying a
+ * crashed run still gets their run back — pinned by › "advances a run past a
+ * transient node failure when the caller retries the same id". What changed is
+ * what the route can carry. It used to be a path to a substitution nothing
+ * could detect; the serde makes the run immune on it, so the trade `execute`
+ * takes no longer buys the gadget anything here.
  */
-test('documents the limit on the crashed-run retry route the refusal lets through', async () => {
+test("keeps the run's own humanReview under that gadget on the crashed-run retry route", async () => {
   assert.equal(
     POLLUTED_FIELD in {},
     false,
@@ -3326,20 +3559,7 @@ test('documents the limit on the crashed-run retry route the refusal lets throug
 
     let outcome;
     try {
-      Object.defineProperty(Object.prototype, POLLUTED_FIELD, {
-        configurable: true,
-        get() {
-          return false;
-        },
-        set() {
-          Object.defineProperty(this, POLLUTED_FIELD, {
-            value: false,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-          });
-        },
-      });
+      armOwnWritingSetter(POLLUTED_FIELD, false);
       outcome = await harness.resumeWith(pending.id, { action: 'reject' });
     } finally {
       delete Object.prototype[POLLUTED_FIELD];
@@ -3348,19 +3568,84 @@ test('documents the limit on the crashed-run retry route the refusal lets throug
     assert.equal(
       'error' in outcome,
       false,
-      'if this now refuses, the limit has been closed on this route — update the claims in investigation.ts and the decision record, and close AIC-93',
+      `the retry must still advance the crashed run: ${outcome.error?.message ?? ''}`,
     );
 
     const persistedControl = await harness.control();
     assert.equal(
-      persistedControl[POLLUTED_FIELD],
-      false,
-      'if this is no longer the gadget\'s value, the limit has moved — re-measure before editing the claims',
+      IncidentStateControlSchema.safeParse(persistedControl).success,
+      true,
+      'the control on disk must still parse',
     );
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(persistedControl, POLLUTED_FIELD),
+      ownValueDescriptor(RETRY_EXPECTED_HUMAN_REVIEW),
+      'the retried run must still be under human review, with its own value from the checkpoint bytes',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The third route, and the one no refusal ever reached first: a caller-supplied
+ * node that pauses itself.
+ *
+ * Resuming an off-contract pause re-enters at that node, which is WRAPPED, so
+ * the control passes through `pickGraphOwnedControl` before `reviewConclusion`
+ * runs at all. That is where a value the prototype supplies ON READ is refused
+ * — › "refuses a control the prototype supplies to a wrapped node, on a pending
+ * interrupt" — and it is exactly where the own-writing gadget used to sail
+ * through, because the field it leaves behind is a genuine own data property.
+ * Both halves are rows now, so neither can drift into the other's place.
+ */
+test("keeps the run's own humanReview under that gadget on the off-contract pause route", async () => {
+  assert.equal(
+    POLLUTED_FIELD in {},
+    false,
+    `the prototype is already carrying ${POLLUTED_FIELD} before this run started: an earlier row leaked it`,
+  );
+
+  const harness = createHarness({
+    runId: 'run-gadget-on-off-contract-pause',
+    nodes: nodesPausingOffContract(),
+  });
+
+  try {
+    const interrupted = await harness.startRaw();
+    assert.equal(
+      isInterrupted(interrupted),
+      true,
+      'a lifecycle node calling interrupt() must pause the run',
+    );
+    const [pending] = interrupted[INTERRUPT];
+
+    let outcome;
+    try {
+      armOwnWritingSetter(POLLUTED_FIELD, false);
+      outcome = await harness.resumeWith(pending.id, { action: 'confirm' });
+    } finally {
+      delete Object.prototype[POLLUTED_FIELD];
+    }
+
+    assert.equal(
+      'error' in outcome,
+      false,
+      `resuming an off-contract pause under this gadget must proceed on the run's own control: ${
+        outcome.error?.message ?? ''
+      }`,
+    );
+
+    const persistedControl = await harness.control();
     assert.equal(
       IncidentStateControlSchema.safeParse(persistedControl).success,
       true,
-      'the substituted control parses, which is what makes this outcome invisible on disk',
+      'the control on disk must still parse',
+    );
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(persistedControl, POLLUTED_FIELD),
+      ownValueDescriptor(RETRY_EXPECTED_HUMAN_REVIEW),
+      'the resumed run must still be under human review, with its own value from the checkpoint bytes',
     );
   } finally {
     harness.cleanup();
