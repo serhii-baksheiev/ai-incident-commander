@@ -1158,6 +1158,29 @@ const assertUncorruptedRunResolves = async (
   );
 };
 
+/**
+ * These fifteen rows prove the SCHEMA, and they are named for it.
+ *
+ * `kind: 'start'` state is parsed by `IncidentStateSchema` before the graph
+ * runs anything, so `LogicalCountSchema` refuses a fractional, negative or
+ * non-safe-integer counter at the input boundary and `assertLogicalBudgetCounters`
+ * is never consulted. Under the name they used to carry — "fails closed …
+ * before spending a logical budget" — that made them vacuous twice over:
+ * neutralising the guard left all fifteen green, and so did removing
+ * `LogicalCountSchema` from the field each one names, because the only thing
+ * they asserted was that `propose_conclusion` had not run.
+ *
+ * The discriminator is the MESSAGE, not the trace. Both refusals land before
+ * any lifecycle node pushes to `trace`, so an empty trace cannot tell them
+ * apart; only the boundary schema answers `invalid investigation execution
+ * input`, while the guard names the counter. A row here that starts reporting
+ * a named counter is a row whose field has lost `LogicalCountSchema`.
+ *
+ * The guard's own path is the resume path, and it is covered there for all
+ * five counters — see hitl-resume-contract.test.mjs › "refuses a
+ * current-version checkpoint carrying a ${corruption.label} ${counter.label},
+ * and names the counter".
+ */
 for (const invalidBudgetCounter of [
   { field: 'iterationsUsed', label: 'fractional iterations used', value: 0.5 },
   { field: 'iterationsUsed', label: 'negative iterations used', value: -1 },
@@ -1195,7 +1218,7 @@ for (const invalidBudgetCounter of [
     value: Number.MAX_SAFE_INTEGER + 1,
   },
 ]) {
-  test(`fails closed on ${invalidBudgetCounter.label} before spending a logical budget`, async () => {
+  test(`refuses ${invalidBudgetCounter.label} at the input boundary, before a logical budget can be spent`, async () => {
     const createInvestigationGraph = requireGraphFactory();
     await assertUncorruptedRunResolves(createInvestigationGraph);
 
@@ -1209,10 +1232,15 @@ for (const invalidBudgetCounter of [
     const outcome = await runToCompletion(graph, state);
 
     assert.equal('error' in outcome, true, 'a corrupt logical budget must reject invocation');
+    assert.deepEqual(
+      trace,
+      [],
+      'a counter that is not a count must be refused before any lifecycle node runs, not merely before the conclusion',
+    );
     assert.equal(
-      trace.includes('propose_conclusion'),
-      false,
-      'a corrupt logical budget must fail before the run spends budget on a conclusion',
+      outcome.error.message,
+      'invalid investigation execution input',
+      `the refusal must be the boundary schema's: a message naming the counter means ${invalidBudgetCounter.field} lost LogicalCountSchema and the graph guard caught it instead`,
     );
   });
 }

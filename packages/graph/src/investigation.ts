@@ -1125,6 +1125,17 @@ function isLogicalCount(value: unknown): value is number {
  * point of a budget is that the number it is decided from is trustworthy: a
  * fractional or negative counter silently changes what "exhausted" means, and a
  * run that continued on one would report usage nobody can reconcile.
+ *
+ * The path where this is load-bearing is the RESUME path, and only that one: a
+ * `kind: 'start'` state is parsed by `IncidentStateSchema` first, so
+ * `LogicalCountSchema` refuses every one of these five before this function is
+ * consulted. Every counter it checks is covered there — see
+ * hitl-resume-contract.test.mjs › "refuses a current-version checkpoint
+ * carrying a ${corruption.label} ${counter.label}, and names the counter",
+ * whose table is exhaustive over the five below. The start-path rows prove the
+ * schema instead, and say so: investigation-graph.test.mjs › "refuses
+ * ${invalidBudgetCounter.label} at the input boundary, before a logical budget
+ * can be spent".
  */
 function assertLogicalBudgetCounters(control: IncidentStateControl): void {
   for (const [field, value] of [

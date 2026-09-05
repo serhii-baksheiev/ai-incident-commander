@@ -331,8 +331,26 @@ for (const persisted of outdatedPersistedControls) {
  * These rows hold the schema version at the CURRENT one on purpose: the
  * refusal has to name the counter rather than the version, or a corrupt
  * counter would be indistinguishable from stale state.
+ *
+ * The table covers EVERY counter `assertLogicalBudgetCounters` checks, and
+ * that exhaustiveness is the point rather than a convenience: it used to
+ * cover three of the five, so neutralising the guard left `maxIterations` and
+ * `llmCallBudget` unprotected with the suite green. Both budgets are here for
+ * that reason. What holds the correspondence is a measurement, not this
+ * sentence — with the guard neutralised, every one of the five names a red row
+ * in this table.
  */
 const corruptPersistedCounters = [
+  {
+    field: 'maxIterations',
+    label: 'iteration budget',
+    namesTheCounter: /invalid iteration budget/,
+  },
+  {
+    field: 'llmCallBudget',
+    label: 'llm call budget',
+    namesTheCounter: /invalid llm call budget/,
+  },
   {
     field: 'iterationsUsed',
     label: 'logical iteration counter',
