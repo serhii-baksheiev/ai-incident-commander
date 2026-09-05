@@ -119,6 +119,21 @@ function writeDomainSource(fixtureRoot, source) {
   writeFileSync(path, source);
 }
 
+/**
+ * The graph-side counterpart of `writeDomainSource`.
+ *
+ * Added with AIC-94: before it, both dependency-cruiser rules were scoped to
+ * `^packages/domain/` and ESLint covered `packages/domain/**` alone, so
+ * "no provider SDK leaks into domain or graph" was enforced for the domain half
+ * only. A probe that writes into `packages/graph` is what makes the graph half
+ * a measurement rather than a claim.
+ */
+function writeGraphSource(fixtureRoot, source) {
+  const path = resolve(fixtureRoot, 'packages/graph/src/__boundary_probe__.ts');
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, source);
+}
+
 function mutateJson(path, mutate) {
   const value = JSON.parse(readFileSync(path, 'utf8'));
   mutate(value);
@@ -161,6 +176,16 @@ const boundaryProbes = [
     name: 'rejects require in domain code',
     mutate: (fixtureRoot) =>
       writeDomainSource(fixtureRoot, 'export const graph = require("@aic/graph");\n'),
+  },
+  {
+    name: 'rejects a graph import of the model role package',
+    mutate: (fixtureRoot) =>
+      writeGraphSource(fixtureRoot, 'import "@aic/roles";\n'),
+  },
+  {
+    name: 'rejects a graph import of a provider sdk',
+    mutate: (fixtureRoot) =>
+      writeGraphSource(fixtureRoot, 'import "@anthropic-ai/sdk";\n'),
   },
   {
     name: 'rejects a domain dependency value that points into graph',
