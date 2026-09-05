@@ -156,6 +156,51 @@ export type GraphOwnedControlField =
   (typeof GRAPH_OWNED_CONTROL_FIELDS)[number];
 
 /**
+ * Every control field that must be a logical count, paired with the word the
+ * refusal names it by.
+ *
+ * Exported for one reason: the resume-path table that proves the guard has to
+ * be DERIVED from this list rather than kept beside it. Two hand-maintained
+ * lists of the same five fields is the shape `.claude/rules/invariants.md`
+ * ("One mechanism, one implementation") tells you to replace with a check, and
+ * this pair had already drifted — the table covered three while the guard
+ * checked five, which left two counters with no row anywhere and the suite
+ * green.
+ *
+ * What derivation buys, stated as what actually goes red rather than as what it
+ * feels like it prevents: an entry added HERE cannot arrive without its rows,
+ * because the rows are generated from this list. The row that fires is the one
+ * checking an added entry names a field the domain declares a logical count,
+ * and its sibling that no such field is left outside both graph guards.
+ * see hitl-resume-contract.test.mjs › "covers every counter the graph's logical
+ * budget guard checks, derived from the exported list rather than restated"
+ * and › "leaves no logical-count control field unguarded between the two graph
+ * guards"
+ *
+ * The labels are the refusal's own words rather than the field names, because
+ * the resume rows assert on the message a caller actually sees.
+ *
+ * Frozen at BOTH levels. `as const` is type-level only and `Object.freeze` is
+ * shallow, so freezing the outer array alone leaves each pair writable: an
+ * in-process importer could rewrite one entry's field and silently stop that
+ * counter being re-validated on the resume path while every refusal message
+ * stayed correct. That sits outside this file's stated threat model — a caller
+ * running in this process can supply the control value directly — but the deep
+ * form costs one call and `packages/tools/src/contracts.ts` already uses it.
+ */
+export const LOGICAL_BUDGET_COUNTERS = Object.freeze(
+  (
+    [
+      ['maxIterations', 'iteration budget'],
+      ['llmCallBudget', 'llm call budget'],
+      ['iterationsUsed', 'logical iteration counter'],
+      ['llmCallsUsed', 'llm call counter'],
+      ['resumeCount', 'resume counter'],
+    ] as const satisfies readonly (readonly [keyof IncidentStateControl, string])[]
+  ).map((entry) => Object.freeze(entry)),
+);
+
+/**
  * The control a lifecycle node may hand back — everything the graph does not
  * own, and nothing else.
  */
@@ -1125,17 +1170,28 @@ function isLogicalCount(value: unknown): value is number {
  * point of a budget is that the number it is decided from is trustworthy: a
  * fractional or negative counter silently changes what "exhausted" means, and a
  * run that continued on one would report usage nobody can reconcile.
+ *
+ * The path where this is load-bearing is the RESUME path, and only that one: a
+ * `kind: 'start'` state is parsed by `IncidentStateSchema` first, so
+ * `LogicalCountSchema` refuses every one of these counters before this function
+ * is consulted. The start-path rows prove the schema instead, and say so — see
+ * investigation-graph.test.mjs › "refuses ${invalidBudgetCounter.label} at the
+ * input boundary, before a logical budget can be spent".
+ *
+ * The counters are `LOGICAL_BUDGET_COUNTERS`, exported rather than written out
+ * here, because the resume-path table that covers them has to be derived from
+ * the same list rather than maintained beside it. A hand-kept second copy is
+ * the one nobody is looking at (`.claude/rules/invariants.md`, "One mechanism,
+ * one implementation"), and this one had already drifted: the table covered
+ * three of these counters while the guard checked five, so the guard could have
+ * been neutralised on `maxIterations` and `llmCallBudget` with the suite green.
+ * see hitl-resume-contract.test.mjs › "covers every counter the graph's logical
+ * budget guard checks, derived from the exported list rather than restated"
  */
 function assertLogicalBudgetCounters(control: IncidentStateControl): void {
-  for (const [field, value] of [
-    ['iteration budget', control.maxIterations],
-    ['llm call budget', control.llmCallBudget],
-    ['logical iteration counter', control.iterationsUsed],
-    ['llm call counter', control.llmCallsUsed],
-    ['resume counter', control.resumeCount],
-  ] as const) {
-    if (!isLogicalCount(value)) {
-      throw new Error(`invalid ${field}`);
+  for (const [field, label] of LOGICAL_BUDGET_COUNTERS) {
+    if (!isLogicalCount(control[field])) {
+      throw new Error(`invalid ${label}`);
     }
   }
 }
