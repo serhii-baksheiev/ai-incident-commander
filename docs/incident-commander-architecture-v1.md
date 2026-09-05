@@ -836,12 +836,19 @@ roles → domain/graph
 evals → domain/graph/roles
 ```
 
-Two of these six are mechanically linted, and the block says which because the
-rest are convention: `dependency-cruiser.config.mjs` enforces line 1
-(`domain-does-not-import-orchestration-frameworks`) and line 2
-(`graph-and-domain-do-not-import-model-providers`), both scoped to
-`^packages/(?:domain|graph)/`. The remaining edges are the workspace manifests'
-business and nothing refuses a new one.
+Three rules in `dependency-cruiser.config.mjs` enforce part of this, and each
+has its own scope — the block says which, because reading them as one rule over
+all six lines is how a session reports a violation that is not one:
+
+| rule | scoped from | what it refuses |
+| --- | --- | --- |
+| `domain-does-not-import-orchestration-frameworks` | `^packages/domain/` | line 1, **for `domain` only** — `graph` imports LangGraph on every build, by design |
+| `graph-and-domain-do-not-import-model-providers` | `^packages/(?:domain\|graph)/` | line 2, both layers |
+| `domain-does-not-import-product-implementation` | `^packages/domain/` | the one-way-ness of lines 3 and 4 — `domain` may not import `graph` or `tools` |
+
+What no rule covers is the direction of lines 5 and 6: nothing refuses a new
+edge into or out of `roles` and `evals`. Those are the workspace manifests'
+business and are convention.
 
 `roles` is the package that owns the provider seam (§ the reference-model roles),
 so the second rule is what keeps the frozen provider-independence of `domain` and

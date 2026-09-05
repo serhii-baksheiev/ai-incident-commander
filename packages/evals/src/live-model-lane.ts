@@ -277,13 +277,26 @@ function movesAgainst(
   declared: Readonly<Partial<Record<GateMetricKey, number>>>,
   observed: Record<string, number>,
 ): GateMetricKey[] {
+  // Two refusals, not one, because the remedies differ and
+  // `.claude/rules/invariants.md` asks the remedy to be decided where the
+  // reason is. An unknown key is a typo or a renamed metric — fix the name. A
+  // WITHHELD key is a real metric this lane deliberately does not publish, so
+  // the entry has to go; keeping it pins a number nothing can ever compare,
+  // which is worse than a typo because the name looks right.
   const comparable = new Set<string>(COMPARED_METRIC_KEYS);
-  const unknown = Object.keys(declared).filter(
-    (key) => !comparable.has(key) || key in LIVE_MODEL_LANE_WITHHELD_METRICS,
-  );
+  const declaredKeys = Object.keys(declared);
+  const unknown = declaredKeys.filter((key) => !comparable.has(key)).sort();
   if (unknown.length > 0) {
     throw new Error(
-      `the control baseline declares metrics this lane does not compare: ${unknown.sort().join(', ')}`,
+      `the control baseline declares metrics this lane does not compare: ${unknown.join(', ')} — check the spelling against the metric keys this lane reports`,
+    );
+  }
+  const withheld = declaredKeys
+    .filter((key) => Object.hasOwn(LIVE_MODEL_LANE_WITHHELD_METRICS, key))
+    .sort();
+  if (withheld.length > 0) {
+    throw new Error(
+      `the control baseline declares metrics this lane withholds: ${withheld.join(', ')} — remove the entry, because a withheld metric never reaches the comparison and a baseline that pins one cannot fail`,
     );
   }
 

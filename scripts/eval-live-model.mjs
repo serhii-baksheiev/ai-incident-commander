@@ -53,8 +53,9 @@
  *
  * ⚠ **What leaves this process when the lane runs.** The prompt carries the
  * incident, the hypotheses, the predictions, the evidence and the assessments —
- * the investigation state — to the configured provider's HTTPS endpoint. Nothing
- * else leaves, and nothing leaves at all without a credential.
+ * the investigation state — to the configured provider's HTTPS endpoint. That is
+ * the only destination the lane reaches on its own; `--publish` adds a second,
+ * the LangSmith ingestion below. Nothing leaves at all without a credential.
  *
  * The scripted nodes come from `test/fixtures/benchmark-experiment.mjs`, which
  * is the ONE implementation of the replay-backed lifecycle in this repository

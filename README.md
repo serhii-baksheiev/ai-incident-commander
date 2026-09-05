@@ -181,7 +181,9 @@ The floor set is asserted rather than described: `test/live-model-lane.test.mjs`
 **What leaves the process.** When a credential is configured, the prompt carries
 the investigation state — the incident, hypotheses, predictions, evidence and
 assessments — to the configured provider's HTTPS endpoint. That is the only
-outbound destination this repository has, it lives in one file
+outbound destination **the lane itself** has; `--publish` adds a second, the
+LangSmith ingestion described under *LangSmith tracing* below. It lives in one
+file
 (`packages/roles/src/reference-model-port.ts`, held to one file by
 `test/roles-boundary.test.mjs` › "reaches the model provider from exactly one
 file in the workspace" and › "performs the provider request in the adapter and

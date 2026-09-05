@@ -21,12 +21,25 @@ import { ownValue } from './own-value.js';
  *
  * The model proposes CONTENT — which hypotheses, which effect, which
  * discriminating test. Everything that is a CLAIM ABOUT PROVENANCE OR LIFECYCLE
- * is stamped here and is refused if the model supplies it: `createdBy`,
- * `producedBy`, `promptVersion`, `at`, and a test's `status`. A model that could
- * write `producedBy: 'rule'` could label its own output as rule-derived, which
- * is exactly the confound the evaluation exists to separate.
- * see roles-model-nodes.test.mjs › "refuses an assessment that claims a rule
- * produced it"
+ * is stamped here, and the model never decides one. There are two different
+ * mechanisms behind that, and an earlier version of this sentence claimed the
+ * stronger one for all of them:
+ *
+ *   - **REFUSED if the model supplies it** — `producedBy`, `promptVersion` and
+ *     `at`, on an assessment. A model that could write `producedBy: 'rule'`
+ *     could label its own output as rule-derived, which is exactly the confound
+ *     the evaluation exists to separate, so an attempt is reported rather than
+ *     absorbed.
+ *     see roles-model-nodes.test.mjs › "refuses an assessment that claims a rule
+ *     produced it"
+ *   - **STAMPED OVER, silently** — a hypothesis's `createdBy` and a
+ *     discriminating test's `status`. These are built from the model's `id` and
+ *     `statement` alone, so whatever the answer carried in those fields is never
+ *     read. The safe value wins either way, which is why this is a difference in
+ *     REPORTING rather than in what a model can achieve — but it is a real
+ *     difference, and the claim above used to hide it.
+ *     see roles-model-nodes.test.mjs › "produces hypotheses the domain schema
+ *     accepts and declares the call it made"
  *
  * ## Every value crosses the domain schemas
  *

@@ -342,6 +342,30 @@ test('refuses a control baseline naming a metric this lane does not compare', as
   );
 });
 
+test('refuses a control baseline naming a metric this lane withholds', async () => {
+  // The other half of the refusal, and the one that had no row: `code-reviewer`
+  // measured that deleting the withheld clause left the whole suite green,
+  // because the unknown-key row is caught by the spelling check alone. A
+  // withheld key is worse than a typo — the name is a real metric, so a reader
+  // of the baseline file has every reason to think it is being compared, and it
+  // can never reach the comparison.
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        laneOptions({
+          controlBaseline: {
+            unsupported_claim_rate: 0,
+            evidence_coverage: 1,
+          },
+        }),
+      ),
+    /withholds: evidence_coverage/,
+    'a withheld metric in the baseline must be refused by name, with the remedy that fits it',
+  );
+});
+
 test('reports model quality only when the control arm matches its declared baseline', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
 
