@@ -23,6 +23,26 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** The wire shape `JsonPlusSerializer` writes for a `DeltaSnapshot`. */
+/**
+ * Is this declared node a record the reviver turns into something else?
+ *
+ * `lc: 1` is a LangChain `Serializable`, `lc: 2` a constructor record (`Set`,
+ * `Map`, `RegExp`, `Error`, `Uint8Array`, `undefined`, `DeltaSnapshot`). Either
+ * way the loaded side is not the record — it is whatever was built from it — so
+ * the record's keys say nothing about that value's own properties, and two of
+ * them collide.
+ *
+ * Read as an OWN property. The declared tree comes from `JSON.parse` and is
+ * own-only, but its prototype is still `Object.prototype`, so a `[[Get]]` here
+ * would let a gadget supply `lc` for every node and steer this decision — which
+ * is the class of mistake this module exists to close.
+ */
+function isRevivedRecord(value: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(value, 'lc')) return false;
+  const lc = Object.getOwnPropertyDescriptor(value, 'lc')?.value;
+  return lc === 1 || lc === 2;
+}
+
 function isDeltaSnapshotRecord(value: unknown): value is { value: unknown } {
   return (
     isPlainObject(value) &&
@@ -77,8 +97,9 @@ function readOwnDataValue(
  * unconditional "make every loaded value match the bytes on disk" repairs them
  * too, so those sites stop firing and a caller who armed a read accessor gets a
  * silent success where they used to get a refusal. Measured: the wide version
- * turns five refusal rows red, and
- * `docs/decisions/control-ownership-boundary.md` forbids that outcome.
+ * turns FOUR refusal rows red — the four
+ * `docs/decisions/control-ownership-boundary.md` enumerates, which is where the
+ * count lives so there is one copy of it — and that record forbids the outcome.
  * see checkpoint-serde-own-values.test.mjs › "leaves a swallowed write for the
  * graph to refuse rather than repairing it"
  * see hitl-resume-contract.test.mjs › "refuses a resume whose restored control
@@ -175,9 +196,37 @@ function restoreDeclared(
   // of a __proto__ key, which the reviver re-parents on assignment", and ›
   // "revives Set, Map, Uint8Array, RegExp, Error and DeltaSnapshot unchanged"
   if (!isPlainObject(declared)) return;
-  if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) {
-    return;
-  }
+
+  // A record the reviver CONSUMES — `lc: 1` (a LangChain `Serializable`) or
+  // `lc: 2` (a constructor record) — built something on the loaded side whose
+  // own keys are its own business, and two of them collide with the record's:
+  // a revived message carries an own `type` of `"human"` where the record
+  // declares `"constructor"`. Walking in overwrote it and broke `instanceof`.
+  // Decided from the declared side's OWN properties, never through `[[Get]]`,
+  // because reading a decision off the prototype chain is the exact mistake
+  // this guard exists to undo.
+  // see checkpoint-serde-own-values.test.mjs › "hands a revived LangChain lc:1
+  // instance back exactly as the reviver built it" and › "revives Set, Map,
+  // Uint8Array, RegExp, Error and DeltaSnapshot unchanged"
+  if (isRevivedRecord(declared)) return;
+
+  // 🔴 The loaded side is rejected ONLY for being genuinely unwalkable.
+  //
+  // Three properties of it were tried as the gate and all three turned out to
+  // belong to the attacker: its prototype, its array-ness, and its `typeof`.
+  // A setter on a parent key hands back an Array — or a function — carrying the
+  // same data, and every earlier version skipped the whole subtree under it.
+  // `channel_values` is the reachable parent in a real checkpoint, and unlike
+  // `control` it is not a LangGraph channel name, so nothing else stops it.
+  //
+  // What is left is the one property the gadget cannot choose away: a primitive
+  // cannot carry a property, so there is nothing to repair on it. Everything
+  // else is walked, and `restoreSlot` decides each key.
+  // see checkpoint-serde-own-values.test.mjs › "keeps the own value when the
+  // gadget hands back an Array as the container"
+  if (loaded === null) return;
+  if (typeof loaded !== 'object' && typeof loaded !== 'function') return;
+
   for (const key of Object.keys(declared)) {
     restoreSlot(loaded, key, declared[key], budget, depth);
   }
@@ -275,6 +324,25 @@ function restoreDeclared(
  *    make it live. Found by `code-reviewer` at the AIC-93 gate.
  *    see checkpoint-serde-own-values.test.mjs › "states its limit: a declared
  *    object whose loaded slot is a primitive is left alone"
+ *
+ * 8. **A `Proxy` that lies through `getOwnPropertyDescriptor` defeats the
+ *    comparison.** `readOwnDataValue` asks for the descriptor; a proxy can
+ *    report the honest declared value there while `[[Get]]` returns the
+ *    attacker's, so nothing looks diverged and nothing is repaired.
+ *    ⚠ `packages/graph/src/investigation.ts` puts a lying `Proxy` outside its
+ *    threat model on the ground that a caller able to build one can supply the
+ *    value directly. That reason does NOT cover this route, where the proxy is
+ *    built by a pollution gadget inside a setter rather than by a caller — so
+ *    it is recorded here as a limit of this module rather than inherited as
+ *    covered. Found by `security-scanner` at the AIC-93 gate; identical before
+ *    this module existed, so it is a limit rather than a regression.
+ *
+ * ⚠ Limit 6's raw-`TypeError` edge widened with the walk. A loaded value
+ * carrying a NON-CONFIGURABLE own data property under a declared key now makes
+ * `Object.defineProperty` throw where the walk used to skip the value for its
+ * shape. That is fail-closed — the load throws, the resume is refused and the
+ * checkpoint on disk is untouched — but the error is a raw `TypeError` and not
+ * this module's own refusal type.
  *
  * The revived non-plain values the reviver builds — `Set`, `Map`, `Uint8Array`,
  * `RegExp`, `Error`, `DeltaSnapshot`, a LangChain `lc: 1` object — are handed

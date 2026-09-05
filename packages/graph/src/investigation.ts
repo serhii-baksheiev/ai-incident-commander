@@ -422,7 +422,9 @@ const OPTIONAL_CONTROL_FIELDS: ReadonlySet<string> = new Set(
  * which `createSqliteCheckpointer` in `packages/persistence` wires, and which
  * a caller passing this graph their own `BaseCheckpointSaver` therefore does
  * not get. Where it is wired the checkpoint bytes are put back, so the run is
- * IMMUNE rather than warned and nothing here reports the attempt (AIC-93).
+ * IMMUNE rather than warned and nothing here reports the attempt (AIC-93) —
+ * immune on the shapes that module covers, which it enumerates as numbered
+ * limits in its own header rather than leaving to this sentence.
  * see hitl-resume-contract.test.mjs › "keeps the run's own humanReview under
  * an inherited setter that writes an own property" and
  * checkpoint-serde-own-values.test.mjs › "states its limit: a checkpointer

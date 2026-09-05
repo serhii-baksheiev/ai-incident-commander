@@ -155,6 +155,32 @@ function ownDescriptor(target, key) {
   return Object.getOwnPropertyDescriptor(target, key);
 }
 
+test('hands a revived LangChain lc:1 instance back exactly as the reviver built it', async () => {
+  // `code-reviewer` and `security-scanner` both measured this independently: a
+  // revived Serializable has an own DATA property `type` = "human", and the
+  // `lc:1` record declares `"type":"constructor"`, so a walk that enters the
+  // instance sees a diverged own data property and overwrites it — `getType()`
+  // then answers "constructor" and `instanceof` fails.
+  //
+  // The walk therefore stops at a node the DECLARED side marks as a record the
+  // reviver consumes, read as an OWN property of the parsed bytes rather than
+  // through the prototype chain, which is the mistake this whole guard is about.
+  const { HumanMessage } = await import('@langchain/core/messages');
+  const original = new HumanMessage({ content: 'hi' });
+
+  const loaded = await roundTrip({ message: original });
+
+  assert.ok(
+    loaded.message instanceof HumanMessage,
+    'the revived instance must survive the walk',
+  );
+  assert.equal(
+    loaded.message.getType(),
+    'human',
+    "if this is 'constructor' the walk entered the instance and overwrote its own `type`",
+  );
+});
+
 test('keeps the own value when the gadget re-parents the target to escape the walk', async () => {
   const loaded = await loadUnder(armReparentingGadget, {
     [POLLUTED_FIELD]: DECLARED_VALUE,
@@ -226,6 +252,117 @@ test('repairs the siblings of a __proto__ key, which the reviver re-parents on a
   );
 });
 
+test('keeps the own value when the gadget hands back an Array as the container', async () => {
+  // The third bypass of the same class, found by `security-scanner` at the
+  // AIC-93 gate and measured end to end through a real `confirm` resume.
+  //
+  // The gate used to reject the loaded side when `Array.isArray(loaded)` or
+  // `typeof loaded !== 'object'`. Both are the GADGET'S to choose: a setter on
+  // a parent key hands back an Array — or a function — carrying the same data,
+  // and the whole subtree under it is skipped. In the real checkpoint the
+  // interceptable key is `channel_values`, which is not a LangGraph channel
+  // name and so does not hit the channel-map collision that accidentally stops
+  // the `control` key.
+  //
+  // The rule this row exists to hold: the loaded side is rejected ONLY for
+  // being genuinely unwalkable — a primitive, which cannot carry a property at
+  // all. Everything else is decided from the serialized form.
+  for (const [label, makeContainer] of [
+    ['an Array', () => []],
+    ['a function', () => Object.assign(function container() {}, {})],
+  ]) {
+    const loaded = await loadUnder(
+      (field) => {
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          get() {
+            return undefined;
+          },
+          set(incoming) {
+            const container = makeContainer();
+            for (const [key, value] of Object.entries(incoming ?? {})) {
+              container[key] = value;
+            }
+            Object.defineProperty(container.control, POLLUTED_FIELD, {
+              value: SUBSTITUTED_VALUE,
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            });
+            Object.defineProperty(this, field, {
+              value: container,
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            });
+          },
+        });
+      },
+      { channel_values: { control: { [POLLUTED_FIELD]: DECLARED_VALUE } } },
+      'channel_values',
+    );
+
+    assert.equal(
+      loaded.channel_values.control[POLLUTED_FIELD],
+      DECLARED_VALUE,
+      `${label}: a container the gadget chose must not take its subtree out of the repair`,
+    );
+  }
+});
+
+test('states its limit: a Proxy that lies through getOwnPropertyDescriptor is not repaired', async () => {
+  assert.match(
+    readFileSync(
+      new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
+      'utf8',
+    ),
+    /defeats the\s+\*\s+comparison/,
+    'the guard must state this limit in the file, per .claude/rules/invariants.md',
+  );
+
+  // The comparison asks for a descriptor. A proxy can report the honest value
+  // there and answer [[Get]] with the attacker's, so nothing looks diverged.
+  // Found by `security-scanner` at the AIC-93 gate; recorded rather than fixed,
+  // because the graph's own threat-model note does not cover a proxy a
+  // pollution gadget builds inside a setter.
+  const loaded = await loadUnder(
+    (field) => {
+      Object.defineProperty(Object.prototype, field, {
+        configurable: true,
+        get() {
+          return undefined;
+        },
+        set() {
+          const honest = { [POLLUTED_FIELD]: DECLARED_VALUE };
+          Object.defineProperty(this, field, {
+            value: new Proxy(
+              { [POLLUTED_FIELD]: SUBSTITUTED_VALUE },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  return key === POLLUTED_FIELD
+                    ? Object.getOwnPropertyDescriptor(honest, key)
+                    : Object.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            ),
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+    },
+    { wrapper: { [POLLUTED_FIELD]: DECLARED_VALUE } },
+    'wrapper',
+  );
+
+  assert.equal(
+    loaded.wrapper[POLLUTED_FIELD],
+    SUBSTITUTED_VALUE,
+    'the limit still holds: the descriptor matched, so nothing was repaired. If this is now the declared value the limit has closed — update the comment and this row',
+  );
+});
+
 test('states its limit: an own key the serialized form does not declare is never examined', async () => {
   // The walk iterates Object.keys(declared), so a key that is not in the bytes
   // has nothing to be repaired TO. Found by `code-reviewer` at the AIC-93 gate.
@@ -293,23 +430,46 @@ test('states its limit: a declared object whose loaded slot is a primitive is le
     'the guard must state this limit in the file, per .claude/rules/invariants.md',
   );
 
-  const [type, data] = await serde.dumpsTyped({ nested: { deeper: true } });
-  const text = new TextDecoder().decode(data);
-  const substituted = new TextEncoder().encode(
-    text.replace('{"deeper":true}', '"a primitive the load will not match"'),
-  );
-  assert.notEqual(
-    new TextDecoder().decode(substituted),
-    text,
-    'the fixture must actually substitute a primitive for the declared object',
+  // The shape the limit names, presented rather than described: the bytes
+  // declare `{"lc":2,"type":"undefined"}` — an OBJECT — and the reviver turns
+  // it into `undefined`, a primitive. An earlier version of this row
+  // substituted the primitive in the BYTES, which made both sides the same
+  // primitive and the walk never reached the shape at all; `prose-reviewer` and
+  // `code-reviewer` both measured that it stayed green when the limit was
+  // closed. This one arms the gadget on the declared key instead.
+  const FIELD = 'stopKind';
+  const loaded = await loadUnder(
+    (field) => {
+      Object.defineProperty(Object.prototype, field, {
+        configurable: true,
+        get() {
+          return undefined;
+        },
+        set() {
+          Object.defineProperty(this, field, {
+            value: 'budget-exhausted',
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        },
+      });
+    },
+    { [FIELD]: undefined },
+    FIELD,
   );
 
-  const loaded = await serde.loadsTyped(type, substituted);
+  const [, bytes] = await serde.dumpsTyped({ [FIELD]: undefined });
+  assert.match(
+    new TextDecoder().decode(bytes),
+    /"lc":2,"type":"undefined"/,
+    'the fixture must serialize as the undefined RECORD, or the declared side is not an object and this row proves nothing',
+  );
 
   assert.equal(
-    loaded.nested,
-    'a primitive the load will not match',
-    'the load carries what the bytes say here, so this row pins the walk rather than the load',
+    loaded[FIELD],
+    'budget-exhausted',
+    'the limit still holds: a declared object whose load left a primitive is skipped, so the substitution survives. If this is now undefined the limit has closed — update the comment and this row',
   );
 });
 
