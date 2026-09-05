@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
 
+import { MemorySaver } from '@langchain/langgraph-checkpoint';
+
 import {
   DESERIALIZATION_MAX_DEPTH,
   DESERIALIZATION_MAX_NODES,
@@ -357,5 +359,45 @@ test('states its limit: a polluted key inside a Map member is not repaired', asy
     loaded.get('member')[POLLUTED_FIELD],
     SUBSTITUTED_VALUE,
     'the limit still holds: if this is now the declared value the limit has closed — update the comment and this row',
+  );
+});
+
+test('states its limit: a checkpointer this module did not build keeps the unrepaired serde', async () => {
+  const source = readFileSync(
+    new URL('../packages/persistence/src/own-value-serde.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /loses this entirely/,
+    'the guard must state this limit in the file, per .claude/rules/invariants.md',
+  );
+
+  // `createInvestigationGraph` takes any `BaseCheckpointSaver`, and the repair
+  // travels with the checkpointer rather than with the graph. `MemorySaver` is
+  // a saver a caller could wire up directly, carrying the default serde.
+  const theirs = new MemorySaver().serde;
+  const [type, data] = await theirs.dumpsTyped({
+    [POLLUTED_FIELD]: DECLARED_VALUE,
+  });
+
+  assert.equal(POLLUTED_FIELD in {}, false);
+  let loaded;
+  try {
+    armOwnWritingGadget();
+    loaded = await theirs.loadsTyped(type, data);
+  } finally {
+    delete Object.prototype[POLLUTED_FIELD];
+  }
+
+  assert.equal(
+    loaded[POLLUTED_FIELD],
+    SUBSTITUTED_VALUE,
+    'the limit still holds: a serde this module did not wrap keeps the gadget\'s value',
+  );
+  assert.equal(
+    Object.hasOwn(loaded, POLLUTED_FIELD),
+    true,
+    'and it is genuinely own, which is why no ownership check downstream sees it',
   );
 });
