@@ -8,6 +8,7 @@ import {
   ConclusionReviewDecisionSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   IncidentStateControlSchema,
+  LogicalCountSchema,
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
@@ -332,41 +333,97 @@ for (const persisted of outdatedPersistedControls) {
  * refusal has to name the counter rather than the version, or a corrupt
  * counter would be indistinguishable from stale state.
  *
- * The table covers EVERY counter `assertLogicalBudgetCounters` checks, and
- * that exhaustiveness is the point rather than a convenience: it used to
- * cover three of the five, so neutralising the guard left `maxIterations` and
- * `llmCallBudget` unprotected with the suite green. Both budgets are here for
- * that reason. What holds the correspondence is a measurement, not this
- * sentence — with the guard neutralised, every one of the five names a red row
- * in this table.
+ * The table is DERIVED from `LOGICAL_BUDGET_COUNTERS`, the list the guard
+ * itself iterates, rather than written out beside it. A second hand-kept copy
+ * is what this repair is undoing: the table used to name three counters while
+ * the guard checked five, so the guard could have been neutralised on
+ * `maxIterations` and `llmCallBudget` with nothing going red. Deriving it means
+ * a counter added to the guard arrives here with its three rows, and the
+ * correspondence is a fact about the code rather than a promise in a comment.
  */
-const corruptPersistedCounters = [
-  {
-    field: 'maxIterations',
-    label: 'iteration budget',
-    namesTheCounter: /invalid iteration budget/,
-  },
-  {
-    field: 'llmCallBudget',
-    label: 'llm call budget',
-    namesTheCounter: /invalid llm call budget/,
-  },
-  {
-    field: 'iterationsUsed',
-    label: 'logical iteration counter',
-    namesTheCounter: /invalid logical iteration counter/,
-  },
-  {
-    field: 'llmCallsUsed',
-    label: 'llm call counter',
-    namesTheCounter: /invalid llm call counter/,
-  },
-  {
-    field: 'resumeCount',
-    label: 'resume counter',
-    namesTheCounter: /invalid resume counter/,
-  },
-];
+function requireLogicalBudgetCounters() {
+  const counters = graphPackage.LOGICAL_BUDGET_COUNTERS;
+  assert.equal(
+    Array.isArray(counters) && counters.length > 0,
+    true,
+    '@aic/graph must publish LOGICAL_BUDGET_COUNTERS as one exported list',
+  );
+  for (const entry of counters) {
+    assert.equal(
+      Array.isArray(entry) && entry.length === 2 &&
+        typeof entry[0] === 'string' && typeof entry[1] === 'string',
+      true,
+      'each LOGICAL_BUDGET_COUNTERS entry must be a [field, label] pair of strings',
+    );
+  }
+  return counters;
+}
+
+const corruptPersistedCounters = requireLogicalBudgetCounters().map(
+  ([field, label]) => ({
+    field,
+    label,
+    namesTheCounter: new RegExp(`invalid ${label}`),
+  }),
+);
+
+/**
+ * The two directions that keep the table honest, because deriving it closes
+ * only one of them.
+ *
+ * Deriving `corruptPersistedCounters` from `LOGICAL_BUDGET_COUNTERS` means a
+ * counter added to the guard cannot arrive without rows. It says nothing about
+ * a counter added to the DOMAIN and to neither guard — which is the drift that
+ * produced this repair, one layer along. So the second assertion partitions
+ * every field the control schema declares a logical count between the two
+ * guards, and names the two that belong to `assertChallengeCounters` rather
+ * than assuming them: a sixth logical-count field lands in neither list and
+ * goes red here.
+ *
+ * ⚠ The limit, stated because the name of this test overstates it otherwise:
+ * this compares DECLARED lists, not what the guards execute. That the guard
+ * really refuses on each field it lists is what the fifteen rows below prove,
+ * by corrupting the field and asserting the refusal names it.
+ */
+const CHALLENGE_GUARD_COUNTERS = ['reservedChallengeBudget', 'challengeRounds'];
+
+test('covers every counter the graph\'s logical budget guard checks, derived from the exported list rather than restated', () => {
+  const exported = requireLogicalBudgetCounters();
+
+  assert.deepEqual(
+    corruptPersistedCounters.map(({ field }) => field),
+    exported.map(([field]) => field),
+    'the resume table must be derived from the guard\'s own list, never restated beside it',
+  );
+
+  for (const [field, label] of exported) {
+    assert.equal(
+      IncidentStateControlSchema.shape[field],
+      LogicalCountSchema,
+      `${field} must be a control field the domain declares a logical count`,
+    );
+    assert.equal(
+      label.length > 0 && !label.includes('${'),
+      true,
+      `${field} must carry the literal word its refusal names it by`,
+    );
+  }
+});
+
+test('leaves no logical-count control field unguarded between the two graph guards', () => {
+  const logicalCountFields = Object.entries(IncidentStateControlSchema.shape)
+    .filter(([, schema]) => schema === LogicalCountSchema)
+    .map(([field]) => field);
+
+  assert.deepEqual(
+    [...logicalCountFields].sort(),
+    [
+      ...requireLogicalBudgetCounters().map(([field]) => field),
+      ...CHALLENGE_GUARD_COUNTERS,
+    ].sort(),
+    'every field the control schema declares a logical count must belong to assertLogicalBudgetCounters or assertChallengeCounters — a new one in neither is a counter nothing re-validates on the resume path',
+  );
+});
 
 const corruptCounterValues = [
   { label: 'fractional', slug: 'fractional', value: 0.5 },

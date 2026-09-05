@@ -156,6 +156,32 @@ export type GraphOwnedControlField =
   (typeof GRAPH_OWNED_CONTROL_FIELDS)[number];
 
 /**
+ * Every control field that must be a logical count, paired with the word the
+ * refusal names it by.
+ *
+ * Exported for one reason: the resume-path table that proves the guard has to
+ * be DERIVED from this list rather than kept beside it. Two hand-maintained
+ * lists of the same five fields is the shape `.claude/rules/invariants.md`
+ * ("One mechanism, one implementation") tells you to replace with a check, and
+ * this pair had already drifted — the table covered three while the guard
+ * checked five, which left two counters with no row anywhere and the suite
+ * green. A sixth entry added here with no row now goes red instead of going
+ * unnoticed.
+ * see hitl-resume-contract.test.mjs › "covers every counter the graph's logical
+ * budget guard checks, derived from the exported list rather than restated"
+ *
+ * The labels are the refusal's own words rather than the field names, because
+ * the resume rows assert on the message a caller actually sees.
+ */
+export const LOGICAL_BUDGET_COUNTERS = Object.freeze([
+  ['maxIterations', 'iteration budget'],
+  ['llmCallBudget', 'llm call budget'],
+  ['iterationsUsed', 'logical iteration counter'],
+  ['llmCallsUsed', 'llm call counter'],
+  ['resumeCount', 'resume counter'],
+] as const satisfies readonly (readonly [keyof IncidentStateControl, string])[]);
+
+/**
  * The control a lifecycle node may hand back — everything the graph does not
  * own, and nothing else.
  */
@@ -1128,25 +1154,25 @@ function isLogicalCount(value: unknown): value is number {
  *
  * The path where this is load-bearing is the RESUME path, and only that one: a
  * `kind: 'start'` state is parsed by `IncidentStateSchema` first, so
- * `LogicalCountSchema` refuses every one of these five before this function is
- * consulted. Every counter it checks is covered there — see
- * hitl-resume-contract.test.mjs › "refuses a current-version checkpoint
- * carrying a ${corruption.label} ${counter.label}, and names the counter",
- * whose table is exhaustive over the five below. The start-path rows prove the
- * schema instead, and say so: investigation-graph.test.mjs › "refuses
- * ${invalidBudgetCounter.label} at the input boundary, before a logical budget
- * can be spent".
+ * `LogicalCountSchema` refuses every one of these counters before this function
+ * is consulted. The start-path rows prove the schema instead, and say so — see
+ * investigation-graph.test.mjs › "refuses ${invalidBudgetCounter.label} at the
+ * input boundary, before a logical budget can be spent".
+ *
+ * The counters are `LOGICAL_BUDGET_COUNTERS`, exported rather than written out
+ * here, because the resume-path table that covers them has to be derived from
+ * the same list rather than maintained beside it. A hand-kept second copy is
+ * the one nobody is looking at (`.claude/rules/invariants.md`, "One mechanism,
+ * one implementation"), and this one had already drifted: the table covered
+ * three of these counters while the guard checked five, so the guard could have
+ * been neutralised on `maxIterations` and `llmCallBudget` with the suite green.
+ * see hitl-resume-contract.test.mjs › "covers every counter the graph's logical
+ * budget guard checks, derived from the exported list rather than restated"
  */
 function assertLogicalBudgetCounters(control: IncidentStateControl): void {
-  for (const [field, value] of [
-    ['iteration budget', control.maxIterations],
-    ['llm call budget', control.llmCallBudget],
-    ['logical iteration counter', control.iterationsUsed],
-    ['llm call counter', control.llmCallsUsed],
-    ['resume counter', control.resumeCount],
-  ] as const) {
-    if (!isLogicalCount(value)) {
-      throw new Error(`invalid ${field}`);
+  for (const [field, label] of LOGICAL_BUDGET_COUNTERS) {
+    if (!isLogicalCount(control[field])) {
+      throw new Error(`invalid ${label}`);
     }
   }
 }
