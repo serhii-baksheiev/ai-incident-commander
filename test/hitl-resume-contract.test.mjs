@@ -416,19 +416,19 @@ test('freezes the exported counter list at both levels, so an importer cannot di
   // `as const` is type-level only and `Object.freeze` is shallow, so the pairs
   // need their own freeze: rewriting one entry's field would stop that counter
   // being re-validated on the resume path while every refusal message stayed
-  // correct. Test files are ESM and therefore strict, so a refused write
-  // throws rather than failing silently.
-  assert.throws(() => {
-    counters[0] = ['iterationsUsed', 'logical iteration counter'];
-  }, TypeError);
-  assert.throws(() => {
-    counters[0][0] = 'iterationsUsed';
-  }, TypeError);
-  assert.throws(() => {
-    counters[0][1] = 'something else';
-  }, TypeError);
-
-  assert.equal(counters[0][0], 'maxIterations');
+  // correct.
+  //
+  // Asserted through `Object.isFrozen` rather than by attempting the writes.
+  // The write form was measured and rejected: on a SHALLOW freeze the first
+  // attempt SUCCEEDS, which leaves this module's shared list corrupted for
+  // every row after it — a failing test that reddens six of its neighbours
+  // reports the wrong defect. A test must not damage the state it shares.
+  assert.equal(Object.isFrozen(counters), true, 'the counter list must be frozen');
+  assert.deepEqual(
+    counters.filter((entry) => !Object.isFrozen(entry)),
+    [],
+    'every [field, label] pair must be frozen too: a shallow freeze leaves each pair writable, so an importer can disarm one counter while the refusal messages stay correct',
+  );
 });
 
 test('leaves no logical-count control field unguarded between the two graph guards', () => {
