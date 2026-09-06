@@ -1137,6 +1137,34 @@ test('measures a declared llm call count of zero on every run of the shipped arm
   }
 });
 
+test('counts no metric or resource container the run did not own', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  // The CONTAINERS are inherited, not the numbers inside them. The two rows
+  // above hand over owned containers and inherit only the value, so `ownNumber`
+  // refuses first and MASKS the container read — measured: reverting the
+  // container read alone left the whole suite green while a result owning
+  // nothing published a metric mean of 42 and an axis mean of 99, which is
+  // verbatim the fabrication this module's own comment cites as fixed.
+  //
+  // Four guards sit in one expression here. Mutating the expression is not
+  // mutating the guards: each needs the shape that reaches it first.
+  const result = Object.create({
+    metrics: { accuracy: { score: 42 } },
+    resources: { toolCallsUsed: 99 },
+  });
+  const experiment = { results: [result], stopKindDistribution: {} };
+  const [arm] = summarize({
+    arms: [{ policy: requireBudgetPolicy(), experiment }],
+  }).arms;
+
+  assert.deepEqual(
+    { ...arm.metrics, ...arm.resourceAxes },
+    {},
+    'a container reached through the prototype is not a container this run handed over: reading the numbers out of it own-safely proves nothing if the bag they came from was never the run\'s',
+  );
+});
+
 test('reports no row for a key whose every value was inherited', async () => {
   const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
 
