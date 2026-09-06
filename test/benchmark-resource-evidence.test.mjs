@@ -1052,8 +1052,8 @@ test('publishes its own behavior metric while Object.prototype carries an access
  * a run of it COST on the one axis that is supposed to count those calls.
  *
  * The corpus is the calibration partition. The hold-out partition is not run
- * here and no assertion reads a hold-out result: the hold-out protocol is not
- * frozen, so a number measured off it now would be a number spent.
+ * here and no assertion reads a hold-out result: a number measured off it now
+ * would be a number spent, and the policy that says so is in `README.md`.
  */
 const REPLAY_RUNS_PER_SCENARIO = 3;
 
