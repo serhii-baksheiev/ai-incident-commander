@@ -272,11 +272,19 @@ price to apply and no token to count, so any such figure would be invented. A
 zero LLM count is published as a real zero rather than converted into a zero
 cost.
 
-`llmCallBudget` is a versioned safety cap, not a calibrated one: no LLM
-execution path exists yet — nothing in `packages/` sets `declaredLlmCalls`, so
-`llmCallsUsed` stays `0` by construction rather than by estimate.
+`llmCallBudget` is a versioned safety cap, not a calibrated one. Two
+model-backed roles in `packages/roles` have set `declaredLlmCalls` since
+AIC-94, but they need a provider credential and are not in the replay-backed
+arm the benchmark and the regression suite run, so `llmCallsUsed` stays `0` on
+every benchmark run by construction of that arm rather than by estimate.
 see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
 declares an llm call"
+
+AIC-18 measured what would calibrate it and found nothing could: the edge that
+reads `llmCallBudget` is the `need-more-evidence` route, which no node outside
+the test tree returns. The per-budget calibration statements are published by
+`summarizeBudgetPolicyEvidence`.
+see budget-policy.test.mjs › "states in the report that llmCallBudget is not empirically calibrated, and why"
 
 `schemaVersion` is `3`: it moves whenever the strict control object gains a
 required field — `2` for the logical budget counters, `3` for `resumeCount`. The counters are required fields, so

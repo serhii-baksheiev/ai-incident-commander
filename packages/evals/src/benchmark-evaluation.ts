@@ -30,6 +30,11 @@ import {
   type EvidenceFingerprint,
   type IncidentScenario,
 } from './replay-scenarios.js';
+import {
+  BENCHMARK_BUDGET_POLICY,
+  parseBenchmarkBudgetPolicy,
+  type BenchmarkBudgetPolicy,
+} from './budget-policy.js';
 
 export const BENCHMARK_METRIC_KEYS = [
   'unsupported_claim_rate',
@@ -637,7 +642,10 @@ export async function runBenchmarkExperiment(
   };
 }
 
-function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
+function initialBenchmarkState(
+  input: BenchmarkExecutionInput,
+  budgetPolicy: BenchmarkBudgetPolicy,
+): IncidentState {
   if (input.metadata.statusRulesVersion !== STATUS_RULES_VERSION) {
     throw new Error('benchmark status-rules version does not match the graph');
   }
@@ -655,9 +663,12 @@ function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
       schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
       statusRulesVersion: STATUS_RULES_VERSION,
       phase: 'normalizing',
-      maxIterations: 4,
-      llmCallBudget: 8,
-      reservedChallengeBudget: 2,
+      // From the policy the experiment declared, not from three literals here:
+      // a budget nobody can vary is a budget nobody can measure, which is how
+      // these three came to be unexamined in the first place (AIC-18).
+      maxIterations: budgetPolicy.maxIterations,
+      llmCallBudget: budgetPolicy.llmCallBudget,
+      reservedChallengeBudget: budgetPolicy.reservedChallengeBudget,
       challengeRounds: 0,
       iterationsUsed: 0,
       llmCallsUsed: 0,
@@ -730,6 +741,16 @@ function hypothesisStatus(
 type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
+    /**
+     * What this experiment allows a run to spend. Defaults to the shipped
+     * `BENCHMARK_BUDGET_POLICY`.
+     *
+     * ⚠ Only the GRAPH runner takes this. `runBenchmarkExperiment` drives an
+     * opaque `investigate` callback and starts no graph, so a policy handed to
+     * it would reach no control block and could not be observed — an option
+     * that silently does nothing is worse than one that does not exist.
+     */
+    budgetPolicy?: BenchmarkBudgetPolicy;
     createNodes(input: BenchmarkExecutionInput): InvestigationNodes;
     recordEvaluation(payload: Readonly<{
       record: BenchmarkRecord;
@@ -740,6 +761,14 @@ type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
 export async function runGraphBenchmarkExperiment(
   options: GraphBenchmarkExperimentOptions,
 ): Promise<BenchmarkExperiment> {
+  // Parsed BEFORE anything runs: a malformed policy must not be discovered
+  // halfway through a corpus, with some runs already recorded under a version
+  // the experiment never executed.
+  // see budget-policy.test.mjs › "refuses a fractional budget instead of falling back to the shipped one"
+  const budgetPolicy = parseBenchmarkBudgetPolicy(
+    options.budgetPolicy ?? BENCHMARK_BUDGET_POLICY,
+  );
+
   // Keyed by runId rather than returned through `investigate`, so the evidence
   // travels a path the opaque callback contract cannot reach.
   const measuredByRunId = new Map<string, MeasuredBenchmarkResources>();
@@ -797,7 +826,7 @@ export async function runGraphBenchmarkExperiment(
       });
       const finalState = await graph.execute({
         kind: 'start',
-        state: initialBenchmarkState(input),
+        state: initialBenchmarkState(input, budgetPolicy),
       });
       measuredByRunId.set(input.runId, {
         // The line that matters is WHO ORIGINATED THE NUMBER, not which channel

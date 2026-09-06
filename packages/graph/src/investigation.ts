@@ -222,12 +222,16 @@ const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
  * counter it owns. A node cannot reach `control.llmCallsUsed` itself — see
  * `preserveGraphOwnedControl`.
  *
- * Nothing in this repository declares anything today, because no LLM execution
- * path exists — no `declaredLlmCalls` is set anywhere in `packages/`. That is
- * why `llmCallsUsed` stays 0 by construction rather than by estimate: an unused
- * channel reports nothing, where a synthesised count would be cost evidence
- * nobody measured. The boundary is here so a real provider, when one arrives,
- * reports through it instead of inventing its own.
+ * Two nodes declare through it since AIC-94 — `createModelGenerateHypotheses`
+ * and `createModelInterpretResidualEvidence` in `packages/roles`, each
+ * returning `declaredLlmCalls: 1`; `challenge_hypothesis` deliberately does
+ * not. But those are model-backed roles that need a provider credential, and
+ * the arm the regression suite and the benchmark run is the replay-backed one,
+ * which declares nothing. So `llmCallsUsed` is 0 on every benchmark run by
+ * construction of that arm rather than by estimate — and, until an earlier
+ * wording here went stale, for the different reason that no producer existed at
+ * all. An unused channel reports nothing, where a synthesised count would be
+ * cost evidence nobody measured.
  *
  * ⚠ A second limit, and it is not the same one: consumption is folded in AFTER
  * the node ran, so a single declaration larger than the remaining budget is
