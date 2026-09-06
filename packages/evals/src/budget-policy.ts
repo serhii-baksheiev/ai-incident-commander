@@ -366,8 +366,14 @@ export function summarizeBudgetPolicyEvidence({
   // number nobody checks, and a budget with no statement is a number published
   // with no word about where it came from. Both are refused here.
   //
-  // The correspondence row checks both directions; this makes the module refuse
-  // rather than leaving the row as the only thing that would notice.
+  // ⚠ What pins what, stated exactly, because a mutation showed the obvious
+  // reading is wrong: the correspondence row below catches the two lists having
+  // DIVERGED, and it is what would go red if a field lost its statement.
+  // Removing this derivation alone reddens nothing, because with the lists
+  // intact the literal and the derived record are equal — making them diverge
+  // means editing a module constant, which no test does. So this block is the
+  // module refusing rather than publishing, and the row is the thing that
+  // notices. Neither is redundant; only the row is pinned.
   // see budget-policy.test.mjs › "carries one calibration statement per declared budget field, and no other"
   const calibration = Object.fromEntries(
     BENCHMARK_BUDGET_FIELDS.map((field) => {

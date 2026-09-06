@@ -919,6 +919,26 @@ test('refuses a policy whose version exists only on the prototype', async () => 
   });
 });
 
+test('refuses a budget that exists only on the prototype, with the version owned', async () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  // The version is checked first and short-circuits, so a policy that owns
+  // nothing cannot tell whether the BUDGETS are read from own properties. This
+  // row owns everything except one budget, which is the shape a mutation showed
+  // the rows above could not see.
+  await withPollutedObjectPrototype('reservedChallengeBudget', 7, async () => {
+    assert.throws(
+      () => parse({
+        policyVersion: 'aic-18-owned-version-inherited-budget',
+        maxIterations: 4,
+        llmCallBudget: 8,
+      }),
+      /reservedChallengeBudget/,
+      'a budget the caller never declared must be refused by name, not taken from the prototype and published as the policy this run executed',
+    );
+  });
+});
+
 test('keeps a validated budget even when an inherited accessor tries to swallow it', async () => {
   const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
 
