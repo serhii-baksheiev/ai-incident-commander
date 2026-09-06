@@ -73,6 +73,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { argv, env, exit, stderr, stdout } from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -135,7 +136,7 @@ const baseMetadata = Object.freeze({
 });
 
 /** The deterministic arm: the replay-backed nodes, unchanged. */
-function scriptedNodes(record) {
+export function scriptedNodes(record) {
   return replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]]));
 }
 
@@ -145,7 +146,7 @@ function scriptedNodes(record) {
  * evidence both arms see is identical and the only difference is who reasoned
  * over it.
  */
-function modelNodes(record, port) {
+export function modelNodes(record, port) {
   return {
     ...scriptedNodes(record),
     generate_hypotheses: createModelGenerateHypotheses({ port }),
@@ -245,7 +246,14 @@ async function main() {
   if (outPath !== undefined) writeFileSync(outPath, serialized);
 }
 
-main().catch((error) => {
-  stderr.write(`${error.name}: ${error.message}\n`);
-  exit(1);
-});
+// The lane runs when this file IS the command, and not when it is imported.
+// Without the guard the two arms above cannot be compared as objects by anything
+// other than a reader of this file, because importing the module would run the
+// lane — and a comparison nobody can execute is an argument, not a test.
+// see live-model-lane.test.mjs › "runs its lane only when it is the process entry point"
+if (argv[1] !== undefined && pathToFileURL(argv[1]).href === import.meta.url) {
+  main().catch((error) => {
+    stderr.write(`${error.name}: ${error.message}\n`);
+    exit(1);
+  });
+}
