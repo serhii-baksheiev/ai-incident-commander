@@ -655,9 +655,18 @@ test('reads the credential value in readModelCredential and nowhere else in pack
  *     `Object.defineProperty`, and the two guards named above still refuse a
  *     credential carrying a control character after that attempt. No other
  *     shared value in the package is examined, and no other tamper shape is:
- *     writing to `RegExp.prototype.test` itself, or rebinding what the guard
- *     modules import, is outside all three rows — and freezing this constant
- *     stops neither.
+ *     writing to `RegExp.prototype.test` OR `RegExp.prototype.exec`, or
+ *     rebinding what the guard modules import, is outside all three rows — and
+ *     freezing this constant stops none of them.
+ *     ⚠ `exec` belongs in that list and an earlier version of it stopped at
+ *     `test`: `.test` delegates through `RegExpExec`, whose `Get(R, 'exec')`
+ *     lands on the prototype, so overwriting `exec` defeats both guards
+ *     identically. Measured by `security-scanner` at the AIC-94 gate. Same trust
+ *     boundary as `test` — an attacker who can write a global prototype can
+ *     replace `readModelCredential` outright — so no code closes it and the
+ *     list is what has to be right.
+ *     `Symbol.match` and `Symbol.replace` are NOT routes, also measured: `.test`
+ *     never consults them and this constant reaches no `String` method.
  *   - the constant's flags are `u` and nothing else. That is a PRECONDITION of
  *     the freeze, not a style preference: `.test` writes `lastIndex` when the
  *     regex is global or sticky, so a FROZEN class carrying `g` or `y` throws
