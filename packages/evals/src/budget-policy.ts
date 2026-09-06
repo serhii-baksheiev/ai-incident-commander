@@ -230,11 +230,34 @@ export interface BudgetPolicyEvidenceReport {
 const mean = (values: readonly number[]): number =>
   values.reduce((total, value) => total + value, 0) / values.length;
 
-const axisEntry = (key: string, values: readonly number[]): BudgetPolicyAxisEntry => ({
-  key,
-  mean: mean(values),
-  exampleCount: values.length,
-});
+/**
+ * An entry for a key the runs actually measured, or nothing.
+ *
+ * ⚠ A key with no owned value is **not reported**. Reporting it would publish
+ * `mean: NaN` — which serialises to `null` — against `exampleCount: 0`: a row
+ * that looks like a measurement and rests on nothing, which is the reading this
+ * whole report exists to refuse. "Contributes nothing to the mean" has to mean
+ * the row is absent, not that the row is empty.
+ * see budget-policy.test.mjs › "reports no row for a key whose every value was inherited"
+ */
+const axisEntry = (
+  key: string,
+  values: readonly number[],
+): BudgetPolicyAxisEntry | undefined =>
+  values.length === 0
+    ? undefined
+    : { key, mean: mean(values), exampleCount: values.length };
+
+/** Drop the keys that measured nothing, so no empty row is published. */
+const measuredEntries = (
+  entries: readonly (readonly [string, BudgetPolicyAxisEntry | undefined])[],
+): Readonly<Record<string, BudgetPolicyAxisEntry>> =>
+  Object.fromEntries(
+    entries.filter(
+      (entry): entry is readonly [string, BudgetPolicyAxisEntry] =>
+        entry[1] !== undefined,
+    ),
+  );
 
 /**
  * The calibration statements, which are the honest core of this report.
@@ -407,7 +430,7 @@ export function summarizeBudgetPolicyEvidence(
       // `exampleCount` still counted the run, so the count would say the mean
       // rests on evidence it does not have. Every key is uniform across runs on
       // today's corpus, so this is latent rather than active.
-      metrics: Object.fromEntries(
+      metrics: measuredEntries(
         metricKeys.map((key) => [
           key,
           axisEntry(
@@ -420,7 +443,7 @@ export function summarizeBudgetPolicyEvidence(
           ),
         ]),
       ),
-      resourceAxes: Object.fromEntries(
+      resourceAxes: measuredEntries(
         axisKeys.map((key) => [
           key,
           axisEntry(

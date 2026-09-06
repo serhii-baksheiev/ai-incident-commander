@@ -1042,6 +1042,76 @@ test('refuses an experiment whose measurements exist only on the prototype', asy
   });
 });
 
+test('refuses an experiment whose stop-kind distribution exists only on the prototype', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arm = { policy: requireBudgetPolicy(), experiment: { results: [] } };
+
+  // Its own row, because the results guard throws FIRST and would mask this
+  // one: a review round measured that deleting this refusal left the suite
+  // green, which is what an unpinned guard beside a pinned one looks like.
+  await withPollutedObjectPrototype('stopKindDistribution', { PWNED: 7 }, async () => {
+    assert.throws(
+      () => summarize({ arms: [arm] }),
+      /stopKindDistribution/,
+      'a distribution read off the prototype describes runs that did not happen, and publishing it beside a real run count is the fabrication this report refuses',
+    );
+  });
+});
+
+test('counts no metric score the run did not own', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  // The metric OBJECT is owned; only its score is inherited. That separates the
+  // own-read on the score from the own-read on its container, which the row
+  // above cannot do.
+  const experiment = {
+    results: [{ metrics: { accuracy: Object.create({ score: 42 }) }, resources: {} }],
+    stopKindDistribution: {},
+  };
+  const report = summarize({ arms: [{ policy: requireBudgetPolicy(), experiment }] });
+
+  assert.deepEqual(
+    report.arms[0].metrics,
+    {},
+    'a score reached through the prototype is not a score this run measured: it must contribute nothing AND leave no row behind, or the report carries a key whose mean rests on no evidence',
+  );
+});
+
+test('counts no resource axis the run did not own', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  const experiment = {
+    results: [{ metrics: {}, resources: Object.create({ toolCallsUsed: 42 }) }],
+    stopKindDistribution: {},
+  };
+  const report = summarize({ arms: [{ policy: requireBudgetPolicy(), experiment }] });
+
+  assert.deepEqual(
+    report.arms[0].resourceAxes,
+    {},
+    'an axis reached through the prototype is not spend this run incurred',
+  );
+});
+
+test('reports no row for a key whose every value was inherited', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  const experiment = {
+    results: [{ metrics: { accuracy: Object.create({ score: 1 }) }, resources: {} }],
+    stopKindDistribution: {},
+  };
+  const [arm] = summarize({ arms: [{ policy: requireBudgetPolicy(), experiment }] }).arms;
+
+  for (const row of Object.values(arm.metrics)) {
+    assert.equal(
+      Number.isFinite(row.mean),
+      true,
+      'a published row must carry a finite mean: NaN serialises to null and reads as a measurement that came back empty, rather than as no measurement at all',
+    );
+    assert.equal(row.exampleCount > 0, true, 'a row with no runs behind it is not evidence');
+  }
+});
+
 test('refuses a report whose arms exist only on the prototype', async () => {
   const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
   const arm = {
