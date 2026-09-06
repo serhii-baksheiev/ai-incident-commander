@@ -15,7 +15,13 @@
  * Everything else about the two arms is the same object graph, which is what
  * makes the comparison mean anything: if the control arm's numbers move against
  * their declared baseline, the change is in the HARNESS and the model arm's
- * numbers are withheld.
+ * numbers are marked UNREPORTABLE.
+ * ⚠ Marked, not withheld — `arms.model.metrics` still carries every model mean
+ * on that verdict and only `reportable` flips; `--publish` is what refuses on
+ * it. A consumer reading `metrics` without checking `reportable` gets numbers
+ * an earlier wording here said were withheld. (Distinct from
+ * `LIVE_MODEL_LANE_WITHHELD_METRICS`, which really does withhold a metric —
+ * that mechanism is unrelated to this verdict.)
  *
  * 🔴 **With no provider credential this command exits non-zero and touches
  * nothing** — no dataset, no project, no run, no model call. That refusal is the
@@ -181,17 +187,19 @@ async function main() {
       });
     },
     async runModelArm(plan) {
-      // The credential is read HERE, at the executable edge, and never by
-      // anything under `packages/`. `resolveModelConfig` above decided that one
-      // exists; this is the only place its value is touched.
+      // The credential's VALUE is read through `readModelCredential`, the same
+      // function `resolveModelConfig` uses for its availability decision — not a
+      // second `env[...]` of this file's own. The two diverged before: the
+      // config validated a trimmed value while this line sent the raw one, so a
+      // credential could be judged usable in one shape and transmitted in
+      // another.
       //
-      // 🔴 Read through `readModelCredential`, the SAME function the
-      // availability decision used — not a second `env[...]` of its own. The
-      // two diverged before: the config validated a trimmed value while this
-      // line sent the raw one, so a credential could be judged usable in one
-      // shape and transmitted in another. Corrected at the AIC-94 gate.
-      // see live-model-lane.test.mjs › "never hands the transport a credential
-      // the configuration did not validate"
+      // ⚠ That reader lives in `packages/roles`, so "the value is never touched
+      // under `packages/`" — which an earlier version of this comment said — is
+      // not true and was not true before either. What IS true is narrower and is
+      // the property worth having: exactly one function reads it.
+      // see roles-boundary.test.mjs › "reads the credential value in
+      // readModelCredential and nowhere else in packages or scripts"
       const apiKey = readModelCredential(env);
       const port = createReferenceModelPort({
         apiKey,

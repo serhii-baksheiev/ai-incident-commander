@@ -179,9 +179,16 @@ export interface BenchmarkResourceEvidence {
    *
    * 🔴 NOTHING PRODUCES THEM YET. They are declared and validated — a present
    * value must be a count, and an absent one stays absent — but no code path
-   * assigns either. The only producer of `MeasuredBenchmarkResources` sets the
-   * six required axes and neither of these, so a fully credentialed live run
-   * publishes no token count on any record. Do not read the declaration as a
+   * assigns either. `MeasuredBenchmarkResources` is an `Omit` of this type, and
+   * its only producer sets the FIVE axes that omit leaves it —
+   * `logicalIterationsUsed`, `declaredLlmCallsUsed`, `toolCallsUsed`,
+   * `retryCount`, `resumeCount` — and neither of these. `wallClockDurationMs`
+   * is the runner's, not the producer's. So a fully credentialed live run
+   * publishes no token count on any record.
+   * ⚠ That is a statement about the tree as it stands, re-measured at the
+   * AIC-94 gate after an earlier version of this paragraph said "six". It is
+   * not pinned by a row, and a producer added tomorrow will silently falsify
+   * it — read it as an observation with a date on it, not as a guarantee. Do not read the declaration as a
    * measurement: that conflation is the exact failure this item exists to
    * prevent, and an earlier version of this comment described a data flow from
    * the usage ledger that does not exist. `code-reviewer` and `prose-reviewer`

@@ -5,7 +5,7 @@ import {
   REFERENCE_MODEL_ID,
   REFERENCE_MODEL_PROVIDER,
 } from './reference-model-port.js';
-import { ownTrimmedString } from './own-value.js';
+import { CREDENTIAL_FORBIDDEN_CHARACTERS, ownTrimmedString } from './own-value.js';
 
 /**
  * Explicit configuration for ONE reference provider and model, resolved from an
@@ -30,19 +30,9 @@ export type ModelConfig =
     }>;
 
 /**
- * Decide whether the live model lane can run, and say what is missing when it
- * cannot.
- *
- * An exported-but-empty variable is read as ABSENT rather than as configured: a
- * blank key produces a 401 at the provider, which reads downstream like a model
- * failure instead of a configuration one.
- * see roles-port-contract.test.mjs › "treats an empty or whitespace credential
- * as absent rather than as configured"
- */
-/**
  * The credential, normalised, or `undefined` when there is not a usable one.
  *
- * 🔴 One reader, used by BOTH the availability decision above and the caller
+ * 🔴 One reader, used by BOTH the availability decision below and the caller
  * that actually sends the value, so the string that was validated is the string
  * that is sent. They diverged before: `resolveModelConfig` validated a TRIMMED
  * value while `scripts/eval-live-model.mjs` passed the raw environment read, so
@@ -50,8 +40,16 @@ export type ModelConfig =
  *
  * A value carrying a control character is refused here rather than trimmed into
  * shape, because trimming cannot reach one in the middle — and the middle is
- * where it leaks: `Headers.append` rejects it with a `TypeError` that quotes the
- * whole header value. Found by `security-scanner` at the AIC-94 gate.
+ * where the leak is. Measured on this repository's Node, mid-value: `NUL`, `LF`
+ * and `CR` make `Headers.append` throw a `TypeError` that QUOTES THE WHOLE
+ * HEADER VALUE. Those three are the whole leaking set — `TAB`, `SOH` and `DEL`
+ * are accepted and sent.
+ * The class refused here is the wider `C0` range plus `DEL`, deliberately: it is
+ * a superset of what leaks, no real credential carries any of them, and a
+ * refusal is cheaper than a rule that has to stay exactly aligned with a
+ * dependency's validator. An earlier version of this comment said the whole
+ * class leaked, which is not what was measured.
+ * Found by `security-scanner` at the AIC-94 gate.
  * see roles-port-contract.test.mjs › "treats a credential carrying a control
  * character as absent rather than as configured"
  * see live-model-lane.test.mjs › "never hands the transport a credential the
@@ -65,9 +63,19 @@ export function readModelCredential(
 ): string | undefined {
   const apiKey = ownTrimmedString(env, MODEL_API_KEY_VARIABLE);
   if (apiKey === undefined) return undefined;
-  return /[\u0000-\u001F\u007F]/u.test(apiKey) ? undefined : apiKey;
+  return CREDENTIAL_FORBIDDEN_CHARACTERS.test(apiKey) ? undefined : apiKey;
 }
 
+/**
+ * Decide whether the live model lane can run, and say what is missing when it
+ * cannot.
+ *
+ * An exported-but-empty variable is read as ABSENT rather than as configured: a
+ * blank key produces a 401 at the provider, which reads downstream like a model
+ * failure instead of a configuration one.
+ * see roles-port-contract.test.mjs › "treats an empty or whitespace credential
+ * as absent rather than as configured"
+ */
 export function resolveModelConfig(
   env: Readonly<Record<string, string | undefined>>,
 ): ModelConfig {

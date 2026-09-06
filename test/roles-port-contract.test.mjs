@@ -43,9 +43,16 @@ function fakeApiKey() {
  * The control characters a credential must never carry into a header value.
  *
  * `\n` and `\r` are the two that arrive by accident — a key copied out of a
- * wrapped terminal, or `$(cat key.txt)` on a file with a blank second line — and
- * the class is checked whole rather than those two, because the cost of a false
- * refusal here is a key nobody could have used anyway.
+ * wrapped terminal, or `$(cat key.txt)` on a file with a blank second line.
+ *
+ * ⚠ Only `NUL`, `LF` and `CR` actually leak: measured mid-value, those three
+ * make `Headers.append` quote the whole header value, while `TAB` and `DEL` are
+ * accepted and sent. The guard refuses the wider class anyway, and the reason is
+ * NOT "a key nobody could have used" — a `TAB` is a legal header value, so
+ * refusing it IS a false refusal. It is accepted because no real credential
+ * carries one, and because a guard pinned to a dependency's exact validator has
+ * to be re-measured every time that dependency moves. Stating the cost honestly
+ * rather than denying it, after an earlier version of this comment denied it.
  */
 const CONTROL_CHARACTERS = ['\n', '\r', '\t', '\u0000'];
 

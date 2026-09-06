@@ -858,8 +858,12 @@ all six lines is how a session reports a violation that is not one:
 
 What no rule covers is the direction of lines 5 and 6, with one exception the
 table above already states: nothing refuses an edge OUT of `roles` and `evals`,
-and nothing refuses an edge INTO them except from `domain` and `graph`, which
-the second rule does refuse. Everything else there is the workspace manifests'
+and nothing refuses an edge INTO `evals` at all. The one exception is an edge
+into **`roles`** from `domain` or `graph`, which the second rule does refuse —
+its `to` names `packages/roles` and the provider SDKs, and `packages/evals`
+appears in no rule's `to` path. Measured at the AIC-94 gate, both directions: a
+`packages/graph` module importing `@aic/evals` passes `npm run lint:graph` with
+the edge resolved and valid, while the same probe importing `@aic/roles` errors. Everything else there is the workspace manifests'
 business and is convention.
 
 An earlier version of this paragraph said no rule covered either direction. It

@@ -49,6 +49,22 @@ export function ownValue(target: unknown, key: string): unknown {
 }
 
 /** The same read, narrowed to a non-empty string. */
+/**
+ * The characters a credential must not carry, as one constant.
+ *
+ * 🔴 Not two literals. `model-config.ts` and `reference-model-port.ts` both
+ * refuse on this class, and a class spelled twice is the drift shape
+ * `.claude/rules/invariants.md` names under "one mechanism, one implementation":
+ * the copy nobody is looking at is the one that goes stale.
+ *
+ * The class is `C0` plus `DEL`. It is deliberately WIDER than what leaks —
+ * measured, only `NUL`, `LF` and `CR` make `Headers.append` quote the value
+ * back — because no real credential carries any of them and a guard pinned to a
+ * dependency's exact validator has to be re-measured whenever that dependency
+ * moves.
+ */
+export const CREDENTIAL_FORBIDDEN_CHARACTERS = /[\u0000-\u001F\u007F]/u;
+
 export function ownTrimmedString(
   target: unknown,
   key: string,

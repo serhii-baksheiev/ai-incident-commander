@@ -1,6 +1,6 @@
 import { ModelCompletionError } from './model-errors.js';
 import type { ModelUsage, ModelUsageLedger } from './model-usage-ledger.js';
-import { ownValue } from './own-value.js';
+import { CREDENTIAL_FORBIDDEN_CHARACTERS, ownValue } from './own-value.js';
 
 /**
  * The ONE reference provider, and the only file in `packages/` that knows its
@@ -154,16 +154,19 @@ export function createReferenceModelPort({
   // A control character inside the value — a key copied from a wrapped terminal,
   // or `export ANTHROPIC_API_KEY="$(cat key.txt)"` on a two-line file, which
   // strips only the TRAILING newline — survives `trim()`. It then reaches
-  // `Headers.append`, whose `TypeError` QUOTES THE OFFENDING HEADER VALUE, and
+  // `Headers.append`, and for `NUL`, `LF` and `CR` — measured, and the whole
+  // leaking set — the `TypeError` QUOTES THE OFFENDING HEADER VALUE, and
   // `scripts/eval-live-model.mjs` prints `name: message` to stderr. That command
-  // is written to run in CI, so the destination is a retained job log.
+  // is AUTHORED to be run in CI, where the destination would be a retained job
+  // log. No workflow in this repository invokes it today — checked, because the
+  // difference sizes the exposure this guard is justified by.
   //
   // Refusing here means this module's OWN error fires instead, and that one
   // carries no value by construction. Found by `security-scanner` at the AIC-94
   // gate and reproduced independently.
   // see roles-port-contract.test.mjs › "refuses a credential carrying a control
   // character instead of letting the transport quote it back"
-  if (apiKey.trim().length === 0 || /[\u0000-\u001F\u007F]/u.test(apiKey)) {
+  if (apiKey.trim().length === 0 || CREDENTIAL_FORBIDDEN_CHARACTERS.test(apiKey)) {
     throw new ModelCompletionError('the reference model port needs a credential');
   }
   const transport: FetchImpl =

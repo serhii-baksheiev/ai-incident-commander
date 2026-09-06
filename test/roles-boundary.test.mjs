@@ -267,10 +267,29 @@ test('declares the model-provider boundary rule for graph and domain', () => {
  * descriptor owns `get`/`set` and no `value`, so reading `descriptor.value` off
  * one walks the prototype chain — the defect every copy exists to prevent.
  *
- * ⚠ Outside the scope, and said here rather than discovered later: an inline
- * `Object.getOwnPropertyDescriptor(x, k)?.value` binds nothing and is not
- * collected. `isRevivedRecord` in `packages/persistence/src/own-value-serde.ts`
- * is written that way today.
+ * ⚠ Outside the scope, and said here rather than discovered later. Three
+ * spellings bind nothing this scan recognises and are NOT collected:
+ *   - an inline `Object.getOwnPropertyDescriptor(x, k)?.value`;
+ *   - destructuring, `const { value } = Object.getOwnPropertyDescriptor(...)`;
+ *   - declare-then-assign, `let d; d = Object.getOwnPropertyDescriptor(...)`.
+ * The third is inside the "binds a descriptor to a name" wording above, so read
+ * that wording as "binds it in a variable declaration with a call initializer",
+ * which is what the scan does. Measured at the AIC-94 gate by planting all three
+ * as unguarded reads and watching this row stay green.
+ *
+ * `isRevivedRecord` in `packages/persistence/src/own-value-serde.ts` is the
+ * first form. It is SAFE, and the reason matters because the obvious one is
+ * wrong: not "a polluted value could not be 1 or 2" — the attacker picks the
+ * polluted value — but that `Object.hasOwn(value, 'lc')` runs first AND the
+ * declared tree comes from `JSON.parse`, which produces own DATA properties
+ * only, so the accessor descriptor that would make `descriptor.value` fall
+ * through cannot arise on that side. `own-value-serde.ts` documents that
+ * provenance itself. Rationale corrected by `code-reviewer` at the AIC-94 gate,
+ * which measured the first version of it false.
+ *
+ * ⚠ The scan also OVER-reaches once, in the safe direction: a read whose
+ * `Object.hasOwn` check is delegated to a type-guard helper is reported as
+ * unguarded. That is a false refusal, never a false pass.
  *
  * The inventory is computed rather than listed for the reason
  * `test/observability-own-value-audit.test.mjs` gives at length: a hand-written
@@ -439,5 +458,175 @@ test('leaves the model error types undistinguished by any caller in packages or 
     branching,
     [],
     'a caller now tells the model error types apart, which the header of model-errors.ts says nothing does: update that header — the types stopped being only an affordance',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* the credential has one reader, and the scan says exactly which spellings     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `packages/roles/src/model-config.ts` claims in its own header that
+ * `readModelCredential` is "one reader, used by BOTH the availability decision
+ * and the caller that actually sends the value", and
+ * `scripts/eval-live-model.mjs` repeats the claim over the line that calls it.
+ * Nothing pinned it. Measured at the AIC-94 gate: reverting that line to
+ * `const apiKey = env[MODEL_API_KEY_VARIABLE]` left the whole suite green,
+ * because the row it cited — live-model-lane.test.mjs › "never hands the
+ * transport a credential the configuration did not validate" — is an
+ * end-to-end leak row that the PORT's own control-character guard already
+ * satisfies. That row pins the conjunction of two guards; this one pins the
+ * single-reader property on its own, so removing either guard is visible.
+ *
+ * ⚠ What this scan matches, exactly — a scanner sees the spellings it matches
+ * and nothing else, so the list is the claim:
+ *   1. an element access keyed by the constant or the literal name —
+ *      `x[MODEL_API_KEY_VARIABLE]`, `x['ANTHROPIC_API_KEY']`;
+ *   2. a property access by that name — `x.ANTHROPIC_API_KEY`;
+ *   3. a destructure of that name — `const { ANTHROPIC_API_KEY } = x`;
+ *   4. a call whose SECOND argument is the constant or the literal name — the
+ *      `(object, key)` helper shape `readModelCredential` itself is written in,
+ *      `ownTrimmedString(env, MODEL_API_KEY_VARIABLE)`.
+ *
+ * ⚠ What it does NOT see, and therefore does not claim:
+ *   - a key assembled at runtime (`env['ANTHROPIC_' + 'API_KEY']`) or held in a
+ *     variable or parameter. That last one is how `ownValue` is written, which
+ *     is why the trail stops at the call site in form 4 rather than following
+ *     it into the helper — and it means an indirection through a second helper
+ *     of one's own would pass;
+ *   - anything outside `packages/**\/*.ts` and `scripts/*.mjs`: tests, `apps/`,
+ *     configuration and shell are all out of scope;
+ *   - what a caller DOES with the value once `readModelCredential` returns it.
+ *     That is the other row's subject, not this one's.
+ *
+ * Comments are not matched because this reads the AST rather than the text,
+ * which is the same "only a read outside a comment counts" convention the
+ * process-environment row above states — both files above DISCUSS the variable
+ * in prose, and neither discussion is a read.
+ */
+const CREDENTIAL_VARIABLE_NAME = 'ANTHROPIC_API_KEY';
+const CREDENTIAL_VARIABLE_CONSTANT = 'MODEL_API_KEY_VARIABLE';
+const CREDENTIAL_READER = {
+  file: 'packages/roles/src/model-config.ts',
+  holder: 'readModelCredential',
+};
+
+function namesTheCredentialKey(node) {
+  return (
+    (ts.isIdentifier(node) && node.text === CREDENTIAL_VARIABLE_CONSTANT) ||
+    (ts.isStringLiteralLike(node) && node.text === CREDENTIAL_VARIABLE_NAME)
+  );
+}
+
+/**
+ * The key a destructuring element reads, which is spelled differently from a
+ * key in expression position: `const { ANTHROPIC_API_KEY: k } = env` names the
+ * key with a bare identifier that is NOT a variable reference, while
+ * `const { [MODEL_API_KEY_VARIABLE]: k } = env` computes it and IS one. Reading
+ * both through `namesTheCredentialKey` gets the first case backwards, which is
+ * how the first draft of this scanner missed the plainest destructure there is.
+ */
+function bindsTheCredentialKey(node) {
+  const key = node.propertyName;
+  if (key === undefined) {
+    return ts.isIdentifier(node.name) && node.name.text === CREDENTIAL_VARIABLE_NAME;
+  }
+  if (ts.isComputedPropertyName(key)) return namesTheCredentialKey(key.expression);
+  return (
+    (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) &&
+    key.text === CREDENTIAL_VARIABLE_NAME
+  );
+}
+
+function credentialValueReads() {
+  const scanned = [
+    ...workspaceSources,
+    ...readdirSync(resolve(projectRoot, 'scripts'))
+      .filter((entry) => entry.endsWith('.mjs'))
+      .map((entry) => resolve(projectRoot, 'scripts', entry)),
+  ];
+
+  const reads = [];
+  for (const path of scanned) {
+    const text = readFileSync(path, 'utf8');
+    if (
+      !text.includes(CREDENTIAL_VARIABLE_NAME) &&
+      !text.includes(CREDENTIAL_VARIABLE_CONSTANT)
+    ) {
+      continue;
+    }
+    const file = ts.createSourceFile(
+      path,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
+    );
+
+    eachNode(file, (node) => {
+      let spelling;
+      if (
+        ts.isElementAccessExpression(node) &&
+        namesTheCredentialKey(node.argumentExpression)
+      ) {
+        spelling = 'element access';
+      } else if (
+        ts.isPropertyAccessExpression(node) &&
+        node.name.text === CREDENTIAL_VARIABLE_NAME
+      ) {
+        spelling = 'property access';
+      } else if (ts.isBindingElement(node) && bindsTheCredentialKey(node)) {
+        spelling = 'destructure';
+      } else if (
+        ts.isCallExpression(node) &&
+        node.arguments.length === 2 &&
+        namesTheCredentialKey(node.arguments[1])
+      ) {
+        spelling = 'keyed helper call';
+      } else {
+        return;
+      }
+
+      const holder = enclosingFunction(node);
+      const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
+      reads.push({
+        file: path.slice(projectRoot.length + 1),
+        holder: holder === undefined ? '<module scope>' : functionLabel(holder),
+        where: `${path.slice(projectRoot.length + 1)}:${line + 1} ${
+          holder === undefined ? '<module scope>' : functionLabel(holder)
+        } (${spelling})`,
+      });
+    });
+  }
+  return reads;
+}
+
+test('reads the credential value in readModelCredential and nowhere else in packages or scripts', () => {
+  const reads = credentialValueReads();
+
+  assert.ok(
+    reads.length > 0,
+    `the scan found no read of ${CREDENTIAL_VARIABLE_NAME} anywhere in packages or scripts: an audit that finds nothing passes everything, so this reads as a broken scanner — a renamed constant, a moved module, or a spelling this row does not match — rather than as a clean repository`,
+  );
+
+  assert.ok(
+    reads.some(
+      ({ file, holder }) =>
+        file === CREDENTIAL_READER.file && holder === CREDENTIAL_READER.holder,
+    ),
+    `the scan did not find the read inside ${CREDENTIAL_READER.file} › ${CREDENTIAL_READER.holder}, which is the one reader this row exists to keep alone: either that function stopped reading the credential or the scan stopped seeing it, and both make every other assertion here vacuous. What it did find was: ${reads.map(({ where }) => where).join(', ') || '(nothing)'}`,
+  );
+
+  const offenders = reads
+    .filter(
+      ({ file, holder }) =>
+        !(file === CREDENTIAL_READER.file && holder === CREDENTIAL_READER.holder),
+    )
+    .map(({ where }) => where);
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `each of these reads the value of ${CREDENTIAL_VARIABLE_NAME} outside ${CREDENTIAL_READER.holder}, so the string a caller sends is no longer provably the string ${CREDENTIAL_READER.file} validated: the two diverged before — the configuration validated a trimmed value while the caller sent the raw one — and a second reader is how they diverge again. Read through readModelCredential instead. The whole scanned inventory was: ${reads.map(({ where }) => where).join(', ')}`,
   );
 });

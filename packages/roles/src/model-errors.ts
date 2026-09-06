@@ -6,8 +6,11 @@
  * problem, a spent budget is a cap this lane chose, and a provider refusal is
  * neither.
  *
- * ⚠ No caller distinguishes them yet. There is no `instanceof` against any of
- * these types outside `dist/`, and the one `catch` on the path —
+ * ⚠ No caller in `packages/` or `scripts/` distinguishes them yet — that is the
+ * exact scope the row below measures, and this sentence quotes it rather than
+ * rounding it up. TESTS do use `instanceof` against these types, deliberately,
+ * which is what pins them as distinct. What is absent is a PRODUCTION branch:
+ * the one `catch` on the path —
  * `scripts/eval-live-model.mjs` — prints `name: message` and exits 1 the same
  * way for all four. An earlier version of this comment said the lane "branches
  * on them"; it does not, and `code-reviewer` and `prose-reviewer` both measured
@@ -22,6 +25,17 @@
  * place a key can be logged.
  * see roles-port-contract.test.mjs › "names the missing variable in the error the
  * lane entry throws"
+ *
+ * ⚠ It does not distinguish ABSENT from PRESENT-BUT-UNUSABLE, and that costs an
+ * operator a bad diagnosis: someone whose key picked up a control character is
+ * told to export a variable they already exported. The behaviour is deliberate
+ * only in the sense that `resolveModelConfig` collapses both to `available:
+ * false` — which the row below pins — not in the sense that it is the right
+ * answer. Naming the reason without the value would keep the no-value property
+ * and fix the diagnosis; that is a change to `ModelConfig`'s shape and is not
+ * taken here.
+ * see roles-port-contract.test.mjs › "treats a credential carrying a control
+ * character as absent rather than as configured"
  */
 export class MissingModelCredentialError extends Error {
   readonly variable: string;
