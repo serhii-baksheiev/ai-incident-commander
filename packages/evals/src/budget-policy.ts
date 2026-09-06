@@ -278,7 +278,7 @@ const CALIBRATION: Readonly<
   llmCallBudget: Object.freeze({
     empiricallyCalibrated: false,
     reason:
-      'a versioned safety cap. It shares the unreached need-more-evidence edge with maxIterations, and no run on this corpus declares an llm call, so declaredLlmCallsUsed is 0 on every one (see budget-policy.test.mjs > \'measures a declared llm call count of zero on every run of the shipped arm\'): nothing measured this value and no benchmark evidence can, until a model-backed arm both declares calls and reaches that edge',
+      'a versioned safety cap. It shares the unreached need-more-evidence edge with maxIterations, and no run on this corpus declares an llm call, so declaredLlmCallsUsed is 0 on every one (see budget-policy.test.mjs \u203a "measures a declared llm call count of zero on every run of the shipped arm"): nothing measured this value and no benchmark evidence can, until a model-backed arm both declares calls and reaches that edge',
   }),
   reservedChallengeBudget: Object.freeze({
     empiricallyCalibrated: false,
@@ -372,9 +372,13 @@ export function summarizeBudgetPolicyEvidence(
         `budget policy arm ${parsed.policyVersion} must own a results array: an inherited one is a measurement of runs the caller never handed over`,
       );
     }
-    if (!ownStopKinds.present) {
+    if (
+      !ownStopKinds.present ||
+      ownStopKinds.value === null ||
+      typeof ownStopKinds.value !== 'object'
+    ) {
       throw new Error(
-        `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution: a distribution read off the prototype describes runs that did not happen`,
+        `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution object: a distribution read off the prototype describes runs that did not happen, and an owned non-object is republished verbatim under a field declared as a record of counts`,
       );
     }
     const results = ownResults.value as readonly BudgetPolicyArmResult[];

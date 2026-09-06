@@ -1147,8 +1147,11 @@ test('counts no metric or resource container the run did not own', async () => {
   // nothing published a metric mean of 42 and an axis mean of 99, which is
   // verbatim the fabrication this module's own comment cites as fixed.
   //
-  // Four guards sit in one expression here. Mutating the expression is not
-  // mutating the guards: each needs the shape that reaches it first.
+  // Mutating the expression is not mutating the guards inside it: each needs the
+  // shape that reaches it first. No count is written here on purpose — an
+  // earlier version of this comment said four and the PR body said five, which
+  // is one fact spelled twice and disagreeing. The rows below name the
+  // positions instead.
   const result = Object.create({
     metrics: { accuracy: { score: 42 } },
     resources: { toolCallsUsed: 99 },
@@ -1165,6 +1168,68 @@ test('counts no metric or resource container the run did not own', async () => {
   );
 });
 
+test('counts only the results that owned their containers, when a run mixes both', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  // Two results, mixed ownership. Every row above hands over a SINGLE result,
+  // so when its container is inherited the key list is empty and the value path
+  // is never walked — the key enumeration reaches the container read first and
+  // masks the three call sites on the value path. Measured: reverting any of
+  // those three alone left the suite green while publishing a mean drawn from a
+  // bag the run never handed over.
+  const owned = {
+    metrics: { accuracy: { score: 10 } },
+    resources: { toolCallsUsed: 10 },
+  };
+  // Two distinct inheriting shapes, because the container read and the per-key
+  // read are separate call sites: one result inherits the CONTAINERS, the other
+  // owns `metrics` and `resources` but inherits the record under each key.
+  const inheritedContainers = Object.create({
+    metrics: { accuracy: { score: 90 } },
+    resources: { toolCallsUsed: 90 },
+  });
+  const inheritedRecords = {
+    metrics: Object.create({ accuracy: { score: 90 } }),
+    resources: Object.create({ toolCallsUsed: 90 }),
+  };
+  const experiment = {
+    results: [owned, inheritedContainers, inheritedRecords],
+    stopKindDistribution: {},
+  };
+  const [arm] = summarize({
+    arms: [{ policy: requireBudgetPolicy(), experiment }],
+  }).arms;
+
+  assert.deepEqual(
+    { metrics: arm.metrics, resourceAxes: arm.resourceAxes },
+    {
+      metrics: { accuracy: { key: 'accuracy', mean: 10, exampleCount: 1 } },
+      resourceAxes: { toolCallsUsed: { key: 'toolCallsUsed', mean: 10, exampleCount: 1 } },
+    },
+    'the second result owns neither container, so it contributes neither a value nor an example: a mean of 50 over two examples would be an average of one real measurement and one the run never handed over',
+  );
+});
+
+test('refuses a stop-kind distribution that is owned but is not a record', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  // The results guard beside it checks shape as well as presence; this one
+  // checked presence only, so an owned string was republished verbatim under a
+  // field declared as a record of counts.
+  for (const value of ['PWNED', 7, null, true]) {
+    assert.throws(
+      () => summarize({
+        arms: [{
+          policy: requireBudgetPolicy(),
+          experiment: { results: [], stopKindDistribution: value },
+        }],
+      }),
+      /stopKindDistribution/,
+      `an owned ${typeof value} is not a stop-kind distribution: republishing it puts a value in the report that violates the type the report declares`,
+    );
+  }
+});
+
 test('reports no row for a key whose every value was inherited', async () => {
   const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
 
@@ -1173,6 +1238,12 @@ test('reports no row for a key whose every value was inherited', async () => {
     stopKindDistribution: {},
   };
   const [arm] = summarize({ arms: [{ policy: requireBudgetPolicy(), experiment }] }).arms;
+
+  assert.deepEqual(
+    arm.metrics,
+    {},
+    'a key whose every value was inherited must leave no row at all — at head this row would otherwise assert nothing, because the loop below has nothing to walk',
+  );
 
   for (const row of Object.values(arm.metrics)) {
     assert.equal(
