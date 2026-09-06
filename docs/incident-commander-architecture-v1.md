@@ -277,12 +277,20 @@ rather than converted into a zero cost.
 `llmCallBudget` is a versioned safety cap, not a calibrated one. Two
 model-backed roles in `packages/roles` have set `declaredLlmCalls` since
 AIC-94, but they need a provider credential and are not in the replay-backed
-arm the benchmark and the regression suite run, so `llmCallsUsed` stays `0` on
-every benchmark run by construction of that arm rather than by estimate.
+arm the benchmark ships, so `llmCallsUsed` reads `0` on every run of **that
+arm** by construction of it rather than by estimate.
+
+⚠ The width of that sentence is the whole of it, and a wider spelling was
+wrong here until this was measured. It is **not** true that every benchmark run
+in this repository declares nothing: `runGraphBenchmarkExperiment` takes the
+nodes it is handed, and a fixture that declares drives the same calibration
+corpus to a non-zero count on all 24 runs.
+see benchmark-resource-evidence.test.mjs › "sources graph resource evidence from the executed control block and the trials it produced"
+
 see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
 declares an llm call" — which pins that the GRAPH invents no consumption. That
-the benchmark arm declares none, and so reads a real zero on every run, is a
-separate claim with its own row:
+the shipped benchmark arm declares none, and so reads a real zero on every one
+of its runs, is a separate claim with its own row:
 see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"
 
 AIC-18 measured what would calibrate it and found nothing could: the edge that

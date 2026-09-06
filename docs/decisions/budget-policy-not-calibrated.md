@@ -112,8 +112,8 @@ about the TREE, and a fixture row cannot see it: a model-backed
 — the direction AIC-94 already took for three other roles — would falsify the
 conclusion and leave every sweep row green.
 
-So the tree has its own row: › "names every non-test file that mentions the
-route this conclusion depends on". It is deliberately coarse — it finds the
+So the tree has its own row:
+see budget-policy.test.mjs › "names every non-test file that mentions the route this conclusion depends on". It is deliberately coarse — it finds the
 string, not a return — and it reports a new mention so a human decides whether
 it is a producer. That is the row to read when this record is quoted.
 

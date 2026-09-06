@@ -1298,15 +1298,33 @@ test('reports no row for a key whose every value was inherited', async () => {
     results: [{ metrics: { accuracy: Object.create({ score: 1 }) }, resources: {} }],
     stopKindDistribution: {},
   };
-  const [arm] = summarize({ arms: [{ policy: requireBudgetPolicy(), experiment }] }).arms;
+  // A second arm, whose scores it OWNS. The finite-mean and non-zero-count
+  // assertions below are properties of a published row, and the arm above
+  // publishes none — so walking its metrics executed the loop zero times and
+  // this row asserted the empty case twice instead of asserting both cases once.
+  const measuredExperiment = {
+    results: [{ metrics: { accuracy: { score: 1 } }, resources: {} }],
+    stopKindDistribution: {},
+  };
+  const [arm, measured] = summarize({
+    arms: [
+      { policy: requireBudgetPolicy(), experiment },
+      { policy: sweepPolicy('aic-18-inherited-beside-measured', 4, 8, 2), experiment: measuredExperiment },
+    ],
+  }).arms;
 
   assert.deepEqual(
     arm.metrics,
     {},
-    'a key whose every value was inherited must leave no row at all — at head this row would otherwise assert nothing, because the loop below has nothing to walk',
+    'a key whose every value was inherited must leave no row at all: a row published for it carries a mean that rests on nothing',
   );
 
-  for (const row of Object.values(arm.metrics)) {
+  assert.equal(
+    Object.keys(measured.metrics).length > 0,
+    true,
+    'the arm this loop walks must publish at least one row, or the two assertions below execute zero times and this row goes green without checking either of them',
+  );
+  for (const row of Object.values(measured.metrics)) {
     assert.equal(
       Number.isFinite(row.mean),
       true,
@@ -1358,5 +1376,626 @@ test('publishes no composite or aggregate score anywhere in the report', async (
     offenders,
     [],
     'a single number blending quality with spend, or the logical budget with recovery, can fall while quality falls with it — every dimension stays its own row, at every depth',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 8. A member of a list is not a member the caller wrote down                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The rows above harden how a single arm and a single result are READ. None of
+ * them hands over a list whose MEMBERSHIP is a lie — a hole, a null, a string —
+ * and `Array.prototype.map` decides an index exists with HasProperty, which
+ * walks the prototype chain. So every own-read below the list is answered
+ * honestly about an element the caller never wrote down.
+ *
+ * All of it lands in the same published shape: a row that names a policy
+ * version, carries a run count and reads as a measurement.
+ */
+
+/** The one arm of a report built from this experiment, for the rows below. */
+function reportFor(experiment, policy = requireBudgetPolicy()) {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  return summarize({ arms: [{ policy, experiment }] }).arms[0];
+}
+
+/** The same call, undone, so `assert.throws` can drive it. */
+function summarizing(experiment, policy = requireBudgetPolicy()) {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  return () => summarize({ arms: [{ policy, experiment }] });
+}
+
+/**
+ * What a call did, captured, so the assertion runs after the decoy is gone.
+ *
+ * The two rows that plant an INDEX on `Object.prototype` poison every `[0]` and
+ * `[1]` read in the process, including the ones `assert` performs while it
+ * builds a failure message. The helper's `finally` restores the prototype
+ * whatever happens, and this keeps the assertion itself outside the window.
+ */
+function capture(call) {
+  try {
+    return { returned: call() };
+  } catch (error) {
+    return { error };
+  }
+}
+
+test('refuses an arms list with a hole in it, naming the index', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arms = [{
+    policy: sweepPolicy('aic-18-dense-arm', 4, 8, 2),
+    experiment: { results: [], stopKindDistribution: {} },
+  }];
+  arms.length = 2;
+
+  assert.throws(
+    () => summarize({ arms }),
+    (error) => {
+      assert.match(
+        error.message,
+        /budget\s*policy/i,
+        `the refusal must name what it refused: ${error.message}`,
+      );
+      assert.match(
+        error.message,
+        /\b1\b/,
+        `the refusal must name the index nobody filled in, or the caller is told an arms list is wrong without being told which arm: ${error.message}`,
+      );
+      return true;
+    },
+    'an index the caller never wrote to is published today as a null arm: a row that was never parsed, never version-checked and never deduplicated, sitting in a list every reader takes to be one arm per policy that ran',
+  );
+});
+
+test('refuses an arms list whose hole is answered by the prototype', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const decoy = {
+    policy: sweepPolicy('PWNED', 1, 1, 1),
+    experiment: {
+      results: [{ metrics: { accuracy: { score: 99 } }, resources: {} }],
+      stopKindDistribution: {},
+    },
+  };
+
+  // `map` asks HasProperty, not "did the caller write this down", so a hole in
+  // an arms list is filled from `Object.prototype` and published as an arm.
+  let outcome;
+  await withPollutedObjectPrototype('0', decoy, async () => {
+    outcome = capture(() => summarize({ arms: new Array(1) }));
+  });
+
+  assert.ok(
+    outcome.error,
+    `an arm assembled from the prototype is a whole policy row nobody declared — measured at head: it published policyVersion PWNED with a metric mean of 99, which is the fabrication every own-read in this module exists to refuse, arriving one level above where those reads look: ${JSON.stringify(outcome.returned)}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /arm/i,
+    `the refusal must say the arms list is what it refused: ${outcome.error.message}`,
+  );
+});
+
+test('refuses a results list whose hole is answered by the prototype, naming the index', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  // Verbatim the scenario `budget-policy.ts` (the comment above the own-read on
+  // `results`) says it closed: an experiment owning nothing publishes a run
+  // count and a metric mean of 42. Owning the `results` array does not close
+  // it, because the elements of that array are still HasProperty reads.
+  let outcome;
+  await withPollutedObjectPrototype('0', { metrics: { accuracy: { score: 42 } } }, async () => {
+    outcome = capture(() => summarize({
+      arms: [{
+        policy: requireBudgetPolicy(),
+        experiment: { results: new Array(3), stopKindDistribution: {} },
+      }],
+    }));
+  });
+
+  assert.ok(
+    outcome.error,
+    `a run the caller never wrote into the results list is not a run: measured at head this published runCount 3 and a metric mean of 42 off a single prototype entry, which is the exact fabrication the module comment claims to have fixed — the fix reached the experiment's own read of results and stopped above its elements: ${JSON.stringify(outcome.returned)}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /\b0\b/,
+    `the refusal must name the index that was never filled in, or a caller with a long results list is told nothing about where to look: ${outcome.error.message}`,
+  );
+});
+
+for (const [label, entry] of [
+  ['null', null],
+  ['a string', 'x'],
+  ['a number', 1],
+  ['undefined', undefined],
+]) {
+  test(`refuses a results entry that is ${label}, rather than counting it as a run`, () => {
+    const results = [{ metrics: { accuracy: { score: 1 } }, resources: {} }, entry];
+
+    assert.throws(
+      summarizing({ results, stopKindDistribution: {} }),
+      (error) => {
+        assert.match(
+          error.message,
+          /budget\s*policy/i,
+          `the refusal must name what it refused: ${error.message}`,
+        );
+        assert.match(
+          error.message,
+          /\b1\b/,
+          `the refusal must name the entry that is not a run: ${error.message}`,
+        );
+        return true;
+      },
+      `a results entry that is not an object is counted in runCount today and measured in nothing: the arm publishes more runs than it has measurements, so every mean beside it rests on fewer examples than the count claims — which is the "looks like a measurement, rests on nothing" reading this report refuses`,
+    );
+  });
+}
+
+test('names the arm it refused when an arms entry is null', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  assert.throws(
+    () => summarize({ arms: [null] }),
+    (error) => {
+      assert.match(
+        error.message,
+        /budget\s*policy/i,
+        `every refusal in this module names what it refused, so the caller is told which input to fix rather than that "something" was wrong: ${error.message}`,
+      );
+      assert.match(
+        error.message,
+        /\b0\b|null|arm/i,
+        `the refusal must name the offending element: ${error.message}`,
+      );
+      return true;
+    },
+    'at head this leaves the module through a raw TypeError from Object.getOwnPropertyDescriptor — "Cannot convert undefined or null to object" — which names no arm, no index and no field, and reads to a caller as a bug in the report rather than as the malformed input it is',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 9. A published mean is finite, or there is no row                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `budget-policy.ts` calls a row of `mean: null` against a non-zero
+ * `exampleCount` "the reading this whole report exists to refuse", and the
+ * inherited-value path really does refuse it. The measured path does not: a
+ * `typeof value === 'number'` test admits `NaN` and `Infinity`, and both
+ * serialise to `null` in the published JSON.
+ *
+ * The rule these rows pin is the one the module already states for an inherited
+ * value: a measurement that is not a number contributes NOTHING to the mean,
+ * and if that leaves the key with no values, no row is published at all.
+ */
+
+test('excludes a non-finite metric score from the mean it publishes', () => {
+  const arm = reportFor({
+    results: [
+      { metrics: { accuracy: { score: NaN } }, resources: {} },
+      { metrics: { accuracy: { score: 1 } }, resources: {} },
+    ],
+    stopKindDistribution: {},
+  });
+
+  assert.deepEqual(
+    arm.metrics,
+    { accuracy: { key: 'accuracy', mean: 1, exampleCount: 1 } },
+    'measured at head this publishes mean null over exampleCount 2: one run that scored nothing readable drags the whole key to null while the count still claims two runs are behind it, so a policy arm with one broken score reads as a policy that measured nothing rather than as one measurement plus one unreadable value',
+  );
+});
+
+test('reports no metric row when every score was non-finite', () => {
+  const arm = reportFor({
+    results: [{ metrics: { accuracy: { score: NaN } }, resources: {} }],
+    stopKindDistribution: {},
+  });
+
+  assert.deepEqual(
+    arm.metrics,
+    {},
+    'a key whose only score was unreadable measured nothing, exactly as a key whose only score was inherited measured nothing: publishing the row anyway puts mean null beside exampleCount 1 in the report, which reads as a measurement that came back empty rather than as no measurement at all',
+  );
+});
+
+test('excludes a non-finite resource reading from the axis mean', () => {
+  const arm = reportFor({
+    results: [
+      { metrics: {}, resources: { toolCallsUsed: Infinity } },
+      { metrics: {}, resources: { toolCallsUsed: 2 } },
+    ],
+    stopKindDistribution: {},
+  });
+
+  assert.deepEqual(
+    arm.resourceAxes,
+    { toolCallsUsed: { key: 'toolCallsUsed', mean: 2, exampleCount: 1 } },
+    'the resource path reads its numbers through the same predicate as the metric path and admits the same non-finite values: an arm that spent 2 tool calls on its one readable run publishes mean null, and a cost axis that reports null is a cost comparison nobody can make',
+  );
+});
+
+test('reports no resource axis row when every reading was non-finite', () => {
+  const arm = reportFor({
+    results: [{ metrics: {}, resources: { toolCallsUsed: Infinity } }],
+    stopKindDistribution: {},
+  });
+
+  assert.deepEqual(
+    arm.resourceAxes,
+    {},
+    'an axis whose only reading was unreadable measured nothing, and a row published for it claims a spend figure this arm never produced',
+  );
+});
+
+test('publishes a finite mean when two readings overflow the sum they are averaged through', () => {
+  const arm = reportFor({
+    results: [
+      { metrics: {}, resources: { toolCallsUsed: Number.MAX_VALUE } },
+      { metrics: {}, resources: { toolCallsUsed: Number.MAX_VALUE } },
+    ],
+    stopKindDistribution: {},
+  });
+
+  assert.deepEqual(
+    { exampleCount: arm.resourceAxes.toolCallsUsed?.exampleCount, finite: Number.isFinite(arm.resourceAxes.toolCallsUsed?.mean) },
+    { exampleCount: 2, finite: true },
+    'both readings are finite, so their mean is finite: summing first makes it Infinity, which serialises to null and publishes a row that says two runs measured nothing while both of them measured something — the same unreadable row the non-finite inputs above produce, reached from inputs the module accepts on purpose',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 10. The stop-kind distribution is counts, and it is the report's own copy   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The row above ("refuses a stop-kind distribution that is owned but is not a
+ * record") pins the four non-objects. An array IS an object, and the values
+ * inside a real object are not checked at all — both come back verbatim under a
+ * field the report declares as `Readonly<Record<string, number>>`.
+ *
+ * And "comes back" is literal: the caller's object is republished by reference
+ * and unfrozen, so the report is a live view of a container the caller still
+ * holds.
+ */
+
+test('refuses a stop-kind distribution that is an array', () => {
+  assert.throws(
+    summarizing({ results: [], stopKindDistribution: ['not', 'a', 'record'] }),
+    /stopKindDistribution/,
+    'an array passes a typeof object check and is republished verbatim: the report then declares a record of stop-kind counts and carries a list of strings, so anything that reads it by stop-kind name gets undefined and anything that iterates it counts positions',
+  );
+});
+
+for (const [label, count] of [
+  ['a string', 'lots'],
+  ['a nested object', { nested: true }],
+  ['null', null],
+  ['NaN', NaN],
+  ['Infinity', Infinity],
+]) {
+  test(`refuses a stop-kind count that is ${label}`, () => {
+    assert.throws(
+      summarizing({ results: [], stopKindDistribution: { sufficient: count } }),
+      /stopKindDistribution/,
+      `a stop-kind distribution is how many runs stopped each way, and ${label} is not a count: republished, it puts a value in the report that violates the type the report declares, and the reading it produces — a stop kind that happened "lots" of times, or null times — is exactly the measurement-shaped nonsense this module refuses everywhere else`,
+    );
+  });
+}
+
+test('publishes the stop-kind distribution as the report\'s own frozen copy', () => {
+  const distribution = { sufficient: 1 };
+  const arm = reportFor({ results: [], stopKindDistribution: distribution });
+
+  assert.notEqual(
+    arm.stopKindDistribution,
+    distribution,
+    'the report republishes the caller\'s object itself, so the published evidence is a live view of a container the caller still holds',
+  );
+  assert.equal(
+    Object.isFrozen(arm.stopKindDistribution),
+    true,
+    'every other value this module publishes is frozen, because a report is a record of what happened and not a mutable working object',
+  );
+
+  distribution.ghostStopKind = 99;
+  assert.deepEqual(
+    Object.entries(arm.stopKindDistribution),
+    [['sufficient', 1]],
+    'a stop kind added to the caller\'s object AFTER the report was produced appears in the report: the published distribution then describes runs that were not in the experiment it names, and nothing about the report says when it stopped being true',
+  );
+});
+
+/**
+ * ⚠ **The property this section deliberately does NOT assert, and why.**
+ *
+ * A key planted on `Object.prototype` after publication reads through the
+ * published distribution, because the copy is an ordinary object. A row
+ * demanding otherwise was written here and removed: the only implementation
+ * that satisfies it is a null-prototype copy, which turns
+ * "reports one row per policy arm, keyed by the version that policy declared"
+ * red — `deepStrictEqual` compares prototypes — and which would single out one
+ * field of the report while `metrics`, `resourceAxes`, `budgets` and
+ * `calibration` are all ordinary `Object.fromEntries` records with exactly the
+ * same exposure.
+ *
+ * So the property the copy buys is stated at its width and no wider: the report
+ * does not change when the CALLER'S object changes. Pollution of the reader's
+ * own realm is not something any record in this report defends against, and
+ * `budget-policy.ts` says so at the site.
+ */
+
+/* -------------------------------------------------------------------------- */
+/* 11. The refusals the module states and nothing reached                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * These six rows are GREEN at head. They are here because each names a refusal
+ * the module makes and no row exercised — including one advertised in the
+ * module's own contract prose and in `docs/decisions/budget-policy-not-calibrated.md`.
+ * An unpinned refusal is one deletion away from a fail-open nobody notices.
+ */
+
+for (const [label, input] of [['null', null], ['a string', 'x']]) {
+  test(`refuses a report request that is ${label}`, () => {
+    const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+    assert.throws(
+      () => summarize(input),
+      /budget\s*policy/i,
+      'a report has to be asked for with an options object carrying arms: anything else is a caller error that must stop here rather than reach a property read further in',
+    );
+  });
+}
+
+test('refuses an arms field that is owned but is not an array', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  assert.throws(
+    () => summarize({ arms: 'x' }),
+    /arms/,
+    'the prototype row beside this one only ever hands over an ABSENT arms field, so the shape half of this guard was unreached: an owned non-array is the half that decides whether a caller who passes one arm instead of a list of them is refused or walked as characters',
+  );
+});
+
+test('refuses an empty arms list', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  assert.throws(
+    () => summarize({ arms: [] }),
+    /arm/i,
+    'a report over no arms is a page of calibration statements with no evidence under them, published in the same shape as a report that measured something',
+  );
+});
+
+test('refuses two arms declaring the same policy version', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const experiment = { results: [], stopKindDistribution: {} };
+
+  assert.throws(
+    () => summarize({
+      arms: [
+        { policy: sweepPolicy('aic-18-same-version', 4, 8, 2), experiment },
+        { policy: sweepPolicy('aic-18-same-version', 0, 0, 0), experiment },
+      ],
+    }),
+    /aic-18-same-version/,
+    'this refusal is advertised in the module\'s own contract prose and in docs/decisions/budget-policy-not-calibrated.md and was pinned by nothing: two rows under one version cannot be told apart, so a sweep that accidentally reuses a version publishes two policies\' evidence as one policy\'s',
+  );
+});
+
+test('refuses an experiment whose results is owned but is not an array', () => {
+  assert.throws(
+    summarizing({ results: 'x', stopKindDistribution: {} }),
+    /results/,
+    'the prototype row for this guard hands over an absent results field, so only the presence half was reached: an owned non-array is what decides whether a caller who passes one result instead of a list is refused or measured by its characters',
+  );
+});
+
+test('refuses a budget above the safe-integer range, by field name', () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  assert.throws(
+    () => parse(sweepPolicy('aic-18-unsafe-budget', 2 ** 53, 8, 2)),
+    /maxIterations/,
+    'a budget past 2**53 no longer counts: the integers stop being distinct, so a run bounded by it is bounded by a number that cannot be decremented reliably — and the MALFORMED_POLICIES table above reaches every other clause of this predicate but not this one',
+  );
+});
+
+/**
+ * The predicate and the schema, pinned as an AGREEMENT rather than as an
+ * implementation.
+ *
+ * `packages/evals/src/budget-policy.ts` hand-restates what `@aic/domain` exports
+ * as `LogicalCountSchema` and what the graph enforces these same three fields
+ * with. `packages/graph/src/investigation.ts` records that this exact
+ * duplication already drifted once and agreed with the schema by luck. This row
+ * survives replacing the predicate with the schema, and goes red the day the two
+ * answers differ on any value in the table — which is the property, not the call.
+ */
+test('accepts a budget exactly when the shared logical-count schema accepts it', async () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+  // Imported here rather than at the top of the file: the rows above are read
+  // by line number by a reviewer while this is being written.
+  const { LogicalCountSchema } = await import('@aic/domain');
+
+  const answers = [0, 1, 4, 2 ** 53 - 1, 2 ** 53, 1e21, Number.MAX_VALUE, NaN, Infinity, -1, 1.5, -0]
+    .map((value) => {
+      let accepted = true;
+      try {
+        parse(sweepPolicy('aic-18-schema-agreement', value, 8, 2));
+      } catch {
+        accepted = false;
+      }
+      return {
+        value: String(value),
+        parser: accepted,
+        schema: LogicalCountSchema.safeParse(value).success,
+      };
+    });
+
+  assert.deepEqual(
+    answers.filter(({ parser, schema }) => parser !== schema),
+    [],
+    'a budget the graph would refuse must be a budget this parser refuses, and the other way round: two spellings of "what a logical count is" drift, and the one nobody is looking at is the one that is wrong — a policy accepted here and rejected downstream fails halfway through a corpus, and one accepted downstream and rejected here cannot be swept at all',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 12. An absent option defaults; an unreadable one is refused                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `tsconfig.base.json` does not set `exactOptionalPropertyTypes`, so
+ * `budgetPolicy: undefined` is TypeScript's own spelling of "absent" on an
+ * optional property, and a caller that assembles options with a spread writes it
+ * without meaning anything by it. The helper at the top of this file already
+ * has to spread-guard around it.
+ *
+ * The asymmetry these two rows pin, since it is the thing a later reader will
+ * want to undo: `undefined` is ABSENT and takes the shipped policy, `null` is
+ * PRESENT in a shape the runner cannot read and is refused
+ * (the MALFORMED_POLICIES entry "an explicitly null policy"). An option nobody
+ * set must not stop a corpus; an option somebody set to a wrong value must.
+ */
+
+const OBSERVED_THEN_STOPPED = 'aic-18-stopped-after-observing-the-control-block';
+
+/**
+ * The budgets the graph was actually started with, read from inside the first
+ * lifecycle node and then stopped — the same observation idiom as the sweep
+ * above, without running a corpus to learn one thing.
+ */
+async function budgetsTheGraphStartedWith(buildOptions) {
+  const runGraphBenchmarkExperiment = requireFunction(
+    evals,
+    'runGraphBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const traces = new Map();
+  const replayCounts = new Map();
+  const observed = new Set();
+
+  try {
+    await runGraphBenchmarkExperiment(buildOptions({
+      experimentId: 'aic-18-budget-policy-option-v0.2',
+      scenarioSet: 'calibration',
+      runsPerScenario: RUNS_PER_SCENARIO,
+      metadata: benchmarkVersions,
+      createNodes: (input) => {
+        traces.set(input.runId, []);
+        replayCounts.set(input.runId, 0);
+        const nodes = replayBackedNodes(input, traces, replayCounts);
+        return {
+          ...nodes,
+          async normalize_incident(state) {
+            observed.add(JSON.stringify({
+              maxIterations: state.control.maxIterations,
+              llmCallBudget: state.control.llmCallBudget,
+              reservedChallengeBudget: state.control.reservedChallengeBudget,
+            }));
+            throw new Error(OBSERVED_THEN_STOPPED);
+          },
+        };
+      },
+      async recordEvaluation() {},
+    }));
+  } catch (error) {
+    if (error.message !== OBSERVED_THEN_STOPPED) {
+      return { refusal: error, observed: [...observed] };
+    }
+  }
+
+  return { observed: [...observed] };
+}
+
+function shippedControlBlock() {
+  const policy = requireBudgetPolicy();
+  return JSON.stringify({
+    maxIterations: policy.maxIterations,
+    llmCallBudget: policy.llmCallBudget,
+    reservedChallengeBudget: policy.reservedChallengeBudget,
+  });
+}
+
+test('starts from the shipped policy when budgetPolicy is present but undefined', async () => {
+  const { refusal, observed } = await budgetsTheGraphStartedWith((base) => ({
+    ...base,
+    budgetPolicy: undefined,
+  }));
+
+  assert.equal(
+    refusal?.message,
+    undefined,
+    `without exactOptionalPropertyTypes, budgetPolicy: undefined is how TypeScript spells an absent optional property, so this option is type-legal and means nothing — refusing it makes the declared type a lie and stops a corpus over an option nobody set: ${String(refusal?.message)}`,
+  );
+  assert.deepEqual(
+    observed,
+    [shippedControlBlock()],
+    'an option that was never really set must default to the shipped policy, exactly as an omitted one does — the JSDoc on this option promises that in so many words',
+  );
+});
+
+test('starts from the shipped policy when budgetPolicy is only inherited', async () => {
+  const ghost = sweepPolicy('aic-18-inherited-option', 0, 0, 0);
+  const { refusal, observed } = await budgetsTheGraphStartedWith((base) =>
+    Object.assign(Object.create({ budgetPolicy: ghost }), base));
+
+  assert.equal(refusal?.message, undefined, `an inherited option is not an option this caller set: ${String(refusal?.message)}`);
+  assert.deepEqual(
+    observed,
+    [shippedControlBlock()],
+    'a policy reached through the prototype chain is not a policy the caller declared, so it is absent and the shipped one runs: picking it up instead would run a whole corpus under budgets nobody asked for and publish it under that policy\'s version',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 13. The two spellings of "which budgets exist"                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠ **The existing row is kept and is not this claim.**
+ * "carries one calibration statement per declared budget field, and no other"
+ * compares `Object.keys(report.calibration)` with `BENCHMARK_BUDGET_FIELDS` —
+ * but `calibration` is built by `Object.fromEntries(BENCHMARK_BUDGET_FIELDS.map(…))`,
+ * so its keys ARE that list by construction and the assertion cannot fail. It
+ * still pins that the report publishes the derived record rather than a literal,
+ * which is worth keeping; it is not a correspondence check.
+ *
+ * The real gap is one direction the compiler does not close either: a
+ * `CALIBRATION` statement for a budget the field list does not declare compiles
+ * clean and is silently dropped from every report. That contradicts the module
+ * comment above `BENCHMARK_BUDGET_FIELDS`, which claims the compiler makes the
+ * two agree in both directions.
+ *
+ * This row reads the constant out of the source because both constants are
+ * frozen and `CALIBRATION` is module-private: nothing a caller can do makes the
+ * two diverge at runtime, so no runtime row can reach the drift.
+ */
+test('declares a calibration statement for exactly the budgets the field list carries', () => {
+  const source = readFileSync(
+    resolve(projectRoot, 'packages/evals/src/budget-policy.ts'),
+    'utf8',
+  );
+  const declaration = source.slice(source.indexOf('const CALIBRATION'));
+  const end = declaration.indexOf('\n});');
+  assert.equal(
+    end > 0,
+    true,
+    'the CALIBRATION literal was not found where this row reads it: a correspondence check that cannot find one of the two things it compares reports agreement it never measured',
+  );
+
+  const statedBudgets = [...declaration.slice(0, end).matchAll(/^ {2}([A-Za-z_$][\w$]*):/gm)]
+    .map(([, field]) => field)
+    .sort();
+  assert.equal(
+    statedBudgets.length > 0,
+    true,
+    'no statement was extracted at all, so the comparison below would pass against an empty list — the vacuous-loop failure this file already made once',
+  );
+
+  assert.deepEqual(
+    statedBudgets,
+    [...evals.BENCHMARK_BUDGET_FIELDS].sort(),
+    'a statement for a budget the field list does not declare compiles clean and is dropped from every report: the module then carries a written, reviewed claim about a budget nothing validates and nothing publishes, while the report reads complete — which is the reassurance-shaped drift the correspondence rule exists to catch, and the compiler closes only the other direction',
   );
 });

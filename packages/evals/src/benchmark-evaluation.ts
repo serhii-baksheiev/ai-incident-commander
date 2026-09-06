@@ -742,8 +742,11 @@ type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
     /**
-     * What this experiment allows a run to spend. Defaults to the shipped
-     * `BENCHMARK_BUDGET_POLICY`.
+     * What this experiment allows a run to spend. Omitted — or supplied as an
+     * own `undefined`, which is the same thing while this project does not set
+     * `exactOptionalPropertyTypes` — it is the shipped `BENCHMARK_BUDGET_POLICY`.
+     * Any other value is parsed and refused if it cannot be read; `null` in
+     * particular is a refusal, not a default.
      *
      * ⚠ Only the GRAPH runner takes this. `runBenchmarkExperiment` drives an
      * opaque `investigate` callback and starts no graph, so a policy handed to
@@ -774,9 +777,36 @@ export async function runGraphBenchmarkExperiment(
   // caller never asked for -- measured, and it is why these two states are now
   // separated.
   // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
-  const budgetPolicy = Object.hasOwn(options, 'budgetPolicy')
-    ? parseBenchmarkBudgetPolicy(options.budgetPolicy)
-    : BENCHMARK_BUDGET_POLICY;
+  // ⚠ Three states, not two, and the middle one cost a review round.
+  //
+  //   ABSENT (omitted, or inherited)  -> the shipped policy. Nothing was asked
+  //                                      for, so there is nothing to refuse.
+  //   own `undefined`                 -> also absent. Without
+  //                                      `exactOptionalPropertyTypes` this is
+  //                                      TypeScript's own spelling of an
+  //                                      omitted optional property, so refusing
+  //                                      it makes the declared type lie — and
+  //                                      the suite's own helper had to spread
+  //                                      around the refusal, which is the trap
+  //                                      showing itself.
+  //   own `null`, or any other value  -> PARSED, and refused if unreadable. A
+  //                                      caller that computed a policy and got
+  //                                      `null` asked for something; running the
+  //                                      corpus under the shipped policy while
+  //                                      it believes otherwise is the fail-open
+  //                                      this seam already had once.
+  //
+  // Own-read for the same reason the policy's own fields are own-read.
+  // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
+  // see budget-policy.test.mjs › "starts from the shipped policy when budgetPolicy is present but undefined"
+  // see budget-policy.test.mjs › "starts from the shipped policy when budgetPolicy is only inherited"
+  const declaredPolicy = Object.getOwnPropertyDescriptor(options, 'budgetPolicy');
+  const budgetPolicy =
+    declaredPolicy === undefined ||
+    !Object.hasOwn(declaredPolicy, 'value') ||
+    declaredPolicy.value === undefined
+      ? BENCHMARK_BUDGET_POLICY
+      : parseBenchmarkBudgetPolicy(declaredPolicy.value);
 
   // Keyed by runId rather than returned through `investigate`, so the evidence
   // travels a path the opaque callback contract cannot reach.

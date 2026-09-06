@@ -38,6 +38,8 @@
  * "states in the report that llmCallBudget is not empirically calibrated, and why"
  */
 
+import { LogicalCountSchema } from '@aic/domain';
+
 /** A budget policy: what a run is ALLOWED to spend, and the version that says so. */
 export interface BenchmarkBudgetPolicy {
   readonly policyVersion: string;
@@ -54,11 +56,20 @@ export interface BenchmarkBudgetPolicy {
  * importer can splice.
  *
  * ⚠ This list and the calibration statements below are two spellings of "which
- * budgets exist". Measured at this head, the compiler makes them agree in both
- * directions: removing an entry is `TS2345` where the parser names that field as
- * a literal, and adding one without a statement is `TS2741` on the calibration
- * record. That is the enforcement; the correspondence row is the runtime check
- * beside it.
+ * budgets exist", and the compiler closes **one and a half** of the two
+ * directions. Measured with `tsc` on a scratch copy of this file: removing an
+ * entry from the list is `TS2345` where the parser names that field as a
+ * literal, and adding an entry without a statement is `TS2741` on the
+ * calibration record — but adding a STATEMENT for a budget the list does not
+ * declare compiles clean, and is then dropped from every report, because
+ * `calibration` is derived from this list by construction.
+ *
+ * A previous version of this sentence said "the compiler makes them agree in
+ * both directions". It does not, and the runtime row could not see the gap
+ * either: with `calibration`'s keys derived from this list, asserting that they
+ * equal this list is a tautology. The direction the compiler misses is covered
+ * by a row that reads this file's source instead.
+ * see budget-policy.test.mjs › "declares a calibration statement for exactly the budgets the field list carries"
  *
  * An earlier version of this sentence said a removed entry "stops being
  * validated and stops being reported". Only the first half was true: the report
@@ -86,11 +97,19 @@ export const BENCHMARK_BUDGET_POLICY: BenchmarkBudgetPolicy = Object.freeze({
   reservedChallengeBudget: 2,
 });
 
+/**
+ * Not restated here. `LogicalCountSchema` is what the domain exports and what
+ * the graph enforces these same three fields with, and a second hand-written
+ * spelling of it is a defect this repository has already paid for once:
+ * `packages/graph/src/investigation.ts` removed its own copy
+ * (`Number.isSafeInteger(x) && x >= 0`) with the note that it "agreed with the
+ * schema by luck rather than by construction". A policy `evals` accepted and
+ * `IncidentStateSchema.parse` then refused would fail halfway through a corpus,
+ * with runs already recorded under its version.
+ * see budget-policy.test.mjs › "accepts exactly the budgets the domain's logical-count schema accepts"
+ */
 const isLogicalCount = (value: unknown): value is number =>
-  typeof value === 'number' &&
-  Number.isInteger(value) &&
-  value >= 0 &&
-  value <= Number.MAX_SAFE_INTEGER;
+  LogicalCountSchema.safeParse(value).success;
 
 /**
  * The slot as the caller OWNS it, never as a `[[Get]]` would report it.
@@ -118,6 +137,81 @@ const readOwnValue = (
     return { present: false };
   }
   return { present: true, value: descriptor.value };
+};
+
+/**
+ * Every element the caller actually wrote down, or a refusal that names the
+ * index — never `Array.prototype.map`'s answer.
+ *
+ * 🔴 The own-read convention stopped at the CONTAINER, and the defect it was
+ * written to prevent walked in one level below it. `map`, `flatMap` and
+ * `filter` decide whether an index exists with `HasProperty`, which walks the
+ * prototype chain: a hole is not skipped when `Object.prototype` carries the
+ * matching index, it is FILLED from it. Measured before this was here, with
+ * `Object.prototype['0']` planted: `{ arms: new Array(1) }` published a whole
+ * arm carrying a fabricated `policyVersion` and a metric mean of 99, and
+ * `results: new Array(3)` published `runCount: 3` with a mean of 42 — which is
+ * verbatim the scenario the comment on the results own-read below claims to
+ * have closed.
+ *
+ * The cheaper half needs no attacker at all: `{ arms: new Array(2) }` passed
+ * the length check and published two `null` arms — rows never parsed, never
+ * version-checked, never deduplicated.
+ *
+ * One forward pass, bounded by `length`, and it refuses the hole and the
+ * unreadable element together. An element that is not a non-null object cannot
+ * be own-read at all, so it is named here rather than left to throw a bare
+ * `TypeError` out of `Object.getOwnPropertyDescriptor`.
+ * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
+ * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
+ */
+const refuseUnownedElements = (values: readonly unknown[], what: string): void => {
+  for (let index = 0; index < values.length; index += 1) {
+    if (!Object.hasOwn(values, index)) {
+      throw new Error(
+        `budget policy ${what} has no own element at index ${index}: a hole is answered by the prototype chain and published as ${what} the caller never wrote down`,
+      );
+    }
+    const element = values[index];
+    if (element === null || typeof element !== 'object') {
+      throw new Error(
+        `budget policy ${what} at index ${index} is ${element === null ? 'null' : typeof element}, not an object: it cannot be read as ${what} and must not be counted as one`,
+      );
+    }
+  }
+};
+
+/*
+ * Module scope, not per-arm: neither closes over anything, and the summarizer
+ * needs `ownNumber` above the stop-kind copy as well as below it.
+ */
+/** An own record, or nothing — never a container the run did not carry. */
+const ownRecord = (source: unknown, key: string): object | undefined => {
+  if (source === null || typeof source !== 'object') return undefined;
+  const slot = readOwnValue(source, key);
+  return slot.present && slot.value !== null && typeof slot.value === 'object'
+    ? (slot.value as object)
+    : undefined;
+};
+/** An own measured number, or nothing. */
+const ownNumber = (source: unknown, key: string): number | undefined => {
+  if (source === null || typeof source !== 'object') return undefined;
+  const slot = readOwnValue(source, key);
+  // `slot.present` as well as the type, symmetric with `ownRecord` above.
+  // Correct without it today only because an absent slot carries no `value`
+  // key at all — which makes this a guard resting on a detail of another
+  // function's return shape rather than on its own check.
+  //
+  // 🔴 `Number.isFinite`, not `typeof === 'number'`. `NaN` and `Infinity`
+  // are numbers, and both serialise to `null` — so admitting them published
+  // `mean: null` against a non-zero `exampleCount`, which the comment on
+  // `axisEntry` calls the reading this whole report exists to refuse. An
+  // unreadable measurement contributes nothing, exactly as an inherited one
+  // does, and a key left with no values gets no row.
+  // see budget-policy.test.mjs › "excludes a non-finite metric score from the mean it publishes"
+  return slot.present && typeof slot.value === 'number' && Number.isFinite(slot.value)
+    ? slot.value
+    : undefined;
 };
 
 /**
@@ -227,8 +321,19 @@ export interface BudgetPolicyEvidenceReport {
  * folded into the logical spend, and a BUDGET (what a policy allowed) is
  * reported apart from an AXIS (what a run spent).
  */
+/**
+ * ⚠ Incremental rather than sum-then-divide, and that is not style: two
+ * readings this module accepts on purpose — `Number.MAX_VALUE` twice — sum to
+ * `Infinity`, which serialises to `null` and publishes a row saying two runs
+ * measured nothing while both measured something. The running form keeps a mean
+ * of finite values finite.
+ * see budget-policy.test.mjs › "publishes a finite mean when two readings overflow the sum they are averaged through"
+ */
 const mean = (values: readonly number[]): number =>
-  values.reduce((total, value) => total + value, 0) / values.length;
+  values.reduce(
+    (running, value, index) => running + (value - running) / (index + 1),
+    0,
+  );
 
 /**
  * An entry for a key the runs actually measured, or nothing.
@@ -278,7 +383,7 @@ const CALIBRATION: Readonly<
   llmCallBudget: Object.freeze({
     empiricallyCalibrated: false,
     reason:
-      'a versioned safety cap. It shares the unreached need-more-evidence edge with maxIterations, and no run on this corpus declares an llm call, so declaredLlmCallsUsed is 0 on every one (see budget-policy.test.mjs \u203a "measures a declared llm call count of zero on every run of the shipped arm"): nothing measured this value and no benchmark evidence can, until a model-backed arm both declares calls and reaches that edge',
+      'a versioned safety cap. It shares the unreached need-more-evidence edge with maxIterations, and the replay-backed arm this benchmark ships declares no llm call, so declaredLlmCallsUsed is 0 on every run OF THAT ARM (see budget-policy.test.mjs \u203a "measures a declared llm call count of zero on every run of the shipped arm") — not on every run the corpus can be driven through, which a wider wording here claimed until it was measured: a fixture that declares drives the same 8 calibration scenarios to a non-zero count on all 24 runs. Nothing measured this value and no benchmark evidence can, until an arm both declares calls and reaches that edge',
   }),
   reservedChallengeBudget: Object.freeze({
     empiricallyCalibrated: false,
@@ -294,6 +399,22 @@ const CALIBRATION: Readonly<
  * experiment it produced. Arms are reported in the order given, and two arms
  * declaring one version are refused: rows that cannot be told apart are not
  * evidence about either policy.
+ *
+ * ⚠ **The limit this function cannot close, stated because it is the widest
+ * one here.** That the experiment really ran under the policy beside it is
+ * ASSERTED BY THE CALLER, not checked. `BenchmarkExperiment` carries no policy
+ * identity, so `{ policy: A, experiment: ranUnderB }` publishes B's runs keyed
+ * by A's `policyVersion` and nothing below can detect it — which is the same
+ * outcome `parseBenchmarkBudgetPolicy` refuses a fallback to prevent, arriving
+ * one layer above where it looks. Every own-read in this file defends against a
+ * caller inheriting a value; none defends against a caller mislabelling one.
+ *
+ * The suite closes it for the arms it runs, outside this module, by observing
+ * the control block from inside the graph:
+ * see budget-policy.test.mjs › "starts the graph from a caller-supplied budget policy"
+ * Closing it HERE means returning the parsed policy from
+ * `runGraphBenchmarkExperiment` and reading it off the experiment, which widens
+ * a public return type; that is AIC-112, not this function.
  */
 export interface BudgetPolicyArmResult {
   readonly metrics: Readonly<Record<string, Readonly<{ score: number }>>>;
@@ -338,6 +459,7 @@ export function summarizeBudgetPolicyEvidence(
   if (declaredArms.value.length === 0) {
     throw new Error('budget policy evidence requires at least one arm');
   }
+  refuseUnownedElements(declaredArms.value, 'arm');
 
   const seen = new Set<string>();
   const reported = (declaredArms.value as readonly BudgetPolicyArmInput[]).map((entry) => {
@@ -375,37 +497,50 @@ export function summarizeBudgetPolicyEvidence(
     if (
       !ownStopKinds.present ||
       ownStopKinds.value === null ||
-      typeof ownStopKinds.value !== 'object'
+      typeof ownStopKinds.value !== 'object' ||
+      Array.isArray(ownStopKinds.value)
     ) {
       throw new Error(
-        `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution object: a distribution read off the prototype describes runs that did not happen, and an owned non-object is republished verbatim under a field declared as a record of counts`,
+        `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution record: a distribution read off the prototype describes runs that did not happen, and an owned non-record is republished verbatim under a field declared as a record of counts`,
       );
     }
+    refuseUnownedElements(ownResults.value, 'result');
     const results = ownResults.value as readonly BudgetPolicyArmResult[];
-    const stopKindDistribution = ownStopKinds.value as Readonly<
-      Record<string, number>
-    >;
+    /**
+     * 🔴 The report's OWN copy, with every count checked, not the caller's
+     * container republished.
+     *
+     * Three things were wrong with republishing it, all measured: an ARRAY
+     * passed the container check above and came back verbatim under a field
+     * declared `Readonly<Record<string, number>>`; the values inside a real
+     * object were never checked at all, so `{ sufficient: 'lots' }` came back
+     * unchanged; and the returned object was `===` the caller's, unfrozen, so a
+     * key added after the report was produced appeared in the published
+     * evidence — a record of what happened that keeps changing after it was
+     * written.
+     *
+     * ⚠ The width of what this buys, stated so nobody reads it wider: the
+     * report does not change when the CALLER'S object changes. It is an
+     * ordinary object, so a key planted on `Object.prototype` afterwards reads
+     * through it — as it does through `metrics`, `resourceAxes`, `budgets` and
+     * `calibration`, which are ordinary records too. Pollution of the reader's
+     * own realm is not something any record in this report defends against.
+     * see budget-policy.test.mjs › "publishes the stop-kind distribution as the report's own frozen copy"
+     */
+    const stopKindDistribution: Readonly<Record<string, number>> = Object.freeze(
+      Object.fromEntries(
+        Object.keys(ownStopKinds.value).map((stopKind) => {
+          const count = ownNumber(ownStopKinds.value as object, stopKind);
+          if (count === undefined) {
+            throw new Error(
+              `budget policy arm ${parsed.policyVersion} has a stopKindDistribution entry ${stopKind} that is not a finite own count: a stop-kind distribution is how many runs stopped each way, and anything else republished is a measurement-shaped value the report's own type forbids`,
+            );
+          }
+          return [stopKind, count];
+        }),
+      ),
+    );
 
-    /** An own record, or nothing — never a container the run did not carry. */
-    const ownRecord = (source: unknown, key: string): object | undefined => {
-      if (source === null || typeof source !== 'object') return undefined;
-      const slot = readOwnValue(source, key);
-      return slot.present && slot.value !== null && typeof slot.value === 'object'
-        ? (slot.value as object)
-        : undefined;
-    };
-    /** An own measured number, or nothing. */
-    const ownNumber = (source: unknown, key: string): number | undefined => {
-      if (source === null || typeof source !== 'object') return undefined;
-      const slot = readOwnValue(source, key);
-      // `slot.present` as well as the type, symmetric with `ownRecord` above.
-      // Correct without it today only because an absent slot carries no `value`
-      // key at all — which makes this a guard resting on a detail of another
-      // function's return shape rather than on its own check.
-      return slot.present && typeof slot.value === 'number'
-        ? slot.value
-        : undefined;
-    };
     const metricKeys: string[] = [
       ...new Set<string>(
         results.flatMap((result) => Object.keys(ownRecord(result, 'metrics') ?? {})),
@@ -493,5 +628,12 @@ export function summarizeBudgetPolicyEvidence(
     }),
   ) as Readonly<Record<BenchmarkBudgetField, BudgetCalibrationStatement>>;
 
-  return { arms: reported, calibration };
+  // Frozen at the levels this function builds, for the reason each arm's
+  // `budgets` and `stopKindDistribution` are: a report is a record of what
+  // happened, and a caller that can rewrite it after it was produced turns
+  // published evidence into a working object.
+  return Object.freeze({
+    arms: Object.freeze(reported.map((arm) => Object.freeze(arm))),
+    calibration,
+  });
 }

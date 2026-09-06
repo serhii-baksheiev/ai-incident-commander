@@ -225,23 +225,25 @@ const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
  * Two nodes declare through it since AIC-94 — `createModelGenerateHypotheses`
  * and `createModelInterpretResidualEvidence` in `packages/roles`, each
  * returning `declaredLlmCalls: 1`; `challenge_hypothesis` deliberately does
- * not. But those are model-backed roles that need a provider credential, and
- * the arm the regression suite and the benchmark run is the replay-backed one,
- * which declares nothing. So `llmCallsUsed` is 0 on every benchmark run by
- * construction of that arm rather than by estimate — and, until an earlier
- * wording here went stale, for the different reason that no producer existed at
- * all. An unused channel reports nothing, where a synthesised count would be
- * cost evidence nobody measured.
- *
- * This is the third site to carry that sentence, and the one a fix round left
- * uncited while correcting the other two.
+ * not. Those are model-backed roles that need a provider credential, and the
+ * arm the regression suite and the shipped benchmark run is the replay-backed
+ * one, which declares nothing — so `llmCallsUsed` reads 0 on every run of THAT
+ * arm by construction of it rather than by estimate. An unused channel reports
+ * nothing, where a synthesised count would be cost evidence nobody measured.
  * see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"
+ *
+ * ⚠ The width matters, and two earlier wordings here were wrong at two
+ * different widths: the first said no producer existed at all, and the
+ * correction that replaced it said 0 on every BENCHMARK run. Neither holds. A
+ * benchmark run declares whatever the nodes handed to it declare, and a probe
+ * fixture drives the same calibration corpus to a non-zero count on all 24.
+ * see benchmark-resource-evidence.test.mjs › "sources graph resource evidence from the executed control block and the trials it produced"
  *
  * ⚠ A second limit, and it is not the same one: consumption is folded in AFTER
  * the node ran, so a single declaration larger than the remaining budget is
  * recorded in full and caught at the next check. That is detection, not
- * pre-authorisation. Unreachable while nothing declares; it is what a provider
- * node has to fix.
+ * pre-authorisation — and it is reachable today, by any node that declares more
+ * than the budget leaves.
  *
  * ⚠ Limit, by construction: `termination_check` and `challenge_hypothesis`
  * return their own decision types and so have no channel of their own. Their
