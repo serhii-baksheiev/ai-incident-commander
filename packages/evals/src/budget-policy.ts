@@ -11,8 +11,9 @@
  * calibration partition, the evidence does not respond to two of them at all:
  * `maxIterations` and `llmCallBudget` are read on ONE edge — the
  * `need-more-evidence` route out of `termination_check` — and no node outside
- * `test/` returns that route, so `0 / 0` publishes byte-identical evidence to
- * the shipped `4 / 8`. `reservedChallengeBudget` is reached, but the challenge
+ * `test/` returns that route, so `0 / 0` publishes evidence identical to the
+ * shipped `4 / 8` on every axis the comparison keeps — which is all of them
+ * except `wallClockDurationMs`, excluded as nondeterministic. `reservedChallengeBudget` is reached, but the challenge
  * cap is two rounds and this corpus uses one, so `1`, `2` and `8` are
  * indistinguishable; only `0` differs, and it stops every run
  * `budget-exhausted`, which moves the accepted v0.1 outcome and is therefore

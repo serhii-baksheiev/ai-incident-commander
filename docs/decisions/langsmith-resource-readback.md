@@ -23,9 +23,12 @@ only — the hold-out was not run, and neither experiment touched the existing
 | `aic63-calibration-resource-evidence-080010` | `outputs.resources`, before the feedback surface existed |
 | `aic63-calibration-resource-feedback-084842` | both surfaces, after per-axis feedback landed |
 
-The second supersedes the first. Both used deterministic replay nodes — there is
-no LLM execution path in this repository, which is why `declaredLlmCallsUsed`
-reads what a node declared rather than what a provider spent.
+The second supersedes the first. Both used deterministic replay nodes, which
+declare nothing — which is why `declaredLlmCallsUsed` reads what a node declared
+rather than what a provider spent. (An execution path exists, and two
+model-backed roles declare through it, but it needs a provider credential and no
+benchmark run has taken it. An earlier wording here said no such path existed at
+all.)
 
 ## What came back
 

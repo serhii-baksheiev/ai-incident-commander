@@ -267,10 +267,12 @@ count those calls when a provider arrives. Recorded here because the budget
 design is read here.
 
 **Token and currency cost are explicitly unsupported.** No axis carries either,
-and none is derived from a call count: with no LLM execution path there is no
-price to apply and no token to count, so any such figure would be invented. A
-zero LLM count is published as a real zero rather than converted into a zero
-cost.
+and none is derived from a call count. An execution path does exist — the
+reference model port, reached only by the live-model lane and only with a
+provider credential — but no benchmark run has ever taken it, so there is no
+observed token count and no price to apply, and any such figure would be
+invented rather than measured. A zero LLM count is published as a real zero
+rather than converted into a zero cost.
 
 `llmCallBudget` is a versioned safety cap, not a calibrated one. Two
 model-backed roles in `packages/roles` have set `declaredLlmCalls` since

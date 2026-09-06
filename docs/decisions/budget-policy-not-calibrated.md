@@ -18,13 +18,13 @@ benchmark metric, every behaviour metric and every deterministic resource axis.
 | --- | --- |
 | `4 / 8 / 2` — shipped | the baseline |
 | `0 / 0 / 2` — spend nothing | identical evidence on all 24 runs |
-| `1 / 1 / 1`, `64 / 1024 / 8`, and the arms between | identical evidence on all 24 runs |
+| `4 / 8 / 1` and `4 / 8 / 8` | identical evidence on all 24 runs |
 | `4 / 8 / 0` | every run stops `budget-exhausted`; no metric score and no resource axis moves |
 
-The rows are executable rather than recorded here: `budget-policy.test.mjs` ›
-"publishes identical evidence at zero logical budget, because nothing reaches
-that edge" and › "exhausts every run at a zero challenge reserve while no metric
-and no resource axis moves".
+Every row above is executable — those four arms are the ones the suite runs, and
+each has a row of its own in `budget-policy.test.mjs`. Wider arms were swept
+while the premise was being checked (`0`, `1`, `4`, `64` against `0`, `1`, `8`,
+`1024`); they are **not** committed and are not claimed here.
 
 ## Why two of the three cannot be calibrated by any corpus this repository runs
 
@@ -97,9 +97,13 @@ in the report".
 
 One thing, and it is a change to the system under test rather than a
 calibration: a node that returns `need-more-evidence`, or a corpus that needs
-more than one iteration. On the day either lands, the identical-evidence rows go
-red — which is the point of writing them as rows rather than as this paragraph.
-Their failure message says so.
+more than one iteration. Measured, by making the replay fixture's
+`termination_check` return that route once: **one** row reddens —
+`budget-policy.test.mjs` › "publishes identical evidence at zero logical budget,
+because nothing reaches that edge". The two reserve rows stay green, because the
+reserve is a different budget on a different edge. That one row going red is the
+day this conclusion has to be re-read, which is the point of writing it as a row
+rather than as this paragraph.
 
 Until then, `llmCallBudget` in particular is a versioned safety cap whose value
 no measurement chose, and the report says that in the same place it publishes

@@ -13,9 +13,11 @@
  *
  *   - `maxIterations` and `llmCallBudget` are read on ONE edge — the
  *     `need-more-evidence` route out of `termination_check` — and no node
- *     outside `test/` returns that route. So `0 / 0` publishes byte-identical
- *     evidence to the shipped `4 / 8`. Those two axes are not calibrated by
- *     anything; they are unreached.
+ *     outside `test/` returns that route. So `0 / 0` publishes evidence
+ *     identical to the shipped `4 / 8` on every axis these rows compare — all
+ *     of them except `wallClockDurationMs`, which is dropped as
+ *     nondeterministic. Those two budgets are not calibrated by anything; they
+ *     are unreached.
  *   - `reservedChallengeBudget` IS reached, because a `sufficient` decision with
  *     no challenge round behind it is forced through the mandatory challenge. At
  *     `1`, `2` and `8` the evidence is identical (the cap is two rounds and this
@@ -868,6 +870,22 @@ test('states in the report that llmCallBudget is not empirically calibrated, and
     new Set(BUDGET_FIELD_NAMES.map((field) => report.calibration[field].reason)).size > 1,
     true,
     'one reason repeated under three budgets is a placeholder: the reserve is reached and the other two are not, and the statements have to say different things',
+  );
+});
+
+test('carries one calibration statement per declared budget field, and no other', async () => {
+  const { report } = await getReport();
+
+  // A correspondence check, in both directions, because the two spellings of
+  // "which budgets exist" live in different shapes: an exported array the
+  // validator walks, and the calibration statements the report publishes. They
+  // agreed by hand until a mutation showed nothing made them: removing a field
+  // from the array left it unvalidated while the report still carried a
+  // statement about it, which is the reassurance-shaped drift this row refuses.
+  assert.deepEqual(
+    Object.keys(report.calibration).sort(),
+    [...evals.BENCHMARK_BUDGET_FIELDS].sort(),
+    'every declared budget gets exactly one calibration statement and nothing else does: a statement about a budget the validator no longer knows is a claim about a number nobody checks',
   );
 });
 
