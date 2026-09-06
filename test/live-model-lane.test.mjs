@@ -14,9 +14,11 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -27,6 +29,12 @@ import {
   replayBackedNodes,
 } from './fixtures/benchmark-experiment.mjs';
 import { childEnv } from './fixtures/child-env.mjs';
+// Imported rather than described: the two arms are compared as objects below, and
+// a comparison that read this file's source instead would be a paraphrase of the
+// command rather than the command. The import is only possible because the
+// command runs its lane behind an entry-point guard — the row that pins the
+// guard is the last one in this file.
+import { modelNodes, scriptedNodes } from '../scripts/eval-live-model.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -651,4 +659,197 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
     ],
     'every metric the replay-backed control arm emits sits at a single score of zero — so the control arm is at the insensitive floor on all of them except unsupported_claim_rate, where zero is the perfect score',
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-111: the two arms have to count the same thing                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The execution input `runGraphBenchmarkExperiment` hands `createNodes`, built
+ * here from one real CALIBRATION record — the lane itself runs the
+ * final-evaluation plan, and a row that read a hold-out result would be spending
+ * corpus this ticket has no claim on. The shape mirrors the runner's own
+ * construction (`benchmark-evaluation.ts`, `executionInput`), because a nodes
+ * factory handed a different shape is not the factory the lane calls.
+ */
+function calibrationExecutionInput() {
+  const [record] = evals.createCalibrationBenchmarkPlan({
+    experimentId: 'aic-111-lane-arms',
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+  });
+  assert.ok(record, 'the calibration plan must contain at least one record');
+  return {
+    experimentId: record.experimentId,
+    exampleId: record.exampleId,
+    scenarioId: record.scenario.id,
+    fixture: record.scenario.fixture,
+    runId: record.runId,
+    threadId: record.threadId,
+    metadata: record.metadata,
+  };
+}
+
+/** The three nodes the model arm is allowed to differ in, and nothing else. */
+const MODEL_BACKED_ROLES = [
+  'challenge_hypothesis',
+  'generate_hypotheses',
+  'interpret_residual_evidence',
+];
+
+/**
+ * A port that refuses to answer and records that it was asked. Nothing in this
+ * file may reach a provider, so the arms are compared as objects and the port
+ * exists only to be handed over unused.
+ */
+function refusingPort(asked) {
+  return {
+    async complete() {
+      asked.push('complete');
+      throw new Error('no row in this file may call the model port');
+    },
+  };
+}
+
+test('swaps exactly the three reasoning roles and leaves the rest of the lifecycle shared', () => {
+  const input = calibrationExecutionInput();
+  const asked = [];
+  const control = scriptedNodes(input);
+  const model = modelNodes(input, refusingPort(asked));
+
+  assert.deepEqual(
+    Object.keys(model).sort(),
+    Object.keys(control).sort(),
+    'the model arm is the control arm with three roles replaced, so it can neither gain nor lose a node',
+  );
+
+  // Compared by the SOURCE each node came from, not by reference: `scriptedNodes`
+  // builds a fresh closure on every call, so a reference comparison would report
+  // that two constructions of the same arm are different arms. What matters here
+  // is which implementation a node came from, and that is what the source says.
+  const differing = Object.keys(control)
+    .filter((name) => String(model[name]) !== String(control[name]))
+    .sort();
+
+  assert.deepEqual(
+    differing,
+    MODEL_BACKED_ROLES,
+    'only the three reasoning roles may differ between the arms: a lane whose arms differ anywhere else is comparing the harness, not the model',
+  );
+  assert.deepEqual(asked, [], 'no row in this file may call the model port');
+});
+
+test('counts the same tool calls on both arms of the lane', async () => {
+  const input = calibrationExecutionInput();
+  const asked = [];
+  const control = scriptedNodes(input);
+  const model = modelNodes(input, refusingPort(asked));
+
+  const controlUpdate = await control.execute_investigation({ evidence: [] });
+  const modelUpdate = await model.execute_investigation({ evidence: [] });
+
+  assert.equal(
+    controlUpdate.trials?.length,
+    input.fixture.entries.length,
+    `the control arm replayed ${String(input.fixture.entries.length)} recorded tool calls and wrote ${String(controlUpdate.trials?.length)} trials: the axis that reports what a run spent reads that channel, so an arm that leaves it unwritten publishes a measured-looking zero`,
+  );
+  assert.deepEqual(
+    modelUpdate.trials,
+    controlUpdate.trials,
+    'both arms replay the same recorded calls through the same node, so the lane compares two numbers that mean the same thing — a model arm counting differently would read as model behaviour',
+  );
+  assert.deepEqual(asked, [], 'no row in this file may call the model port');
+});
+
+/**
+ * The scaffolding this comparison rests on, pinned in both directions.
+ *
+ * The two arms above are the command's own functions rather than copies, which
+ * requires importing the command — and a command that ran its lane at import
+ * time could not be imported. The guard that makes it importable must not have
+ * changed what `npm run eval:live-model` does, so both halves are asserted: an
+ * import runs nothing, and an execution still refuses without a credential.
+ */
+test('runs its lane only when it is the process entry point', () => {
+  const commandPath = resolve(projectRoot, 'scripts/eval-live-model.mjs');
+  const commandUrl = JSON.stringify(pathToFileURL(commandPath).href);
+
+  const imported = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `import { modelNodes, scriptedNodes } from ${commandUrl};\nprocess.stdout.write([typeof scriptedNodes, typeof modelNodes].join(','));`,
+    ],
+    { cwd: projectRoot, encoding: 'utf8', env: childEnv({ CI: '1' }) },
+  );
+
+  assert.equal(
+    imported.status,
+    0,
+    `importing the command must run no lane: ${imported.stderr}`,
+  );
+  assert.equal(
+    imported.stdout,
+    'function,function',
+    'the command must export both arms, or the comparison above has to copy them and can then drift from what the lane runs',
+  );
+
+  const executed = spawnSync(
+    process.execPath,
+    [commandPath],
+    { cwd: projectRoot, encoding: 'utf8', env: childEnv({ CI: '1' }) },
+  );
+
+  assert.notEqual(
+    executed.status,
+    0,
+    'making the command importable must not stop it being a command: with no credential it still refuses',
+  );
+  assert.match(executed.stderr, new RegExp(MODEL_API_KEY_VARIABLE));
+});
+
+/**
+ * The half the row above cannot see, and the reason it needs its own.
+ *
+ * That row spawns `resolve(projectRoot, …)`, a path already resolved through
+ * every symlink by the runner's own `import.meta.url` — so it exercises only
+ * the case where the two sides agree. ESM resolves `import.meta.url` through
+ * symlinks while `process.argv[1]` keeps the path as typed, and the first
+ * version of this guard compared the two directly. Reached through a link it
+ * then ran no lane and exited 0: a command that refuses turned into a command
+ * that reports success having done nothing, which is the one failure this
+ * file's header promises cannot happen.
+ *
+ * The `symlinkSync` below is what produces the divergence, and it is deliberate
+ * rather than incidental: it makes the row independent of how any particular
+ * machine lays out its temp directory. Measured on this one, `$TMPDIR` already
+ * resolves through `/var` → `/private/var`, so a scratch clone under
+ * `mkdtempSync` diverges here on its own — which is why the defect this row
+ * guards is an ordinary path rather than a contrived one. What the runner's
+ * filesystem does is deliberately not claimed: nothing here can check it, and
+ * the row does not depend on it either way.
+ */
+test('refuses without a credential when it is reached through a symlinked path', () => {
+  const linkRoot = mkdtempSync(join(tmpdir(), 'aic-111-entrypoint-'));
+  try {
+    const link = join(linkRoot, 'repo');
+    symlinkSync(projectRoot, link);
+
+    const executed = spawnSync(
+      process.execPath,
+      [join(link, 'scripts/eval-live-model.mjs')],
+      { cwd: projectRoot, encoding: 'utf8', env: childEnv({ CI: '1' }) },
+    );
+
+    assert.notEqual(
+      executed.status,
+      0,
+      `reached through a symlink the command must still refuse, not exit 0 having run nothing: stdout=${JSON.stringify(executed.stdout)} stderr=${JSON.stringify(executed.stderr)}`,
+    );
+    assert.match(executed.stderr, new RegExp(MODEL_API_KEY_VARIABLE));
+  } finally {
+    rmSync(linkRoot, { force: true, recursive: true });
+  }
 });

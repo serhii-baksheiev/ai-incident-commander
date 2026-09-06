@@ -33,6 +33,7 @@ import {
   benchmarkVersions,
   capturingClient,
   perfectOutcomeFor,
+  replayBackedNodes,
   requireFunction,
   singleRecordExperiment,
 } from './fixtures/benchmark-experiment.mjs';
@@ -1033,4 +1034,373 @@ test('publishes its own behavior metric while Object.prototype carries an access
     'passed',
     'the published reason must be the one this run produced',
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-111: the tool count of the arm that really replays tool calls           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything above measures `toolCallsUsed` against fixtures written FOR that
+ * axis: `resourceProbeNodes` and `retryProbeNodes` both write the `trials`
+ * channel themselves, so they prove the runner reads the channel and nothing
+ * about whether the arm this repository actually executes writes it.
+ *
+ * `replayBackedNodes` is that arm — the deterministic lifecycle the regression
+ * suite runs and the live-model lane uses as its control (`scripts/eval-live-model.mjs`).
+ * It replays a recorded tool call per fixture entry, and the rows below are what
+ * a run of it COST on the one axis that is supposed to count those calls.
+ *
+ * The corpus is the calibration partition. The hold-out partition is not run
+ * here and no assertion reads a hold-out result: a number measured off it now
+ * would be a number spent, and the policy that says so is in `README.md`.
+ */
+const REPLAY_RUNS_PER_SCENARIO = 3;
+
+/**
+ * The calibration scenario that plans one more tool call than every other, and
+ * the only calibration scenario whose ground truth reaches `challenge_effect`.
+ * Asserted to be in the partition before it is used, so a corpus rename reddens
+ * here instead of quietly selecting nothing.
+ */
+const CHALLENGE_SCENARIO_ID = 'challenge-keeps-leader';
+
+/**
+ * Wraps the last lifecycle node so the executed state is read by something
+ * other than the publisher — the same independent-observation shape
+ * `resourceProbeNodes` uses, applied to nodes this file does not own.
+ */
+function observingFinalState(nodes, runId, observed) {
+  return {
+    ...nodes,
+    async propose_conclusion(state, ...rest) {
+      observed.set(runId, {
+        trials: state.trials.map(({ attempt, id, status, testId }) => ({
+          attempt,
+          id,
+          status,
+          testId,
+        })),
+        evidenceCount: state.evidence.length,
+      });
+      return nodes.propose_conclusion(state, ...rest);
+    },
+  };
+}
+
+let replayBackedCalibrationExperiment;
+
+/**
+ * One graph-backed calibration run of `replayBackedNodes`, memoised for cost
+ * exactly as the two probes above are: every caller destructures from a single
+ * await, so no assertion compares values obtained from two invocations.
+ *
+ * `spend` is what each run replayed and what its final state held, keyed by
+ * runId — the fixture's own replay counter, the number of entries it was given
+ * to replay, and the trials the executed state carried.
+ */
+function getReplayBackedCalibrationExperiment() {
+  if (replayBackedCalibrationExperiment !== undefined) {
+    return replayBackedCalibrationExperiment;
+  }
+
+  replayBackedCalibrationExperiment = (async () => {
+    const runGraphBenchmarkExperiment = requireFunction(
+      evals,
+      'runGraphBenchmarkExperiment',
+      '@aic/evals',
+    );
+    const traces = new Map();
+    const replayCounts = new Map();
+    const observed = new Map();
+    const plannedByRunId = new Map();
+
+    const experiment = await runGraphBenchmarkExperiment({
+      experimentId: 'aic-111-replay-tool-calls-v0.2',
+      scenarioSet: 'calibration',
+      runsPerScenario: REPLAY_RUNS_PER_SCENARIO,
+      metadata: benchmarkVersions,
+      createNodes: (input) => {
+        traces.set(input.runId, []);
+        replayCounts.set(input.runId, 0);
+        plannedByRunId.set(input.runId, {
+          scenarioId: input.scenarioId,
+          entryCount: input.fixture.entries.length,
+        });
+        return observingFinalState(
+          replayBackedNodes(input, traces, replayCounts),
+          input.runId,
+          observed,
+        );
+      },
+      async recordEvaluation() {},
+    });
+
+    assert.equal(
+      observed.size,
+      plannedByRunId.size,
+      'every run must reach the lifecycle node that observes its final state',
+    );
+    const spend = new Map(
+      [...plannedByRunId].map(([runId, planned]) => [
+        runId,
+        {
+          ...planned,
+          replayed: replayCounts.get(runId),
+          ...observed.get(runId),
+        },
+      ]),
+    );
+    return { experiment, spend };
+  })();
+
+  return replayBackedCalibrationExperiment;
+}
+
+test('counts one tool call per tool call the replay-backed arm replayed', async () => {
+  const { experiment, spend } = await getReplayBackedCalibrationExperiment();
+
+  assert.equal(
+    experiment.results.length,
+    evals.BENCHMARK_SCENARIO_PARTITIONS.calibration.length *
+      REPLAY_RUNS_PER_SCENARIO,
+    'the whole calibration partition must have run, or the rows below cover less corpus than they claim',
+  );
+
+  for (const result of experiment.results) {
+    const run = spend.get(result.runId);
+    assert.ok(run, `no observation was recorded for run ${result.runId}`);
+    assert.equal(
+      run.replayed,
+      run.entryCount,
+      `the fixture must really replay every recorded call, or nothing below proves anything: ${run.scenarioId}`,
+    );
+    assert.equal(
+      result.resources?.toolCallsUsed,
+      run.replayed,
+      `a run that replayed ${String(run.replayed)} tool calls must not publish ${String(result.resources?.toolCallsUsed)}: an arm whose control nodes never write the trials channel reports a measured-looking zero on the one axis that counts what it spent (${run.scenarioId})`,
+    );
+    assert.equal(
+      result.resources.toolCallsUsed,
+      run.entryCount,
+      `the published tool count must be the number of calls the corpus recorded for this scenario: ${run.scenarioId}`,
+    );
+  }
+});
+
+test('reports a tool count that follows the corpus rather than one number for every run', async () => {
+  const { experiment, spend } = await getReplayBackedCalibrationExperiment();
+
+  const plannedCounts = new Set([...spend.values()].map(({ entryCount }) => entryCount));
+  assert.equal(
+    plannedCounts.size > 1,
+    true,
+    'this row only discriminates a constant while the calibration scenarios record different numbers of tool calls',
+  );
+  assert.deepEqual(
+    [...new Set(experiment.results.map(({ resources }) => resources?.toolCallsUsed))].sort(),
+    [...plannedCounts].sort(),
+    'the tool counts published across the partition must be exactly the counts the corpus records: one value for every run — including the current zero — is a constant, not a measurement',
+  );
+
+  assert.equal(
+    evals.BENCHMARK_SCENARIO_PARTITIONS.calibration.includes(CHALLENGE_SCENARIO_ID),
+    true,
+    `the calibration partition no longer contains ${CHALLENGE_SCENARIO_ID}: this row selects on a scenario id and must be re-read, not renamed`,
+  );
+
+  const countsFor = (matches) => new Set(
+    experiment.results
+      .filter((result) => matches(spend.get(result.runId).scenarioId))
+      .map(({ resources }) => resources?.toolCallsUsed),
+  );
+  const challenge = countsFor((id) => id === CHALLENGE_SCENARIO_ID);
+  const others = countsFor((id) => id !== CHALLENGE_SCENARIO_ID);
+
+  assert.equal(challenge.size, 1, `${CHALLENGE_SCENARIO_ID} must spend the same on every one of its runs`);
+  assert.equal(others.size, 1, 'every other calibration scenario records the same number of tool calls');
+  assert.equal(
+    [...challenge][0],
+    [...others][0] + 1,
+    `${CHALLENGE_SCENARIO_ID} replays exactly one more recorded call than every other calibration scenario, and the axis has to show that difference`,
+  );
+});
+
+/**
+ * What separates "counts tool calls" from "counts evidence".
+ *
+ * Every calibration entry happens to be an `ok` result carrying exactly one
+ * evidence item, so on that corpus the two numbers are equal and an
+ * implementation that counted evidence would pass every row above. The fixture
+ * here breaks the coincidence: each scenario carries one extra recorded call
+ * whose result is `unavailable`, so it produced no evidence — and it was still a
+ * tool call the investigation spent.
+ *
+ * The scenarios are five calibration scenarios with that entry appended, because
+ * an ad-hoc plan takes exactly five. The hold-out `incomplete-evidence` scenario
+ * has the shape this row needs and is deliberately not used: its results are not
+ * this ticket's to spend.
+ */
+function unavailableCallScenarios() {
+  return evals.BENCHMARK_SCENARIO_PARTITIONS.calibration
+    .slice(0, 5)
+    .map((scenarioId) => {
+      const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+      assert.ok(scenario, `missing calibration scenario: ${scenarioId}`);
+      const [first] = scenario.fixture.entries;
+      return {
+        ...scenario,
+        fixture: {
+          ...scenario.fixture,
+          entries: [
+            ...scenario.fixture.entries,
+            {
+              toolId: first.toolId,
+              // A different input, so this is its own recorded call rather than
+              // a second spelling of the first one.
+              input: { ...first.input, aic111: 'unavailable-probe' },
+              result: {
+                status: 'unavailable',
+                reason: 'the recorded tool was down for this call',
+              },
+            },
+          ],
+        },
+      };
+    });
+}
+
+test('counts a replayed tool call that produced no evidence', async () => {
+  const runGraphBenchmarkExperiment = requireFunction(
+    evals,
+    'runGraphBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const scenarios = unavailableCallScenarios();
+  const traces = new Map();
+  const replayCounts = new Map();
+  const observed = new Map();
+  const entryCounts = new Map();
+
+  const experiment = await runGraphBenchmarkExperiment({
+    experimentId: 'aic-111-unavailable-tool-call-v0.2',
+    scenarioSet: 'ad-hoc',
+    scenarios,
+    runsPerScenario: REPLAY_RUNS_PER_SCENARIO,
+    metadata: benchmarkVersions,
+    createNodes: (input) => {
+      traces.set(input.runId, []);
+      replayCounts.set(input.runId, 0);
+      entryCounts.set(input.runId, input.fixture.entries.length);
+      return observingFinalState(
+        replayBackedNodes(input, traces, replayCounts),
+        input.runId,
+        observed,
+      );
+    },
+    async recordEvaluation() {},
+  });
+
+  assert.equal(experiment.results.length, scenarios.length * REPLAY_RUNS_PER_SCENARIO);
+
+  for (const result of experiment.results) {
+    const entries = entryCounts.get(result.runId);
+    const { evidenceCount } = observed.get(result.runId);
+    assert.equal(
+      evidenceCount < entries,
+      true,
+      `the fixture only separates the two counts while it holds a call that produced no evidence: ${String(entries)} entries produced ${String(evidenceCount)} evidence items`,
+    );
+    assert.equal(
+      result.resources?.toolCallsUsed,
+      entries,
+      `a tool call that came back unavailable was still a call this run spent: ${String(entries)} calls were replayed and ${String(result.resources?.toolCallsUsed)} were counted`,
+    );
+    assert.notEqual(
+      result.resources.toolCallsUsed,
+      evidenceCount,
+      'this axis counts tool calls, not the evidence they produced',
+    );
+  }
+});
+
+/**
+ * A characterisation PIN, and the value is a MEASUREMENT taken at b2950d0 —
+ * before the trials channel was written — not a requirement anybody chose.
+ *
+ * Writing the replayed tool calls into the `trials` channel is exactly the
+ * change that could credit a challenge nothing executed, because
+ * `executedDiscriminatingTrialCount` reads that channel. What it takes to be
+ * credited is not restated here — one fact spelled twice is one fact that goes
+ * stale in one of the two places, and this comment was that second place. It is
+ * stated where the filter is (`benchmark-evaluation.ts`) and where this
+ * fixture's trial ids are chosen against it
+ * (`test/fixtures/benchmark-experiment.mjs`).
+ *
+ * What matters here is the measurement: the fixture never runs the challenge's
+ * discriminating test, and `challenge_effect` scored 0 / `no-investigation-change`
+ * on every run that emits it, before the channel was written and after.
+ *
+ * The row directly below holds the after half.
+ */
+const CHALLENGE_EFFECT_BEFORE_TRIALS = Object.freeze({
+  score: 0,
+  reason: 'no-investigation-change',
+});
+
+test('writing the replayed tool calls into the trials channel credits no challenge', async () => {
+  const { experiment, spend } = await getReplayBackedCalibrationExperiment();
+
+  const scored = experiment.results.filter(
+    ({ behaviorMetrics }) => behaviorMetrics.challenge_effect !== undefined,
+  );
+  assert.equal(
+    scored.length,
+    REPLAY_RUNS_PER_SCENARIO,
+    `only ${CHALLENGE_SCENARIO_ID} reaches challenge_effect in this partition, once per run`,
+  );
+  assert.equal(
+    scored.every(({ runId }) => spend.get(runId).scenarioId === CHALLENGE_SCENARIO_ID),
+    true,
+    'the scored runs must be the challenge scenario, or this pin is watching the wrong runs',
+  );
+  assert.equal(
+    scored.every(({ resources }) => resources.toolCallsUsed > 0),
+    true,
+    'the pin is vacuous until the run writes trials at all: a channel nothing writes cannot credit a challenge either way',
+  );
+
+  for (const result of scored) {
+    assert.deepEqual(
+      {
+        score: result.behaviorMetrics.challenge_effect.score,
+        reason: result.behaviorMetrics.challenge_effect.reason,
+      },
+      CHALLENGE_EFFECT_BEFORE_TRIALS,
+      'the replayed tool calls must not carry the ids of the challenge\'s discriminating tests: a resource fix that moves a behaviour score has published a quality claim nothing observed',
+    );
+  }
+});
+
+test('measures a retry count of zero off trials that are all on their first attempt', async () => {
+  const { experiment, spend } = await getReplayBackedCalibrationExperiment();
+
+  for (const result of experiment.results) {
+    const { trials, scenarioId } = spend.get(result.runId);
+    assert.equal(
+      trials.length > 0,
+      true,
+      `a retry count read off an empty trials channel is not a measurement of anything: ${scenarioId} left the channel unwritten`,
+    );
+    assert.deepEqual(
+      [...new Set(trials.map(({ attempt }) => attempt))],
+      [1],
+      `every replayed call is a first attempt, and the trials must say so rather than leaving the attempt to be assumed: ${scenarioId}`,
+    );
+    assert.equal(
+      result.resources?.retryCount,
+      0,
+      'nothing retried, so the retry count is zero — measured off trials that exist, not read off a channel nobody wrote',
+    );
+  }
 });
