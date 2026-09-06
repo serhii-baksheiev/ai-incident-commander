@@ -48,7 +48,6 @@ export function ownValue(target: unknown, key: string): unknown {
     : descriptor.value;
 }
 
-/** The same read, narrowed to a non-empty string. */
 /**
  * The characters a credential must not carry, as one constant.
  *
@@ -62,9 +61,27 @@ export function ownValue(target: unknown, key: string): unknown {
  * back — because no real credential carries any of them and a guard pinned to a
  * dependency's exact validator has to be re-measured whenever that dependency
  * moves.
+ *
+ * 🔴 FROZEN, and the freeze is the price of sharing it. Two literals allocated a
+ * fresh `RegExp` per evaluation, so there was no shared object to tamper with;
+ * one constant is one object, and an own `test` installed on it shadows
+ * `RegExp.prototype.test` for BOTH guards at once. That surface did not exist
+ * before this constant did. Measured by `security-scanner` at the AIC-94 gate.
+ * see roles-boundary.test.mjs › "refuses an own test override on the shared
+ * credential class, and keeps both guards refusing"
+ *
+ * ⚠ The freeze works only while the flags stay `u`. `.test` writes `lastIndex`
+ * on a `g` or `y` regex, so a frozen one THROWS from `.test` — a later author
+ * adding a flag would turn a working guard into a crash. That interlock has its
+ * own row rather than being left as a comment.
+ * see roles-boundary.test.mjs › "keeps the shared credential class unicode-only,
+ * because a frozen stateful regex throws from test"
  */
-export const CREDENTIAL_FORBIDDEN_CHARACTERS = /[\u0000-\u001F\u007F]/u;
+export const CREDENTIAL_FORBIDDEN_CHARACTERS = Object.freeze(
+  /[\u0000-\u001F\u007F]/u,
+);
 
+/** The same read, narrowed to a non-empty string. */
 export function ownTrimmedString(
   target: unknown,
   key: string,

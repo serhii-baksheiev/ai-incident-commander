@@ -484,9 +484,11 @@ test('leaves the model error types undistinguished by any caller in packages or 
  *      `x[MODEL_API_KEY_VARIABLE]`, `x['ANTHROPIC_API_KEY']`;
  *   2. a property access by that name — `x.ANTHROPIC_API_KEY`;
  *   3. a destructure of that name — `const { ANTHROPIC_API_KEY } = x`;
- *   4. a call whose SECOND argument is the constant or the literal name — the
- *      `(object, key)` helper shape `readModelCredential` itself is written in,
- *      `ownTrimmedString(env, MODEL_API_KEY_VARIABLE)`.
+ *   4. a TWO-ARGUMENT call whose second argument is the constant or the literal
+ *      name — the `(object, key)` helper shape `readModelCredential` itself is
+ *      written in, `ownTrimmedString(env, MODEL_API_KEY_VARIABLE)`. The arity is
+ *      part of the form, not incidental: a three-argument call carrying the key
+ *      second is not collected, measured at the AIC-94 gate.
  *
  * ⚠ What it does NOT see, and therefore does not claim:
  *   - a key assembled at runtime (`env['ANTHROPIC_' + 'API_KEY']`) or held in a
@@ -628,5 +630,192 @@ test('reads the credential value in readModelCredential and nowhere else in pack
     offenders,
     [],
     `each of these reads the value of ${CREDENTIAL_VARIABLE_NAME} outside ${CREDENTIAL_READER.holder}, so the string a caller sends is no longer provably the string ${CREDENTIAL_READER.file} validated: the two diverged before — the configuration validated a trimmed value while the caller sent the raw one — and a second reader is how they diverge again. Read through readModelCredential instead. The whole scanned inventory was: ${reads.map(({ where }) => where).join(', ')}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* the credential character class: one shared object, read by two guards        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `CREDENTIAL_FORBIDDEN_CHARACTERS` in `packages/roles/src/own-value.ts` is
+ * read by two guards — `readModelCredential` in `model-config.ts`, and the
+ * constructor guard in `reference-model-port.ts`. Extracting it from the two
+ * inline regex literals it replaced is what created a tamper surface, and the
+ * surface is a consequence of the extraction rather than of the guards: two
+ * literals allocated a FRESH `RegExp` per evaluation, so there was no shared
+ * object to write to. One shared object can carry an OWN `test` that shadows
+ * `RegExp.prototype.test`, and that single write answers for BOTH guards.
+ * Found by `security-scanner` at the AIC-94 gate; the second row below
+ * reproduces it, which is why these are rows rather than a sentence in
+ * own-value.ts.
+ *
+ * ⚠ What these three rows check, stated no wider than the checks:
+ *   - THIS ONE object refuses an own `test` installed through
+ *     `Object.defineProperty`, and the two guards named above still refuse a
+ *     credential carrying a control character after that attempt. No other
+ *     shared value in the package is examined, and no other tamper shape is:
+ *     writing to `RegExp.prototype.test` itself, or rebinding what the guard
+ *     modules import, is outside all three rows — and freezing this constant
+ *     stops neither.
+ *   - the constant's flags are `u` and nothing else. That is a PRECONDITION of
+ *     the freeze, not a style preference: `.test` writes `lastIndex` when the
+ *     regex is global or sticky, so a FROZEN class carrying `g` or `y` throws
+ *     `TypeError` out of both guards instead of answering. The third row builds
+ *     that stateful twin locally and shows the throw, so a later author adding
+ *     a flag reddens here instead of crashing a guard in production.
+ *   - the BUILT modules under `packages/roles/dist`, which is what `.test` is
+ *     called on at runtime. A stale `dist` is therefore what these rows judge,
+ *     as it is for the own-property row above.
+ *
+ * The constant arrives by path because `own-value.ts` is not re-exported from
+ * the package index — the same reason, and the same precedent, as the
+ * own-property row above. The guards arrive through `@aic/roles`, their public
+ * surface.
+ */
+
+/**
+ * A key-shaped string assembled at runtime, and the same shape with one control
+ * character spliced into the middle where `trim()` cannot reach it.
+ *
+ * Never written out as a literal: `.claude/rules/autonomy.md` ("Never") asks a
+ * fixture needing a credential SHAPE to build it rather than spell it, or this
+ * repository's own secret guard reports its test data as a leak. Same shape as
+ * `fakeApiKey` in roles-port-contract.test.mjs, local here because the two
+ * files share no helper module.
+ */
+function credentialShape() {
+  return ['sk', 'ant', 'test', '0'.repeat(24)].join('-');
+}
+
+function leakingCredentialShape() {
+  const key = credentialShape();
+  const middle = Math.floor(key.length / 2);
+  return `${key.slice(0, middle)}${String.fromCharCode(10)}${key.slice(middle)}`;
+}
+
+/**
+ * The constant and the two guards, with the identity precondition checked.
+ *
+ * A tamper row that writes to one object and reads another passes VACUOUSLY, so
+ * the shared-object claim is established before anything is attempted. It is
+ * established behaviourally: `@aic/roles` re-exports `model-config.js` and
+ * `reference-model-port.js`, so equal function identities prove the package
+ * specifier and the dist path resolve to the same module instances — and
+ * `model-config.js` reaches the constant through `./own-value.js` beside
+ * itself, which is the same URL this helper imports.
+ */
+async function credentialClassSurface() {
+  const roles = await import('@aic/roles');
+  const own = await import('../packages/roles/dist/own-value.js');
+  const config = await import('../packages/roles/dist/model-config.js');
+  const port = await import('../packages/roles/dist/reference-model-port.js');
+
+  assert.equal(
+    roles.readModelCredential,
+    config.readModelCredential,
+    '@aic/roles and packages/roles/dist/model-config.js resolved to different module instances, so the constant this file tampers with is not the one the guard reads and every assertion below would pass without checking anything',
+  );
+  assert.equal(
+    roles.createReferenceModelPort,
+    port.createReferenceModelPort,
+    '@aic/roles and packages/roles/dist/reference-model-port.js resolved to different module instances, so the constant this file tampers with is not the one that guard reads and every assertion below would pass without checking anything',
+  );
+  assert.ok(
+    own.CREDENTIAL_FORBIDDEN_CHARACTERS instanceof RegExp,
+    'own-value.js no longer exports CREDENTIAL_FORBIDDEN_CHARACTERS as a RegExp: these rows check a shared regex object, and there is nothing here for them to check',
+  );
+
+  return { roles, forbidden: own.CREDENTIAL_FORBIDDEN_CHARACTERS };
+}
+
+test('freezes the shared credential character class, which still answers for a leaking credential', async () => {
+  const { forbidden } = await credentialClassSurface();
+
+  assert.equal(
+    forbidden.test(leakingCredentialShape()),
+    true,
+    'the shared class stopped matching a control character spliced into a credential shape: both credential guards decide on this one call, so a class that answers false here is two guards passing a value that reaches Headers.append',
+  );
+  assert.equal(
+    forbidden.test(credentialShape()),
+    false,
+    'the shared class now matches an ordinary credential shape, so every usable key is refused as though it carried a control character: the class is C0 plus DEL and widening it is a measured decision, not a hardening freebie',
+  );
+
+  assert.ok(
+    Object.isFrozen(forbidden),
+    'CREDENTIAL_FORBIDDEN_CHARACTERS is not frozen: it is ONE shared RegExp that both readModelCredential and the createReferenceModelPort guard call .test on, so a single own `test` property installed on it answers for both at once. Freeze the literal in packages/roles/src/own-value.ts, and leave the flags at `u` — that is what keeps .test working on a frozen regex',
+  );
+});
+
+test('refuses an own test override on the shared credential class, and keeps both guards refusing', async () => {
+  const { roles, forbidden } = await credentialClassSurface();
+  const leaking = leakingCredentialShape();
+
+  let attempt;
+  try {
+    Object.defineProperty(forbidden, 'test', { value: () => false });
+    attempt = 'accepted';
+  } catch (error) {
+    attempt = error;
+  }
+
+  try {
+    assert.ok(
+      attempt instanceof TypeError,
+      `installing an own \`test\` on CREDENTIAL_FORBIDDEN_CHARACTERS was ${attempt === 'accepted' ? 'accepted' : `refused with ${String(attempt)}`} where a frozen object throws TypeError: one write then shadows RegExp.prototype.test for BOTH readModelCredential and the createReferenceModelPort guard, and a credential carrying a control character travels on to Headers.append, whose TypeError quotes the whole header value into stderr. Freeze the constant in packages/roles/src/own-value.ts`,
+    );
+
+    assert.equal(
+      roles.readModelCredential({ [roles.MODEL_API_KEY_VARIABLE]: leaking }),
+      undefined,
+      'readModelCredential returned a credential carrying a control character after an own `test` override was attempted on the shared class: the configuration guard is now decided by whoever last wrote to that object rather than by the class. Freeze the constant in packages/roles/src/own-value.ts',
+    );
+
+    assert.throws(
+      () =>
+        roles.createReferenceModelPort({
+          apiKey: leaking,
+          modelId: 'claude-under-test',
+          ledger: roles.createModelUsageLedger({ maxCalls: 1 }),
+          async fetchImpl() {
+            throw new Error('a refused credential must never reach a transport');
+          },
+        }),
+      roles.ModelCompletionError,
+      'createReferenceModelPort accepted a credential carrying a control character after an own `test` override was attempted on the shared class: the same single write defeats this guard and the configuration guard together, which is what the shared object costs. Freeze the constant in packages/roles/src/own-value.ts',
+    );
+  } finally {
+    // Best-effort restore, and it succeeds only while the class is unfrozen and
+    // the override landed as configurable — which the attempt above does not
+    // request. `Reflect.deleteProperty` reports failure instead of throwing, so
+    // a stuck override cannot mask this row's real result. Nothing later in
+    // this file calls `.test` on the constant, and `node --test` gives each
+    // test FILE its own process, so the blast radius of a stuck override is the
+    // rows below this one, which read source text only.
+    if (attempt === 'accepted') Reflect.deleteProperty(forbidden, 'test');
+  }
+});
+
+test('keeps the shared credential class unicode-only, because a frozen stateful regex throws from test', async () => {
+  const { forbidden } = await credentialClassSurface();
+
+  assert.equal(
+    forbidden.flags,
+    'u',
+    'the shared credential class carries a flag beyond `u`. .test writes lastIndex on a global or sticky regex, so on a FROZEN class it throws TypeError instead of answering — both credential guards would crash rather than refuse. Keep the flags at `u`, or remove the freeze deliberately and state the trade where the constant is',
+  );
+
+  // The interaction itself, on a twin built here from the real class's own
+  // source so this row spells no second copy of the character class and never
+  // touches the shared object.
+  const statefulTwin = Object.freeze(
+    new RegExp(forbidden.source, `${forbidden.flags}g`),
+  );
+  assert.throws(
+    () => statefulTwin.test(leakingCredentialShape()),
+    TypeError,
+    'a frozen regex carrying `g` answered .test instead of throwing, so the precondition the row above rests on no longer holds on this runtime: re-measure before treating the flags assertion as what makes the freeze safe',
   );
 });

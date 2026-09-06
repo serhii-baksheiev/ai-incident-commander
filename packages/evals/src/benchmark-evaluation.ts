@@ -179,8 +179,9 @@ export interface BenchmarkResourceEvidence {
    *
    * 🔴 NOTHING PRODUCES THEM YET. They are declared and validated — a present
    * value must be a count, and an absent one stays absent — but no code path
-   * assigns either. `MeasuredBenchmarkResources` is an `Omit` of this type, and
-   * its only producer sets the FIVE axes that omit leaves it —
+   * assigns either. `MeasuredBenchmarkResources` is an `Omit` of this type — it
+   * leaves seven properties, the five REQUIRED axes and these two optional ones
+   * — and its only producer sets the five required axes —
    * `logicalIterationsUsed`, `declaredLlmCallsUsed`, `toolCallsUsed`,
    * `retryCount`, `resumeCount` — and neither of these. `wallClockDurationMs`
    * is the runner's, not the producer's. So a fully credentialed live run

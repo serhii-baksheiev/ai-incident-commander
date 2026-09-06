@@ -7,8 +7,10 @@
  * neither.
  *
  * ⚠ No caller in `packages/` or `scripts/` distinguishes them yet — that is the
- * exact scope the row below measures, and this sentence quotes it rather than
- * rounding it up. TESTS do use `instanceof` against these types, deliberately,
+ * exact scope the row named here measures, and this sentence quotes it rather
+ * than rounding it up.
+ * see roles-boundary.test.mjs › "leaves the model error types undistinguished by
+ * any caller in packages or scripts" TESTS do use `instanceof` against these types, deliberately,
  * which is what pins them as distinct. What is absent is a PRODUCTION branch:
  * the one `catch` on the path —
  * `scripts/eval-live-model.mjs` — prints `name: message` and exits 1 the same
