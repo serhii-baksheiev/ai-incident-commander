@@ -917,9 +917,13 @@ function sourceFilesUnder(roots) {
  * other roles — would falsify the conclusion and leave every one of them green.
  *
  * ⚠ What this row can and cannot see, because a coarse check trusted as a fine
- * one is worse than none: it finds the STRING, not a return. A new mention is
- * reported and a human decides whether it is a producer. It cannot see a route
- * assembled from a variable, and it does not read `test/`.
+ * one is worse than none. It finds the STRING, not a return: a new mention is
+ * reported and a human decides whether it is a producer, and a route assembled
+ * from a variable is invisible. It walks four fixed roots, so a producer in a
+ * NEW top-level directory is unwatched. It skips the top-level `test/` but does
+ * walk `incident-lab/tests` and would walk a future per-package test directory — a
+ * false-positive direction, which is the safe one. And a producer added inside
+ * either of the two files it already allows would not redden it.
  */
 test('names every non-test file that mentions the route this conclusion depends on', () => {
   const mentions = sourceFilesUnder(['packages', 'scripts', 'incident-lab', 'apps'])
@@ -1016,6 +1020,25 @@ test('keeps a validated budget even when an inherited accessor tries to swallow 
       4,
       'the value the caller declared and this parser validated must be the value it returns: an accumulator that writes through the prototype lets an inherited setter rewrite an honest policy',
     );
+  });
+});
+
+test('refuses an experiment whose measurements exist only on the prototype', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arm = { policy: requireBudgetPolicy(), experiment: {} };
+
+  // The arms guard passes here — the caller owns `arms`, `policy` and
+  // `experiment`. What it does not own is the MEASUREMENTS, and a report that
+  // hardened which policy it names while reading the numbers off the prototype
+  // would carry the convention's wording and not its property.
+  await withPollutedObjectPrototype('results', [{ metrics: {}, resources: {} }], async () => {
+    await withPollutedObjectPrototype('stopKindDistribution', { PWNED: 7 }, async () => {
+      assert.throws(
+        () => summarize({ arms: [arm] }),
+        /results/,
+        'an experiment that owns no results is not evidence: publishing an inherited run list as a measured one is the reading this report exists to make impossible',
+      );
+    });
   });
 });
 

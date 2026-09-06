@@ -21,7 +21,9 @@
  * makes the conclusion outlive this corpus — swapping the corpus changes nothing
  * while the fixture supplies `termination_check`. The sweep rows watch the
  * fixture and cannot see the tree; a separate row does.
- * see budget-policy.test.mjs › "names every non-test file that mentions the route this conclusion depends on" `reservedChallengeBudget` is reached, but the challenge
+ * see budget-policy.test.mjs › "names every non-test file that mentions the route this conclusion depends on"
+ *
+ * `reservedChallengeBudget` is reached, but the challenge
  * cap is two rounds and this corpus uses one, so `1`, `2` and `8` are
  * indistinguishable; only `0` differs, and it stops every run
  * `budget-exhausted`, which moves the accepted v0.1 outcome and is therefore
@@ -285,17 +287,26 @@ export interface BudgetPolicyArmInput {
   readonly experiment: BudgetPolicyArmExperiment;
 }
 
-export function summarizeBudgetPolicyEvidence({
-  arms,
-}: Readonly<{
-  arms: readonly BudgetPolicyArmInput[];
-}>): BudgetPolicyEvidenceReport {
+export function summarizeBudgetPolicyEvidence(
+  input: Readonly<{ arms: readonly BudgetPolicyArmInput[] }>,
+): BudgetPolicyEvidenceReport {
+  // A named parameter rather than a destructure: `{ arms }` in the signature
+  // performs a `[[Get]]` on the argument BEFORE the guard below runs, so an
+  // inherited getter fires on a call the guard then refuses. It also forced the
+  // real read to go through `arguments`, which breaks silently if anyone
+  // converts this to an arrow — and `packages/evals` is outside the eslint
+  // configuration that would catch it.
+  if (input === null || typeof input !== 'object') {
+    throw new Error(
+      'budget policy evidence requires an options object carrying an arms list',
+    );
+  }
   // Read from what the caller OWNS, for the reason `readOwnValue` states: an
   // arm list inherited from `Object.prototype` publishes a report about runs
   // nobody handed over. Measured: `summarize({})` under a polluted prototype
   // returned a full evidence report instead of refusing.
   // see budget-policy.test.mjs › "refuses a report whose arms exist only on the prototype"
-  const declaredArms = readOwnValue(arguments[0] as object, 'arms');
+  const declaredArms = readOwnValue(input, 'arms');
   if (!declaredArms.present || !Array.isArray(declaredArms.value)) {
     throw new Error(
       'budget policy evidence requires an own arms list: an inherited one is a report about runs the caller never declared',
@@ -304,7 +315,6 @@ export function summarizeBudgetPolicyEvidence({
   if (declaredArms.value.length === 0) {
     throw new Error('budget policy evidence requires at least one arm');
   }
-  void arms;
 
   const seen = new Set<string>();
   const reported = (declaredArms.value as readonly BudgetPolicyArmInput[]).map((entry) => {
@@ -324,10 +334,48 @@ export function summarizeBudgetPolicyEvidence({
     }
     seen.add(parsed.policyVersion);
 
-    const results = experiment.results;
+    // 🔴 The own-read goes down to the NUMBERS, not just to the policy label. A
+    // report that hardened which policy it names while reading its measurements
+    // through the prototype chain would carry the convention's wording and not
+    // its property — measured before this was here: with `results` and
+    // `stopKindDistribution` planted on `Object.prototype`, an experiment owning
+    // nothing published runCount 1, a fabricated stop-kind distribution and a
+    // metric mean of 42.
+    // see budget-policy.test.mjs › "refuses an experiment whose measurements exist only on the prototype"
+    const ownResults = readOwnValue(experiment as object, 'results');
+    const ownStopKinds = readOwnValue(experiment as object, 'stopKindDistribution');
+    if (!ownResults.present || !Array.isArray(ownResults.value)) {
+      throw new Error(
+        `budget policy arm ${parsed.policyVersion} must own a results array: an inherited one is a measurement of runs the caller never handed over`,
+      );
+    }
+    if (!ownStopKinds.present) {
+      throw new Error(
+        `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution: a distribution read off the prototype describes runs that did not happen`,
+      );
+    }
+    const results = ownResults.value as readonly BudgetPolicyArmResult[];
+    const stopKindDistribution = ownStopKinds.value as Readonly<
+      Record<string, number>
+    >;
+
+    /** An own record, or nothing — never a container the run did not carry. */
+    const ownRecord = (source: unknown, key: string): object | undefined => {
+      if (source === null || typeof source !== 'object') return undefined;
+      const slot = readOwnValue(source, key);
+      return slot.present && slot.value !== null && typeof slot.value === 'object'
+        ? (slot.value as object)
+        : undefined;
+    };
+    /** An own measured number, or nothing. */
+    const ownNumber = (source: unknown, key: string): number | undefined => {
+      if (source === null || typeof source !== 'object') return undefined;
+      const slot = readOwnValue(source, key);
+      return typeof slot.value === 'number' ? slot.value : undefined;
+    };
     const metricKeys: string[] = [
       ...new Set<string>(
-        results.flatMap((result) => Object.keys(result.metrics)),
+        results.flatMap((result) => Object.keys(ownRecord(result, 'metrics') ?? {})),
       ),
     ].sort();
     // Derived from what the runs published rather than from a list here, so an
@@ -336,7 +384,7 @@ export function summarizeBudgetPolicyEvidence({
     const axisKeys: string[] = [
       ...new Set<string>(
         results.flatMap((result) =>
-          Object.keys(result.resources ?? {}).filter(
+          Object.keys(ownRecord(result, 'resources') ?? {}).filter(
             (key) => key !== 'schemaVersion',
           ),
         ),
@@ -351,7 +399,7 @@ export function summarizeBudgetPolicyEvidence({
         reservedChallengeBudget: parsed.reservedChallengeBudget,
       }),
       runCount: results.length,
-      stopKindDistribution: experiment.stopKindDistribution,
+      stopKindDistribution,
       // ⚠ A run that did not publish a key contributes NOTHING to that key's
       // mean, rather than contributing a zero. `?? 0` would manufacture the
       // "spent nothing on that axis" reading that `benchmark-evaluation.ts`
@@ -365,7 +413,9 @@ export function summarizeBudgetPolicyEvidence({
           axisEntry(
             key,
             results
-              .map((result) => result.metrics[key]?.score)
+              .map((result) =>
+                ownNumber(ownRecord(ownRecord(result, 'metrics'), key), 'score'),
+              )
               .filter((score): score is number => typeof score === 'number'),
           ),
         ]),
@@ -376,7 +426,7 @@ export function summarizeBudgetPolicyEvidence({
           axisEntry(
             key,
             results
-              .map((result) => result.resources?.[key])
+              .map((result) => ownNumber(ownRecord(result, 'resources'), key))
               .filter((value): value is number => typeof value === 'number'),
           ),
         ]),
