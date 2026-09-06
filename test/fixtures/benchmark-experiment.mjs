@@ -245,18 +245,68 @@ export function replayBackedNodes(record, traces, replayCounts) {
     }),
     derive_predictions: visit('derive_predictions'),
     plan_investigation: visit('plan_investigation'),
+    /**
+     * Replays every recorded call and writes BOTH channels the execution of a
+     * tool produces: the evidence it yielded, and the trial that yielded it.
+     *
+     * The trial half is not bookkeeping. `toolCallsUsed` is derived as
+     * `finalState.trials.length` (`benchmark-evaluation.ts`), so an arm that
+     * replays real calls and leaves this channel unwritten publishes a
+     * measured-looking zero on the one axis that reports what it spent — which
+     * is the reading that file's own comment says the evidence must never
+     * manufacture. One trial per recorded call, including a call whose result
+     * came back `unavailable` or `error`: it produced no evidence and it was
+     * still a call this investigation spent.
+     * see benchmark-resource-evidence.test.mjs › "counts one tool call per tool
+     * call the replay-backed arm replayed" and › "counts a replayed tool call
+     * that produced no evidence"
+     *
+     * Two identity choices carry weight, and both are pinned rather than
+     * described:
+     *
+     * - `attempt` is 1 on every trial, because nothing here retries. That keeps
+     *   `retryCount` — trials past their first attempt — a measurement rather
+     *   than a constant somebody typed;
+     *   see › "measures a retry count of zero off trials that are all on their
+     *   first attempt"
+     * - `testId` is this node's own, and deliberately not the
+     *   `challenge-test-${runId}` the challenge plans.
+     *   `executedDiscriminatingTrialCount` counts trials whose `testId` the
+     *   challenge planned, so a collision here would credit a challenge whose
+     *   discriminating test this fixture never executes — a behaviour score
+     *   moved by a resource fix.
+     *   see › "writing the replayed tool calls into the trials channel credits
+     *   no challenge"
+     *
+     * `durationMs` is 0 because a replay measures nothing: the recorded result
+     * is returned from memory, and the wall clock the benchmark reports is
+     * measured around the whole investigation instead.
+     */
     async execute_investigation(state) {
       traces.get(record.runId).push('execute_investigation');
       if (state.evidence.length > 0) return {};
 
       const evidence = [];
-      for (const entry of record.fixture.entries) {
+      const trials = [];
+      for (const [index, entry] of record.fixture.entries.entries()) {
         const replayed = await replay.execute(entry.toolId, entry.input);
         assert.deepEqual(replayed, entry.result);
         replayCounts.set(record.runId, replayCounts.get(record.runId) + 1);
-        if (replayed.status === 'ok') evidence.push(...replayed.output);
+        const produced = replayed.status === 'ok' ? replayed.output : [];
+        evidence.push(...produced);
+        trials.push({
+          id: `replay-trial-${record.runId}-${index + 1}`,
+          runId: record.runId,
+          testId: `replay-test-${record.runId}-${index + 1}`,
+          attempt: 1,
+          tool: entry.toolId,
+          input: entry.input,
+          status: replayed.status,
+          durationMs: 0,
+          evidenceIds: produced.map(({ id }) => id),
+        });
       }
-      return { evidence };
+      return { trials, evidence };
     },
     evaluate_predictions: visit('evaluate_predictions'),
     interpret_residual_evidence: visit('interpret_residual_evidence'),
