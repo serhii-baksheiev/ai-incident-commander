@@ -822,8 +822,14 @@ test('runs its lane only when it is the process entry point', () => {
  * that reports success having done nothing, which is the one failure this
  * file's header promises cannot happen.
  *
- * Not a contrived path. macOS resolves `$TMPDIR` through `/var` → `/private/var`,
- * so `mkdtempSync` alone is enough to produce it — which is what this row uses.
+ * The `symlinkSync` below is what produces the divergence, and it is there so
+ * the row works on every platform: on macOS `$TMPDIR` already resolves through
+ * `/var` → `/private/var`, so a temp directory alone would do it, but on the
+ * Linux runner CI uses `/tmp` is a real directory and nothing would diverge.
+ *
+ * The macOS fact is why this is an ordinary path rather than a contrived one —
+ * a scratch clone under `mkdtempSync` is enough to meet it — not what this row
+ * relies on.
  */
 test('refuses without a credential when it is reached through a symlinked path', () => {
   const linkRoot = mkdtempSync(join(tmpdir(), 'aic-111-entrypoint-'));
