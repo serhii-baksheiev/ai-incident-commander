@@ -580,8 +580,12 @@ with no investigation change".
 
 Quality alone cannot tell an improvement from a change that bought the same
 answer more expensively, so a benchmark evaluation may also carry **resource
-evidence**: a versioned object with one field per axis — logical iterations,
-declared LLM calls, tool calls, wall-clock duration, retry count, resume count.
+evidence**: a versioned object with one field per axis. The axes are not
+enumerated here — the list moved once already and this copy did not — so read
+them from `BenchmarkResourceEvidence` in `packages/evals/src/benchmark-evaluation.ts`,
+whose membership is checked against the outbound allowlists.
+see `test/model-run-identity-correspondence.test.mjs` › "carries every declared
+resource axis in one of the two resource allowlists"
 
 Three properties are load-bearing, and each is a rule rather than a preference:
 
@@ -598,7 +602,13 @@ Three properties are load-bearing, and each is a rule rather than a preference:
   number computed from them.
 - **Provenance decides what may be published, and the line is who originated the
   number** — not which channel the graph owns, because the graph owns the
-  control block either way. The six axes split three and three.
+  control block either way. The REQUIRED axes split three and three.
+
+  Two further axes are **optional** and provider-originated —
+  `inputTokensUsed` and `outputTokensUsed`. They are declared and validated but
+  **nothing produces them yet**, so no record this repository can emit carries
+  one; the provenance rule below is what they would have to satisfy when a
+  producer is wired, not a description of anything published today.
 
   **Graph-originated** — `logicalIterationsUsed` and `resumeCount`, which the
   graph increments itself and no node update can write, and
@@ -829,12 +839,47 @@ Dependency rule:
 
 ```text
 domain imports no LangChain/LangGraph
+domain and graph import no model provider, and no roles package
 graph → domain
 tools → domain
-evals → domain/graph
+roles → domain/graph
+evals → domain/graph/roles
 ```
 
-This direction is mechanically linted.
+Three rules in `dependency-cruiser.config.mjs` enforce part of this, and each
+has its own scope — the block says which, because reading them as one rule over
+all six lines is how a session reports a violation that is not one:
+
+| rule | scoped from | what it refuses |
+| --- | --- | --- |
+| `domain-does-not-import-orchestration-frameworks` | `^packages/domain/` | line 1, **for `domain` only** — `graph` imports LangGraph on every build, by design |
+| `graph-and-domain-do-not-import-model-providers` | `^packages/(?:domain\|graph)/` | line 2, both layers |
+| `domain-does-not-import-product-implementation` | `^packages/domain/` | the one-way-ness of lines 3 and 4 — `domain` may not import `graph` or `tools` |
+
+What no rule covers is the direction of lines 5 and 6, with one exception the
+table above already states: nothing refuses an edge OUT of `roles` and `evals`,
+and nothing refuses an edge INTO `evals` at all. The one exception is an edge
+into **`roles`** from `domain` or `graph`, which the second rule does refuse —
+its `to` names `packages/roles` and the provider SDKs, and `packages/evals`
+appears in no rule's `to` path. Measured at the AIC-94 gate, both directions: a
+`packages/graph` module importing `@aic/evals` passes `npm run lint:graph` with
+the edge resolved and valid, while the same probe importing `@aic/roles` errors. Everything else there is the workspace manifests'
+business and is convention.
+
+An earlier version of this paragraph said no rule covered either direction. It
+contradicted its own table two lines up, and `prose-reviewer` measured that at
+the AIC-94 gate — which is the failure this block's preamble warns about, in the
+inverse direction: reporting a violation that is not one, and reporting cover
+that is not there, are the same mistake.
+
+`roles` is the package that owns the provider seam (§ the reference-model roles),
+so the second rule is what keeps the frozen provider-independence of `domain` and
+`graph` true rather than merely stated — it refuses a provider SDK **and** an
+import of `packages/roles` from either of them.
+see test/roles-boundary.test.mjs › "declares the model-provider boundary rule for
+graph and domain" and test/repository-scaffold.test.mjs › "lint rejects a graph
+import of the model role package" (declared there as the probe name `rejects a
+graph import of the model role package`, run through ``test(`lint ${probe.name}`)``)
 
 ## 20. Rig integration
 

@@ -1988,11 +1988,30 @@ test('pins direct LangSmith 0.9.0 ownership in observability without changing ev
   );
 
   assert.equal(observabilityManifest.dependencies?.langsmith, '0.9.0');
+  // `@aic/roles` joined this set with AIC-94: the live-model lane lives in
+  // `packages/evals` and requires the credential through
+  // `requireModelConfig`, so the evaluation layer depends on the role layer it
+  // evaluates. It is a WORKSPACE edge and brings no published package with it —
+  // `packages/roles` declares only workspace dependencies, the provider path is
+  // plain `fetch`, and the assertion below still holds that `langsmith` is
+  // owned by `packages/observability` alone.
+  const evalsWorkspaceDependencies = Object.keys(evalsManifest.dependencies ?? {})
+    .filter((dependency) => dependency.startsWith('@aic/'))
+    .sort();
+  assert.deepEqual(evalsWorkspaceDependencies, [
+    '@aic/domain',
+    '@aic/graph',
+    '@aic/roles',
+  ]);
+  const rolesManifest = JSON.parse(
+    readFileSync(resolve(projectRoot, 'packages/roles/package.json'), 'utf8'),
+  );
   assert.deepEqual(
-    Object.keys(evalsManifest.dependencies ?? {})
-      .filter((dependency) => dependency.startsWith('@aic/'))
-      .sort(),
-    ['@aic/domain', '@aic/graph'],
+    Object.keys(rolesManifest.dependencies ?? {}).filter(
+      (dependency) => !dependency.startsWith('@aic/'),
+    ),
+    [],
+    'the role layer must reach the model provider without a published dependency, or this edge would import a supply chain into the eval layer',
   );
   assert.equal(evalsManifest.dependencies?.langsmith, undefined);
   assert.deepEqual(graph.INVESTIGATION_NODE_NAMES, expectedLifecycleNodes);

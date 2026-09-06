@@ -114,6 +114,108 @@ evaluation that carries no resource evidence at all", › "refuses resource
 evidence at an unknown schema version before any run is created", and ›
 "refuses resource evidence missing ${field} before any run is created".
 
+## Reference model roles and the live evaluation lane
+
+Three investigation roles — `generate_hypotheses`,
+`interpret_residual_evidence` and `challenge_hypothesis` — have model-backed
+implementations in `packages/roles`, written against a provider-neutral
+`ModelPort`. The scripted nodes remain the path for every deterministic unit and
+regression test; the model-backed roles are used only by the live lane below.
+
+One reference provider and model are configured explicitly, through
+`ANTHROPIC_API_KEY` and the optional `AIC_REFERENCE_MODEL_ID` override.
+`resolveModelConfig` takes the environment as an argument and **never returns
+the credential**: it reports whether the lane can run and under which model, and
+the key is read once, at the executable edge — which holds because no workspace
+package reads the process environment at all, checked by
+`test/roles-boundary.test.mjs` › "keeps every process-environment read out of the
+workspace packages". No provider SDK is installed — the
+adapter issues one plain `fetch` with an injected transport, so the whole path
+is unit-testable with no network. The graph and domain layers stay
+provider-independent, and that is now mechanical on both sides: the
+`graph-and-domain-do-not-import-model-providers` rule in
+`dependency-cruiser.config.mjs` refuses the import, proven by
+`test/repository-scaffold.test.mjs` › "lint rejects a graph import of the model
+role package" and › "lint rejects a graph import of a provider sdk". The
+provider host and wire format live in exactly one file, held there by
+`test/roles-boundary.test.mjs` › "reaches the model provider from exactly one
+file in the workspace".
+
+```bash
+npm run eval:live-model
+npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./lane-report.json
+```
+
+> 🔴 **Read everything below in the present tense with this in front of it: no
+> model has ever executed these roles in this repository.** There is no provider
+> credential in this environment, so every test of this lane and of the three
+> roles drives an injected or fetch-stubbed port, and no HTTP request has left
+> this machine for a provider. The path is implemented and refuses correctly
+> without a credential; it is not evidence that a real model's output satisfies
+> the domain schemas, and no model-quality figure, token count or cost figure in
+> this repository was produced by a model. AIC-94's acceptance rows 1 and 2 are
+> **unproven** on that ground, not met.
+>
+> The same disclosure is at the top of `packages/evals/src/live-model-lane.ts`,
+> `scripts/eval-live-model.mjs`, `test/live-model-lane.test.mjs` and
+> `test/roles-model-nodes.test.mjs`.
+
+The lane runs two arms over the accepted hold-out corpus, at one commit, in one
+process: a scripted control arm and a model arm that differ only in those three
+roles. They are reported separately and per metric, with no composite anywhere.
+If the control arm moves against its declared baseline, the regression is in the
+harness and the model arm's numbers are marked unreportable; with no declared
+baseline the model arm is unreportable for the same reason. Both arms are
+bounded by an explicit run cap and completion cap, published in the report.
+
+🔴 **What the control arm can catch is narrower than "it moved".** Measured over
+the final-evaluation corpus, the replay-backed control scores a single value of
+**zero on every metric it emits**, and zero is the worst score for five of the
+six. So it detects a harness change that moves a metric **up**, or that stops
+emitting one — and it cannot detect one that pushes a metric further down,
+because there is no further down. Read a `harness-regression` verdict as covering
+the first direction only, and its absence as saying nothing about the second.
+The floor set is asserted rather than described: `test/live-model-lane.test.mjs`
+› "measures the harness zero that makes evidence_coverage unreportable".
+
+**What leaves the process.** When a credential is configured, the prompt carries
+the investigation state — the incident, hypotheses, predictions, evidence and
+assessments — to the configured provider's HTTPS endpoint. That is the only
+outbound destination **the lane itself** has; `--publish` adds a second, the
+LangSmith ingestion described under *LangSmith tracing* below. It lives in one
+file
+(`packages/roles/src/reference-model-port.ts`, held to one file by
+`test/roles-boundary.test.mjs` › "reaches the model provider from exactly one
+file in the workspace" and › "performs the provider request in the adapter and
+nowhere else"), and without a credential nothing leaves at all.
+
+Two things the lane deliberately does not do. It **withholds
+`evidence_coverage`** from both arms with the reason attached: that evaluator
+compares a hand-written ground-truth predicate against an evidence statement as
+an exact fingerprint, so any graph-executed run scores zero for a harness reason
+rather than a model one — a pre-existing evaluator defect, filed separately, and
+publishing the zero would be exactly the confound this lane exists to prevent.
+And it **never retries a publication refusal**: LangSmith ingestion can refuse a
+write — an exhausted tenant quota is one way — and a refused publication fails
+the command rather than being smoothed into a success. Publication is opt-in; without `--publish` the
+lane produces its per-metric evidence locally with no ingestion at all.
+
+With no credential the command exits non-zero with a named
+`MissingModelCredentialError` and touches nothing — no dataset, no project, no
+run, no model call. Executable proof: `test/live-model-lane.test.mjs` ›
+"exits non-zero naming the variable when the command is run with no credential"
+and › "refuses the lane with the named variable and touches nothing when no
+credential is set".
+
+Run identity records what produced it: `modelId` and `modelProvider` are
+optional run-metadata fields, and `inputTokensUsed` / `outputTokensUsed` are
+optional resource axes at resource schema version 2. All four are optional
+because a run with no model has nothing to declare, and a published zero would
+be a measured-zero claim rather than an absent measurement. The correspondence
+between those types and the persistence allowlists is computed in both
+directions by `test/model-run-identity-correspondence.test.mjs`, because a field
+added to a type but not to an allowlist is dropped without a word.
+
 ## Project status
 
 | Area | Status |
@@ -142,7 +244,7 @@ The architecture freeze means structural changes must be justified by benchmark 
 apps/cli                  command-line entrypoint
 packages/domain           framework-free domain contracts
 packages/graph            LangGraph state, nodes, edges, and routing
-packages/roles            semantic roles and prompts
+packages/roles            semantic roles, prompts, and the reference model port
 packages/tools            live and replay tool adapters
 packages/persistence      checkpointing and recovery
 packages/evals            deterministic and LangSmith evaluation gates

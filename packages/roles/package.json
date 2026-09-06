@@ -8,5 +8,9 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@aic/domain": "0.0.0",
+    "@aic/graph": "0.0.0"
   }
 }

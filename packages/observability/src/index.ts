@@ -16,7 +16,7 @@ const PERSISTED_METRIC_KEYS = [
  * fields it declares may mean something else, and publishing them under the
  * names below would be a measurement claim nobody made.
  */
-const PERSISTED_RESOURCE_SCHEMA_VERSION = 1;
+const PERSISTED_RESOURCE_SCHEMA_VERSION = 2;
 const PERSISTED_RESOURCE_KEYS = [
   'logicalIterationsUsed',
   'declaredLlmCallsUsed',
@@ -24,6 +24,28 @@ const PERSISTED_RESOURCE_KEYS = [
   'wallClockDurationMs',
   'retryCount',
   'resumeCount',
+] as const;
+
+/**
+ * Resource axes a record MAY declare, held to the same count rule when present.
+ *
+ * Split from the list above rather than added to it, because a required token
+ * axis would refuse every deterministic record: no model ran, so there is
+ * nothing to declare, and an absent axis is the honest shape. Present-and-wrong
+ * is still refused — the axes are as strictly checked as their required
+ * neighbours, they are simply allowed not to be there.
+ * see model-run-identity-correspondence.test.mjs › "carries every declared
+ * resource axis in one of the two resource allowlists"
+ * see benchmark-resource-evidence.test.mjs › "refuses a token axis that is
+ * present and is not a count"
+ *
+ * The version above moved 1 -> 2 with them: the shape a record can carry
+ * changed, and a reader that accepted a v1 record under the new shape would be
+ * guessing that the absence was intentional rather than truncated.
+ */
+const PERSISTED_OPTIONAL_RESOURCE_KEYS = [
+  'inputTokensUsed',
+  'outputTokensUsed',
 ] as const;
 
 const PERSISTED_BEHAVIOR_METRIC_KEYS = [
@@ -68,6 +90,8 @@ const PERSISTED_OPTIONAL_METADATA_KEYS = [
   'evaluatorVersion',
   'seed',
   'docsAvailable',
+  'modelId',
+  'modelProvider',
 ] as const satisfies readonly (keyof PersistedBenchmarkRunMetadata)[];
 
 const PERSISTED_BEHAVIOR_EVALUATOR_VERSION =
@@ -146,6 +170,11 @@ export interface PersistedBenchmarkRunMetadata {
   readonly temperature: number;
   readonly seed?: number;
   readonly docsAvailable?: boolean;
+  // Optional for the reason `BenchmarkVersions` states where they originate: a
+  // run with no model declares neither, and an absent identity is not the same
+  // claim as a declared placeholder one.
+  readonly modelId?: string;
+  readonly modelProvider?: string;
 }
 
 export interface PersistedBenchmarkRecord {
@@ -547,19 +576,32 @@ function requireResourceEvidence(
   const entries: [string, number][] = [
     ['schemaVersion', PERSISTED_RESOURCE_SCHEMA_VERSION],
   ];
+  const requireCount = (key: string, value: unknown): number => {
+    // The same rule the graph applies to its own counters: a count is a
+    // non-negative safe integer. Hoisted out of the required loop when the
+    // optional axes arrived, so the two lists cannot drift into two standards —
+    // an optional axis checked more loosely is the one a fabricated token count
+    // would come through.
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`benchmark resource evidence ${key} is not a count`);
+    }
+    return value;
+  };
+  for (const key of PERSISTED_OPTIONAL_RESOURCE_KEYS) {
+    const value = own(key);
+    // Absent is the deterministic path and is not an error. Present is held to
+    // the same standard as a required axis.
+    if (value !== undefined) entries.push([key, requireCount(key, value)]);
+  }
   for (const key of PERSISTED_RESOURCE_KEYS) {
     const value = own(key);
     if (value === undefined) {
       throw new Error(`benchmark resource evidence missing ${key}`);
     }
-    // The same rule the graph applies to its own counters: a count is a
-    // non-negative safe integer. Restated rather than imported because this
-    // layer keeps its own outbound vocabulary — but it must not be LOOSER than
-    // the graph's, or a negative duration crosses the boundary as evidence.
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-      throw new Error(`benchmark resource evidence ${key} is not a count`);
-    }
-    entries.push([key, value]);
+    // Restated rather than imported because this layer keeps its own outbound
+    // vocabulary — but it must not be LOOSER than the graph's, or a negative
+    // duration crosses the boundary as evidence.
+    entries.push([key, requireCount(key, value)]);
   }
   return Object.fromEntries(entries);
 }
@@ -799,13 +841,26 @@ async function persistPreparedExperiment({
     // surface short of that. Nothing is blended: no composite key is emitted,
     // and `schemaVersion` is metadata about the shape rather than an axis, so
     // it stays out of the score stream.
+    //
+    // The optional token axes are read from the PROJECTION rather than from a
+    // second list: `requireResourceEvidence` inserts them only when the record
+    // declared them, so iterating what it built publishes a token axis exactly
+    // when one was measured and never manufactures a zero for a run with no
+    // model.
+    // see benchmark-resource-evidence.test.mjs › "publishes a token axis only
+    // when the record declared one"
     if (resources !== undefined) {
-      for (const key of PERSISTED_RESOURCE_KEYS) {
+      for (const key of [
+        ...PERSISTED_RESOURCE_KEYS,
+        ...PERSISTED_OPTIONAL_RESOURCE_KEYS,
+      ]) {
+        const score = resources[key];
+        if (score === undefined) continue;
         await client.createFeedback({
           runId: record.runId,
           sessionId: projectId,
           key,
-          score: resources[key],
+          score,
         });
       }
     }

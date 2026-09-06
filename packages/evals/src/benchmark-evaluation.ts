@@ -51,6 +51,23 @@ export interface BenchmarkVersions {
   readonly temperature: number;
   readonly seed?: number;
   readonly docsAvailable?: boolean;
+  /**
+   * Which model produced the run, and whose.
+   *
+   * Optional because the deterministic path has no model: a scripted or replay
+   * run declares neither, and a run that declared `modelId: 'none'` would be
+   * asserting a model identity nobody chose. Absent means "no model executed a
+   * role here", which is the honest reading for every v0.1 record and for the
+   * scripted control arm of the live lane.
+   *
+   * `modelProvider` is separate from `modelId` rather than folded into it: two
+   * providers can serve the same model name, and a comparison across them is
+   * exactly what a reference-model evaluation must not make by accident.
+   * see model-run-identity-correspondence.test.mjs › "carries every declared
+   * run-metadata field in one of the two metadata allowlists"
+   */
+  readonly modelId?: string;
+  readonly modelProvider?: string;
 }
 
 export interface BenchmarkRunMetadata extends BenchmarkVersions {
@@ -112,7 +129,7 @@ export type BehaviorMetrics = Partial<{
  * schema version on purpose: this one describes what a BENCHMARK publishes,
  * which moves for different reasons than what the graph persists.
  */
-export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 1 as const;
+export const BENCHMARK_RESOURCE_SCHEMA_VERSION = 2 as const;
 
 /**
  * What a run SPENT, one axis per field and no axis computed FROM ANOTHER AXIS.
@@ -150,6 +167,49 @@ export interface BenchmarkResourceEvidence {
   readonly wallClockDurationMs: number;
   readonly retryCount: number;
   readonly resumeCount: number;
+  /**
+   * What the model actually consumed, as the provider reported it.
+   *
+   * OPTIONAL, and that is the whole design of these two axes. Every other axis
+   * here is measurable on any run; these two exist only where a model ran, and a
+   * scripted run that published `inputTokensUsed: 0` would be claiming a
+   * measured zero rather than an absent measurement — the reading this evidence
+   * exists to refuse everywhere else in this file. Absent means "no model
+   * executed a role", which is what the deterministic path is.
+   *
+   * 🔴 NOTHING PRODUCES THEM YET. They are declared and validated — a present
+   * value must be a count, and an absent one stays absent — but no code path
+   * assigns either. `MeasuredBenchmarkResources` is an `Omit` of this type — it
+   * leaves seven properties, the five REQUIRED axes and these two optional ones
+   * — and its only producer sets the five required axes —
+   * `logicalIterationsUsed`, `declaredLlmCallsUsed`, `toolCallsUsed`,
+   * `retryCount`, `resumeCount` — and neither of these. `wallClockDurationMs`
+   * is the runner's, not the producer's. So a fully credentialed live run
+   * publishes no token count on any record.
+   * ⚠ That is a statement about the tree as it stands, re-measured at the
+   * AIC-94 gate after an earlier version of this paragraph said "six". It is
+   * not pinned by a row, and a producer added tomorrow will silently falsify
+   * it — read it as an observation with a date on it, not as a guarantee. Do not read the declaration as a
+   * measurement: that conflation is the exact failure this item exists to
+   * prevent, and an earlier version of this comment described a data flow from
+   * the usage ledger that does not exist. `code-reviewer` and `prose-reviewer`
+   * both measured it at the AIC-94 gate. Wiring it needs PER-RUN accounting the
+   * ledger does not offer — `read()` returns lane-cumulative totals — which is
+   * why it is a separate item rather than a line here.
+   *
+   * Where token evidence DOES exist today is the lane report's
+   * `arms.model.usage`, which is lane-cumulative and is what acceptance row 5
+   * is satisfied by.
+   *
+   * They are kept separate from `declaredLlmCallsUsed` because those count
+   * different things and neither can be derived from the other:
+   * `declaredLlmCallsUsed` counts only what a WRAPPED lifecycle node declared,
+   * and `challenge_hypothesis` has no declaration channel at all.
+   * see roles-model-nodes.test.mjs › "records the challenge role usage in the
+   * ledger while the graph counter cannot see it"
+   */
+  readonly inputTokensUsed?: number;
+  readonly outputTokensUsed?: number;
 }
 
 /**
