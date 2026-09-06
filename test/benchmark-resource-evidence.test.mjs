@@ -1339,8 +1339,13 @@ test('counts a replayed tool call that produced no evidence', async () => {
  *
  * What matters here is the measurement: the fixture never runs the challenge's
  * discriminating test, and `challenge_effect` scored 0 / `no-investigation-change`
- * on every run that emits it, before the channel was written and after. The row
- * directly below is what holds that.
+ * on every run that emits it, before the channel was written and after.
+ *
+ * The row directly below holds the AFTER half, which is the half a future
+ * change can break. The before half is a measurement taken at `b2950d0` and no
+ * test at this head can pin it — a value read off a channel nothing wrote is
+ * not reproducible once something writes it. That is the whole reason this
+ * constant is a characterisation pin rather than a derivation.
  */
 const CHALLENGE_EFFECT_BEFORE_TRIALS = Object.freeze({
   score: 0,

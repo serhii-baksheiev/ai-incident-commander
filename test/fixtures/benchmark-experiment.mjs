@@ -277,8 +277,8 @@ export function replayBackedNodes(record, traces, replayCounts) {
      * - `attempt` is 1 on every trial, because nothing here retries. That keeps
      *   `retryCount` — trials past their first attempt — a measurement rather
      *   than a constant somebody typed;
-     *   see benchmark-resource-evidence.test.mjs › "measures a retry count of
-     *   zero off trials that are all on their first attempt"
+     *   see benchmark-resource-evidence.test.mjs ›
+     *   "measures a retry count of zero off trials that are all on their first attempt"
      * - `testId` is this node's own, and deliberately not the
      *   `challenge-test-${runId}` the challenge plans.
      *   `executedDiscriminatingTrialCount` counts trials that are BOTH
