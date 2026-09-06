@@ -1129,9 +1129,10 @@ test('counts no resource axis the run did not own', async () => {
 });
 
 /**
- * The pin behind a sentence two documents make.
+ * The pin behind a sentence three sites make.
  *
- * `budget-policy.ts` and the architecture document both say `llmCallsUsed` is 0
+ * `budget-policy.ts`, the architecture document and `packages/graph`'s own
+ * header all say `llmCallsUsed` is 0
  * on EVERY benchmark run, and the only pointer either offered was
  * `investigation-graph.test.mjs` › "leaves llmCallsUsed at zero when no node
  * declares an llm call" — which drives `fakeNodes` through the graph and never
@@ -1204,9 +1205,15 @@ test('counts only the results that owned their containers, when a run mixes both
     metrics: { accuracy: { score: 10 } },
     resources: { toolCallsUsed: 10 },
   };
-  // Two distinct inheriting shapes, because the container read and the per-key
-  // read are separate call sites: one result inherits the CONTAINERS, the other
-  // owns `metrics` and `resources` but inherits the record under each key.
+  // Two distinct inheriting shapes, because the container read and the read one
+  // level in are separate call sites: one result inherits the CONTAINERS, the
+  // other owns `metrics` and `resources` and inherits what sits under each key.
+  //
+  // ⚠ Those two halves are not symmetric, and calling them both "the record
+  // under each key" would invite a later reader to simplify one of them away.
+  // Under `metrics` the inherited thing is a RECORD, read by `ownRecord`; under
+  // `resources` it is a NUMBER, read by `ownNumber`. So the resources half pins
+  // the value read, not a per-key container read.
   const inheritedContainers = Object.create({
     metrics: { accuracy: { score: 90 } },
     resources: { toolCallsUsed: 90 },
