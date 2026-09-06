@@ -405,6 +405,14 @@ const MALFORMED_POLICIES = [
     named: 'llmCallBudget',
     policy: sweepPolicy('aic-18-malformed-string', 4, '8', 2),
   },
+  // Not a policy at all. Both rows below exist because a mutation showed the
+  // branch that refuses them was unpinned, and the second one caught a real
+  // fail-open: `?? BENCHMARK_BUDGET_POLICY` cannot tell "not supplied" from
+  // "supplied and null", so an explicit null silently ran under the shipped
+  // policy. An ABSENT option is the fail-open case and defaults; an option
+  // PRESENT in a shape the runner cannot read is the refusal case.
+  { label: 'a policy that is not an object', named: 'policyVersion', policy: 'nonsense' },
+  { label: 'an explicitly null policy', named: 'policyVersion', policy: null },
 ];
 
 for (const { label, named, policy } of MALFORMED_POLICIES) {

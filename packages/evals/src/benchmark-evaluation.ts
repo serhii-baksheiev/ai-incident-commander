@@ -765,9 +765,17 @@ export async function runGraphBenchmarkExperiment(
   // halfway through a corpus, with some runs already recorded under a version
   // the experiment never executed.
   // see budget-policy.test.mjs › "refuses a fractional budget instead of falling back to the shipped one"
-  const budgetPolicy = parseBenchmarkBudgetPolicy(
-    options.budgetPolicy ?? BENCHMARK_BUDGET_POLICY,
-  );
+  //
+  // `Object.hasOwn` rather than `??`: an ABSENT option is the fail-open case and
+  // takes the shipped policy, while an option PRESENT in a shape this runner
+  // cannot read is the refusal case. `?? BENCHMARK_BUDGET_POLICY` cannot tell
+  // those apart, so an explicit `null` ran the whole corpus under a policy the
+  // caller never asked for -- measured, and it is why these two states are now
+  // separated.
+  // see budget-policy.test.mjs › "refuses an explicitly null policy instead of falling back to the shipped one"
+  const budgetPolicy = Object.hasOwn(options, 'budgetPolicy')
+    ? parseBenchmarkBudgetPolicy(options.budgetPolicy)
+    : BENCHMARK_BUDGET_POLICY;
 
   // Keyed by runId rather than returned through `investigate`, so the evidence
   // travels a path the opaque callback contract cannot reach.
