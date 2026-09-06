@@ -44,6 +44,10 @@ import {
   replayBackedNodes,
   requireFunction,
 } from './fixtures/benchmark-experiment.mjs';
+import {
+  withAccessorPollutedObjectPrototype,
+  withPollutedObjectPrototype,
+} from './fixtures/prototype-decoy.mjs';
 
 /* -------------------------------------------------------------------------- */
 /* The vocabulary these rows are written against                              */
@@ -871,6 +875,82 @@ test('states in the report that llmCallBudget is not empirically calibrated, and
     true,
     'one reason repeated under three budgets is a placeholder: the reserve is reached and the other two are not, and the statements have to say different things',
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 7. The policy is read from what the caller OWNS                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * AIC-67 and AIC-69 were both this defect, and the convention they left is
+ * repo-wide: a value published as measured is read from an own data property or
+ * it is refused. A budget policy is caller-supplied input, and the version
+ * string it carries is what every downstream row is keyed by — so a policy
+ * assembled from `Object.prototype` is a measurement claim about a run that
+ * never happened.
+ */
+test('refuses a policy whose fields exist only on the prototype', async () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  await withPollutedObjectPrototype('policyVersion', 'budget-policy-v0.2', async () => {
+    await withPollutedObjectPrototype('maxIterations', 0, async () => {
+      await withPollutedObjectPrototype('llmCallBudget', 0, async () => {
+        await withPollutedObjectPrototype('reservedChallengeBudget', 0, async () => {
+          assert.throws(
+            () => parse({}),
+            /budget\s*policy/i,
+            'an empty object is not a policy: assembling one from the prototype publishes evidence under a version nobody declared',
+          );
+        });
+      });
+    });
+  });
+});
+
+test('refuses a policy whose version exists only on the prototype', async () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  await withPollutedObjectPrototype('policyVersion', 'budget-policy-v0.2', async () => {
+    assert.throws(
+      () => parse({ maxIterations: 0, llmCallBudget: 0, reservedChallengeBudget: 0 }),
+      /policyVersion/,
+      'a policy that declares no version must be refused, not handed the shipped one off the prototype — that is the exact substitution this parser says it prevents',
+    );
+  });
+});
+
+test('keeps a validated budget even when an inherited accessor tries to swallow it', async () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  await withAccessorPollutedObjectPrototype('maxIterations', 999999, [], async () => {
+    const policy = parse({
+      policyVersion: 'aic-18-accessor-decoy',
+      maxIterations: 4,
+      llmCallBudget: 8,
+      reservedChallengeBudget: 2,
+    });
+    assert.equal(
+      policy.maxIterations,
+      4,
+      'the value the caller declared and this parser validated must be the value it returns: an accumulator that writes through the prototype lets an inherited setter rewrite an honest policy',
+    );
+  });
+});
+
+test('refuses a report whose arms exist only on the prototype', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arm = {
+    policy: requireBudgetPolicy(),
+    experiment: { results: [], stopKindDistribution: {} },
+  };
+
+  await withPollutedObjectPrototype('arms', [arm], async () => {
+    assert.throws(
+      () => summarize({}),
+      /arm/i,
+      'a report assembled from the prototype is a published measurement of runs the caller never handed over',
+    );
+  });
 });
 
 test('carries one calibration statement per declared budget field, and no other', async () => {

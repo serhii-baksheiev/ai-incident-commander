@@ -64,7 +64,38 @@ export const BENCHMARK_BUDGET_POLICY: BenchmarkBudgetPolicy = Object.freeze({
 });
 
 const isLogicalCount = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  typeof value === 'number' &&
+  Number.isInteger(value) &&
+  value >= 0 &&
+  value <= Number.MAX_SAFE_INTEGER;
+
+/**
+ * The slot as the caller OWNS it, never as a `[[Get]]` would report it.
+ *
+ * 🔴 A budget policy is caller-supplied input whose version string keys every
+ * row published from it, so a field read through the prototype chain is a
+ * measurement claim about a run nobody declared. Measured before this was here:
+ * under a polluted `Object.prototype`, `parse({})` returned a fully valid
+ * policy carrying the SHIPPED version string with every budget at 0, and
+ * driving it through the graph runner flipped the whole calibration corpus from
+ * `sufficient` to `budget-exhausted` while publishing under that version.
+ *
+ * An own ACCESSOR answers `present: false` too: a value a getter computes is
+ * not a value the caller wrote down. Same shape as
+ * `packages/persistence/src/own-value-serde.ts` and the graph's own refusal
+ * sites, which is the convention AIC-67 and AIC-69 left behind.
+ * see budget-policy.test.mjs › "refuses a policy whose version exists only on the prototype"
+ */
+const readOwnValue = (
+  source: object,
+  key: string,
+): { present: boolean; value?: unknown } => {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+    return { present: false };
+  }
+  return { present: true, value: descriptor.value };
+};
 
 /**
  * Parse a caller-supplied policy, or refuse it.
@@ -86,30 +117,39 @@ export function parseBenchmarkBudgetPolicy(
     );
   }
 
-  const record = candidate as Record<string, unknown>;
-  const policyVersion = record['policyVersion'];
-  if (typeof policyVersion !== 'string' || policyVersion.trim().length === 0) {
+  const version = readOwnValue(candidate, 'policyVersion');
+  if (
+    !version.present ||
+    typeof version.value !== 'string' ||
+    version.value.trim().length === 0
+  ) {
     throw new Error(
-      'budget policy requires a non-empty policyVersion: evidence published under an unnamed policy cannot be compared with anything',
+      'budget policy requires a non-empty own policyVersion: evidence published under an unnamed or inherited policy cannot be compared with anything',
     );
   }
 
-  const budgets: Record<string, number> = {};
-  for (const field of BENCHMARK_BUDGET_FIELDS) {
-    const value = record[field];
-    if (!isLogicalCount(value)) {
+  // Read into locals and build the result literal from them. An accumulator
+  // object assigned into with `budgets[field] = value` writes THROUGH the
+  // prototype: an inherited setter swallows the validated number and the
+  // read-back returns the getter's, so a policy that passed validation is
+  // published as a different one. An object literal is CreateDataProperty and
+  // cannot be intercepted.
+  // see budget-policy.test.mjs › "keeps a validated budget even when an inherited accessor tries to swallow it"
+  const read = (field: BenchmarkBudgetField): number => {
+    const slot = readOwnValue(candidate, field);
+    if (!slot.present || !isLogicalCount(slot.value)) {
       throw new Error(
-        `budget policy field ${field} must be a non-negative integer, received ${String(value)}`,
+        `budget policy field ${field} must be an own non-negative safe integer, received ${slot.present ? String(slot.value) : '(absent, or inherited)'}`,
       );
     }
-    budgets[field] = value;
-  }
+    return slot.value;
+  };
 
   return Object.freeze({
-    policyVersion,
-    maxIterations: budgets['maxIterations'] as number,
-    llmCallBudget: budgets['llmCallBudget'] as number,
-    reservedChallengeBudget: budgets['reservedChallengeBudget'] as number,
+    policyVersion: version.value,
+    maxIterations: read('maxIterations'),
+    llmCallBudget: read('llmCallBudget'),
+    reservedChallengeBudget: read('reservedChallengeBudget'),
   });
 }
 
@@ -227,16 +267,33 @@ export function summarizeBudgetPolicyEvidence({
 }: Readonly<{
   arms: readonly BudgetPolicyArmInput[];
 }>): BudgetPolicyEvidenceReport {
-  // Not `Array.isArray(arms)`: its guard is `arg is any[]`, which would narrow
-  // an already-typed readonly array to `any[]` and silently erase the element
-  // type for everything below.
-  if (arms.length === 0) {
+  // Read from what the caller OWNS, for the reason `readOwnValue` states: an
+  // arm list inherited from `Object.prototype` publishes a report about runs
+  // nobody handed over. Measured: `summarize({})` under a polluted prototype
+  // returned a full evidence report instead of refusing.
+  // see budget-policy.test.mjs › "refuses a report whose arms exist only on the prototype"
+  const declaredArms = readOwnValue(arguments[0] as object, 'arms');
+  if (!declaredArms.present || !Array.isArray(declaredArms.value)) {
+    throw new Error(
+      'budget policy evidence requires an own arms list: an inherited one is a report about runs the caller never declared',
+    );
+  }
+  if (declaredArms.value.length === 0) {
     throw new Error('budget policy evidence requires at least one arm');
   }
+  void arms;
 
   const seen = new Set<string>();
-  const reported = arms.map(({ policy, experiment }) => {
-    const parsed = parseBenchmarkBudgetPolicy(policy);
+  const reported = (declaredArms.value as readonly BudgetPolicyArmInput[]).map((entry) => {
+    const armPolicy = readOwnValue(entry as object, 'policy');
+    const armExperiment = readOwnValue(entry as object, 'experiment');
+    if (!armPolicy.present || !armExperiment.present) {
+      throw new Error(
+        'each budget policy arm must own both a policy and an experiment: an inherited one describes an arm that was never run',
+      );
+    }
+    const experiment = armExperiment.value as BudgetPolicyArmExperiment;
+    const parsed = parseBenchmarkBudgetPolicy(armPolicy.value);
     if (seen.has(parsed.policyVersion)) {
       throw new Error(
         `budget policy version ${parsed.policyVersion} appears on two arms: two rows under one version cannot be told apart`,
@@ -272,12 +329,21 @@ export function summarizeBudgetPolicyEvidence({
       }),
       runCount: results.length,
       stopKindDistribution: experiment.stopKindDistribution,
+      // ⚠ A run that did not publish a key contributes NOTHING to that key's
+      // mean, rather than contributing a zero. `?? 0` would manufacture the
+      // "spent nothing on that axis" reading that `benchmark-evaluation.ts`
+      // refuses by name for `retryCount` — and it would do it while
+      // `exampleCount` still counted the run, so the count would say the mean
+      // rests on evidence it does not have. Every key is uniform across runs on
+      // today's corpus, so this is latent rather than active.
       metrics: Object.fromEntries(
         metricKeys.map((key) => [
           key,
           axisEntry(
             key,
-            results.map((result) => result.metrics[key]?.score ?? 0),
+            results
+              .map((result) => result.metrics[key]?.score)
+              .filter((score): score is number => typeof score === 'number'),
           ),
         ]),
       ),
@@ -286,12 +352,34 @@ export function summarizeBudgetPolicyEvidence({
           key,
           axisEntry(
             key,
-            results.map((result) => result.resources?.[key] ?? 0),
+            results
+              .map((result) => result.resources?.[key])
+              .filter((value): value is number => typeof value === 'number'),
           ),
         ]),
       ),
     };
   });
 
-  return { arms: reported, calibration: CALIBRATION };
+  // Derived from BENCHMARK_BUDGET_FIELDS rather than returned as the literal: a
+  // statement about a budget the validator no longer knows is a claim about a
+  // number nobody checks, and a budget with no statement is a number published
+  // with no word about where it came from. Both are refused here.
+  //
+  // The correspondence row checks both directions; this makes the module refuse
+  // rather than leaving the row as the only thing that would notice.
+  // see budget-policy.test.mjs › "carries one calibration statement per declared budget field, and no other"
+  const calibration = Object.fromEntries(
+    BENCHMARK_BUDGET_FIELDS.map((field) => {
+      const statement = CALIBRATION[field];
+      if (statement === undefined) {
+        throw new Error(
+          `budget policy field ${field} has no calibration statement: a budget cannot be published without saying whether evidence chose its value`,
+        );
+      }
+      return [field, statement];
+    }),
+  ) as Readonly<Record<BenchmarkBudgetField, BudgetCalibrationStatement>>;
+
+  return { arms: reported, calibration };
 }
