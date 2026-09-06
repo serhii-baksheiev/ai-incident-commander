@@ -745,8 +745,13 @@ type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
      * What this experiment allows a run to spend. Omitted — or supplied as an
      * own `undefined`, which is the same thing while this project does not set
      * `exactOptionalPropertyTypes` — it is the shipped `BENCHMARK_BUDGET_POLICY`.
-     * Any other value is parsed and refused if it cannot be read; `null` in
-     * particular is a refusal, not a default.
+     * An own ACCESSOR is refused outright, before any parse and whatever it
+     * would have computed: a policy a getter produces is not one this caller
+     * wrote down, and the version it keys published rows by would name a run
+     * nobody declared. Any other value is parsed and refused if it cannot be
+     * read; `null` in particular is a refusal, not a default.
+     *
+     * Four states, and the block at the read site says why each is what it is.
      *
      * ⚠ Only the GRAPH runner takes this. `runBenchmarkExperiment` drives an
      * opaque `investigate` callback and starts no graph, so a policy handed to

@@ -224,8 +224,13 @@ const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
  *
  * Two nodes declare through it since AIC-94 — `createModelGenerateHypotheses`
  * and `createModelInterpretResidualEvidence` in `packages/roles`, each
- * returning `declaredLlmCalls: 1`; `challenge_hypothesis` deliberately does
- * not. Those are model-backed roles that need a provider credential, and the
+ * returning `declaredLlmCalls: 1`. `challenge_hypothesis` does not, and
+ * "deliberately" was the wrong word for it: it **cannot**. A `ChallengeResult`
+ * carries `alternative` and `discriminatingTests` and nothing else, and
+ * `parseChallengeResult` refuses a third key outright — so a model-backed
+ * challenge role that returned a count would fail at runtime, not opt in. The
+ * limit further down this block says exactly that; this line used to imply a
+ * choice a later session could reverse. Those are model-backed roles that need a provider credential, and the
  * arm the regression suite and the shipped benchmark run is the replay-backed
  * one, which declares nothing — so `llmCallsUsed` reads 0 on every run of THAT
  * arm by construction of it rather than by estimate. An unused channel reports

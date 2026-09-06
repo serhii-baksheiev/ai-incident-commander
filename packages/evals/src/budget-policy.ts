@@ -106,7 +106,7 @@ export const BENCHMARK_BUDGET_POLICY: BenchmarkBudgetPolicy = Object.freeze({
  * schema by luck rather than by construction". A policy `evals` accepted and
  * `IncidentStateSchema.parse` then refused would fail halfway through a corpus,
  * with runs already recorded under its version.
- * see budget-policy.test.mjs › "accepts exactly the budgets the domain's logical-count schema accepts"
+ * see budget-policy.test.mjs › "accepts a budget exactly when the shared logical-count schema accepts it"
  */
 const isLogicalCount = (value: unknown): value is number =>
   LogicalCountSchema.safeParse(value).success;
@@ -367,11 +367,17 @@ const mean = (values: readonly number[]): number =>
 /**
  * An entry for a key the runs actually measured, or nothing.
  *
- * ⚠ A key with no owned value is **not reported**. Reporting it would publish
- * `mean: NaN` — which serialises to `null` — against `exampleCount: 0`: a row
- * that looks like a measurement and rests on nothing, which is the reading this
- * whole report exists to refuse. "Contributes nothing to the mean" has to mean
- * the row is absent, not that the row is empty.
+ * ⚠ A key with no owned value is **not reported**, and the length check below
+ * is the ONLY thing that holds that — the finite check beside it does not.
+ * Measured: the running `mean` returns **`0`** for an empty list, not `NaN`, so
+ * dropping the length guard publishes `{ mean: 0, exampleCount: 0 }` — a row
+ * asserting a run spent nothing on an axis no run measured. That is worse than
+ * the `null` it used to publish, because it is finite and reads as a real zero.
+ *
+ * This sentence said `mean: NaN` until it was measured. That was true of the
+ * sum-then-divide form and stopped being true when the arithmetic changed one
+ * round earlier — the hazard it named was the one the finite check would have
+ * caught, and the hazard that is actually here is the one it does not.
  * see budget-policy.test.mjs › "reports no row for a key whose every value was inherited"
  */
 const axisEntry = (
@@ -432,6 +438,21 @@ const CALIBRATION: Readonly<
   }),
 });
 
+export interface BudgetPolicyArmResult {
+  readonly metrics: Readonly<Record<string, Readonly<{ score: number }>>>;
+  readonly resources?: Readonly<Record<string, number>>;
+}
+
+export interface BudgetPolicyArmExperiment {
+  readonly results: readonly BudgetPolicyArmResult[];
+  readonly stopKindDistribution: Readonly<Record<string, number>>;
+}
+
+export interface BudgetPolicyArmInput {
+  readonly policy: BenchmarkBudgetPolicy;
+  readonly experiment: BudgetPolicyArmExperiment;
+}
+
 /**
  * Summarise one or more policy arms, per axis, per policy version.
  *
@@ -456,21 +477,6 @@ const CALIBRATION: Readonly<
  * `runGraphBenchmarkExperiment` and reading it off the experiment, which widens
  * a public return type; that is AIC-112, not this function.
  */
-export interface BudgetPolicyArmResult {
-  readonly metrics: Readonly<Record<string, Readonly<{ score: number }>>>;
-  readonly resources?: Readonly<Record<string, number>>;
-}
-
-export interface BudgetPolicyArmExperiment {
-  readonly results: readonly BudgetPolicyArmResult[];
-  readonly stopKindDistribution: Readonly<Record<string, number>>;
-}
-
-export interface BudgetPolicyArmInput {
-  readonly policy: BenchmarkBudgetPolicy;
-  readonly experiment: BudgetPolicyArmExperiment;
-}
-
 export function summarizeBudgetPolicyEvidence(
   input: Readonly<{ arms: readonly BudgetPolicyArmInput[] }>,
 ): BudgetPolicyEvidenceReport {
