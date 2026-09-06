@@ -382,6 +382,47 @@ test('refuses a challenge whose alternative repeats the hypothesis it was asked 
   await assert.rejects(() => challenge(state, 'h-1'), ModelRoleOutputError);
 });
 
+test('refuses a challenge carrying no discriminating test in the role, where a model-quality failure belongs', async () => {
+  // A challenge with an empty `discriminatingTests` is a model-quality failure:
+  // the provider answered, the transport worked, and the content is unusable.
+  // The role used to pass it through, and `parseChallengeResult` in
+  // `packages/graph` then refused it with `invalid challenge result` — a bare
+  // `Error` from the harness. That routes a model failure through a harness
+  // error and erases the one distinction `packages/roles/src/model-errors.ts`
+  // says these types exist to keep, which is also the distinction the live-model
+  // lane reports on.
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      alternative: { id: 'alt-1', statement: 'the dependency, not the deploy' },
+      discriminatingTests: [],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(
+        error instanceof ModelRoleOutputError,
+        'a challenge that discriminates nothing is output the domain refuses, not a transport or harness fault',
+      );
+      assert.equal(error.role, 'challenge_hypothesis', 'the refusal names the role that produced it');
+      assert.doesNotMatch(
+        error.message,
+        /invalid challenge result/,
+        "the graph's generic message means the role handed the empty array on and the harness caught it instead",
+      );
+      return true;
+    },
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* D3: the asymmetry between the two channels, pinned                         */
 /* -------------------------------------------------------------------------- */

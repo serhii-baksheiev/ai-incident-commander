@@ -354,6 +354,24 @@ export function createModelChallengeHypothesis({
       }),
     );
 
+    // 🔴 An empty list is a MODEL-QUALITY failure, and it is refused HERE so it
+    // is reported as one.
+    //
+    // The graph refuses it too — `parseChallengeResult` rejects the shape — but
+    // with a generic `invalid challenge result`, which reads as a harness fault.
+    // That is the confusion `model-errors.ts` exists to prevent and the whole
+    // point of this item: a challenge that names no way to tell the two
+    // hypotheses apart is the model failing at the task, not the harness
+    // failing at its contract. Found by `code-reviewer` at the AIC-94 gate.
+    // see roles-model-nodes.test.mjs › "refuses a challenge carrying no
+    // discriminating test in the role, where a model-quality failure belongs"
+    if (discriminatingTests.length === 0) {
+      throw new ModelRoleOutputError(
+        role,
+        'the challenge names no discriminating test, so nothing separates the alternative from the hypothesis it challenges',
+      );
+    }
+
     return { alternative, discriminatingTests };
   };
 }

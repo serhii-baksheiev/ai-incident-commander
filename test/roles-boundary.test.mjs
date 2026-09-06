@@ -19,6 +19,8 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function sourceFiles(directory) {
@@ -110,21 +112,12 @@ test('spells the own-property read the same way as the two copies it names', asy
   // module by path (`benchmark-regression-gate.js` is the precedent).
   const roles = await import('../packages/roles/dist/own-value.js');
 
-  // The correspondence the behaviour probe cannot see on its own: all three
-  // spellings must carry the guard, so a fourth copy or a weakened one is
-  // caught by name rather than by whether this row's fixture happens to reach
-  // it.
-  for (const path of [
-    'packages/roles/src/own-value.ts',
-    'packages/observability/src/index.ts',
-    'packages/graph/src/investigation.ts',
-  ]) {
-    assert.match(
-      readFileSync(resolve(projectRoot, path), 'utf8'),
-      /Object\.hasOwn\(descriptor, 'value'\)/,
-      `${path} must guard the descriptor read with Object.hasOwn(descriptor, 'value'): without it, an accessor descriptor's missing 'value' is read off the prototype chain`,
-    );
-  }
+  // The correspondence this probe cannot see on its own — that every OTHER
+  // spelling carries the guard too — used to live here as a list of three
+  // paths, and a fourth copy had already arrived without it noticing. It is
+  // computed now, from the AST of every package source:
+  // see roles-boundary.test.mjs › "every private own-data-property read in
+  // packages carries the descriptor guard"
 
   const planted = {};
   Object.defineProperty(planted, 'token', {
@@ -258,5 +251,193 @@ test('declares the model-provider boundary rule for graph and domain', () => {
     config,
     /\^packages\/\(\?:domain\|graph\)\//,
     'the rule must be scoped to both layers the acceptance row names',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* the own-data-property reads, as a COMPUTED inventory                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What counts as a private own-data-property read, decided from the AST.
+ *
+ * A read is a function that BINDS an own-property descriptor to a name and then
+ * reads `value` off that name. That pair is the family this repository keeps
+ * several private spellings of, and it is the pair that goes wrong: an ACCESSOR
+ * descriptor owns `get`/`set` and no `value`, so reading `descriptor.value` off
+ * one walks the prototype chain — the defect every copy exists to prevent.
+ *
+ * ⚠ Outside the scope, and said here rather than discovered later: an inline
+ * `Object.getOwnPropertyDescriptor(x, k)?.value` binds nothing and is not
+ * collected. `isRevivedRecord` in `packages/persistence/src/own-value-serde.ts`
+ * is written that way today.
+ *
+ * The inventory is computed rather than listed for the reason
+ * `test/observability-own-value-audit.test.mjs` gives at length: a hand-written
+ * list of the copies is a different wrong subset every time it is edited. The
+ * list this row replaced named three files while four existed.
+ */
+function isFunctionLike(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
+}
+
+function isCallTo(node, object, method) {
+  return (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === object &&
+    node.expression.name.text === method
+  );
+}
+
+function eachNode(node, visit) {
+  visit(node);
+  node.forEachChild((child) => eachNode(child, visit));
+}
+
+function enclosingFunction(node) {
+  let current = node.parent;
+  while (current !== undefined && !isFunctionLike(current)) current = current.parent;
+  return current;
+}
+
+function functionLabel(node) {
+  const named = node.name ?? node.parent?.name;
+  return named !== undefined && ts.isIdentifier(named) ? named.text : '<anonymous>';
+}
+
+function ownDataPropertyReads() {
+  const reads = [];
+  for (const path of workspaceSources) {
+    const text = readFileSync(path, 'utf8');
+    if (!text.includes('getOwnPropertyDescriptor')) continue;
+    const file = ts.createSourceFile(
+      path,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+
+    eachNode(file, (node) => {
+      if (
+        !ts.isVariableDeclaration(node) ||
+        !ts.isIdentifier(node.name) ||
+        node.initializer === undefined ||
+        !isCallTo(node.initializer, 'Object', 'getOwnPropertyDescriptor')
+      ) {
+        return;
+      }
+      const holder = enclosingFunction(node);
+      if (holder === undefined) return;
+
+      const binding = node.name.text;
+      let readsValue = false;
+      let guarded = false;
+      eachNode(holder, (inner) => {
+        if (
+          ts.isPropertyAccessExpression(inner) &&
+          ts.isIdentifier(inner.expression) &&
+          inner.expression.text === binding &&
+          inner.name.text === 'value'
+        ) {
+          readsValue = true;
+        }
+        if (
+          isCallTo(inner, 'Object', 'hasOwn') &&
+          inner.arguments.length === 2 &&
+          ts.isIdentifier(inner.arguments[0]) &&
+          inner.arguments[0].text === binding &&
+          ts.isStringLiteralLike(inner.arguments[1]) &&
+          inner.arguments[1].text === 'value'
+        ) {
+          guarded = true;
+        }
+      });
+      if (!readsValue) return;
+
+      const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
+      reads.push({
+        where: `${path.slice(projectRoot.length + 1)}:${line + 1} ${functionLabel(holder)}`,
+        guarded,
+      });
+    });
+  }
+  return reads;
+}
+
+test('every private own-data-property read in packages carries the descriptor guard', () => {
+  const reads = ownDataPropertyReads();
+
+  assert.ok(
+    reads.length > 0,
+    'the scan found no own-data-property read anywhere in packages: an audit that finds nothing passes everything, so this reads as broken rather than as clean',
+  );
+
+  const unguarded = reads.filter(({ guarded }) => !guarded).map(({ where }) => where);
+  assert.deepEqual(
+    unguarded,
+    [],
+    `each of these binds an own-property descriptor and reads 'value' off it without first asking Object.hasOwn(descriptor, 'value'): for an ACCESSOR descriptor there is no own 'value', so a planted Object.prototype.value answers the read — the exact prototype-chain read this family of functions exists to prevent. The whole computed inventory was: ${reads.map(({ where }) => where).join(', ')}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* the model error types are an affordance, not yet a branch                   */
+/* -------------------------------------------------------------------------- */
+
+test('leaves the model error types undistinguished by any caller in packages or scripts', () => {
+  // `packages/roles/src/model-errors.ts` says in its own header that no caller
+  // branches on these types yet — that the separate types are the affordance and
+  // not the behaviour. That is a claim about this repository, so it is checked
+  // here rather than believed: the day someone adds the first `instanceof`, this
+  // row goes red and the header gets corrected, instead of quietly becoming
+  // false in the direction of "we already have that".
+  //
+  // The type names are read out of the module rather than listed, so a fifth
+  // error class is covered on the day it is written.
+  const errorsPath = resolve(projectRoot, 'packages/roles/src/model-errors.ts');
+  const declared = [
+    ...readFileSync(errorsPath, 'utf8').matchAll(/export class (\w+) extends Error\b/g),
+  ].map(([, name]) => name);
+
+  assert.ok(
+    declared.length > 0,
+    'no error class was found in model-errors.ts: the scan below would then check nothing',
+  );
+
+  const scanned = [
+    ...workspaceSources,
+    ...readdirSync(resolve(projectRoot, 'scripts'))
+      .filter((entry) => entry.endsWith('.mjs'))
+      .map((entry) => resolve(projectRoot, 'scripts', entry)),
+  ];
+  const branching = [];
+  for (const path of scanned) {
+    // A comment may DISCUSS the types — model-errors.ts's header does — so only
+    // an `instanceof` outside a comment counts.
+    const code = readFileSync(path, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    for (const name of declared) {
+      if (new RegExp(`instanceof\\s+${name}\\b`).test(code)) {
+        branching.push(`${path.slice(projectRoot.length + 1)} branches on ${name}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    branching,
+    [],
+    'a caller now tells the model error types apart, which the header of model-errors.ts says nothing does: update that header — the types stopped being only an affordance',
   );
 });
