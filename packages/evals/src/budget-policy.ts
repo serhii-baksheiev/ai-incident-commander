@@ -278,7 +278,7 @@ const CALIBRATION: Readonly<
   llmCallBudget: Object.freeze({
     empiricallyCalibrated: false,
     reason:
-      'a versioned safety cap. It shares the unreached need-more-evidence edge with maxIterations, and no run on this corpus declares an llm call, so declaredLlmCallsUsed is 0 on every one: nothing measured this value and no benchmark evidence can, until a model-backed arm both declares calls and reaches that edge',
+      'a versioned safety cap. It shares the unreached need-more-evidence edge with maxIterations, and no run on this corpus declares an llm call, so declaredLlmCallsUsed is 0 on every one (see budget-policy.test.mjs > \'measures a declared llm call count of zero on every run of the shipped arm\'): nothing measured this value and no benchmark evidence can, until a model-backed arm both declares calls and reaches that edge',
   }),
   reservedChallengeBudget: Object.freeze({
     empiricallyCalibrated: false,

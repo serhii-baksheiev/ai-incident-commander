@@ -1080,8 +1080,20 @@ test('counts no metric score the run did not own', async () => {
 test('counts no resource axis the run did not own', async () => {
   const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
 
+  // An OWN accessor, not an inherited value. `Object.keys` returns own keys
+  // only, so a resources object that merely INHERITS an axis lists no key at
+  // all and the row passes whether the read is hardened or not — measured: that
+  // shape left this row green against a plain `[[Get]]`. An own accessor is the
+  // shape that separates them: the key is listed, and the value is computed
+  // rather than written down.
+  const resources = {};
+  Object.defineProperty(resources, 'toolCallsUsed', {
+    enumerable: true,
+    configurable: true,
+    get: () => 42,
+  });
   const experiment = {
-    results: [{ metrics: {}, resources: Object.create({ toolCallsUsed: 42 }) }],
+    results: [{ metrics: {}, resources }],
     stopKindDistribution: {},
   };
   const report = summarize({ arms: [{ policy: requireBudgetPolicy(), experiment }] });
@@ -1089,8 +1101,40 @@ test('counts no resource axis the run did not own', async () => {
   assert.deepEqual(
     report.arms[0].resourceAxes,
     {},
-    'an axis reached through the prototype is not spend this run incurred',
+    'a value a getter computes is not spend the run wrote down: publishing it would make the report a measurement of whatever the caller decides to return, which is the property readOwnValue exists to hold',
   );
+});
+
+/**
+ * The pin behind a sentence two documents make.
+ *
+ * `budget-policy.ts` and the architecture document both say `llmCallsUsed` is 0
+ * on EVERY benchmark run, and the only pointer either offered was
+ * `investigation-graph.test.mjs` › "leaves llmCallsUsed at zero when no node
+ * declares an llm call" — which drives `fakeNodes` through the graph and never
+ * runs a benchmark arm at all. The claim was true and unbacked, which is the
+ * shape this repository refuses; it is the same premise family that had already
+ * rotted in three places and is corrected by this branch.
+ *
+ * This row runs the shipped arm and reads the axis. It goes red the day a
+ * declaring node enters the benchmark arm — which is precisely the drift the
+ * decision record names as what would expire this item's conclusion.
+ */
+test('measures a declared llm call count of zero on every run of the shipped arm', async () => {
+  const { experiment } = await getArm('shipped');
+
+  assert.equal(
+    experiment.results.length > 0,
+    true,
+    'an axis asserted over no runs is not a measurement',
+  );
+  for (const result of experiment.results) {
+    assert.equal(
+      result.resources?.declaredLlmCallsUsed,
+      0,
+      'the replay-backed arm declares no llm call, so this axis reads a real zero rather than an estimated one — if it ever reads otherwise, the two documents that say "0 on every benchmark run" have to be re-read before they are quoted again',
+    );
+  }
 });
 
 test('reports no row for a key whose every value was inherited', async () => {

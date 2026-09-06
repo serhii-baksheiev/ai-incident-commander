@@ -280,7 +280,10 @@ AIC-94, but they need a provider credential and are not in the replay-backed
 arm the benchmark and the regression suite run, so `llmCallsUsed` stays `0` on
 every benchmark run by construction of that arm rather than by estimate.
 see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
-declares an llm call"
+declares an llm call" — which pins that the GRAPH invents no consumption. That
+the benchmark arm declares none, and so reads a real zero on every run, is a
+separate claim with its own row:
+see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"
 
 AIC-18 measured what would calibrate it and found nothing could: the edge that
 reads `llmCallBudget` is the `need-more-evidence` route, which no node outside
