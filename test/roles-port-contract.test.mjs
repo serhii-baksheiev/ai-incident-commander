@@ -39,6 +39,49 @@ function fakeApiKey() {
   return ['sk', 'ant', 'test', '0'.repeat(24)].join('-');
 }
 
+/**
+ * The control characters a credential must never carry into a header value.
+ *
+ * `\n` and `\r` are the two that arrive by accident — a key copied out of a
+ * wrapped terminal, or `$(cat key.txt)` on a file with a blank second line — and
+ * the class is checked whole rather than those two, because the cost of a false
+ * refusal here is a key nobody could have used anyway.
+ */
+const CONTROL_CHARACTERS = ['\n', '\r', '\t', '\u0000'];
+
+/** The same key shape, assembled at runtime, with one character spliced inside it. */
+function fakeApiKeyCarrying(controlCharacter) {
+  const key = fakeApiKey();
+  const middle = Math.floor(key.length / 2);
+  return `${key.slice(0, middle)}${controlCharacter}${key.slice(middle)}`;
+}
+
+/**
+ * Assert that nothing a caller can read off the refusal carries the credential.
+ *
+ * Written against every surface rather than `message` alone, and against each
+ * SEGMENT either side of the control character as well as the whole string, so
+ * that an error type which echoes only the first line of the value — which is
+ * the whole key up to the break — fails this too.
+ */
+function assertHidesCredential(error, apiKey) {
+  const surfaces = [
+    error.message,
+    String(error),
+    error.stack ?? '',
+    JSON.stringify(error, Object.getOwnPropertyNames(error)),
+  ].join('\n');
+
+  for (const secret of [apiKey, ...apiKey.split(/[\u0000-\u001f]/)]) {
+    if (secret.length < 8) continue;
+    assert.equal(
+      surfaces.includes(secret),
+      false,
+      'a refusal that quotes the value it refused writes the credential to whatever log reads the error',
+    );
+  }
+}
+
 test('refuses the live model lane with a named variable when no provider credential is set', () => {
   const resolveModelConfig = requireExport('resolveModelConfig');
   const MODEL_API_KEY_VARIABLE = requireExport('MODEL_API_KEY_VARIABLE');
@@ -106,6 +149,27 @@ test('treats an empty or whitespace credential as absent rather than as configur
       resolveModelConfig({ [MODEL_API_KEY_VARIABLE]: value }),
       { available: false, missing: MODEL_API_KEY_VARIABLE },
       'an exported-but-empty variable is not a credential',
+    );
+  }
+});
+
+test('treats a credential carrying a control character as absent rather than as configured', () => {
+  // A key copied out of a wrapped terminal, or read with
+  // `export ANTHROPIC_API_KEY="$(cat key.txt)"` from a two-line file — command
+  // substitution strips only the TRAILING newline — carries an inner control
+  // character. Such a value is not empty after `trim`, so it used to resolve as
+  // a configured lane, and the string then reached a transport that reports an
+  // invalid header value by quoting it.
+  const resolveModelConfig = requireExport('resolveModelConfig');
+  const MODEL_API_KEY_VARIABLE = requireExport('MODEL_API_KEY_VARIABLE');
+
+  for (const controlCharacter of CONTROL_CHARACTERS) {
+    assert.deepEqual(
+      resolveModelConfig({
+        [MODEL_API_KEY_VARIABLE]: fakeApiKeyCarrying(controlCharacter),
+      }),
+      { available: false, missing: MODEL_API_KEY_VARIABLE },
+      'a value no request could carry as a header is not a credential',
     );
   }
 });
@@ -373,6 +437,70 @@ test('never puts the credential anywhere but the request it authenticates', asyn
     false,
     'not in what the port hands back',
   );
+});
+
+test('refuses a credential carrying a control character instead of letting the transport quote it back', () => {
+  // The transport is what turns this from a bad request into a leak:
+  // `Headers.append` reports an invalid header value by QUOTING it, and this
+  // lane's command writes `${error.name}: ${error.message}` to stderr, which in
+  // CI is a retained job log. So the port refuses such a credential with its
+  // own named error — the one that carries no value — and the string never
+  // reaches a transport at all.
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  const ModelCompletionError = requireExport('ModelCompletionError');
+
+  for (const controlCharacter of CONTROL_CHARACTERS) {
+    const apiKey = fakeApiKeyCarrying(controlCharacter);
+    let requests = 0;
+
+    assert.throws(
+      () =>
+        createReferenceModelPort({
+          apiKey,
+          modelId: 'claude-under-test',
+          ledger: createModelUsageLedger({ maxCalls: 1 }),
+          async fetchImpl() {
+            requests += 1;
+            return completionResponse({ text: 'answer' });
+          },
+        }),
+      (error) => {
+        assert.ok(
+          error instanceof ModelCompletionError,
+          "the refusal must be this module's own named error, not one the provider stack raised",
+        );
+        assertHidesCredential(error, apiKey);
+        return true;
+      },
+    );
+    assert.equal(requests, 0, 'a credential the port refuses never reaches a transport');
+  }
+});
+
+test('accepts a legitimate credential, including one padded with surrounding spaces', async () => {
+  // The other half of the row above, and the reason it is a control-character
+  // check rather than a whitespace one: surrounding spaces are harmless — a
+  // header value is normalized before it is validated — so a key that picked
+  // some up from a shell must not start being refused.
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+
+  for (const apiKey of [fakeApiKey(), `  ${fakeApiKey()}  `]) {
+    const captured = [];
+    const port = createReferenceModelPort({
+      apiKey,
+      modelId: 'claude-under-test',
+      ledger: createModelUsageLedger({ maxCalls: 1 }),
+      async fetchImpl(url, init) {
+        captured.push(init);
+        return completionResponse({ text: 'answer' });
+      },
+    });
+
+    await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 16 });
+    assert.equal(captured.length, 1, 'a usable credential still authenticates one request');
+  }
 });
 
 test('reports a provider refusal as a failed completion rather than an empty one', async () => {

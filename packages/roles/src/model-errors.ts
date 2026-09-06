@@ -1,10 +1,17 @@
 /**
  * The refusals of the model path, each named for what a caller must do about it.
  *
- * They are their own types rather than `Error` with a message, because the live
- * lane branches on them: an absent credential is an operator configuration
- * problem the lane reports and exits on, a spent budget is a cap the lane chose,
- * and a provider refusal is neither.
+ * They are their own types rather than `Error` with a message so that a caller
+ * CAN tell them apart: an absent credential is an operator configuration
+ * problem, a spent budget is a cap this lane chose, and a provider refusal is
+ * neither.
+ *
+ * ⚠ No caller distinguishes them yet. There is no `instanceof` against any of
+ * these types outside `dist/`, and the one `catch` on the path —
+ * `scripts/eval-live-model.mjs` — prints `name: message` and exits 1 the same
+ * way for all four. An earlier version of this comment said the lane "branches
+ * on them"; it does not, and `code-reviewer` and `prose-reviewer` both measured
+ * that at the AIC-94 gate. The types are the affordance, not the behaviour.
  */
 
 /**

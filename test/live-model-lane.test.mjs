@@ -41,6 +41,13 @@ function fakeApiKey() {
   return ['sk', 'ant', 'test', '0'.repeat(24)].join('-');
 }
 
+/** The same shape with one control character spliced inside it: a key copied out of a wrapped terminal. */
+function fakeApiKeyCarrying(controlCharacter) {
+  const key = fakeApiKey();
+  const middle = Math.floor(key.length / 2);
+  return `${key.slice(0, middle)}${controlCharacter}${key.slice(middle)}`;
+}
+
 /**
  * A scripted experiment over the real final-evaluation plan.
  *
@@ -260,7 +267,7 @@ test('publishes one figure per metric and no composite anywhere', async () => {
 /* harness regression vs model-quality regression                             */
 /* -------------------------------------------------------------------------- */
 
-test('reports a moved control arm as a harness regression and withholds the model numbers', async () => {
+test('reports a moved control arm as a harness regression and marks the model numbers unreportable', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
 
   const report = await runLiveModelLane(
@@ -484,6 +491,56 @@ test('exits non-zero naming the variable when the command is run with no credent
     result.stdout,
     '',
     'no report is written when the lane never ran: an empty report is still a report',
+  );
+});
+
+/**
+ * The value that is sent has to be the value that was validated.
+ *
+ * The command reads the credential at the executable edge and hands it to the
+ * port; if it hands over a string the configuration did not check, the check is
+ * not a check. A credential with an inner control character is where the two
+ * come apart: `trim` does not remove it, so the lane reads as configured, and
+ * the transport reports an invalid header value by QUOTING it — straight into
+ * the `${error.name}: ${error.message}` this command writes to stderr, which for
+ * `npm run eval:live-model` is a retained CI job log.
+ *
+ * The credential here is assembled at runtime for the reason every fixture in
+ * this suite is (`.claude/rules/autonomy.md`, "Never"), and it is spawned rather
+ * than exported into this process, so no real key can reach the child.
+ */
+test('never hands the transport a credential the configuration did not validate', () => {
+  const canary = fakeApiKeyCarrying('\n');
+
+  const result = spawnSync(
+    process.execPath,
+    [resolve(projectRoot, 'scripts/eval-live-model.mjs')],
+    {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: childEnv({ CI: '1', [MODEL_API_KEY_VARIABLE]: canary }),
+    },
+  );
+
+  assert.notEqual(result.status, 0, 'an unusable credential must fail the command');
+  for (const [stream, text] of [
+    ['stderr', result.stderr],
+    ['stdout', result.stdout],
+  ]) {
+    // Each SEGMENT as well as the whole value: an error that echoes only the
+    // first line has still published the key up to the break.
+    for (const secret of [canary, ...canary.split(/[\u0000-\u001f]/)]) {
+      assert.equal(
+        text.includes(secret),
+        false,
+        `the credential reached ${stream}, which in CI is a retained job log`,
+      );
+    }
+  }
+  assert.doesNotMatch(
+    result.stderr,
+    /TypeError/,
+    'a transport-raised type error means the string was handed on unchecked; the refusal belongs to this repository, whose errors carry no value',
   );
 });
 

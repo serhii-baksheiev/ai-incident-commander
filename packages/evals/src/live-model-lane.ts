@@ -25,7 +25,12 @@ import type { GateMetricKey } from './benchmark-regression-gate.js';
  * the model getting worse or the harness changing underneath it, and those two
  * findings have opposite remedies.
  * see live-model-lane.test.mjs › "reports a moved control arm as a harness
- * regression and withholds the model numbers"
+ * regression and marks the model numbers unreportable"
+ * ⚠ MARKS, not withholds: `arms.model.metrics` still carries every model mean
+ * on that verdict and only `reportable` flips. The `--publish` path is what
+ * gates on it, so nothing reaches LangSmith — but a consumer reading
+ * `metrics` without checking `reportable` gets numbers an earlier wording
+ * here said were withheld. Corrected at the AIC-94 gate.
  *
  * ## The corpus is the accepted hold-out policy, not a new one
  *

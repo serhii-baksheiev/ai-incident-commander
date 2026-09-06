@@ -79,6 +79,7 @@ import {
   createModelInterpretResidualEvidence,
   createModelUsageLedger,
   createReferenceModelPort,
+  readModelCredential,
   resolveModelConfig,
 } from '@aic/roles';
 
@@ -183,7 +184,15 @@ async function main() {
       // The credential is read HERE, at the executable edge, and never by
       // anything under `packages/`. `resolveModelConfig` above decided that one
       // exists; this is the only place its value is touched.
-      const apiKey = env[MODEL_API_KEY_VARIABLE];
+      //
+      // 🔴 Read through `readModelCredential`, the SAME function the
+      // availability decision used — not a second `env[...]` of its own. The
+      // two diverged before: the config validated a trimmed value while this
+      // line sent the raw one, so a credential could be judged usable in one
+      // shape and transmitted in another. Corrected at the AIC-94 gate.
+      // see live-model-lane.test.mjs › "never hands the transport a credential
+      // the configuration did not validate"
+      const apiKey = readModelCredential(env);
       const port = createReferenceModelPort({
         apiKey,
         modelId: config.modelId,

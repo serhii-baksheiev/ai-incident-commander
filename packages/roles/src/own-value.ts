@@ -15,9 +15,14 @@
  *
  * ⚠ Limit, stated because "one mechanism, one implementation"
  * (`.claude/rules/invariants.md`) is the rule this file sits closest to: this is
- * the THIRD private spelling of that read in this repository — `ownValue` in
- * `packages/observability/src/index.ts` and `readOwnDataValue` in
- * `packages/graph/src/investigation.ts` are the other two. It is private here for
+ * one of SEVERAL private spellings of that read in this repository, and the
+ * count is deliberately not written here — an earlier draft said "the third"
+ * and named two others, and was already wrong when the branch rebased, because
+ * AIC-93 had added another. The inventory that is allowed to go stale is the
+ * one nobody checks; read the one the boundary row computes instead.
+ * see roles-boundary.test.mjs › "every private own-data-property read in
+ * packages carries the descriptor guard"
+ * It is private here for
  * the same reason theirs are private there: sharing one would make
  * `packages/roles` depend on `packages/observability` (and so on `langsmith`)
  * for a four-line read. Inside this package there is exactly one copy, which is

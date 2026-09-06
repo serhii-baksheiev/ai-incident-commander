@@ -177,12 +177,26 @@ export interface BenchmarkResourceEvidence {
    * exists to refuse everywhere else in this file. Absent means "no model
    * executed a role", which is what the deterministic path is.
    *
-   * ⚠ They come from the usage ledger in `packages/roles`, not from
-   * `declaredLlmCallsUsed`. Those two count different things and neither can be
-   * derived from the other: `declaredLlmCallsUsed` counts only what a WRAPPED
-   * lifecycle node declared, and `challenge_hypothesis` has no declaration
-   * channel at all, so a run whose challenge rounds spent tokens reports them
-   * here and not there.
+   * 🔴 NOTHING PRODUCES THEM YET. They are declared and validated — a present
+   * value must be a count, and an absent one stays absent — but no code path
+   * assigns either. The only producer of `MeasuredBenchmarkResources` sets the
+   * six required axes and neither of these, so a fully credentialed live run
+   * publishes no token count on any record. Do not read the declaration as a
+   * measurement: that conflation is the exact failure this item exists to
+   * prevent, and an earlier version of this comment described a data flow from
+   * the usage ledger that does not exist. `code-reviewer` and `prose-reviewer`
+   * both measured it at the AIC-94 gate. Wiring it needs PER-RUN accounting the
+   * ledger does not offer — `read()` returns lane-cumulative totals — which is
+   * why it is a separate item rather than a line here.
+   *
+   * Where token evidence DOES exist today is the lane report's
+   * `arms.model.usage`, which is lane-cumulative and is what acceptance row 5
+   * is satisfied by.
+   *
+   * They are kept separate from `declaredLlmCallsUsed` because those count
+   * different things and neither can be derived from the other:
+   * `declaredLlmCallsUsed` counts only what a WRAPPED lifecycle node declared,
+   * and `challenge_hypothesis` has no declaration channel at all.
    * see roles-model-nodes.test.mjs › "records the challenge role usage in the
    * ledger while the graph counter cannot see it"
    */

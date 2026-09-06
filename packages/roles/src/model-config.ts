@@ -39,11 +39,39 @@ export type ModelConfig =
  * see roles-port-contract.test.mjs › "treats an empty or whitespace credential
  * as absent rather than as configured"
  */
+/**
+ * The credential, normalised, or `undefined` when there is not a usable one.
+ *
+ * 🔴 One reader, used by BOTH the availability decision above and the caller
+ * that actually sends the value, so the string that was validated is the string
+ * that is sent. They diverged before: `resolveModelConfig` validated a TRIMMED
+ * value while `scripts/eval-live-model.mjs` passed the raw environment read, so
+ * a credential could be judged usable in one shape and sent in another.
+ *
+ * A value carrying a control character is refused here rather than trimmed into
+ * shape, because trimming cannot reach one in the middle — and the middle is
+ * where it leaks: `Headers.append` rejects it with a `TypeError` that quotes the
+ * whole header value. Found by `security-scanner` at the AIC-94 gate.
+ * see roles-port-contract.test.mjs › "treats a credential carrying a control
+ * character as absent rather than as configured"
+ * see live-model-lane.test.mjs › "never hands the transport a credential the
+ * configuration did not validate"
+ *
+ * ⚠ Returns the secret. It is the one function here that does, and nothing
+ * stores what it returns: `ModelConfig` carries only `apiKeyVariable`, the NAME.
+ */
+export function readModelCredential(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const apiKey = ownTrimmedString(env, MODEL_API_KEY_VARIABLE);
+  if (apiKey === undefined) return undefined;
+  return /[\u0000-\u001F\u007F]/u.test(apiKey) ? undefined : apiKey;
+}
+
 export function resolveModelConfig(
   env: Readonly<Record<string, string | undefined>>,
 ): ModelConfig {
-  const apiKey = ownTrimmedString(env, MODEL_API_KEY_VARIABLE);
-  if (apiKey === undefined) {
+  if (readModelCredential(env) === undefined) {
     return { available: false, missing: MODEL_API_KEY_VARIABLE };
   }
   return {

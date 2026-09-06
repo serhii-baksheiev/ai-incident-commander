@@ -149,7 +149,21 @@ export function createReferenceModelPort({
   ledger: ModelUsageLedger;
   fetchImpl?: FetchImpl;
 }>): ModelPort {
-  if (apiKey.trim().length === 0) {
+  // 🔴 Empty is not the only unusable credential, and the other kind LEAKS.
+  //
+  // A control character inside the value — a key copied from a wrapped terminal,
+  // or `export ANTHROPIC_API_KEY="$(cat key.txt)"` on a two-line file, which
+  // strips only the TRAILING newline — survives `trim()`. It then reaches
+  // `Headers.append`, whose `TypeError` QUOTES THE OFFENDING HEADER VALUE, and
+  // `scripts/eval-live-model.mjs` prints `name: message` to stderr. That command
+  // is written to run in CI, so the destination is a retained job log.
+  //
+  // Refusing here means this module's OWN error fires instead, and that one
+  // carries no value by construction. Found by `security-scanner` at the AIC-94
+  // gate and reproduced independently.
+  // see roles-port-contract.test.mjs › "refuses a credential carrying a control
+  // character instead of letting the transport quote it back"
+  if (apiKey.trim().length === 0 || /[\u0000-\u001F\u007F]/u.test(apiKey)) {
     throw new ModelCompletionError('the reference model port needs a credential');
   }
   const transport: FetchImpl =
