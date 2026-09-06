@@ -1156,7 +1156,7 @@ test('measures a declared llm call count of zero on every run of the shipped arm
     assert.equal(
       result.resources?.declaredLlmCallsUsed,
       0,
-      'the replay-backed arm declares no llm call, so this axis reads a real zero rather than an estimated one — if it ever reads otherwise, the two documents that say "0 on every benchmark run" have to be re-read before they are quoted again',
+      'the replay-backed arm declares no llm call, so this axis reads a real zero rather than an estimated one — if it ever reads otherwise, all three sites that say "0 on every benchmark run" have to be re-read before any of them is quoted again',
     );
   }
 });
