@@ -1694,6 +1694,10 @@ test('publishes the stop-kind distribution as the report\'s own frozen copy', ()
     distribution,
     'the report republishes the caller\'s object itself, so the published evidence is a live view of a container the caller still holds',
   );
+  // ⚠ The message below states a property of the WHOLE report, and this row
+  // sees one field of it. What carries the universal claim is the generic walk,
+  // which is where a level added later is caught:
+  // see budget-policy.test.mjs › "freezes every level of a published report, not only the levels named where the freeze is written"
   assert.equal(
     Object.isFrozen(arm.stopKindDistribution),
     true,
@@ -1805,12 +1809,21 @@ test('refuses a budget above the safe-integer range, by field name', () => {
  * The predicate and the schema, pinned as an AGREEMENT rather than as an
  * implementation.
  *
- * `packages/evals/src/budget-policy.ts` hand-restates what `@aic/domain` exports
- * as `LogicalCountSchema` and what the graph enforces these same three fields
- * with. `packages/graph/src/investigation.ts` records that this exact
- * duplication already drifted once and agreed with the schema by luck. This row
- * survives replacing the predicate with the schema, and goes red the day the two
- * answers differ on any value in the table — which is the property, not the call.
+ * ⚠ **What this row catches is narrower than its table reads, and saying so is
+ * the point.** `packages/evals/src/budget-policy.ts` no longer hand-restates the
+ * rule: `isLogicalCount` delegates to `LogicalCountSchema.safeParse`, so both
+ * sides of the comparison below now call the same function and cannot disagree
+ * on any value. No input makes this red while that delegation stands.
+ *
+ * What it catches is the DELEGATION CEASING — a second spelling of "what a
+ * logical count is" written here again by a refactor, a dependency removal or an
+ * inlining, and disagreeing anywhere in the table. That is not hypothetical:
+ * `packages/graph/src/investigation.ts` records removing its own copy
+ * (`Number.isSafeInteger(x) && x >= 0`) with the note that it "agreed with the
+ * schema by luck rather than by construction". So this is a tripwire on the
+ * duplication returning, not a live comparison of two independent answers — and
+ * the values in the table are chosen to straddle every boundary such a
+ * re-spelling would get wrong.
  */
 test('accepts a budget exactly when the shared logical-count schema accepts it', async () => {
   const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
@@ -1997,5 +2010,485 @@ test('declares a calibration statement for exactly the budgets the field list ca
     statedBudgets,
     [...evals.BENCHMARK_BUDGET_FIELDS].sort(),
     'a statement for a budget the field list does not declare compiles clean and is dropped from every report: the module then carries a written, reviewed claim about a budget nothing validates and nothing publishes, while the report reads complete — which is the reassurance-shaped drift the correspondence rule exists to catch, and the compiler closes only the other direction',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 14. A finite mean is a property of the published row, not of one formula    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Section 9 pins the INPUT side: a reading that is not a finite number
+ * contributes nothing, and a key left with no readings gets no row. `ownNumber`
+ * enforces that, and **every value handed over below is accepted by it** — all
+ * of them are finite numbers.
+ *
+ * These rows pin the OUTPUT side, which is a different claim and is false today.
+ * `mean` was replaced with the incremental form
+ * `running + (value - running) / (index + 1)`, carrying the comment "The running
+ * form keeps a mean of finite values finite". Measured on the built module, over
+ * inputs `ownNumber` accepts on purpose:
+ *
+ *   readings                      incremental (shipped)   sum-then-divide (deleted)
+ *   [MAX_VALUE, -MAX_VALUE]       -Infinity               0
+ *   [MAX_VALUE, -MAX_VALUE, 0]    NaN                     0
+ *   [MAX_VALUE, MAX_VALUE]        1.797e308 (finite)      Infinity
+ *
+ * So the comment is not true, and neither formula is the property: each one
+ * publishes `{"key":"…","mean":null,"exampleCount":n}` on the inputs the other
+ * survives. Measured through the public export, `[MAX_VALUE, -MAX_VALUE]`
+ * publishes `{"key":"t","mean":null,"exampleCount":2}` and the three-value case
+ * the same with `exampleCount: 3` — verbatim the row `axisEntry`'s own comment
+ * calls "the reading this whole report exists to refuse", now reached from
+ * values the module accepts rather than from values it rejects.
+ *
+ * What is pinned here is therefore the PROPERTY and neither arithmetic: a
+ * published row carries a finite mean, and a key whose mean cannot be made
+ * finite gets no row at all — the rule `ownNumber` applies to what goes in,
+ * applied to what comes out.
+ *
+ * ⚠ These rows do not stand alone. "publishes a finite mean when two readings
+ * overflow the sum they are averaged through" above drives `[MAX_VALUE,
+ * MAX_VALUE]` and must stay green, so no fix can satisfy one direction by
+ * reintroducing the other — which is the whole reason both are here.
+ */
+
+/** The whole report, where a row needs `calibration` and not just one arm. */
+function wholeReportFor(experiment, policy = requireBudgetPolicy()) {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  return summarize({ arms: [{ policy, experiment }] });
+}
+
+/**
+ * Every published measurement row, found by SHAPE rather than by field name: an
+ * object whose own keys are exactly `AXIS_ENTRY_KEYS`. A third family of rows
+ * added beside `metrics` and `resourceAxes` is covered without editing this,
+ * which is the same reason the composite check walks every key at every depth.
+ */
+function publishedRows(value, path = 'report', found = []) {
+  if (value === null || typeof value !== 'object') return found;
+  const keys = Object.keys(value);
+  if (keys.slice().sort().join() === AXIS_ENTRY_KEYS.slice().sort().join()) {
+    found.push([path, value]);
+    return found;
+  }
+  for (const key of keys) publishedRows(value[key], `${path}.${key}`, found);
+  return found;
+}
+
+/**
+ * The property, asserted over whatever the report published. A key the module
+ * chose to drop satisfies it vacuously and on purpose: "finite mean, or no row"
+ * is one rule with two legal outcomes, and the illegal one is a row that is
+ * present and unreadable.
+ */
+function assertEveryPublishedMeanIsFinite(published, why) {
+  assert.deepEqual(
+    publishedRows(published)
+      .filter(([, row]) => !Number.isFinite(row.mean))
+      .map(([path, row]) => [path, String(row.mean), row.exampleCount]),
+    [],
+    why,
+  );
+}
+
+const CANCELLING_PAIR = [Number.MAX_VALUE, -Number.MAX_VALUE];
+const CANCELLING_TRIPLE = [Number.MAX_VALUE, -Number.MAX_VALUE, 0];
+
+test('publishes a finite metric mean, or no metric row, when two scores cancel', () => {
+  const arm = reportFor({
+    results: CANCELLING_PAIR.map((score) => ({
+      metrics: { accuracy: { score } },
+      resources: {},
+    })),
+    stopKindDistribution: {},
+  });
+
+  assertEveryPublishedMeanIsFinite(
+    arm,
+    'both scores are finite and both are accepted by ownNumber, so this key has two readings and an average of them: measured at head the incremental form runs to -Infinity and publishes {"key":"accuracy","mean":null,"exampleCount":2} — a row saying two runs measured nothing while both measured something, which is the reading axisEntry names as the one this report exists to refuse',
+  );
+});
+
+test('publishes a finite metric mean, or no metric row, when a third score follows two that cancel', () => {
+  const arm = reportFor({
+    results: CANCELLING_TRIPLE.map((score) => ({
+      metrics: { accuracy: { score } },
+      resources: {},
+    })),
+    stopKindDistribution: {},
+  });
+
+  assertEveryPublishedMeanIsFinite(
+    arm,
+    'the third reading is 0, so it cannot move a mean that was already computable: measured at head the running value is -Infinity after two readings and NaN after the third, publishing {"key":"accuracy","mean":null,"exampleCount":3} — an unreadable figure standing over a count of three runs that each measured a number',
+  );
+});
+
+test('publishes a finite resource axis mean, or no axis row, when two readings cancel', () => {
+  const arm = reportFor({
+    results: CANCELLING_PAIR.map((toolCallsUsed) => ({
+      metrics: {},
+      resources: { toolCallsUsed },
+    })),
+    stopKindDistribution: {},
+  });
+
+  assertEveryPublishedMeanIsFinite(
+    arm,
+    'the resource path averages through the same function as the metric path and fails the same way: measured at head this publishes {"key":"toolCallsUsed","mean":null,"exampleCount":2}, and a cost axis reporting null is a spend comparison nobody can make — the exact defect the non-finite-input rows above close from the other side',
+  );
+});
+
+test('publishes a finite resource axis mean, or no axis row, when a third reading follows two that cancel', () => {
+  const arm = reportFor({
+    results: CANCELLING_TRIPLE.map((toolCallsUsed) => ({
+      metrics: {},
+      resources: { toolCallsUsed },
+    })),
+    stopKindDistribution: {},
+  });
+
+  assertEveryPublishedMeanIsFinite(
+    arm,
+    'measured at head this publishes {"key":"toolCallsUsed","mean":null,"exampleCount":3}: three finite readings, one of them a plain 0, and a published spend figure that serialises to null',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 15. An own accessor is not a value the caller wrote down                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 🔴 **The guard checks a value it then throws away.**
+ *
+ * `refuseUnownedElements` asks `Object.hasOwn(values, index)` — which an own
+ * ACCESSOR answers yes — and then reads `values[index]`, a `[[Get]]` that
+ * INVOKES that accessor. It returns `void`, so the summarizer re-reads the same
+ * index through `.map`. The value the guard checked is not the value the
+ * summarizer consumes, and nothing carries the first read forward to the second.
+ *
+ * Measured on the built module, with a getter on index 0 that answers a valid
+ * element on its first read and something else afterwards:
+ *
+ *   - on `arms[0]`: `TypeError: Cannot convert undefined or null to object`,
+ *     from `Object.getOwnPropertyDescriptor` — verbatim the bare `TypeError`
+ *     the guard's own comment says it exists to prevent, now reached THROUGH
+ *     the guard rather than around it;
+ *   - on `results[0]`: no refusal at all. The arm publishes `runCount: 1` with
+ *     `metrics: {}` — one more run counted than measured, which is the "the
+ *     count says the mean rests on evidence it does not have" reading the
+ *     results-entry rows above refuse for a plain non-object.
+ *
+ * The convention that makes the flip impossible rather than merely detected is
+ * already stated in this module: `readOwnValue` reports an own accessor as
+ * `present: false`, on the ground that "a value a getter computes is not a value
+ * the caller wrote down". An element is the one place that convention was not
+ * applied. So an own accessor in a list is refused exactly as a hole is — and
+ * the third row below is the one that says so, with a getter that answers a
+ * perfectly valid arm every time.
+ */
+
+/**
+ * A one-element list whose element is an own ACCESSOR rather than an own value.
+ * `Object.hasOwn` says the index exists; every read of it runs caller code.
+ * Defining index 0 sets `length` itself, so nothing here relies on a hole.
+ */
+function listWithOwnAccessor(get) {
+  const list = [];
+  Object.defineProperty(list, '0', { configurable: true, enumerable: true, get });
+  return list;
+}
+
+/** A reader that answers `first` on its first read and `rest` on every one after. */
+function answersOnce(first, rest) {
+  let reads = 0;
+  return () => {
+    reads += 1;
+    return reads === 1 ? first : rest;
+  };
+}
+
+test('refuses an arms element whose own accessor answers a different value on the second read', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arms = listWithOwnAccessor(answersOnce(
+    {
+      policy: sweepPolicy('aic-18-flipping-arm', 4, 8, 2),
+      experiment: { results: [], stopKindDistribution: {} },
+    },
+    null,
+  ));
+
+  const outcome = capture(() => summarize({ arms }));
+
+  assert.ok(
+    outcome.error,
+    `an element that is one thing when it is checked and another when it is read is not an arm: ${JSON.stringify(outcome.returned)}`,
+  );
+  assert.equal(
+    outcome.error instanceof TypeError,
+    false,
+    `measured at head this leaves the module as a raw TypeError — "Cannot convert undefined or null to object" — which is verbatim the failure refuseUnownedElements says it was written to prevent, now produced by the guard's own [[Get]] rather than prevented by it: ${outcome.error.message}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /budget\s*policy/i,
+    `every refusal in this module names what it refused, so the caller is told which input to fix: ${outcome.error.message}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /\b0\b/,
+    `the refusal must name the index, exactly as the hole and non-object refusals beside it do: ${outcome.error.message}`,
+  );
+});
+
+test('refuses a results element whose own accessor answers a different value on the second read', () => {
+  const results = listWithOwnAccessor(answersOnce(
+    { metrics: { accuracy: { score: 1 } }, resources: {} },
+    'not a run',
+  ));
+
+  const outcome = capture(() => reportFor({ results, stopKindDistribution: {} }));
+
+  assert.ok(
+    outcome.error,
+    `measured at head this is not refused at all: the getter hands the guard an object and the summarizer a string, and the arm publishes runCount 1 with no metric and no resource axis behind it — a run counted and measured in nothing, which is exactly what "refuses a results entry that is a string" above refuses when the string is written down plainly: ${JSON.stringify(outcome.returned)}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /budget\s*policy/i,
+    `the refusal must name what it refused: ${outcome.error.message}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /\b0\b/,
+    `the refusal must name the index that is not a run: ${outcome.error.message}`,
+  );
+});
+
+test('refuses an arms element that is an own accessor, exactly as it refuses a hole', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arm = {
+    policy: sweepPolicy('aic-18-steady-accessor-arm', 4, 8, 2),
+    experiment: { results: [], stopKindDistribution: {} },
+  };
+  // Answers the SAME valid arm every time. Nothing about this input is
+  // inconsistent, which is the point: the refusal is about the shape of the
+  // slot, not about catching a value that changed.
+  const arms = listWithOwnAccessor(() => arm);
+
+  const outcome = capture(() => summarize({ arms }));
+
+  assert.ok(
+    outcome.error,
+    `readOwnValue reports an own accessor as absent everywhere else in this module, on the stated ground that a value a getter computes is not a value the caller wrote down; an element is the one slot where that convention was not applied, so measured at head this publishes a full policy row assembled from caller code: ${JSON.stringify(outcome.returned)}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /budget\s*policy/i,
+    `the refusal must name what it refused: ${outcome.error.message}`,
+  );
+  assert.match(
+    outcome.error.message,
+    /\b0\b/,
+    `the refusal must name the index the caller did not write a value into: ${outcome.error.message}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 16. A published report is frozen at every level                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `summarizeBudgetPolicyEvidence` freezes what it names, and it names five
+ * things. Measured on a real report: `report`, `report.arms`, each `arm`,
+ * `arm.budgets` and `arm.stopKindDistribution` are frozen; **`arm.metrics`,
+ * each metric entry, `arm.resourceAxes`, each axis entry and
+ * `report.calibration` are not.** A caller rewrote a published mean to `999`
+ * and injected a whole metric row that no run produced, both in place, both
+ * silently.
+ *
+ * ⚠ **Calibration is the case worth being precise about, because the obvious
+ * reading of it is wrong.** The individual statement objects ARE frozen, so
+ * flipping `report.calibration.maxIterations.empiricallyCalibrated` in place
+ * does NOT take. The record HOLDING them is not, so the whole entry can be
+ * replaced instead — measured,
+ * `report.calibration.maxIterations = { empiricallyCalibrated: true, reason: 'replaced wholesale' }`
+ * succeeds. Same published lie, different route, and only the second route is
+ * open. The row below drives the route that works.
+ *
+ * The first row walks the report rather than naming five levels, so a level
+ * added later is covered by the same assertion instead of by remembering to
+ * extend a list — which is the failure mode the freeze already has once.
+ */
+
+/**
+ * Every reachable container that is not frozen, as paths. Own enumerable keys
+ * only, with a `seen` set so a report that ever gains a shared sub-object is
+ * still walked once.
+ */
+function unfrozenPaths(value, path = 'report', seen = new Set()) {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return [];
+  seen.add(value);
+  const found = Object.isFrozen(value) ? [] : [path];
+  for (const key of Object.keys(value)) {
+    for (const nested of unfrozenPaths(value[key], `${path}.${key}`, seen)) {
+      found.push(nested);
+    }
+  }
+  return found;
+}
+
+/**
+ * A mutation attempt, and nothing else. Against a frozen target an assignment
+ * throws in this file's strict mode, so the attempt has to be allowed to fail:
+ * what the rows below assert is the REPORT afterwards, which is the property,
+ * rather than which of the two ways the attempt was stopped.
+ */
+function attempted(mutate) {
+  try {
+    mutate();
+  } catch {
+    /* a frozen target refuses the assignment, which is one of the two passes */
+  }
+}
+
+test('freezes every level of a published report, not only the levels named where the freeze is written', () => {
+  const report = wholeReportFor({
+    results: [{ metrics: { accuracy: { score: 1 } }, resources: { toolCallsUsed: 2 } }],
+    stopKindDistribution: { sufficient: 1 },
+  });
+
+  assert.deepEqual(
+    unfrozenPaths(report),
+    [],
+    'measured at head, five levels are frozen and five are not: report.arms[0].metrics, that record\'s entries, report.arms[0].resourceAxes, its entries, and report.calibration are all ordinary mutable objects, so the published evidence is a working object anywhere the freeze was not spelled out by hand — and a level added to this report tomorrow inherits that omission by default',
+  );
+});
+
+test('keeps a published mean when a caller assigns over it', () => {
+  const report = wholeReportFor({
+    results: [{ metrics: { accuracy: { score: 1 } }, resources: {} }],
+    stopKindDistribution: {},
+  });
+
+  attempted(() => {
+    report.arms[0].metrics.accuracy.mean = 999;
+  });
+
+  assert.deepEqual(
+    report.arms[0].metrics.accuracy,
+    { key: 'accuracy', mean: 1, exampleCount: 1 },
+    'measured at head this assignment takes: the report then publishes a mean of 999 over exampleCount 1, a figure no run produced, standing beside a count that vouches for it — a record of what happened that anyone holding it can rewrite after the fact',
+  );
+});
+
+test('keeps its metric rows when a caller injects one no run produced', () => {
+  const report = wholeReportFor({
+    results: [{ metrics: { accuracy: { score: 1 } }, resources: {} }],
+    stopKindDistribution: {},
+  });
+
+  attempted(() => {
+    report.arms[0].metrics.ghostMetric = { key: 'ghostMetric', mean: 5, exampleCount: 1 };
+  });
+
+  assert.deepEqual(
+    Object.keys(report.arms[0].metrics),
+    ['accuracy'],
+    'measured at head a whole metric row can be added to a published arm: the derivation that decides which keys the runs actually measured — the same derivation measuredEntries exists to keep honest — is undone by one assignment on the record it produced',
+  );
+});
+
+test('keeps a calibration statement when a caller replaces the whole entry', () => {
+  const report = wholeReportFor({ results: [], stopKindDistribution: {} });
+  const stated = report.calibration.maxIterations.reason;
+
+  attempted(() => {
+    report.calibration.maxIterations = {
+      empiricallyCalibrated: true,
+      reason: 'replaced wholesale',
+    };
+  });
+
+  assert.deepEqual(
+    {
+      empiricallyCalibrated: report.calibration.maxIterations.empiricallyCalibrated,
+      reason: report.calibration.maxIterations.reason,
+    },
+    { empiricallyCalibrated: false, reason: stated },
+    'the statement objects are frozen, so flipping empiricallyCalibrated in place does nothing — but report.calibration is not, so the whole entry can be swapped instead, and measured at head that succeeds: the report then says evidence chose maxIterations, which is the single claim this whole item was written to refuse, published in the field the report offers as its own honesty',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 17. An own accessor on the budgetPolicy option is a fourth state            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The three rows above and the MALFORMED_POLICIES entry "an explicitly null
+ * policy" pin three states of this option. `runGraphBenchmarkExperiment` reads
+ * it with `Object.getOwnPropertyDescriptor` plus `Object.hasOwn(d, 'value')` —
+ * and an ACCESSOR descriptor has no `value` at all, so an own getter falls
+ * through the same branch as an absent option and the corpus runs under the
+ * shipped policy. Before the read became a descriptor read the accessor was
+ * invoked and its result was parsed and refused.
+ *
+ * ⚠ **The getter is invoked once, and the once is not the seam.** Measured, the
+ * count reported by the failure below is 1: `Object.getOwnPropertyDescriptor`
+ * plus `Object.hasOwn(d, 'value')` never runs it, and the single invocation
+ * comes from the `...options` spread that forwards the options to
+ * `runBenchmarkExperiment` — after the policy has already been decided, into a
+ * field nothing downstream reads by that name. So the accessor's value reaches
+ * nothing that chooses a budget, which is the defect; "the seam never asked"
+ * and "the getter never ran" are two different claims, and only the first is
+ * true.
+ *
+ * The comment written at that same seam enumerates "Three states, not two" and
+ * ends with "any other value -> PARSED, and refused if unreadable". An own
+ * accessor is a fourth state and takes neither path — it is neither absent nor
+ * parsed, while being described by a comment that says every option is one or
+ * the other.
+ *
+ * The behaviour pinned here is REFUSAL, for two reasons that agree.
+ * `.claude/rules/invariants.md` states that a field ABSENT is the fail-open
+ * case and a field PRESENT in a shape the reader cannot accept is the refusal
+ * case; and this seam's entire history is an explicit `null` silently
+ * defaulting, which is the same failure with a different shape in the slot.
+ * Nothing else moves: absent, inherited and own-`undefined` still take the
+ * shipped policy, own-`null` and any other value are still parsed and refused
+ * if unreadable.
+ *
+ * The getter answers a well-formed policy every time, so nothing about its
+ * VALUE can be what refuses it — the same discrimination the steady-accessor
+ * arm row above makes.
+ */
+test('refuses a budgetPolicy option that is an own accessor', async () => {
+  let reads = 0;
+  const { refusal, observed } = await budgetsTheGraphStartedWith((base) => {
+    Object.defineProperty(base, 'budgetPolicy', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return sweepPolicy('aic-18-accessor-option', 0, 0, 0);
+      },
+    });
+    return base;
+  });
+
+  assert.ok(
+    refusal,
+    `an own accessor is a budgetPolicy the caller set, in a shape this seam cannot read: measured at head it is treated as absent, the getter is invoked ${reads} times and the whole corpus runs under the shipped policy while the caller believes it asked for another one — ${JSON.stringify(observed)}. That is the fail-open this seam already paid for once, with an accessor in the slot instead of a null`,
+  );
+  assert.match(
+    refusal.message,
+    /budget\s*policy/i,
+    `the refusal must name what it refused, exactly as the malformed-policy refusals do: ${refusal.message}`,
+  );
+  assert.deepEqual(
+    observed,
+    [],
+    'a policy the runner cannot read must stop the experiment before any scenario starts, rather than silently substituting the shipped budgets and publishing evidence under them',
   );
 });

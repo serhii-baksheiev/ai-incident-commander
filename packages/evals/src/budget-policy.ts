@@ -158,27 +158,47 @@ const readOwnValue = (
  * the length check and published two `null` arms — rows never parsed, never
  * version-checked, never deduplicated.
  *
- * One forward pass, bounded by `length`, and it refuses the hole and the
- * unreadable element together. An element that is not a non-null object cannot
- * be own-read at all, so it is named here rather than left to throw a bare
- * `TypeError` out of `Object.getOwnPropertyDescriptor`.
+ * 🔴 **It returns what it checked, and that is the whole point of the second
+ * version of this function.** The first read the element with `Object.hasOwn`
+ * plus `values[index]` and returned `void`, so the summarizer read the index
+ * AGAIN — and `Object.hasOwn` is true for an own accessor, which `[[Get]]` then
+ * invokes. A getter answering with a valid arm and then with `null` produced
+ * `TypeError: Cannot convert undefined or null to object`, which is verbatim
+ * the bare throw this comment claimed to prevent, reached through the guard.
+ * The checked value and the consumed value are now the same value.
+ *
+ * An own ACCESSOR is refused exactly as a hole is, which is `readOwnValue`'s
+ * rule everywhere else in this module: a value a getter computes is not a value
+ * the caller wrote down.
+ * see budget-policy.test.mjs › "refuses an arms element whose own accessor answers a different value on the second read"
+ *
+ * ⚠ One forward pass, bounded by the array's own `length` — and `length` is the
+ * caller's number. `Array.isArray` is true for a `Proxy` of an array, so a trap
+ * can claim up to `2**32 - 1` and make this pass run for minutes. That exposure
+ * is not new — `.map` had it — and it is stated rather than closed, because the
+ * callers of this summarizer are in-process and a bound cheap enough to add
+ * here would refuse honest input.
  * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
  * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
  */
-const refuseUnownedElements = (values: readonly unknown[], what: string): void => {
+const ownElements = (values: readonly unknown[], what: string): readonly object[] => {
+  const owned: object[] = [];
   for (let index = 0; index < values.length; index += 1) {
-    if (!Object.hasOwn(values, index)) {
+    const descriptor = Object.getOwnPropertyDescriptor(values, index);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
       throw new Error(
-        `budget policy ${what} has no own element at index ${index}: a hole is answered by the prototype chain and published as ${what} the caller never wrote down`,
+        `budget policy ${what} has no own value at index ${index}: a hole is answered by the prototype chain, and an accessor answers with whatever it computes — neither is ${what} the caller wrote down`,
       );
     }
-    const element = values[index];
+    const element = descriptor.value as unknown;
     if (element === null || typeof element !== 'object') {
       throw new Error(
         `budget policy ${what} at index ${index} is ${element === null ? 'null' : typeof element}, not an object: it cannot be read as ${what} and must not be counted as one`,
       );
     }
+    owned.push(element);
   }
+  return owned;
 };
 
 /*
@@ -322,12 +342,21 @@ export interface BudgetPolicyEvidenceReport {
  * reported apart from an AXIS (what a run spent).
  */
 /**
- * ⚠ Incremental rather than sum-then-divide, and that is not style: two
- * readings this module accepts on purpose — `Number.MAX_VALUE` twice — sum to
- * `Infinity`, which serialises to `null` and publishes a row saying two runs
- * measured nothing while both measured something. The running form keeps a mean
- * of finite values finite.
+ * ⚠ **Neither arithmetic form is safe on every input this module accepts, and a
+ * round was spent learning that.** Sum-then-divide turns `MAX_VALUE` twice into
+ * `Infinity`; the running form below turns `MAX_VALUE, -MAX_VALUE` into
+ * `-Infinity` and a third reading after them into `NaN`. Both publish a row
+ * saying runs measured nothing while they measured something.
+ *
+ * So the guarantee does not live in the arithmetic. It lives on the OUTPUT, in
+ * `axisEntry`: a computed mean that is not finite yields no row, exactly as a
+ * key with no owned values yields no row. That is the same rule `ownNumber`
+ * applies to inputs, applied where it can actually hold.
+ *
+ * The running form is kept because it is right on the case a row already pins,
+ * not because it is universally right.
  * see budget-policy.test.mjs › "publishes a finite mean when two readings overflow the sum they are averaged through"
+ * see budget-policy.test.mjs › "publishes a finite metric mean, or no metric row, when two scores cancel"
  */
 const mean = (values: readonly number[]): number =>
   values.reduce(
@@ -348,19 +377,30 @@ const mean = (values: readonly number[]): number =>
 const axisEntry = (
   key: string,
   values: readonly number[],
-): BudgetPolicyAxisEntry | undefined =>
-  values.length === 0
-    ? undefined
-    : { key, mean: mean(values), exampleCount: values.length };
+): BudgetPolicyAxisEntry | undefined => {
+  if (values.length === 0) return undefined;
+  const measured = mean(values);
+  // The output guard, not a second input guard: `ownNumber` already refused
+  // every non-finite READING, and finite readings can still average to one.
+  if (!Number.isFinite(measured)) return undefined;
+  return { key, mean: measured, exampleCount: values.length };
+};
 
 /** Drop the keys that measured nothing, so no empty row is published. */
 const measuredEntries = (
   entries: readonly (readonly [string, BudgetPolicyAxisEntry | undefined])[],
 ): Readonly<Record<string, BudgetPolicyAxisEntry>> =>
-  Object.fromEntries(
-    entries.filter(
-      (entry): entry is readonly [string, BudgetPolicyAxisEntry] =>
-        entry[1] !== undefined,
+  Object.freeze(
+    Object.fromEntries(
+      entries
+        .filter(
+          (entry): entry is readonly [string, BudgetPolicyAxisEntry] =>
+            entry[1] !== undefined,
+        )
+        // The row too, not only the record holding it: an unfrozen entry lets a
+        // caller assign over a published mean, which is the same rewrite the
+        // record-level freeze refuses one level up.
+        .map(([key, entry]) => [key, Object.freeze(entry)] as const),
     ),
   );
 
@@ -459,10 +499,10 @@ export function summarizeBudgetPolicyEvidence(
   if (declaredArms.value.length === 0) {
     throw new Error('budget policy evidence requires at least one arm');
   }
-  refuseUnownedElements(declaredArms.value, 'arm');
+  const armInputs = ownElements(declaredArms.value, 'arm');
 
   const seen = new Set<string>();
-  const reported = (declaredArms.value as readonly BudgetPolicyArmInput[]).map((entry) => {
+  const reported = (armInputs as readonly BudgetPolicyArmInput[]).map((entry) => {
     const armPolicy = readOwnValue(entry as object, 'policy');
     const armExperiment = readOwnValue(entry as object, 'experiment');
     if (!armPolicy.present || !armExperiment.present) {
@@ -504,8 +544,8 @@ export function summarizeBudgetPolicyEvidence(
         `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution record: a distribution read off the prototype describes runs that did not happen, and an owned non-record is republished verbatim under a field declared as a record of counts`,
       );
     }
-    refuseUnownedElements(ownResults.value, 'result');
-    const results = ownResults.value as readonly BudgetPolicyArmResult[];
+
+    const results = ownElements(ownResults.value, 'result') as readonly BudgetPolicyArmResult[];
     /**
      * 🔴 The report's OWN copy, with every count checked, not the caller's
      * container republished.
@@ -627,11 +667,24 @@ export function summarizeBudgetPolicyEvidence(
       return [field, statement];
     }),
   ) as Readonly<Record<BenchmarkBudgetField, BudgetCalibrationStatement>>;
+  // The record as well as the statements in it. Each statement is already
+  // frozen where CALIBRATION is declared, so an in-place flip of
+  // `empiricallyCalibrated` never took — but this record was not, so the whole
+  // entry could be REPLACED, which reaches the same published lie by a route
+  // the in-place attempt does not. Measured before this line existed.
+  // see budget-policy.test.mjs › "keeps a calibration statement when a caller replaces the whole entry"
+  Object.freeze(calibration);
 
-  // Frozen at the levels this function builds, for the reason each arm's
+  // Frozen at every level this function builds, for the reason each arm's
   // `budgets` and `stopKindDistribution` are: a report is a record of what
   // happened, and a caller that can rewrite it after it was produced turns
-  // published evidence into a working object.
+  // published evidence into a working object. An earlier version of this
+  // sentence said "at the levels this function builds" while `metrics`,
+  // `resourceAxes`, their entries and `calibration` were all left mutable — a
+  // caller set a published mean to 999 and injected a metric row no run
+  // produced. The row below walks the report rather than naming levels, so a
+  // level added later is covered without editing a list.
+  // see budget-policy.test.mjs › "freezes every level of a published report, not only the levels named where the freeze is written"
   return Object.freeze({
     arms: Object.freeze(reported.map((arm) => Object.freeze(arm))),
     calibration,

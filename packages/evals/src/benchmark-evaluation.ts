@@ -777,7 +777,7 @@ export async function runGraphBenchmarkExperiment(
   // caller never asked for -- measured, and it is why these two states are now
   // separated.
   // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
-  // ⚠ Three states, not two, and the middle one cost a review round.
+  // ⚠ Four states, not two, and each of the last three cost a review round.
   //
   //   ABSENT (omitted, or inherited)  -> the shipped policy. Nothing was asked
   //                                      for, so there is nothing to refuse.
@@ -789,6 +789,15 @@ export async function runGraphBenchmarkExperiment(
   //                                      the suite's own helper had to spread
   //                                      around the refusal, which is the trap
   //                                      showing itself.
+  //   own ACCESSOR                    -> REFUSED. A getter is present in a shape
+  //                                      this reader does not accept, and
+  //                                      `.claude/rules/invariants.md` calls that
+  //                                      the refusal case. It was silently
+  //                                      treated as absent until a review round
+  //                                      measured it: the seam never asked the
+  //                                      getter, and the corpus ran under the
+  //                                      shipped policy while the caller
+  //                                      believed it had supplied one.
   //   own `null`, or any other value  -> PARSED, and refused if unreadable. A
   //                                      caller that computed a policy and got
   //                                      `null` asked for something; running the
@@ -800,11 +809,15 @@ export async function runGraphBenchmarkExperiment(
   // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
   // see budget-policy.test.mjs › "starts from the shipped policy when budgetPolicy is present but undefined"
   // see budget-policy.test.mjs › "starts from the shipped policy when budgetPolicy is only inherited"
+  // see budget-policy.test.mjs › "refuses a budgetPolicy option that is an own accessor"
   const declaredPolicy = Object.getOwnPropertyDescriptor(options, 'budgetPolicy');
+  if (declaredPolicy !== undefined && !Object.hasOwn(declaredPolicy, 'value')) {
+    throw new Error(
+      'budget policy option must be a value this caller wrote down, not an accessor: a policy a getter computes is not a policy the experiment can publish a version for',
+    );
+  }
   const budgetPolicy =
-    declaredPolicy === undefined ||
-    !Object.hasOwn(declaredPolicy, 'value') ||
-    declaredPolicy.value === undefined
+    declaredPolicy === undefined || declaredPolicy.value === undefined
       ? BENCHMARK_BUDGET_POLICY
       : parseBenchmarkBudgetPolicy(declaredPolicy.value);
 
