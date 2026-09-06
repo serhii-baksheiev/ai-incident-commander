@@ -1046,6 +1046,37 @@ test('refuses an arm that inherits its policy and experiment', async () => {
   );
 });
 
+/**
+ * One row per MEMBER, not one for the pair.
+ *
+ * The row above hands over an arm inheriting BOTH fields, so it pins the
+ * conjunction — measured: either own-read reverted alone left the whole suite
+ * green while an arm inheriting only that one field went from refused to
+ * publishing a metric mean of 42 under the shipped version string.
+ *
+ * That is the sentence this branch wrote about somebody else's finding one
+ * commit before making the same mistake: a row pins the conjunction, never the
+ * member. It is why these two exist separately.
+ */
+for (const [label, build] of [
+  ['policy', (policy, experiment) => Object.assign(Object.create({ policy }), { experiment })],
+  ['experiment', (policy, experiment) => Object.assign(Object.create({ experiment }), { policy })],
+]) {
+  test(`refuses an arm that inherits only its ${label}`, async () => {
+    const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+    const experiment = {
+      results: [{ metrics: { accuracy: { score: 42 } }, resources: { toolCallsUsed: 99 } }],
+      stopKindDistribution: {},
+    };
+
+    assert.throws(
+      () => summarize({ arms: [build(requireBudgetPolicy(), experiment)] }),
+      /policy and an experiment/,
+      `an arm that owns one field and inherits the other is still an arm describing a run the caller did not fully hand over: ${label} reached through the prototype must be refused on its own, not only alongside the other`,
+    );
+  });
+}
+
 test('refuses an experiment whose measurements exist only on the prototype', async () => {
   const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
   const arm = { policy: requireBudgetPolicy(), experiment: {} };
