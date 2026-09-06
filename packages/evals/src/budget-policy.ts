@@ -173,11 +173,22 @@ const readOwnValue = (
  * see budget-policy.test.mjs › "refuses an arms element whose own accessor answers a different value on the second read"
  *
  * ⚠ One forward pass, bounded by the array's own `length` — and `length` is the
- * caller's number. `Array.isArray` is true for a `Proxy` of an array, so a trap
- * can claim up to `2**32 - 1` and make this pass run for minutes. That exposure
- * is not new — `.map` had it — and it is stated rather than closed, because the
- * callers of this summarizer are in-process and a bound cheap enough to add
- * here would refuse honest input.
+ * caller's number, which is a weaker bound than it looks. `Array.isArray` is
+ * true for a `Proxy` of an array, and a `get` trap on `length` is not
+ * constrained by any proxy invariant while the target's `length` is writable, so
+ * a trap can claim `2**53`. The failure mode is not slowness: this function
+ * pushes one entry per index, so it exhausts the heap. Measured, a claimed
+ * length of `5e8` under `--max-old-space-size=256` dies in about 4.9 s with
+ * `FATAL ERROR: Reached heap limit`.
+ *
+ * A first version of this paragraph said `2**32 - 1` and "run for minutes". Both
+ * were wrong, and a limits note that understates its own bound is worse than
+ * none — it is the guard's claim about how far it can be trusted.
+ *
+ * The exposure is not new — `.map` allocated per element the same way — and it
+ * is stated rather than closed: every caller of this summarizer is in-process,
+ * so this is not a trust boundary, and a length cap cheap enough to add here
+ * would refuse an honest corpus larger than today's.
  * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
  * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
  */

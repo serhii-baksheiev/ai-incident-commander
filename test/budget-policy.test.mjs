@@ -2492,3 +2492,124 @@ test('refuses a budgetPolicy option that is an own accessor', async () => {
     'a policy the runner cannot read must stop the experiment before any scenario starts, rather than silently substituting the shipped budgets and publishing evidence under them',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* 18. The checked element IS the consumed element                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠ **These two rows are GREEN AT HEAD BY CONSTRUCTION.** They demonstrate no
+ * defect today; they are the pin for a property that round 9 introduced, that
+ * `ownElements`'s comment states emphatically — "It returns what it checked,
+ * and that is the whole point of the second version of this function… The
+ * checked value and the consumed value are now the same value" — and that
+ * nothing in this file held.
+ *
+ * 🔴 **The mutant they exist to catch.** In `ownElements`, replace
+ * `owned.push(element)` with `owned.push(values[index])`: the descriptor read
+ * still happens and an own accessor is still refused by it, but the value that
+ * leaves the function is a SECOND read, a `[[Get]]`, of the caller's index.
+ * Measured by running this whole file against that mutant, applied to the built
+ * module in memory: 85 rows, 83 pass, and the only two that go red are the two
+ * below. Every other row survives it — including
+ * "refuses an arms element whose own accessor answers a different value on the
+ * second read" one section above, which cannot reach it: a plain own accessor
+ * has no `value` in its descriptor and is refused one line earlier, so the
+ * `[[Get]]` the mutant reintroduces is never performed on it.
+ *
+ * **What does reach it is a `Proxy` of an array whose `getOwnPropertyDescriptor`
+ * trap and `get` trap disagree.** `Array.isArray` is true for a proxy of an
+ * array, so it passes the container check, and then the two reads answer
+ * differently — which is the whole difference between checking a value and
+ * consuming it. Measured on the built module at this head, and again with the
+ * mutant applied to a scratch copy of it:
+ *
+ *   - arms: head publishes one arm under the DESCRIPTOR's policy version; the
+ *     mutant throws `TypeError: Cannot convert undefined or null to object`,
+ *     verbatim the bare throw round 8 was blocked for and round 9's comment
+ *     says it closed;
+ *   - results: head publishes `runCount: 1` with the descriptor's metric and
+ *     resource rows behind it; the mutant publishes `runCount: 1` with
+ *     `metrics: {}` and `resourceAxes: {}` — a run counted and measured in
+ *     nothing, the same reading the results-entry refusals above exist to
+ *     refuse.
+ *
+ * Both call sites consume the snapshot, so both get a row: a mutant that
+ * reintroduced the second read at one of them only would otherwise be caught at
+ * one of them only.
+ *
+ * The proxied element is a perfectly valid arm (or result) every time it is
+ * READ FROM THE DESCRIPTOR, so nothing about its value can be what these rows
+ * turn on — what they turn on is which of the two reads the report was built
+ * from.
+ */
+
+/**
+ * A one-element list that reports `element` from `getOwnPropertyDescriptor` and
+ * answers `getAnswer` from `[[Get]]` on the same index. A proxy of a real
+ * array, so `Array.isArray`, `length` and every other index behave normally.
+ */
+function listWhoseGetDisagreesWithItsDescriptor(element, getAnswer) {
+  return new Proxy([element], {
+    getOwnPropertyDescriptor: (target, key) =>
+      key === '0'
+        ? { value: element, writable: true, enumerable: true, configurable: true }
+        : Reflect.getOwnPropertyDescriptor(target, key),
+    get: (target, key) => (key === '0' ? getAnswer : Reflect.get(target, key)),
+  });
+}
+
+/** The error a call raised, as a comparable pair, or `[]` when it raised none. */
+function raised(outcome) {
+  return outcome.error === undefined
+    ? []
+    : [outcome.error.constructor.name, outcome.error.message];
+}
+
+test('publishes the arm its descriptor carried, never the one a second read answers with', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arm = {
+    policy: sweepPolicy('aic-18-descriptor-arm', 4, 8, 2),
+    experiment: { results: [], stopKindDistribution: {} },
+  };
+  const arms = listWhoseGetDisagreesWithItsDescriptor(arm, null);
+
+  const outcome = capture(() => summarize({ arms }));
+
+  assert.deepEqual(
+    raised(outcome),
+    [],
+    'the element the guard checked is a valid arm, so nothing here is malformed input: a throw means the summarizer consumed a SECOND read of the index instead of the value it checked, which is the mutant owned.push(values[index]) and which reaches the module as a bare TypeError',
+  );
+  assert.deepEqual(
+    outcome.returned.arms.map((published) => published.policyVersion),
+    ['aic-18-descriptor-arm'],
+    'the arm published must be the one the descriptor carried: a report assembled from the get trap is a report about an element the caller never wrote into that slot',
+  );
+});
+
+test('publishes the run its descriptor carried, never the one a second read answers with', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const result = { metrics: { accuracy: { score: 1 } }, resources: { toolCallsUsed: 2 } };
+  const results = listWhoseGetDisagreesWithItsDescriptor(result, 'not a run');
+  const policy = sweepPolicy('aic-18-descriptor-result', 4, 8, 2);
+
+  const outcome = capture(() =>
+    summarize({ arms: [{ policy, experiment: { results, stopKindDistribution: {} } }] }),
+  );
+
+  assert.deepEqual(
+    raised(outcome),
+    [],
+    'the element the guard checked is a valid result, so no refusal is owed here: what this row watches is which read the arm below was built from',
+  );
+  assert.deepEqual(
+    {
+      runCount: outcome.returned.arms[0].runCount,
+      metrics: Object.keys(outcome.returned.arms[0].metrics),
+      resourceAxes: Object.keys(outcome.returned.arms[0].resourceAxes),
+    },
+    { runCount: 1, metrics: ['accuracy'], resourceAxes: ['toolCallsUsed'] },
+    'under the mutant owned.push(values[index]) this arm publishes runCount 1 with metrics {} and resourceAxes {} — the count vouches for a run whose measurements were replaced by whatever the get trap answered, which is the same "counted and measured in nothing" reading the results-entry refusals above exist to refuse',
+  );
+});
