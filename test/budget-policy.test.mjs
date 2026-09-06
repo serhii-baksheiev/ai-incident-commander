@@ -1976,9 +1976,10 @@ test('starts from the shipped policy when budgetPolicy is only inherited', async
  *
  * The real gap is one direction the compiler does not close either: a
  * `CALIBRATION` statement for a budget the field list does not declare compiles
- * clean and is silently dropped from every report. That contradicts the module
- * comment above `BENCHMARK_BUDGET_FIELDS`, which claims the compiler makes the
- * two agree in both directions.
+ * clean and is silently dropped from every report. That contradicted the module
+ * comment above `BENCHMARK_BUDGET_FIELDS`, which claimed the compiler makes the
+ * two agree in both directions; that comment was corrected when this row landed
+ * and now states which single direction the compiler closes.
  *
  * This row reads the constant out of the source because both constants are
  * frozen and `CALIBRATION` is module-private: nothing a caller can do makes the
@@ -2023,7 +2024,11 @@ test('declares a calibration statement for exactly the budgets the field list ca
  * enforces that, and **every value handed over below is accepted by it** — all
  * of them are finite numbers.
  *
- * These rows pin the OUTPUT side, which is a different claim and is false today.
+ * ⚠ **"is false today" below described the state BEFORE these rows landed.** The
+ * output side holds at head, and the module comment quoted next no longer
+ * exists — it was replaced when the guarantee moved onto the output.
+ *
+ * These rows pin the OUTPUT side, which was a different claim and was false then.
  * `mean` was replaced with the incremental form
  * `running + (value - running) / (index + 1)`, carrying the comment "The running
  * form keeps a mean of finite values finite". Measured on the built module, over
@@ -2300,13 +2305,17 @@ test('refuses an arms element that is an own accessor, exactly as it refuses a h
 /* -------------------------------------------------------------------------- */
 
 /**
- * `summarizeBudgetPolicyEvidence` freezes what it names, and it names five
- * things. Measured on a real report: `report`, `report.arms`, each `arm`,
- * `arm.budgets` and `arm.stopKindDistribution` are frozen; **`arm.metrics`,
+ * ⚠ **Everything in this paragraph is the state BEFORE the rows below landed.
+ * All of it is fixed at head — do not read it as licence to skip a freeze.**
+ *
+ * `summarizeBudgetPolicyEvidence` froze what it named, and it named five
+ * things. Measured on a real report at the time: `report`, `report.arms`, each
+ * `arm`, `arm.budgets` and `arm.stopKindDistribution` were frozen; **`arm.metrics`,
  * each metric entry, `arm.resourceAxes`, each axis entry and
- * `report.calibration` are not.** A caller rewrote a published mean to `999`
+ * `report.calibration` were not.** A caller rewrote a published mean to `999`
  * and injected a whole metric row that no run produced, both in place, both
- * silently.
+ * silently. Every one of those levels is frozen at head, which is what the rows
+ * below assert.
  *
  * ⚠ **Calibration is the case worth being precise about, because the obvious
  * reading of it is wrong.** The individual statement objects ARE frozen, so

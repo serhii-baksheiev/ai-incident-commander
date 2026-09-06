@@ -230,9 +230,11 @@ const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
  * `parseChallengeResult` refuses a third key outright — so a model-backed
  * challenge role that returned a count would fail at runtime, not opt in. The
  * limit further down this block says exactly that; this line used to imply a
- * choice a later session could reverse. Those are model-backed roles that need a provider credential, and the
- * arm the regression suite and the shipped benchmark run is the replay-backed
- * one, which declares nothing — so `llmCallsUsed` reads 0 on every run of THAT
+ * choice a later session could reverse.
+ *
+ * The two roles that DO declare are model-backed and need a provider
+ * credential, and the arm the regression suite and the shipped benchmark run is
+ * the replay-backed one, which declares nothing — so `llmCallsUsed` reads 0 on every run of THAT
  * arm by construction of it rather than by estimate. An unused channel reports
  * nothing, where a synthesised count would be cost evidence nobody measured.
  * see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"

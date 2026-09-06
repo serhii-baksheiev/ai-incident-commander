@@ -742,9 +742,10 @@ type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
     /**
-     * What this experiment allows a run to spend. Omitted — or supplied as an
-     * own `undefined`, which is the same thing while this project does not set
-     * `exactOptionalPropertyTypes` — it is the shipped `BENCHMARK_BUDGET_POLICY`.
+     * What this experiment allows a run to spend. Omitted, inherited rather than
+     * owned, or supplied as an own `undefined` — which is the same thing while
+     * this project does not set `exactOptionalPropertyTypes` — it is the
+     * shipped `BENCHMARK_BUDGET_POLICY`.
      * An own ACCESSOR is refused outright, before any parse and whatever it
      * would have computed: a policy a getter produces is not one this caller
      * wrote down, and the version it keys published rows by would name a run

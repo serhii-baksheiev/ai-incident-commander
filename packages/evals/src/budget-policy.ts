@@ -172,23 +172,28 @@ const readOwnValue = (
  * the caller wrote down.
  * see budget-policy.test.mjs › "refuses an arms element whose own accessor answers a different value on the second read"
  *
- * ⚠ One forward pass, bounded by the array's own `length` — and `length` is the
- * caller's number, which is a weaker bound than it looks. `Array.isArray` is
- * true for a `Proxy` of an array, and a `get` trap on `length` is not
- * constrained by any proxy invariant while the target's `length` is writable, so
- * a trap can claim `2**53`. The failure mode is not slowness: this function
- * pushes one entry per index, so it exhausts the heap. Measured, a claimed
- * length of `5e8` under `--max-old-space-size=256` dies in about 4.9 s with
- * `FATAL ERROR: Reached heap limit`.
+ * ⚠ One forward pass, bounded by the array's own `length`, which is the caller's
+ * number: `Array.isArray` is true for a `Proxy` of an array, so `length` can be
+ * anything a trap says.
  *
- * A first version of this paragraph said `2**32 - 1` and "run for minutes". Both
- * were wrong, and a limits note that understates its own bound is worse than
- * none — it is the guard's claim about how far it can be trusted.
+ * **A claimed length alone does not get past this loop.** The descriptor read
+ * falls through to the proxy's target, so the first index the target does not
+ * own is refused — measured, a one-element target claiming `5e8` throws at index
+ * 1 in 0 ms. Reaching a claimed length needs a proxy that ALSO fabricates an own
+ * descriptor at every index, and that shape does allocate one entry per index.
+ * It is a real exposure, stated rather than closed: every caller of this
+ * summarizer is in-process, so this is not a trust boundary, and a length cap
+ * cheap enough to add here would refuse an honest corpus larger than today's.
+ * The two-trap shape is the one the suite builds, one `length` trap short of it:
+ * see budget-policy.test.mjs › "publishes the arm its descriptor carried, never the one a second read answers with"
  *
- * The exposure is not new — `.map` allocated per element the same way — and it
- * is stated rather than closed: every caller of this summarizer is in-process,
- * so this is not a trust boundary, and a length cap cheap enough to add here
- * would refuse an honest corpus larger than today's.
+ * ⚠ **This paragraph carried a fabricated figure twice and now carries none.**
+ * The first version said `2**32 - 1` and "run for minutes"; the second said a
+ * `length` trap claiming `5e8` exhausts the heap, having measured a proxy with
+ * two traps and described one with a single trap. Both were a limits note wider
+ * than its measurement, which is the one thing a limits note must never be — it
+ * is the guard's own claim about how far it can be trusted. What survives here
+ * is the shape, not a number.
  * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
  * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
  */
