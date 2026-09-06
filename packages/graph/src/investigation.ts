@@ -228,13 +228,14 @@ const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
  * not. But those are model-backed roles that need a provider credential, and
  * the arm the regression suite and the benchmark run is the replay-backed one,
  * which declares nothing. So `llmCallsUsed` is 0 on every benchmark run by
- * construction of that arm rather than by estimate — the third site to carry
- * this sentence, and the one a fix round left uncited while correcting the
- * other two.
- * see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm" — and, until an earlier
+ * construction of that arm rather than by estimate — and, until an earlier
  * wording here went stale, for the different reason that no producer existed at
  * all. An unused channel reports nothing, where a synthesised count would be
  * cost evidence nobody measured.
+ *
+ * This is the third site to carry that sentence, and the one a fix round left
+ * uncited while correcting the other two.
+ * see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"
  *
  * ⚠ A second limit, and it is not the same one: consumption is folded in AFTER
  * the node ran, so a single declaration larger than the remaining budget is

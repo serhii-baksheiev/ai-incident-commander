@@ -1023,6 +1023,29 @@ test('keeps a validated budget even when an inherited accessor tries to swallow 
   });
 });
 
+test('refuses an arm that inherits its policy and experiment', async () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+
+  // The `arms` list itself is owned; the ARM inherits both of its fields. The
+  // row one level up hands over an inherited `arms` and never reaches this
+  // read — measured: reverting these two alone left the whole suite green while
+  // an arm built this way published a metric mean of 42 and an axis mean of 99
+  // under the shipped version string.
+  const arm = Object.create({
+    policy: requireBudgetPolicy(),
+    experiment: {
+      results: [{ metrics: { accuracy: { score: 42 } }, resources: { toolCallsUsed: 99 } }],
+      stopKindDistribution: {},
+    },
+  });
+
+  assert.throws(
+    () => summarize({ arms: [arm] }),
+    /policy and an experiment/,
+    'an arm that owns neither field describes a run the caller never handed over, and this refusal is advertised in the PR description by name — an advertised refusal with no row is a contract nothing holds',
+  );
+});
+
 test('refuses an experiment whose measurements exist only on the prototype', async () => {
   const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
   const arm = { policy: requireBudgetPolicy(), experiment: {} };

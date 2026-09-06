@@ -398,7 +398,13 @@ export function summarizeBudgetPolicyEvidence(
     const ownNumber = (source: unknown, key: string): number | undefined => {
       if (source === null || typeof source !== 'object') return undefined;
       const slot = readOwnValue(source, key);
-      return typeof slot.value === 'number' ? slot.value : undefined;
+      // `slot.present` as well as the type, symmetric with `ownRecord` above.
+      // Correct without it today only because an absent slot carries no `value`
+      // key at all — which makes this a guard resting on a detail of another
+      // function's return shape rather than on its own check.
+      return slot.present && typeof slot.value === 'number'
+        ? slot.value
+        : undefined;
     };
     const metricKeys: string[] = [
       ...new Set<string>(
