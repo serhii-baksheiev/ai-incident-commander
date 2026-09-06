@@ -764,7 +764,8 @@ export async function runGraphBenchmarkExperiment(
   // Parsed BEFORE anything runs: a malformed policy must not be discovered
   // halfway through a corpus, with some runs already recorded under a version
   // the experiment never executed.
-  // see budget-policy.test.mjs › "refuses a fractional budget instead of falling back to the shipped one"
+  // The refusal rows are generated from a table, so grep the MALFORMED_POLICIES
+  // labels in budget-policy.test.mjs rather than a whole test name.
   //
   // `Object.hasOwn` rather than `??`: an ABSENT option is the fail-open case and
   // takes the shipped policy, while an option PRESENT in a shape this runner
@@ -772,7 +773,7 @@ export async function runGraphBenchmarkExperiment(
   // those apart, so an explicit `null` ran the whole corpus under a policy the
   // caller never asked for -- measured, and it is why these two states are now
   // separated.
-  // see budget-policy.test.mjs › "refuses an explicitly null policy instead of falling back to the shipped one"
+  // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
   const budgetPolicy = Object.hasOwn(options, 'budgetPolicy')
     ? parseBenchmarkBudgetPolicy(options.budgetPolicy)
     : BENCHMARK_BUDGET_POLICY;

@@ -31,7 +31,9 @@ while the premise was being checked (`0`, `1`, `4`, `64` against `0`, `1`, `8`,
 `maxIterations` and `llmCallBudget` are read on exactly one edge — the
 `need-more-evidence` route out of `termination_check`
 (`packages/graph/src/investigation.ts`, the branch that terminates
-`budget-exhausted`). **No node outside `test/` returns that route.** Both
+`budget-exhausted`). **No node outside `test/` returns that route** — a property
+of the tree rather than of any corpus, which is why this conclusion is not
+about the calibration partition alone, and why it has a row of its own. Both
 benchmark arms use the replay-backed lifecycle, whose `termination_check`
 returns `terminal` / `sufficient`, and the model arm replaces three reasoning
 roles without touching it.
@@ -96,14 +98,24 @@ in the report".
 ## What would change this conclusion
 
 One thing, and it is a change to the system under test rather than a
-calibration: a node that returns `need-more-evidence`, or a corpus that needs
-more than one iteration. Measured, by making the replay fixture's
-`termination_check` return that route once: **one** row reddens —
-`budget-policy.test.mjs` › "publishes identical evidence at zero logical budget,
-because nothing reaches that edge". The two reserve rows stay green, because the
-reserve is a different budget on a different edge. That one row going red is the
-day this conclusion has to be re-read, which is the point of writing it as a row
-rather than as this paragraph.
+calibration: a node that returns `need-more-evidence`.
+
+**Two rows watch that, and they watch different things.** Making the replay
+fixture return the route reddens `budget-policy.test.mjs` › "publishes identical
+evidence at zero logical budget, because nothing reaches that edge" — inside
+that file, one row; run suite-wide it also reddens
+`benchmark-evaluation.test.mjs` › "runs all fifteen fresh records through
+createInvestigationGraph and replay", which asserts the exact node trace. But
+both of those watch the FIXTURE. The claim this conclusion actually rests on is
+about the TREE, and a fixture row cannot see it: a model-backed
+`termination_check` added in `packages/roles` and wired into the lane's model arm
+— the direction AIC-94 already took for three other roles — would falsify the
+conclusion and leave every sweep row green.
+
+So the tree has its own row: › "names every non-test file that mentions the
+route this conclusion depends on". It is deliberately coarse — it finds the
+string, not a return — and it reports a new mention so a human decides whether
+it is a producer. That is the row to read when this record is quoted.
 
 Until then, `llmCallBudget` in particular is a versioned safety cap whose value
 no measurement chose, and the report says that in the same place it publishes

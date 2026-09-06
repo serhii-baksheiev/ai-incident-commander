@@ -13,7 +13,15 @@
  * `need-more-evidence` route out of `termination_check` — and no node outside
  * `test/` returns that route, so `0 / 0` publishes evidence identical to the
  * shipped `4 / 8` on every axis the comparison keeps — which is all of them
- * except `wallClockDurationMs`, excluded as nondeterministic. `reservedChallengeBudget` is reached, but the challenge
+ * except `wallClockDurationMs`, excluded as nondeterministic.
+ *
+ * ⚠ Those are two claims with two different lifetimes, and only one is about a
+ * corpus. The identical evidence is a fact about the calibration runs. "No node
+ * outside `test/` returns that route" is a fact about the TREE, and it is what
+ * makes the conclusion outlive this corpus — swapping the corpus changes nothing
+ * while the fixture supplies `termination_check`. The sweep rows watch the
+ * fixture and cannot see the tree; a separate row does.
+ * see budget-policy.test.mjs › "names every non-test file that mentions the route this conclusion depends on" `reservedChallengeBudget` is reached, but the challenge
  * cap is two rounds and this corpus uses one, so `1`, `2` and `8` are
  * indistinguishable; only `0` differs, and it stops every run
  * `budget-exhausted`, which moves the accepted v0.1 outcome and is therefore
@@ -41,8 +49,21 @@ export interface BenchmarkBudgetPolicy {
  *
  * Frozen for the reason `GRAPH_OWNED_CONTROL_FIELDS` is: `as const` is erased at
  * compile time, so an exported array is ordinary mutable runtime state that any
- * importer can splice — and an entry removed from here is a budget that stops
- * being validated and stops being reported.
+ * importer can splice.
+ *
+ * ⚠ This list and the calibration statements below are two spellings of "which
+ * budgets exist". Measured at this head, the compiler makes them agree in both
+ * directions: removing an entry is `TS2345` where the parser names that field as
+ * a literal, and adding one without a statement is `TS2741` on the calibration
+ * record. That is the enforcement; the correspondence row is the runtime check
+ * beside it.
+ *
+ * An earlier version of this sentence said a removed entry "stops being
+ * validated and stops being reported". Only the first half was true: the report
+ * went on publishing a statement for a field the validator no longer knew, which
+ * is the opposite of the reassurance. Recorded because that sentence survived
+ * two passes before it was measured.
+ * see budget-policy.test.mjs › "carries one calibration statement per declared budget field, and no other"
  */
 export const BENCHMARK_BUDGET_FIELDS = Object.freeze([
   'maxIterations',
@@ -106,7 +127,9 @@ const readOwnValue = (
  * evidence because it looks like a measurement. Every refusal names the field,
  * so the caller is told which number to fix rather than that "something" was
  * wrong.
- * see budget-policy.test.mjs › "refuses a fractional budget instead of falling back to the shipped one"
+ * The refusal rows are generated from a table, so their full names are not
+ * greppable: see budget-policy.test.mjs, the MALFORMED_POLICIES table, whose
+ * labels ("a fractional budget", "an explicitly null policy") a grep does find.
  */
 export function parseBenchmarkBudgetPolicy(
   candidate: unknown,

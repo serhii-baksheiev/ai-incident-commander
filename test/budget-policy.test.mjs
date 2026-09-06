@@ -35,7 +35,10 @@
  * exported constant would prove the constant, not the wiring.
  */
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import * as evals from '@aic/evals';
 
@@ -874,6 +877,65 @@ test('states in the report that llmCallBudget is not empirically calibrated, and
     new Set(BUDGET_FIELD_NAMES.map((field) => report.calibration[field].reason)).size > 1,
     true,
     'one reason repeated under three budgets is a placeholder: the reserve is reached and the other two are not, and the statements have to say different things',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 6b. The premise the whole conclusion rests on                              */
+/* -------------------------------------------------------------------------- */
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/** Every source file under the given roots, skipping build output. */
+function sourceFilesUnder(roots) {
+  const found = [];
+  const walk = (current) => {
+    for (const entry of readdirSync(current)) {
+      if (entry === 'dist' || entry === 'node_modules') continue;
+      const path = join(current, entry);
+      if (statSync(path).isDirectory()) {
+        walk(path);
+        continue;
+      }
+      if (/\.(ts|mjs|js)$/.test(entry)) found.push(path);
+    }
+  };
+  for (const root of roots) walk(resolve(projectRoot, root));
+  return found;
+}
+
+/**
+ * 🔴 This row, not the sweep rows, is what watches this item's conclusion.
+ *
+ * The finding is that `maxIterations` and `llmCallBudget` cannot be calibrated
+ * by any corpus, and it rests on ONE property of the tree: the edge that reads
+ * them is `need-more-evidence`, and nothing outside `test/` returns it. The
+ * sweep rows above cannot see that — they build their nodes from
+ * `replayBackedNodes`, whose `termination_check` is hardcoded, so they watch the
+ * FIXTURE. A model-backed `termination_check` added in `packages/roles` and
+ * wired into the lane's model arm — the direction AIC-94 already took for three
+ * other roles — would falsify the conclusion and leave every one of them green.
+ *
+ * ⚠ What this row can and cannot see, because a coarse check trusted as a fine
+ * one is worse than none: it finds the STRING, not a return. A new mention is
+ * reported and a human decides whether it is a producer. It cannot see a route
+ * assembled from a variable, and it does not read `test/`.
+ */
+test('names every non-test file that mentions the route this conclusion depends on', () => {
+  const mentions = sourceFilesUnder(['packages', 'scripts', 'incident-lab', 'apps'])
+    .filter((path) => readFileSync(path, 'utf8').includes('need-more-evidence'))
+    .map((path) => relative(projectRoot, path))
+    .sort();
+
+  assert.deepEqual(
+    mentions,
+    [
+      // The route's own type union and its single consumer — the budget edge.
+      'packages/graph/src/investigation.ts',
+      // This item's prose about why that edge is unreached.
+      'packages/evals/src/budget-policy.ts',
+    ].sort(),
+    'a non-test file started mentioning need-more-evidence: if anything there RETURNS that route, the logical budgets became measurable and this item\'s conclusion — that no corpus can calibrate them — has to be re-read before it is quoted again',
   );
 });
 
