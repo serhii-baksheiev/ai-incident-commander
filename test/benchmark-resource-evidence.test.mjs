@@ -1328,13 +1328,19 @@ test('counts a replayed tool call that produced no evidence', async () => {
  * A characterisation PIN, and the value is a MEASUREMENT taken at b2950d0 —
  * before the trials channel was written — not a requirement anybody chose.
  *
- * `executedDiscriminatingTrialCount` counts trials whose `testId` is one the
- * challenge planned, so writing the replayed tool calls into the same channel is
- * exactly the change that could credit a challenge nothing executed. The fixture
- * never runs the challenge's discriminating test, and `challenge_effect` scored
- * 0 / `no-investigation-change` on every run that emits it. If a trial id
- * collides with `challenge-test-${runId}`, this run scores 1 / `passed` instead
- * — a behaviour claim manufactured by a resource fix.
+ * Writing the replayed tool calls into the `trials` channel is exactly the
+ * change that could credit a challenge nothing executed, because
+ * `executedDiscriminatingTrialCount` reads that channel. What it takes to be
+ * credited is not restated here — one fact spelled twice is one fact that goes
+ * stale in one of the two places, and this comment was that second place:
+ * `benchmark-evaluation.ts` states the condition beside the filter, and the two
+ * halves of it are pinned by behavior-evaluators.test.mjs › "does not credit a
+ * discriminating trial that ended in error" and › "does not credit a
+ * discriminating trial whose tool was unavailable".
+ *
+ * What matters here is the measurement: the fixture never runs the challenge's
+ * discriminating test, and `challenge_effect` scored 0 / `no-investigation-change`
+ * on every run that emits it, before the channel was written and after.
  */
 const CHALLENGE_EFFECT_BEFORE_TRIALS = Object.freeze({
   score: 0,

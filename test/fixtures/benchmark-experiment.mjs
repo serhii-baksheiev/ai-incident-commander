@@ -246,8 +246,17 @@ export function replayBackedNodes(record, traces, replayCounts) {
     derive_predictions: visit('derive_predictions'),
     plan_investigation: visit('plan_investigation'),
     /**
-     * Replays every recorded call and writes BOTH channels the execution of a
-     * tool produces: the evidence it yielded, and the trial that yielded it.
+     * Replays every recorded call and writes both channels: the evidence the
+     * call yielded, and a trial recording that the call happened.
+     *
+     * ⚠ The link between the two is one-way. `trial.evidenceIds` names the
+     * evidence this call produced, but the corpus evidence carries its own
+     * baked `trialId` of `trial-<evidenceId>` (`replay-scenarios.ts`), which
+     * names no trial in this state and named none before this node wrote any.
+     * The real node keeps the pair equal by overwriting `trialId` as it parses
+     * (`packages/graph/src/index.ts`); this one leaves the frozen corpus alone,
+     * because nothing reads the back-reference and rewriting accepted evidence
+     * to tidy a pointer is a larger risk than the untidiness.
      *
      * The trial half is not bookkeeping. `toolCallsUsed` is derived as
      * `finalState.trials.length` (`benchmark-evaluation.ts`), so an arm that
@@ -257,9 +266,10 @@ export function replayBackedNodes(record, traces, replayCounts) {
      * manufacture. One trial per recorded call, including a call whose result
      * came back `unavailable` or `error`: it produced no evidence and it was
      * still a call this investigation spent.
-     * see benchmark-resource-evidence.test.mjs › "counts one tool call per tool
-     * call the replay-backed arm replayed" and › "counts a replayed tool call
-     * that produced no evidence"
+     * see benchmark-resource-evidence.test.mjs ›
+     * "counts one tool call per tool call the replay-backed arm replayed"
+     * see benchmark-resource-evidence.test.mjs ›
+     * "counts a replayed tool call that produced no evidence"
      *
      * Two identity choices carry weight, and both are pinned rather than
      * described:
@@ -277,12 +287,26 @@ export function replayBackedNodes(record, traces, replayCounts) {
      *   so here the id is the whole of it: a collision would credit a
      *   challenge whose discriminating test this fixture never executes — a
      *   behaviour score moved by a resource fix.
-     *   see benchmark-resource-evidence.test.mjs › "writing the replayed tool
-     *   calls into the trials channel credits no challenge"
+     *   see benchmark-resource-evidence.test.mjs ›
+     *   "writing the replayed tool calls into the trials channel credits no challenge"
      *
      * `durationMs` is 0 because a replay measures nothing: the recorded result
      * is returned from memory, and the wall clock the benchmark reports is
      * measured around the whole investigation instead.
+     *
+     * ⚠ **The ids are per entry, and the early return is what keeps them
+     * unique.** This node is entered TWICE per run — the challenge round
+     * re-enters at `execute_investigation` — and the second entry replays
+     * nothing only because evidence is already there. A corpus whose entries
+     * ALL came back non-`ok` would leave evidence empty, replay a second time,
+     * and re-emit the same ids, which `upsertById` collapses: the run would
+     * have spent twice what the axis reports. No scenario in
+     * `BENCHMARK_SCENARIO_PARTITIONS` is that shape — every one has an `ok`
+     * entry — and the divergence is caught rather than merely unlikely, because
+     * the replay counter would read twice the trial count and the row below
+     * asserts the two are equal.
+     * see benchmark-resource-evidence.test.mjs ›
+     * "counts one tool call per tool call the replay-backed arm replayed"
      */
     async execute_investigation(state) {
       traces.get(record.runId).push('execute_investigation');

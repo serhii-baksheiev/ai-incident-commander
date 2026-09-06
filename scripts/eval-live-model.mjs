@@ -71,9 +71,9 @@
  * detect.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { argv, env, exit, stderr, stdout } from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -246,12 +246,41 @@ async function main() {
   if (outPath !== undefined) writeFileSync(outPath, serialized);
 }
 
-// The lane runs when this file IS the command, and not when it is imported.
-// Without the guard the two arms above cannot be compared as objects by anything
-// other than a reader of this file, because importing the module would run the
-// lane — and a comparison nobody can execute is an argument, not a test.
-// see live-model-lane.test.mjs › "runs its lane only when it is the process entry point"
-if (argv[1] !== undefined && pathToFileURL(argv[1]).href === import.meta.url) {
+/**
+ * Was this file invoked directly?
+ *
+ * The lane runs when this file IS the command, and not when it is imported.
+ * Without the guard the two arms above cannot be compared as objects by
+ * anything other than a reader of this file, because importing the module would
+ * run the lane — and a comparison nobody can execute is an argument, not a test.
+ *
+ * Compared by REALPATH on both sides, which is the form nine scripts under
+ * `.claude/scripts/` already use and `detect-missed-gate.mjs` writes the reason
+ * for: ESM resolves `import.meta.url` through symlinks while `process.argv[1]`
+ * keeps the path as typed, so a checkout behind a link — a macOS temp dir,
+ * where `$TMPDIR` goes through `/var` → `/private/var`, is the ordinary case —
+ * fails a naive equality check. This command would then exit 0 having run no
+ * lane and printed nothing, which reads exactly like a clean run and
+ * contradicts the refusal this file's header promises. That is not
+ * hypothetical: the naive form shipped here and both cold reviewers reproduced
+ * it.
+ *
+ * see live-model-lane.test.mjs › "runs its lane only when it is the process entry point"
+ * see live-model-lane.test.mjs › "refuses without a credential when it is reached through a symlinked path"
+ */
+const invokedDirectly = () => {
+  if (!argv[1]) return false;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(argv[1]);
+};
+
+if (invokedDirectly()) {
   main().catch((error) => {
     stderr.write(`${error.name}: ${error.message}\n`);
     exit(1);

@@ -14,7 +14,9 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -806,4 +808,42 @@ test('runs its lane only when it is the process entry point', () => {
     'making the command importable must not stop it being a command: with no credential it still refuses',
   );
   assert.match(executed.stderr, new RegExp(MODEL_API_KEY_VARIABLE));
+});
+
+/**
+ * The half the row above cannot see, and the reason it needs its own.
+ *
+ * That row spawns `resolve(projectRoot, …)`, a path already resolved through
+ * every symlink by the runner's own `import.meta.url` — so it exercises only
+ * the case where the two sides agree. ESM resolves `import.meta.url` through
+ * symlinks while `process.argv[1]` keeps the path as typed, and the first
+ * version of this guard compared the two directly. Reached through a link it
+ * then ran no lane and exited 0: a command that refuses turned into a command
+ * that reports success having done nothing, which is the one failure this
+ * file's header promises cannot happen.
+ *
+ * Not a contrived path. macOS resolves `$TMPDIR` through `/var` → `/private/var`,
+ * so `mkdtempSync` alone is enough to produce it — which is what this row uses.
+ */
+test('refuses without a credential when it is reached through a symlinked path', () => {
+  const linkRoot = mkdtempSync(join(tmpdir(), 'aic-111-entrypoint-'));
+  try {
+    const link = join(linkRoot, 'repo');
+    symlinkSync(projectRoot, link);
+
+    const executed = spawnSync(
+      process.execPath,
+      [join(link, 'scripts/eval-live-model.mjs')],
+      { cwd: projectRoot, encoding: 'utf8', env: childEnv({ CI: '1' }) },
+    );
+
+    assert.notEqual(
+      executed.status,
+      0,
+      `reached through a symlink the command must still refuse, not exit 0 having run nothing: stdout=${JSON.stringify(executed.stdout)} stderr=${JSON.stringify(executed.stderr)}`,
+    );
+    assert.match(executed.stderr, new RegExp(MODEL_API_KEY_VARIABLE));
+  } finally {
+    rmSync(linkRoot, { force: true, recursive: true });
+  }
 });
