@@ -254,9 +254,9 @@ async function main() {
  * anything other than a reader of this file, because importing the module would
  * run the lane — and a comparison nobody can execute is an argument, not a test.
  *
- * Compared by REALPATH on both sides, which is the form nine scripts under
- * `.claude/scripts/` already use and `detect-missed-gate.mjs` writes the reason
- * for: ESM resolves `import.meta.url` through symlinks while `process.argv[1]`
+ * Compared by REALPATH on both sides. Nine scripts under `.claude/scripts/`
+ * carry this same inline form, and `detect-missed-gate.mjs` writes the reason
+ * for it: ESM resolves `import.meta.url` through symlinks while `process.argv[1]`
  * keeps the path as typed, so a checkout behind a link — a macOS temp dir,
  * where `$TMPDIR` goes through `/var` → `/private/var`, is the ordinary case —
  * fails a naive equality check. This command would then exit 0 having run no
