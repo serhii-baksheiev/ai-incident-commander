@@ -217,21 +217,7 @@ async function main() {
   // 1. The credential first, so an unconfigured run creates no dataset, no
   //    project, no run and no record — the property the sibling command's
   //    header already states and this one inherits.
-  // 🔴 `.available` is CHECKED, not just resolved. `resolveModelConfig` does not
-  // throw — it returns `{available: false}` — so reading it and moving on left
-  // the real refusal inside `runLiveModelLane`, seven lines AFTER the record was
-  // claimed. Measured under `env -i` with no credential: the command wrote a
-  // `claimed` record and exited 1 having executed no scenario and made no
-  // provider call, and the next run was then refused with "the corpus is spent
-  // when scenarios execute … so the runs happened" — a false statement, over a
-  // run that never started, whose only remedy was a hand-written void record.
-  // see final-evaluation-command.test.mjs › "refuses an unconfigured run before it claims the candidate"
   const config = resolveModelConfig(env);
-  if (config.available !== true) {
-    throw new Error(
-      `no model provider credential is configured (${config.missing ?? MODEL_API_KEY_VARIABLE}): refusing before the candidate is claimed, because a claim asserts that scenarios executed`,
-    );
-  }
 
   // 2. The candidate, and a refusal if the tree does not match it.
   const dirty = git(['status', '--porcelain', '--', ...evals.FINAL_EVALUATION_CANDIDATE_PATHS]);
@@ -274,6 +260,28 @@ async function main() {
       )}\n`,
     );
     return;
+  }
+
+  // 🔴 The credential is required HERE — after the dry run has returned, and
+  // before the claim. Both halves are load-bearing and the first was got wrong
+  // once: putting this above the `--dry-run` return made the dry run need a
+  // live provider key, which contradicts this file's own header ("how a
+  // reviewer verifies a record") and the evidence README's reproduction
+  // instruction. A dry run claims nothing and calls nothing, so it needs
+  // nothing.
+  //
+  // `resolveModelConfig` does not throw — it returns `{available: false}` — so
+  // reading it and moving on left the real refusal inside `runLiveModelLane`,
+  // AFTER `claimRecord`. Measured under `env -i`: the command wrote a `claimed`
+  // record and exited 1 having executed no scenario and made no provider call,
+  // and the next run was then refused with "the corpus is spent when scenarios
+  // execute … so the runs happened" — false, about a run that never started.
+  // see final-evaluation-command.test.mjs › "refuses an unconfigured run before it claims the candidate"
+  // see final-evaluation-command.test.mjs › "reports a dry run with no provider credential, because a dry run claims nothing"
+  if (config.available !== true) {
+    throw new Error(
+      `no model provider credential is configured (${config.missing ?? MODEL_API_KEY_VARIABLE}): refusing before the candidate is claimed, because a claim asserts that scenarios executed`,
+    );
   }
 
   if (!decision.admit) {

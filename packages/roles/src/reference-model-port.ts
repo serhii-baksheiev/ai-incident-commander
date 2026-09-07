@@ -76,8 +76,9 @@ export interface ModelCompletion {
    * Without it a completion cut off at `max_tokens` reaches a role as an
    * ordinary string, `JSON.parse` fails on the half-written object, and the role
    * reports "the answer is not parseable JSON" — a false statement about the one
-   * thing this lane exists to measure. Measured on a real calibration run:
-   * a lane report recording the model as producing malformed output, reported as malformed output.
+   * thing this lane exists to measure. Measured on a real calibration run before
+   * this field existed: the lane recorded the model arm unreportable for
+   * producing malformed output, and adding the field removed the symptom.
    *
    * Absent when the provider did not say, which is not the same as "the model
    * finished": a fake port in a test may omit it, and a role reads it as

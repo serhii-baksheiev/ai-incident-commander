@@ -107,8 +107,9 @@ const TRUNCATED_STOP_REASONS = Object.freeze(['max_tokens']);
  * 🔴 A truncated answer is the harness's doing, not the model's. Reporting it as
  * "the answer is not parseable JSON" attributes a token budget to model quality,
  * and this lane exists to measure exactly that quality. Measured on a real
- * calibration run before this guard: a lane report recording the model as producing malformed output,
- * recorded as the model producing malformed output.
+ * calibration run before this guard existed, the lane recorded the model arm
+ * unreportable for producing malformed output — where the provider had in fact
+ * cut the answer off.
  * see roles-model-nodes.test.mjs › "refuses a truncated answer as a truncation rather than as malformed output"
  */
 function refuseTruncated(role: string, completion: ModelCompletion): void {

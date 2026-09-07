@@ -207,3 +207,34 @@ test('documents the dry-run invocation in the form npm actually forwards', () =>
     );
   }
 });
+
+/**
+ * 🔴 **A dry run claims nothing and calls nothing, so it needs nothing.**
+ *
+ * The credential check that stops an unconfigured run from claiming a candidate
+ * was first placed ABOVE the `--dry-run` early return, which made the dry run
+ * require a live provider key. Measured with `env -i`: the parent commit printed
+ * the full decision JSON and the fixed one exited 1.
+ *
+ * That contradicted three sentences at once — the command's own header ("how a
+ * reviewer verifies a record"), the evidence README's "without executing
+ * anything", and its reproduction instruction for the fingerprint invariance —
+ * and the refusal explained a claim the dry run was never going to make. The
+ * row above pins that the check precedes the CLAIM; this one pins that it does
+ * not precede the dry-run return, and both are needed because moving the block
+ * either way leaves the other row green.
+ */
+test('reports a dry run with no provider credential, because a dry run claims nothing', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+
+  const dryRunReturn = source.indexOf("if (flag('dry-run'))");
+  const availabilityCheck = source.indexOf('config.available !== true');
+
+  assert.notEqual(dryRunReturn, -1, 'the dry-run early return must be findable');
+  assert.notEqual(availabilityCheck, -1, 'the availability check must be findable');
+  assert.equal(
+    dryRunReturn < availabilityCheck,
+    true,
+    'the dry run must return BEFORE the credential is required: it claims nothing and calls nothing, and the README sends a reviewer to it as the way to check a record without a credential and without spending a corpus',
+  );
+});
