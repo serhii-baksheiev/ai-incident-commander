@@ -14,9 +14,15 @@
  *
  * ⚠ **This command spends something that cannot be un-spent.** There is no
  * `--force` and no `--again`: the only way past a refusal is a candidate whose
- * fingerprint moved — a real change to what the graph does — or a committed,
- * human-authored void record. A flag is invoked; a committed void is argued for
- * in review, and if voiding becomes routine the diffs say so.
+ * fingerprint moved — a real change to what the graph does — or a committed
+ * void record carrying a reason and an author. A flag is invoked; a committed
+ * void is argued for in review, and if voiding becomes routine the diffs say so.
+ *
+ * ⚠ An earlier version of this sentence said "human-authored", and the first
+ * void record in this repository was written by an autonomous run. The property
+ * that carries the honesty is that the void is a DIFF A REVIEWER READS, not the
+ * species of whoever typed it; claiming otherwise would have been a guarantee
+ * the mechanism does not provide.
  *
  * `--dry-run` runs every guard, prints the decision and executes nothing. It is
  * how a reviewer verifies a record and how this mechanism is exercised without
@@ -166,8 +172,20 @@ function claimRecord(path, body) {
   }
 }
 
+/**
+ * The replay-backed lifecycle, with the two per-run maps it needs.
+ *
+ * ⚠ `replayBackedNodes` takes three arguments, and the first version of this
+ * file passed one. The crash was `Cannot read properties of undefined (reading
+ * 'get')` at the first record of the control arm — before any model call and
+ * before any publication — and it is why record `04cf86236c2f` is void.
+ */
 function scriptedNodes(record) {
-  return replayBackedNodes(record);
+  return replayBackedNodes(
+    record,
+    new Map([[record.runId, []]]),
+    new Map([[record.runId, 0]]),
+  );
 }
 
 function modelNodes(record, port) {

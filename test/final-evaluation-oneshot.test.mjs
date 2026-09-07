@@ -145,12 +145,12 @@ test('matches a record by the candidate fingerprint it carries, not by the name 
   );
 });
 
-test('admits a candidate whose only covering record was voided by a named person', () => {
+test('admits a candidate whose only covering record was voided with a reason and an author', () => {
   const outcome = decide()({
     records: [
       recordFor('sha256:this', 'void', {
         voidReason: 'the first ingestion answered 429 before any scenario ran',
-        voidedBy: 'the repository owner',
+        voidedBy: 'the autonomous run, stated as such rather than as a person',
       }),
     ],
     candidateFingerprint: 'sha256:this',
@@ -159,7 +159,7 @@ test('admits a candidate whose only covering record was voided by a named person
   assert.equal(
     outcome.admit,
     true,
-    'a run that produced no information did not spend the shot; voiding it is a committed, reviewed diff rather than a flag, so the cost of doing it routinely is visible',
+    'a run that produced no information did not spend the shot; voiding it is a committed diff a reviewer reads rather than a flag a run flips, and that — not who typed it — is the property carrying the honesty',
   );
 });
 

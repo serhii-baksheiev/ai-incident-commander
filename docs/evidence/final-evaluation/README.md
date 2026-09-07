@@ -41,9 +41,15 @@ Two cases, both records, neither a flag.
    which is more informative than a corpus that was only ever run once.
 2. **The run produced no information** — a crash, an ingestion refusal before
    any scenario executed, an operator interrupt. The remedy is a committed
-   record with `"status": "void"`, a `voidReason` and a `voidedBy` naming a
-   person. Written by hand, reviewed as a diff, and admitted by
-   `decideFinalEvaluation` as covering nothing.
+   record with `"status": "void"`, a `voidReason` and a `voidedBy` naming its
+   author. Written by hand rather than by a flag, reviewed as a diff, and
+   admitted by `decideFinalEvaluation` as covering nothing.
+
+   ⚠ The first void record here was authored by an autonomous run, and says so
+   in its own `voidedBy`. The property that carries the honesty is that a void
+   is a diff a reviewer reads — not that a human typed it. An earlier draft of
+   this file said "naming a person", which would have promised a check this
+   mechanism does not perform.
 
 There is deliberately no `--force`. A flag is invoked; a committed void is
 argued for in review, and if voiding becomes routine the diffs say so.
