@@ -308,8 +308,10 @@ function corpusLaneOptions(
  * `npm run eval:live-model` is a shipped, repeatable command, so a lane that
  * carries `'final-evaluation'` as a literal rather than as an option spends the
  * declared one-shot hold-out on every invocation — a diagnostic run, a retry, a
- * demonstration. That it has never happened here is an accident of this
- * environment having no provider credential, which is not a mechanism.
+ * demonstration. It had never happened here only because no provider credential
+ * existed — an accident of the environment, not a mechanism, and one that ended
+ * when this gate was executed. The literal is still the defect; the accident is
+ * no longer the reason it has not bitten.
  */
 test('runs the live model lane over calibration unless the caller declares the final-evaluation corpus', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');

@@ -3,8 +3,14 @@
  *
  * Every assertion here runs against a FAKE port. The roles are written to
  * `ModelPort`, which names no provider, so the whole role layer is decidable
- * with no network and no credential — which is also why these roles can be
- * exercised at all in an environment that has neither.
+ * with no network and no credential — which is why this file needs neither.
+ *
+ * ⚠ That says nothing about the REPOSITORY. A real model has since executed
+ * these roles; the records are committed under `docs/evidence/final-evaluation/`.
+ * An earlier version of this sentence read "an environment that has neither",
+ * which described the whole environment and stopped being true. It was the third
+ * wording of one stale fact and the last of them found, by `prose-reviewer`, in
+ * the round after a README paragraph claimed the sweep for it was finished.
  *
  * Nothing in this file is a claim about model QUALITY. It pins the contract the
  * roles must satisfy whatever the model says: every value crosses the domain's

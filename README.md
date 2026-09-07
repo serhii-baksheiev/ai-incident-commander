@@ -157,14 +157,19 @@ npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./la
 > calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
 > records.
 >
-> It also named four files as carrying the same disclosure. Two of them had
-> already been corrected; the other two were still asserting it, in different
-> words, and are corrected now — `packages/evals/src/live-model-lane.ts` and
-> `test/live-model-lane.test.mjs`. The first version of THIS paragraph said none
-> of the four still carried it, which was reached by grepping for the old
-> wording rather than for the claim: the two stale copies said the same thing in
-> other words. That is the same mistake one level down, and `prose-reviewer`
-> caught it in the round that reviewed this rewrite.
+> It also named four files as carrying the same disclosure, and all four are
+> corrected now — `packages/evals/src/live-model-lane.ts`,
+> `scripts/eval-live-model.mjs`, `test/live-model-lane.test.mjs` and
+> `test/roles-model-nodes.test.mjs`.
+>
+> ⚠ **Getting to that took three passes, and each one failed the same way.** The
+> first said none of the four still carried it; the second said two were already
+> corrected. Both were reached by grepping the old WORDING, and each stale copy
+> said the same thing in different words — the last of them, "an environment that
+> has neither", matched none of the phrasings the earlier sweeps searched for.
+> The sweep that worked searched for the CLAIM: every file asserting that the
+> environment lacks a credential or that no model has run, then reading each hit
+> to sort a conditional or past-tense mention from a present-tense assertion.
 >
 > Found by `code-reviewer` at the AIC-19 gate, in a file no diff had touched —
 > which is how a disclosure goes stale: nothing edits it, so nothing rechecks it.
