@@ -711,3 +711,101 @@ test('carries the reason a completion stopped, so a truncation is not read as th
     'the port must carry why the provider stopped: without it a truncation is indistinguishable from a model that wrote malformed JSON, and the lane reports the second when the first is true',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* The answer shape is constrained by the provider, not asked for in prose     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 🔴 **The roles asked for JSON in a sentence and hoped.**
+ *
+ * Every role's system prompt carries an "Answer shape:" line and a JSON-only
+ * instruction, and then `parseJsonDocument` picks the first `{` to the last `}`
+ * and hopes. Measured on real calibration runs, the reference model answered
+ * with syntactically invalid JSON — `"rationale"::"placehol"`, a doubled colon —
+ * and the whole lane recorded the model arm unreportable.
+ *
+ * The provider offers a mechanism that makes that impossible:
+ * `output_config.format` with a JSON schema constrains the response itself.
+ * Measured against the live API before this was written: the same request with
+ * a schema came back as `{"answer":"hello"}` and `stop_reason: end_turn`.
+ *
+ * ⚠ **This is not tuning, and the distinction matters for a hold-out.** It does
+ * not change what the model is asked to reason about, and it cannot make a bad
+ * hypothesis good. It removes an ENCODING failure — whether the model can emit
+ * well-formed JSON — from a lane that exists to measure investigation quality.
+ * The roles still refuse a schema-valid answer whose CONTENT the domain rejects,
+ * and those refusals remain the measurement.
+ */
+test('constrains the answer shape at the provider when a role declares one', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  let sentBody;
+
+  const port = createReferenceModelPort({
+    apiKey: 'test-key-not-a-real-credential',
+    modelId: 'claude-under-test',
+    ledger: createModelUsageLedger({ maxCalls: 4 }),
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: '{"ok":true}' }],
+          usage: { input_tokens: 5, output_tokens: 5 },
+          stop_reason: 'end_turn',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+
+  const schema = {
+    type: 'object',
+    properties: { ok: { type: 'boolean' } },
+    required: ['ok'],
+    additionalProperties: false,
+  };
+  await port.complete({
+    system: 'irrelevant',
+    prompt: 'irrelevant',
+    maxOutputTokens: 1024,
+    outputSchema: schema,
+  });
+
+  assert.deepEqual(
+    sentBody.output_config,
+    { format: { type: 'json_schema', schema } },
+    'a declared schema must reach the provider as output_config.format: asking for a shape in prose and parsing hopefully is what let a doubled colon end a thirty-record evaluation',
+  );
+});
+
+test('sends no output_config when a role declares no shape', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  let sentBody;
+
+  const port = createReferenceModelPort({
+    apiKey: 'test-key-not-a-real-credential',
+    modelId: 'claude-under-test',
+    ledger: createModelUsageLedger({ maxCalls: 4 }),
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'free text' }],
+          usage: { input_tokens: 5, output_tokens: 5 },
+          stop_reason: 'end_turn',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+
+  await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 128 });
+
+  assert.equal(
+    Object.hasOwn(sentBody, 'output_config'),
+    false,
+    'an absent schema must send no output_config at all: an empty one is a constraint nobody declared',
+  );
+});

@@ -61,6 +61,24 @@ export interface ModelCompletionRequest {
   readonly system: string;
   readonly prompt: string;
   readonly maxOutputTokens: number;
+  /**
+   * 🔴 A JSON Schema the PROVIDER enforces on the answer, so a malformed one is
+   * impossible rather than caught.
+   *
+   * Every role asked for its shape in a sentence and then parsed hopefully —
+   * first `{` to last `}`. Measured on real calibration runs, the reference
+   * model answered `"rationale"::"placehol"`, a doubled colon, and the lane
+   * recorded the model arm unreportable for the whole thirty-record corpus.
+   *
+   * ⚠ This constrains ENCODING, never content. It cannot make a bad hypothesis
+   * good, and the roles still refuse a schema-valid answer whose content the
+   * domain rejects — those refusals are the measurement this lane exists for.
+   * Absent means no constraint is sent at all: an empty one is a constraint
+   * nobody declared.
+   * see roles-port-contract.test.mjs › "constrains the answer shape at the provider when a role declares one"
+   * see roles-port-contract.test.mjs › "sends no output_config when a role declares no shape"
+   */
+  readonly outputSchema?: Readonly<Record<string, unknown>>;
   /** Overrides `PROVIDER_TIMEOUT_MS`; absent means that default applies. */
   readonly signal?: AbortSignal;
 }
@@ -217,6 +235,15 @@ export function createReferenceModelPort({
           max_tokens: request.maxOutputTokens,
           system: request.system,
           messages: [{ role: 'user', content: request.prompt }],
+          // Own-read and spread only when the caller declared one, so an absent
+          // schema sends no `output_config` rather than an empty constraint.
+          ...(ownValue(request, 'outputSchema') === undefined
+            ? {}
+            : {
+                output_config: {
+                  format: { type: 'json_schema', schema: request.outputSchema },
+                },
+              }),
         }),
       });
 
