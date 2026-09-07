@@ -2759,7 +2759,7 @@ test('keeps a refusal short when the caller decides how its value prints', () =>
   assert.equal(
     refusal.message.length < 500,
     true,
-    `a refusal the caller sizes is a refusal the caller can turn into a log flood or a truncated record of what was refused — measured 10000085 characters at this head, from a 4-field policy object, and this one is ${refusal.message.length}`,
+    `a refusal the caller sizes is a refusal the caller can turn into a log flood or a truncated record of what was refused — measured 10000085 characters before this row existed, from a 4-field policy object, and this one is ${refusal.message.length}`,
   );
 });
 
@@ -3046,7 +3046,7 @@ test('bounds a refusal whose value is a bigint the caller sized', () => {
   );
 });
 
-test('keeps a truncated refusal well-formed when the value is not ASCII', () => {
+test('never splits a character when it truncates a refusal', () => {
   const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
 
   // Truncating by UTF-16 code unit cuts an astral character in half and leaves
@@ -3060,6 +3060,18 @@ test('keeps a truncated refusal well-formed when the value is not ASCII', () => 
     true,
     'a refusal truncated mid-surrogate is not well-formed UTF-16: it survives an assertion but not a re-encode, and the value that produced it was chosen by the caller',
   );
+
+  // ⚠ The property is that truncation never CREATES a lone surrogate, not that
+  // the message is always well-formed. A lone surrogate the caller supplies
+  // INSIDE the bound survives into the message — measured, and the reason this
+  // row is titled for the cut rather than for the result. Past the bound it is
+  // truncated away, which is an accident of position and not a guarantee.
+  assert.equal(
+    capture(() => parse(policyWithBudget('aic-18-lone-surrogate', 'maxIterations', `ab\uD83Dcd`)))
+      .error.message.isWellFormed(),
+    false,
+    'a lone surrogate short enough to survive the bound reaches the message unchanged: this row pins the cut, and stating that limit here is cheaper than a title that implies the wider property',
+  );
   assert.equal(
     refusal.message.length < 500,
     true,
@@ -3068,16 +3080,24 @@ test('keeps a truncated refusal well-formed when the value is not ASCII', () => 
 });
 
 /**
- * The same bound, at the three refusal sites that interpolate a caller string
+ * The same bound, at the six refusal sites that interpolate a caller string
  * directly rather than through `describeRefusedValue`.
  *
  * Round 12 bounded the value in the parse refusal and said, in the comment
- * above the helper, that it was "the only one in this module". Measured on the
- * built module at the parent commit, it was one of four: an arm's
- * `policyVersion` reaches four refusals raw, and a stop-kind KEY — a string off
- * `Object.keys`, so equally the caller's — reaches one. A ten-million-character
- * version produced a 10 000 091-character refusal, and a ten-million-character
- * stop-kind key produced 10 000 229.
+ * above the helper, that it was "the only one in this module". Counted on the
+ * parent commit, it was one of six: an arm's `policyVersion` reaches FIVE
+ * refusals raw, and a stop-kind KEY — a string off `Object.keys`, so equally
+ * the caller's — reaches one. A ten-million-character version produced a
+ * 10 000 091-character refusal, and a ten-million-character stop-kind key
+ * produced 10 000 249.
+ *
+ * ⚠ The first version of this paragraph said "three sites", "four refusals"
+ * and "10 000 229" — a miscount inside the very docblock written to correct a
+ * miscount, contradicting `budget-policy.ts`'s own "it names five refusals
+ * below" shipped in the same commit. The counts here are `grep -cF` on the two
+ * templates; the stop-kind figure is computed from the head message for this
+ * exact fixture (370 characters, of which 121 are the key) rather than
+ * remembered.
  *
  * A refusal whose length the caller picks is the same defect wherever it sits,
  * so the bound belongs to the refusal rather than to one branch of one helper.
@@ -3112,7 +3132,7 @@ test('bounds every refusal that names a caller-supplied string', () => {
   assert.equal(
     hugeStopKind.message.length < 500,
     true,
-    `a stop-kind key comes off Object.keys, so it is the caller's string exactly as a value is — measured 10000229 characters at the parent commit, and this is ${hugeStopKind.message.length}`,
+    `a stop-kind key comes off Object.keys, so it is the caller's string exactly as a value is — measured 10000249 characters at the parent commit, and this is ${hugeStopKind.message.length}`,
   );
 
   // An ordinary version must still be named in full, or the bound was bought by

@@ -860,7 +860,7 @@ function assertHumanHypothesisIdIsAvailable(
  * Absent is the ordinary case and means zero — a scripted node spends no LLM
  * call and declares nothing. It is no longer the ONLY case: two model-backed
  * roles have declared through here since AIC-94, which the
- * `InvestigationNodeResult` docblock below names. This sentence said "no node in this
+ * `InvestigationNodeResult` docblock above names. This sentence said "no node in this
  * repository declares anything" until that stopped being true, and it is the
  * header of the function on the producer's own path — so a session reading
  * that path was the one getting the retracted premise.
