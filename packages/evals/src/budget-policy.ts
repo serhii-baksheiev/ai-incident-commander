@@ -270,7 +270,7 @@ const REFUSED_VALUE_LIMIT = 120;
  * half and left a lone high surrogate in the message: measured, a refusal
  * carrying `'A' + '😀'.repeat(200)` came back with `isWellFormed()` false,
  * which survives an assertion but not a re-encode.
- * see budget-policy.test.mjs › "keeps a truncated refusal well-formed when the value is not ASCII"
+ * see budget-policy.test.mjs › "never splits a character when it truncates a refusal"
  */
 const truncateForRefusal = (text: string): string => {
   if (text.length <= REFUSED_VALUE_LIMIT) return text;
