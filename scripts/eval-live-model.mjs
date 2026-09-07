@@ -4,7 +4,17 @@
  *
  * `npm run eval:live-model`
  *
- * Two arms over the accepted hold-out corpus, at one commit, in one process:
+ * Two arms over the CALIBRATION corpus, at one commit, in one process.
+ *
+ * 🔴 It used to be the hold-out corpus, and that was the defect rather than the
+ * design: this command is a repeatable diagnostic, the lane's `scenarioSet` was
+ * the literal `'final-evaluation'` with no way to ask for anything else, and
+ * `final-evaluation` is calibration ∪ hold-out. So every invocation spent the
+ * one-shot hold-out, and nothing said so. It had never happened here only
+ * because no provider credential existed — an accident of the environment, not
+ * a guard. The corpus is declared by the caller now, and the hold-out has one
+ * caller: `scripts/eval-final-holdout.mjs`.
+ *
  *
  *   - a SCRIPTED control arm — the deterministic nodes the regression suite
  *     already uses — and
@@ -172,6 +182,10 @@ async function main() {
 
   const report = await evals.runLiveModelLane({
     env,
+    // Declared, never defaulted. This command is run repeatedly and must never
+    // reach the hold-out; the lane refuses an omitted value rather than
+    // choosing one.
+    scenarioSet: 'calibration',
     experimentId: `aic-94-live-model-${headSha().slice(0, 12)}`,
     headSha: headSha(),
     metadata: baseMetadata,

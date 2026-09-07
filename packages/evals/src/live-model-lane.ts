@@ -6,6 +6,7 @@ import {
 
 import {
   BENCHMARK_METRIC_KEYS,
+  createCalibrationBenchmarkPlan,
   createFinalEvaluationBenchmarkPlan,
   type BenchmarkExperiment,
   type BenchmarkVersions,
@@ -140,8 +141,11 @@ const COMPARED_METRIC_KEYS: readonly GateMetricKey[] = [
   ...BEHAVIOR_METRIC_KEYS,
 ];
 
+/** The two corpora a lane may declare. There is no third, and no default. */
+export type LiveModelLaneScenarioSet = 'calibration' | 'final-evaluation';
+
 export interface LiveModelLanePlan {
-  readonly scenarioSet: 'final-evaluation';
+  readonly scenarioSet: LiveModelLaneScenarioSet;
   readonly runsPerScenario: number;
   readonly metadata: BenchmarkVersions;
 }
@@ -198,6 +202,23 @@ export interface LiveModelLaneOptions {
   readonly experimentId: string;
   /** The exact commit both arms ran at — a comparison across commits is none. */
   readonly headSha: string;
+  /**
+   * 🔴 **Which corpus, declared by the caller, with no default.**
+   *
+   * This was the literal `'final-evaluation'` — so every invocation of the
+   * shipped `eval:live-model` command spent the hold-out, repeatably and with
+   * nothing guarding it. It had never happened here only because no provider
+   * credential existed, which is an accident of an environment rather than a
+   * mechanism.
+   *
+   * An OMITTED value is refused rather than defaulted, for the reason
+   * `createExecutionBenchmarkPlan` already refuses one: a corpus nobody wrote
+   * down is a corpus nobody chose, and the cheaper of the two mistakes to make
+   * silently is the one that spends the hold-out.
+   * see live-model-lane.test.mjs › "refuses a lane whose scenario set the caller did not declare"
+   * see live-model-lane.test.mjs › "touches no hold-out scenario when the caller declares calibration"
+   */
+  readonly scenarioSet?: LiveModelLaneScenarioSet;
   readonly runsPerScenario?: number;
   readonly metadata: BenchmarkVersions;
   readonly controlBaseline?: Readonly<Partial<Record<GateMetricKey, number>>>;
@@ -334,11 +355,27 @@ export async function runLiveModelLane(
 ): Promise<LiveModelLaneReport> {
   const config = requireModelConfig(options.env);
 
+  // Read own-only and refused when absent, BEFORE either arm is invoked, so a
+  // lane that did not say which corpus it wanted runs nothing at all.
+  const declaredScenarioSet = Object.hasOwn(options, 'scenarioSet')
+    ? options.scenarioSet
+    : undefined;
+  if (
+    declaredScenarioSet !== 'calibration' &&
+    declaredScenarioSet !== 'final-evaluation'
+  ) {
+    throw new Error(
+      'the live model lane requires an explicit calibration or final-evaluation scenarioSet: the final-evaluation corpus includes the hold-out, and a corpus nobody declared is one nobody chose',
+    );
+  }
+
   const runsPerScenario =
     options.runsPerScenario ?? LIVE_MODEL_LANE_RUNS_PER_SCENARIO;
   const scenarioCount =
-    BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
-    BENCHMARK_SCENARIO_PARTITIONS.holdout.length;
+    declaredScenarioSet === 'calibration'
+      ? BENCHMARK_SCENARIO_PARTITIONS.calibration.length
+      : BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
+        BENCHMARK_SCENARIO_PARTITIONS.holdout.length;
   const plannedRuns = scenarioCount * runsPerScenario;
   if (plannedRuns > LIVE_MODEL_LANE_MAX_MODEL_RUNS) {
     throw new Error(
@@ -347,13 +384,17 @@ export async function runLiveModelLane(
   }
 
   const plan: LiveModelLanePlan = {
-    scenarioSet: 'final-evaluation',
+    scenarioSet: declaredScenarioSet,
     runsPerScenario,
     metadata: options.metadata,
   };
   // Built here as well as inside each arm, so the lane knows the corpus it is
   // comparing over rather than inferring it from whichever arm answered first.
-  const declaredExampleIds = createFinalEvaluationBenchmarkPlan({
+  const buildPlan =
+    declaredScenarioSet === 'calibration'
+      ? createCalibrationBenchmarkPlan
+      : createFinalEvaluationBenchmarkPlan;
+  const declaredExampleIds = buildPlan({
     experimentId: options.experimentId,
     runsPerScenario,
     metadata: options.metadata,
