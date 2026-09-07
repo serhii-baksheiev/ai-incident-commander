@@ -50,12 +50,20 @@ import { ownValue } from './own-value.js';
  *
  * ## Limits, stated
  *
- *   - **The answer is JSON in text, not a provider structured-output feature.**
- *     A structured-output request is a second wire shape this repository cannot
- *     exercise without a credential, so the roles ask for JSON and parse it
- *     tolerantly — first `{` to last `}`, one forward scan.
+ *   - **The answer shape is enforced by the PROVIDER, and the tolerant parse is
+ *     the belt beside those braces.** Each role declares a JSON schema, sent as
+ *     `output_config.format`, so a malformed answer is refused before it reaches
+ *     here. The first-`{`-to-last-`}` scan stays for the answer the schema does
+ *     not cover and for a provider that ignores the field.
+ *     see roles-port-contract.test.mjs › "constrains the answer shape at the provider when a role declares one"
  *     see roles-model-nodes.test.mjs › "reads a JSON answer the model wrapped in
  *     prose or a fenced block"
+ *
+ *     ⚠ This bullet used to read "The answer is JSON in text, not a provider
+ *     structured-output feature… this repository cannot exercise without a
+ *     credential". Both halves stopped being true when the schemas landed —
+ *     ninety lines below it — and the row named above exercises the wire shape
+ *     with an injected transport and no credential at all.
  *   - **One completion per role execution.** No repair round, no retry: a role
  *     that could re-ask on a refused answer would hide the model-quality signal
  *     the lane is measuring.
@@ -67,6 +75,170 @@ import { ownValue } from './own-value.js';
  *     see roles-model-nodes.test.mjs › "records the challenge role usage in the
  *     ledger while the graph counter cannot see it"
  */
+
+/**
+ * The answer shapes, as schemas the PROVIDER enforces.
+ *
+ * 🔴 **These make the provenance channel unexpressible, which is stronger than
+ * refusing it.** Every schema is `additionalProperties: false` and none of them
+ * declares `producedBy`, `promptVersion` or `at` — so a model cannot claim
+ * provenance at all, rather than claiming it and being caught. The architecture
+ * says the model governs content and never provenance; this enforces that at the
+ * boundary instead of detecting a violation after the fact.
+ *
+ * The refusals below stay anyway, and deliberately: the schema is the
+ * PROVIDER's guarantee and the refusal is ours. A guard that rests on a remote
+ * party keeping its promise is a guard with one owner too few.
+ *
+ * ⚠ **What these do NOT constrain: content.** A schema-valid answer whose
+ * hypothesis is wrong, whose evidence id does not exist, or whose effect
+ * contradicts the state is still refused by the domain, and those refusals are
+ * the model-quality signal this lane measures. Encoding is not judgement.
+ *
+ * ⚠ **`discriminatingTests[].input` is a CLOSED shape, and that is a real
+ * limit worth stating.** The API refuses every open form — measured: an
+ * `object` with `additionalProperties: true` ("not supported"), an empty schema
+ * ("Empty schema ({}) that accepts any JSON value is not supported"), and every
+ * `object` must set `additionalProperties: false` explicitly. So the input keys
+ * are enumerated from the ones the replay corpus actually uses (`service`,
+ * `window`, `query`, `metric`), all optional. The domain types this field
+ * `z.unknown()` and would accept any shape, so the constraint is this schema's
+ * and not the domain's: a tool needing a key outside that set cannot be
+ * expressed, which is a false REFUSAL — the safe direction — and it will show up
+ * as the model failing to answer rather than as a wrong answer accepted.
+ *
+ * Encoding the payload as a JSON string was the alternative and was rejected: it
+ * satisfies the API while moving the parse failure from the envelope into the
+ * field, which relocates the defect instead of removing it.
+ * see roles-port-contract.test.mjs › "constrains the answer shape at the provider when a role declares one"
+ */
+/**
+ * 🔴 **Every enum below is DERIVED from the domain schema, never restated.**
+ *
+ * The first version of these schemas hand-wrote them, and one was wrong within
+ * an hour: `cost` was spelled `['cheap', 'moderate', 'expensive']` where the
+ * domain declares `['cheap', 'medium', 'expensive']`. The model then answered
+ * exactly what the schema asked for and the domain refused it — a failure this
+ * lane would have recorded as the MODEL's, on the one axis it exists to report
+ * honestly.
+ *
+ * `.claude/rules/invariants.md` states the rule this broke: "One mechanism, one
+ * implementation. And one spelling of a fact… If two files enforce the same
+ * invariant, they will disagree — and the one nobody is looking at is the one
+ * that is wrong." Reading the options off the exported schema means a domain
+ * change cannot leave a stale copy here.
+ * see roles-model-nodes.test.mjs › "derives every answer-schema enum from the domain rather than restating it"
+ */
+const enumOf = (schema: unknown, field: string): readonly string[] => {
+  const shape = (schema as { shape?: Record<string, { options?: readonly string[] }> }).shape;
+  const options = shape?.[field]?.options;
+  // ⚠ `.options` is an array of SCHEMAS on a union or discriminated union, not
+  // of strings — zod uses the same property name for both. No domain field is a
+  // union today, so this is latent; the string check makes the refusal total
+  // rather than resting on that staying true.
+  if (
+    options === undefined ||
+    options.length === 0 ||
+    !options.every((value) => typeof value === 'string')
+  ) {
+    throw new Error(
+      `the domain schema does not declare an enum for ${field}: a hand-written fallback here is the second spelling this derivation exists to prevent`,
+    );
+  }
+  // Copied, not handed over: `.options` is the array zod itself holds, so
+  // returning it puts a live domain object inside a schema this module ships to
+  // a caller. Measured before the copy: mutating it through the handed-over
+  // schema persisted into every later request in the process.
+  return Object.freeze([...options]);
+};
+
+const HYPOTHESES_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    hypotheses: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { id: { type: 'string' }, statement: { type: 'string' } },
+        required: ['id', 'statement'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['hypotheses'],
+  additionalProperties: false,
+});
+
+const ASSESSMENTS_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    assessments: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          evidenceId: { type: 'string' },
+          hypothesisId: { type: 'string' },
+          predictionId: { type: 'string' },
+          effect: { type: 'string', enum: enumOf(EvidenceAssessmentSchema, 'effect') },
+          strength: { type: 'string', enum: enumOf(EvidenceAssessmentSchema, 'strength') },
+          rationale: { type: 'string' },
+        },
+        required: ['id', 'evidenceId', 'hypothesisId', 'effect', 'strength', 'rationale'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['assessments'],
+  additionalProperties: false,
+});
+
+
+const CHALLENGE_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    alternative: {
+      type: 'object',
+      properties: { id: { type: 'string' }, statement: { type: 'string' } },
+      required: ['id', 'statement'],
+      additionalProperties: false,
+    },
+    discriminatingTests: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          predictionId: { type: 'string' },
+          // `minLength` matches the domain's `ToolIdSchema` (`z.string().min(1)`).
+          // Without it a schema-valid empty tool id reached the domain and was
+          // refused there — the schema permitting what the domain rejects, which
+          // is the shape this whole repair exists to remove.
+          tool: { type: 'string', minLength: 1 },
+          input: {
+            type: 'object',
+            properties: {
+              service: { type: 'string' },
+              window: { type: 'string' },
+              query: { type: 'string' },
+              metric: { type: 'string' },
+            },
+            additionalProperties: false,
+          },
+          cost: { type: 'string', enum: enumOf(InvestigationTestSchema, 'cost') },
+          // `planned` only: a test the model PROPOSES has not run, so the other
+          // three statuses the domain allows would be claims about execution.
+          status: { type: 'string', enum: ['planned'] },
+        },
+        required: ['id', 'predictionId', 'tool', 'input', 'cost', 'status'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['alternative', 'discriminatingTests'],
+  additionalProperties: false,
+});
 
 /** The prompt set this module ships, versioned so a run can record which it used. */
 export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.2' as const;
@@ -210,6 +382,7 @@ export function createModelGenerateHypotheses({
       ].join('\n'),
       prompt: `prompt-version: ${promptVersion}\n\n${describeState(state)}`,
       maxOutputTokens,
+      outputSchema: HYPOTHESES_SCHEMA,
     });
 
     refuseTruncated(role, completion);
@@ -283,6 +456,7 @@ export function createModelInterpretResidualEvidence({
       ].join('\n'),
       prompt: `prompt-version: ${promptVersion}\n\n${describeState(state)}`,
       maxOutputTokens,
+      outputSchema: ASSESSMENTS_SCHEMA,
     });
 
     refuseTruncated(role, completion);
@@ -371,6 +545,7 @@ export function createModelChallengeHypothesis({
         describeState(state),
       ].join('\n'),
       maxOutputTokens,
+      outputSchema: CHALLENGE_SCHEMA,
     });
 
     refuseTruncated(role, completion);
