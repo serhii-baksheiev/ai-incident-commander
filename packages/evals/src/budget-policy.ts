@@ -187,13 +187,18 @@ const readOwnValue = (
  * The two-trap shape is the one the suite builds, one `length` trap short of it:
  * see budget-policy.test.mjs › "publishes the arm its descriptor carried, never the one a second read answers with"
  *
- * ⚠ **This paragraph carried a fabricated figure twice and now carries none.**
- * The first version said `2**32 - 1` and "run for minutes"; the second said a
- * `length` trap claiming `5e8` exhausts the heap, having measured a proxy with
- * two traps and described one with a single trap. Both were a limits note wider
- * than its measurement, which is the one thing a limits note must never be — it
- * is the guard's own claim about how far it can be trusted. What survives here
- * is the shape, not a number.
+ * ⚠ **This paragraph carried a fabricated figure twice, and the figure it
+ * carries now has a row behind it.** The first version said `2**32 - 1` and
+ * "run for minutes"; the second said a `length` trap claiming `5e8` exhausts
+ * the heap, having measured a proxy with two traps and described one with a
+ * single trap. Both were a limits note wider than its measurement, which is the
+ * one thing a limits note must never be — it is the guard's own claim about how
+ * far it can be trusted.
+ *
+ * A third version said it had dropped every number and kept three (`5e8`,
+ * `index 1`, `0 ms`) nine lines above, which is the same defect wearing an
+ * apology. The figure is true, so it stays and is pinned instead:
+ * see budget-policy.test.mjs › "refuses a proxied arms list at the first unowned index, whatever length it claims"
  * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
  * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
  */
@@ -250,6 +255,40 @@ const ownNumber = (source: unknown, key: string): number | undefined => {
     : undefined;
 };
 
+/** How long a refused value may make the refusal that reports it. */
+const REFUSED_VALUE_LIMIT = 120;
+
+/**
+ * Name a refused value without asking the caller how it prints.
+ *
+ * 🔴 **The refusal message is a call site the caller controls, and it was the
+ * only one in this module.** `String(value)` runs `toString`/`Symbol.toPrimitive`
+ * — caller code, invoked inside the branch whose whole job is to reject that
+ * caller. Three consequences, each measured on the built module before this
+ * existed: a null-prototype object threw `TypeError: Cannot convert object to
+ * primitive value` and named no field, so the parser's own contract two
+ * paragraphs below was false for it; a throwing `Symbol.toPrimitive` replaced
+ * the refusal with the caller's own error; and a `toString` returning ten
+ * million characters made the refusal ten million characters long.
+ *
+ * So only values with a string form the caller cannot choose are printed as
+ * themselves. Everything else is reported by TYPE, which is what the caller
+ * needs anyway — `object` says the field is not a number as surely as any
+ * rendering of it would, and a string is truncated because its length is the
+ * caller's to pick.
+ * see budget-policy.test.mjs › "names the field when a budget value cannot be turned into a string"
+ * see budget-policy.test.mjs › "refuses a budget without running the caller code that would describe it"
+ * see budget-policy.test.mjs › "keeps a refusal short when the caller decides how its value prints"
+ */
+const describeRefusedValue = (value: unknown): string => {
+  if (value === null) return 'null';
+  const type = typeof value;
+  if (type === 'number' || type === 'boolean' || type === 'bigint') return String(value);
+  if (type !== 'string') return type;
+  const text = value as string;
+  return text.length > REFUSED_VALUE_LIMIT ? `${text.slice(0, REFUSED_VALUE_LIMIT)}…` : text;
+};
+
 /**
  * Parse a caller-supplied policy, or refuse it.
  *
@@ -294,7 +333,7 @@ export function parseBenchmarkBudgetPolicy(
     const slot = readOwnValue(candidate, field);
     if (!slot.present || !isLogicalCount(slot.value)) {
       throw new Error(
-        `budget policy field ${field} must be an own non-negative safe integer, received ${slot.present ? String(slot.value) : '(absent, or inherited)'}`,
+        `budget policy field ${field} must be an own non-negative safe integer, received ${slot.present ? describeRefusedValue(slot.value) : '(absent, or inherited)'}`,
       );
     }
     return slot.value;
@@ -532,6 +571,19 @@ export function summarizeBudgetPolicyEvidence(
         'each budget policy arm must own both a policy and an experiment: an inherited one describes an arm that was never run',
       );
     }
+    // 🔴 Present is not readable, and this guard is the difference. `present`
+    // is true for an own `experiment: null`, and the field reads below go
+    // straight to `Object.getOwnPropertyDescriptor(null, …)` — which threw
+    // `TypeError: Cannot convert undefined or null to object`, verbatim the
+    // bare throw `ownElements`'s comment above says its second version
+    // eliminated. It did, for the arms list; this is the same throw one field
+    // over, and the caller learned nothing about which arm to fix.
+    // see budget-policy.test.mjs › "names the arm whose experiment is present but is not a readable object"
+    if (armExperiment.value === null || typeof armExperiment.value !== 'object') {
+      throw new Error(
+        `each budget policy arm must own an experiment object: an arm whose experiment is ${describeRefusedValue(armExperiment.value)} declares the field and carries no run under it`,
+      );
+    }
     const experiment = armExperiment.value as BudgetPolicyArmExperiment;
     const parsed = parseBenchmarkBudgetPolicy(armPolicy.value);
     if (seen.has(parsed.policyVersion)) {
@@ -568,6 +620,29 @@ export function summarizeBudgetPolicyEvidence(
     }
 
     const results = ownElements(ownResults.value, 'result') as readonly BudgetPolicyArmResult[];
+
+    // 🔴 The array refusal beside `stopKindDistribution` states its reason
+    // generally — an owned non-record "is republished verbatim under a field
+    // declared as a record of counts" — and guarded one of the three fields
+    // that reason covers. Measured before this loop existed:
+    // `resources: [7, 9]` published `resourceAxes` keyed `"0"` and `"1"`, each
+    // carrying a mean. An axis named `"0"` is not an axis anybody measured —
+    // the name is a position in a list — so the report carried a measurement
+    // under a key no run produced, which is the fabricated-measurement reading
+    // every own-read here exists to refuse, reached without a prototype.
+    // Refused once per result rather than at the four read sites below, so the
+    // key-derivation and value paths cannot disagree about it.
+    // see budget-policy.test.mjs › "refuses a result whose measurements are a list instead of a record"
+    for (const [index, result] of results.entries()) {
+      for (const field of ['metrics', 'resources'] as const) {
+        const slot = readOwnValue(result as object, field);
+        if (slot.present && Array.isArray(slot.value)) {
+          throw new Error(
+            `budget policy arm ${parsed.policyVersion} has a result at index ${index} whose ${field} is a list: a record of measurements keyed by name is not a list of them, and republishing one keys the report by position instead of by what was measured`,
+          );
+        }
+      }
+    }
     /**
      * 🔴 The report's OWN copy, with every count checked, not the caller's
      * container republished.
@@ -592,10 +667,19 @@ export function summarizeBudgetPolicyEvidence(
     const stopKindDistribution: Readonly<Record<string, number>> = Object.freeze(
       Object.fromEntries(
         Object.keys(ownStopKinds.value).map((stopKind) => {
+          // 🔴 `isLogicalCount`, not `ownNumber`. The message below asserts
+          // COUNTHOOD — "how many runs stopped each way" — and `ownNumber` asks
+          // only for a finite own number, so `-1` and `1.5` were accepted and
+          // republished: an arm published `runCount: 3` beside a distribution
+          // summing to `0.5`, a report whose own two halves disagree and which
+          // no reader can catch from the report alone. The predicate that means
+          // what the message says is the one the three budgets already use, and
+          // it is imported into this file.
+          // see budget-policy.test.mjs › "refuses a stop-kind count that is a finite number but not a count"
           const count = ownNumber(ownStopKinds.value as object, stopKind);
-          if (count === undefined) {
+          if (count === undefined || !isLogicalCount(count)) {
             throw new Error(
-              `budget policy arm ${parsed.policyVersion} has a stopKindDistribution entry ${stopKind} that is not a finite own count: a stop-kind distribution is how many runs stopped each way, and anything else republished is a measurement-shaped value the report's own type forbids`,
+              `budget policy arm ${parsed.policyVersion} has a stopKindDistribution entry ${stopKind} that is not an own count: a stop-kind distribution is how many runs stopped each way, and anything else republished is a measurement-shaped value the report's own type forbids`,
             );
           }
           return [stopKind, count];

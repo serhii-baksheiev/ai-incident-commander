@@ -414,6 +414,16 @@ const MALFORMED_POLICIES = [
     named: 'llmCallBudget',
     policy: sweepPolicy('aic-18-malformed-string', 4, '8', 2),
   },
+  {
+    // The defect section 19 pins on the parser, reached the way a caller
+    // actually reaches it. Measured on the built module at this head: the seam
+    // rejects with `TypeError: Cannot convert object to primitive value` — a
+    // refusal that names neither the policy nor the field, so the run stops
+    // and the caller is told nothing about which number to fix.
+    label: 'a budget whose value cannot be turned into a string',
+    named: 'maxIterations',
+    policy: sweepPolicy('aic-18-malformed-uncoercible', Object.create(null), 8, 2),
+  },
   // Not a policy at all. Both rows below exist because a mutation showed the
   // branch that refuses them was unpinned, and the second one caught a real
   // fail-open: `?? BENCHMARK_BUDGET_POLICY` cannot tell "not supplied" from
@@ -2620,5 +2630,345 @@ test('publishes the run its descriptor carried, never the one a second read answ
     },
     { runCount: 1, metrics: ['accuracy'], resourceAxes: ['toolCallsUsed'] },
     'under the mutant owned.push(values[index]) this arm publishes runCount 1 with metrics {} and resourceAxes {} — the count vouches for a run whose measurements were replaced by whatever the get trap answered, which is the same "counted and measured in nothing" reading the results-entry refusals above exist to refuse',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 19. A refusal names the field, including when the value refuses to print    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `packages/evals/src/budget-policy.ts` states the contract these three rows
+ * hold it to: "Every refusal names the field, so the caller is told which
+ * number to fix rather than that 'something' was wrong."
+ *
+ * It is not held, and all three breaks are the same line — the refusal builds
+ * its message with `String(slot.value)`, which hands the caller's value the
+ * pen. The value being refused is caller-supplied by construction: this parser
+ * exists because a policy arrives from outside. Measured on
+ * `packages/evals/dist/budget-policy.js` at this head:
+ *
+ *   - `maxIterations: Object.create(null)` → `TypeError: Cannot convert object
+ *     to primitive value`, 40 characters, naming no field at all — the caller
+ *     is told exactly the "something was wrong" this contract forbids;
+ *   - `llmCallBudget` carrying a throwing `Symbol.toPrimitive` → the caller's
+ *     own `TypeError: attacker-chosen` leaves the parser, so caller code ran
+ *     INSIDE the refusal and chose what the refusal said;
+ *   - `maxIterations: { toString: () => 'A'.repeat(1e7) }` → a refusal 10000085
+ *     characters long, so the caller sizes the string this parser hands its
+ *     logs.
+ *
+ * The ordinary case is unaffected and must stay that way: `maxIterations:
+ * 'nope'` refuses in 89 characters, naming the field AND the value received.
+ * A refusal that stopped reporting the value would trade one unhelpful message
+ * for another.
+ */
+
+/** A policy that is valid apart from the one field each row below poisons. */
+function policyWithBudget(policyVersion, field, value) {
+  return { ...sweepPolicy(policyVersion, 4, 8, 2), [field]: value };
+}
+
+test('names the field when a budget value cannot be turned into a string', () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  assert.throws(
+    () => parse(policyWithBudget('aic-18-uncoercible-budget', 'maxIterations', Object.create(null))),
+    (error) => {
+      assert.match(
+        error.message,
+        /maxIterations/,
+        `the refusal must name the field the caller has to fix: ${error.message}`,
+      );
+      assert.doesNotMatch(
+        error.message,
+        /Cannot convert object to primitive value/,
+        `a coercion failure is not a diagnosis: the caller learns that the parser tripped over the value, not which of the three budgets it was reading: ${error.message}`,
+      );
+      return true;
+    },
+    'a null-prototype object is a value with no string form, and refusing it is easy — naming the field while refusing it is the contract, and interpolating the value into the message is what loses it',
+  );
+});
+
+test('refuses a budget without running the caller code that would describe it', () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  let callerCodeRan = false;
+  const outcome = capture(() =>
+    parse(policyWithBudget('aic-18-hostile-coercion', 'llmCallBudget', {
+      [Symbol.toPrimitive]() {
+        callerCodeRan = true;
+        throw new TypeError('attacker-chosen');
+      },
+    })),
+  );
+
+  assert.equal(
+    callerCodeRan,
+    false,
+    'validating a value must not EXECUTE it: `String(value)` invokes a method the caller wrote, inside the branch whose whole job is to reject that caller — so the refusal path is a call site the caller controls',
+  );
+  assert.deepEqual(
+    outcome.returned,
+    undefined,
+    'a budget that is not a number must still be refused, whatever it does when asked to print',
+  );
+  assert.match(
+    outcome.error.message,
+    /llmCallBudget/,
+    `the refusal must be this parser's, naming the field: an error the caller threw and this parser passed through is the caller writing the audit trail: ${outcome.error.message}`,
+  );
+});
+
+test('keeps a refusal short when the caller decides how its value prints', () => {
+  const parse = requireFunction(evals, 'parseBenchmarkBudgetPolicy', '@aic/evals');
+
+  // The control first, because a bound is only worth pinning next to the
+  // behaviour it must not cost: an ordinary bad value keeps reporting what was
+  // received, which is how the caller finds the wrong number. Green at head.
+  assert.throws(
+    () => parse(policyWithBudget('aic-18-ordinary-bad-budget', 'maxIterations', 'nope')),
+    /budget policy field maxIterations must be an own non-negative safe integer, received nope/,
+    'an ordinary bad value must still name both the field and the value received: this row bounds the message, it does not ask for a message that says less',
+  );
+
+  const refusal = capture(() =>
+    parse(policyWithBudget('aic-18-caller-sized-refusal', 'maxIterations', {
+      toString: () => 'A'.repeat(1e7),
+    })),
+  ).error;
+
+  assert.match(
+    refusal.message,
+    /maxIterations/,
+    `the refusal must name the field: ${refusal.message.length} characters long`,
+  );
+  assert.equal(
+    refusal.message.length < 500,
+    true,
+    `a refusal the caller sizes is a refusal the caller can turn into a log flood or a truncated record of what was refused — measured 10000085 characters at this head, from a 4-field policy object, and this one is ${refusal.message.length}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 20. An arm's experiment is present, which is not the same as readable       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The arm guard checks that `policy` and `experiment` are both PRESENT, and
+ * then reads the experiment's fields as an object. Presence and readability are
+ * two facts, and only the first one is checked — so an arm that owns
+ * `experiment: null` reaches `Object.getOwnPropertyDescriptor(null, 'results')`.
+ * Measured on `packages/evals/dist/budget-policy.js` at this head:
+ *
+ *   - `experiment: null` → `TypeError: Cannot convert undefined or null to object`
+ *   - `experiment: undefined` → the same bare TypeError
+ *   - `experiment: 5` → a named refusal, because a primitive is boxed by the
+ *     descriptor read and simply owns no `results`
+ *
+ * That bare string is verbatim the throw `ownElements`'s own comment says the
+ * second version of it eliminated ("A getter answering with a valid arm and
+ * then with `null` produced `TypeError: Cannot convert undefined or null to
+ * object`, which is verbatim the bare throw this comment claimed to prevent").
+ * It is still open one field over — the arm's experiment rather than the arms
+ * list — which is why this row exists beside that comment rather than trusting
+ * it.
+ */
+test('names the arm whose experiment is present but is not a readable object', () => {
+  const policy = sweepPolicy('aic-18-unreadable-arm-experiment', 4, 8, 2);
+
+  // `5` is the control: it already refuses by name today, and it is in the same
+  // loop on purpose — the three values differ only in whether a descriptor read
+  // can box them, which is an implementation accident, not a distinction the
+  // caller made.
+  for (const experiment of [null, undefined, 5]) {
+    assert.throws(
+      summarizing(experiment, policy),
+      (error) => {
+        assert.match(
+          error.message,
+          /budget\s*policy/i,
+          `the refusal must name what it refused, exactly as every other refusal in this module does: ${error.message}`,
+        );
+        assert.match(
+          error.message,
+          /experiment|aic-18-unreadable-arm-experiment/,
+          `the refusal must name the arm or the field that made it unreadable, so the caller knows which arm to fix rather than that the summarizer tripped: ${error.message}`,
+        );
+        return true;
+      },
+      `an arm whose experiment is ${String(experiment)} describes no run and must be refused by name: an own key holding nothing is a declaration the caller made, not a field the summarizer may read through`,
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* 21. A stop-kind count is a count, not a finite number                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The refusal beside this one asserts counthood in words — an entry that is
+ * not a count is "a measurement-shaped value the report's own type forbids" —
+ * and then validates with `ownNumber`, which asks only for a finite own number.
+ * `isLogicalCount`, the predicate that means what the message says, is imported
+ * into the same file and guards the three budgets 480 lines above it.
+ *
+ * Measured on `packages/evals/dist/budget-policy.js`, on an arm with three
+ * results: `{ sufficient: -1 }` and `{ ambiguous: 1.5 }` are both ACCEPTED and
+ * republished verbatim, beside `runCount: 3`. A report that says three runs
+ * happened and that half of one of them stopped ambiguously is internally
+ * inconsistent, and consistency between the count and the distribution is the
+ * one property this summarizer exists to guarantee.
+ */
+test('refuses a stop-kind count that is a finite number but not a count', () => {
+  const policy = sweepPolicy('aic-18-non-count-stop-kind', 4, 8, 2);
+  const results = [0, 1, 2].map(() => ({ metrics: {}, resources: {} }));
+
+  // `NaN`, `Infinity` and `'3'` already refuse at this head; `-1` and `1.5` do
+  // not. They are one table because they are one question — is this entry a
+  // number of runs — and splitting them would let a fix answer it twice.
+  for (const [stopKind, count] of [
+    ['sufficient', -1],
+    ['ambiguous', 1.5],
+    ['sufficient', NaN],
+    ['sufficient', Infinity],
+    ['sufficient', '3'],
+  ]) {
+    assert.throws(
+      summarizing({ results, stopKindDistribution: { [stopKind]: count } }, policy),
+      (error) => {
+        assert.match(
+          error.message,
+          /stopKindDistribution/,
+          `the refusal must name the field it refused: ${error.message}`,
+        );
+        assert.match(
+          error.message,
+          new RegExp(stopKind),
+          `the refusal must name the entry, because a distribution has many and only one of them is wrong: ${error.message}`,
+        );
+        return true;
+      },
+      `${String(count)} is not how many runs stopped ${stopKind}: republished beside runCount 3 it is a report whose own two halves disagree, which no reader can detect from the report alone`,
+    );
+  }
+
+  // The other half of the predicate, so a fix cannot pass by refusing every
+  // entry. Green at head.
+  const [arm] = summarizing({ results, stopKindDistribution: { sufficient: 3 } }, policy)().arms;
+  assert.deepEqual(
+    arm.stopKindDistribution,
+    { sufficient: 3 },
+    'a whole non-negative count is what this field is for, and it must still be published unchanged',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 22. A record of measurements is not a list of them                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The `stopKindDistribution` guard states its reason generally — an owned
+ * non-record "is republished verbatim under a field declared as a record of
+ * counts" — and is applied to one field. Its two siblings, a result's `metrics`
+ * and its `resources`, are declared `Readonly<Record<string, …>>` in exactly
+ * the same way and get no array refusal at all.
+ *
+ * Measured on `packages/evals/dist/budget-policy.js` at this head:
+ *
+ *   - `results: [{ resources: [7, 9] }]` → ACCEPTED, publishing
+ *     `resourceAxes: { "0": { key: "0", mean: 7, exampleCount: 1 },
+ *     "1": { key: "1", mean: 9, exampleCount: 1 } }`;
+ *   - `results: [{ metrics: [{ score: 1 }] }]` → ACCEPTED, publishing
+ *     `metrics: { "0": { key: "0", mean: 1, exampleCount: 1 } }`;
+ *   - `stopKindDistribution: [1, 2]` → refused, which is the control.
+ *
+ * An axis called `"0"` is not an axis anybody measured: the name comes from the
+ * position of a value in a list, so the report carries a mean under a key the
+ * run never produced. That is the fabricated-measurement reading every own-read
+ * in this module exists to refuse, reached without touching a prototype.
+ */
+test('refuses a result whose measurements are a list instead of a record', () => {
+  const policy = sweepPolicy('aic-18-positional-axis-name', 4, 8, 2);
+
+  // The stop-kind entry is the control: the same shape, under the one field
+  // that already refuses it. It sits in this loop so a fix cannot satisfy the
+  // row by moving the refusal from one field to another.
+  for (const [named, experiment] of [
+    ['resources', { results: [{ metrics: {}, resources: [7, 9] }], stopKindDistribution: {} }],
+    ['metrics', { results: [{ metrics: [{ score: 1 }], resources: {} }], stopKindDistribution: {} }],
+    ['stopKindDistribution', { results: [], stopKindDistribution: [1, 2] }],
+  ]) {
+    assert.throws(
+      summarizing(experiment, policy),
+      (error) => {
+        assert.match(
+          error.message,
+          new RegExp(named),
+          `the refusal must name the field that was a list: ${error.message}`,
+        );
+        return true;
+      },
+      `an array under ${named} publishes rows keyed by POSITION — an axis named "0" carrying a mean is a measurement-shaped value under a name no run produced, and an index is never a legitimate key here because the field is declared a record`,
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* 23. The bound the limits note quotes                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠ **GREEN AT HEAD BY CONSTRUCTION.** This row demonstrates no defect. It is
+ * the backing for a FIGURE, and it exists because the figure had none.
+ *
+ * `budget-policy.ts`'s limits note says a claimed length alone does not get
+ * past `ownElements` — "a one-element target claiming `5e8` throws at index 1
+ * in 0 ms" — and then, nine lines below, said the paragraph "carried a
+ * fabricated figure twice and now carries none". It carried three: `5e8`,
+ * `index 1`, `0 ms`. Two earlier versions of that note were wrong in opposite
+ * directions, which is exactly why the third one may not rest on a reader
+ * taking its word for the fourth.
+ *
+ * So the note keeps the figure and points here instead of claiming to have
+ * dropped it. `.claude/rules/invariants.md` allows a limits sentence exactly
+ * two forms — generated from the thing it describes, or a pointer to the test
+ * that proves it — and a note that says "I no longer quote a number" while
+ * quoting one is neither.
+ *
+ * 🔴 **The distinction being pinned.** A proxy that fakes only `length` does
+ * NOT allocate per index: the descriptor read falls through to the real target,
+ * so the first index the target does not own is refused. Reaching a claimed
+ * length needs a SECOND trap fabricating a descriptor at every index, and that
+ * shape is a real exposure the note states rather than closes. One trap and two
+ * traps are different guards, and conflating them is what made version two of
+ * the note wrong.
+ */
+test('refuses a proxied arms list at the first unowned index, whatever length it claims', () => {
+  const summarize = requireFunction(evals, 'summarizeBudgetPolicyEvidence', '@aic/evals');
+  const arm = {
+    policy: sweepPolicy('aic-18-claimed-length', 4, 8, 2),
+    experiment: { results: [], stopKindDistribution: {} },
+  };
+
+  // ONE trap. `length` lies; every descriptor read falls through to the real
+  // one-element target.
+  const claimingHugeLength = new Proxy([arm], {
+    get: (target, key) => (key === 'length' ? 5e8 : Reflect.get(target, key)),
+  });
+
+  const startedAt = performance.now();
+  assert.throws(
+    () => summarize({ arms: claimingHugeLength }),
+    /index 1/,
+    'a length a proxy merely CLAIMS must not decide how far this loop walks: the refusal is the first index the target does not own, which is index 1 of a one-element target',
+  );
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(
+    elapsedMs < 1000,
+    true,
+    `the walk must stop at the first unowned index rather than at the claimed length: 5e8 iterations would not finish, and this took ${elapsedMs.toFixed(1)}ms`,
   );
 });

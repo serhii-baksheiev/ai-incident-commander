@@ -21,8 +21,10 @@ benchmark metric, every behaviour metric and every deterministic resource axis.
 | `4 / 8 / 1` and `4 / 8 / 8` | identical evidence on all 24 runs |
 | `4 / 8 / 0` | every run stops `budget-exhausted`; no metric score and no resource axis moves |
 
-Every row above is executable — those four arms are the ones the suite runs, and
-each has a row of its own in `budget-policy.test.mjs`. Wider arms were swept
+Every row above is executable — `SWEEP_ARMS` in `budget-policy.test.mjs` is the
+list the suite runs, and each arm has a row of its own. It holds five: the
+shipped default plus the four probes the table's rows describe, the third row
+carrying two of them. Wider arms were swept
 while the premise was being checked (`0`, `1`, `4`, `64` against `0`, `1`, `8`,
 `1024`); they are **not** committed and are not claimed here.
 

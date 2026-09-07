@@ -857,8 +857,14 @@ function assertHumanHypothesisIdIsAvailable(
 /**
  * Reads a node's LLM declaration, and refuses anything that is not a count.
  *
- * Absent is the ordinary case and means zero — no node in this repository
- * declares anything. Present-but-not-a-count is a different case and throws:
+ * Absent is the ordinary case and means zero — a scripted node spends no LLM
+ * call and declares nothing. It is no longer the ONLY case: two model-backed
+ * roles have declared through here since AIC-94, which the block above
+ * `GRAPH_OWNED_CONTROL_FIELDS` names. This sentence said "no node in this
+ * repository declares anything" until that stopped being true, and it is the
+ * header of the function on the producer's own path — so a session reading
+ * that path was the one getting the retracted premise.
+ * Present-but-not-a-count is a different case and throws:
  * the node tried to report consumption and got the shape wrong, and folding
  * that into a graph-owned counter would corrupt the one number the budget is
  * decided from.
