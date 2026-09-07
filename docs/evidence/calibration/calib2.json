@@ -1,0 +1,109 @@
+{
+  "headSha": "c88fd6c8b44f15dce43a75b395453dbeafb8565f",
+  "experimentId": "aic-94-live-model-c88fd6c8b44f",
+  "credential": {
+    "variable": "ANTHROPIC_API_KEY",
+    "provider": "anthropic",
+    "modelId": "claude-opus-5"
+  },
+  "plan": {
+    "scenarioSet": "calibration",
+    "runsPerScenario": 3,
+    "metadata": {
+      "graphVersion": "graph-v0.2",
+      "promptVersion": "reference-roles-prompt-v0.2",
+      "toolsetVersion": "toolset-v0.1",
+      "statusRulesVersion": "v0.1",
+      "evaluatorVersion": "behavior-evaluators-v0.2",
+      "toolMode": "replay",
+      "knowledgeSetVersion": "knowledge-none-v0.1",
+      "memoryEnabled": false,
+      "temperature": 0,
+      "docsAvailable": false
+    }
+  },
+  "caps": {
+    "maxModelRuns": 30,
+    "maxModelCalls": 150
+  },
+  "exampleIds": [
+    "00d9e595-7c46-8b5f-abb8-5fbf5b1f98bf",
+    "128a8860-cb97-80a2-bfae-a8d948fc7b9e",
+    "13f75678-c0cd-8ce7-a144-3b07160a7a40",
+    "23378f65-8640-85b8-a0b9-e25a0c69e32b",
+    "39798e4d-b217-808b-956e-ebd81fde418e",
+    "3e451d30-561f-8b4e-9461-37fe0c3b6137",
+    "3fabb8f1-1bd6-8fea-8d63-c97c9ec7fac3",
+    "43e98931-cb85-8a5c-91e8-b276e9e0e240",
+    "583d4eac-cafd-8dd8-be9f-6a559d9e1e91",
+    "59d9d04d-fe52-8f0d-b5f3-74152b4866bf",
+    "602db4a5-7406-8e46-812e-e163dc6310e0",
+    "7b9efa5d-de95-8180-bef4-568a5f215cc9",
+    "85cc633e-09ce-82f5-a620-6db31f4a1858",
+    "86051c38-8cd2-86fb-a16b-78cb50878cb1",
+    "94f9d1cf-6914-87b2-a213-fbfb7a358cd1",
+    "98bbe90b-3b32-85a5-9be1-0f67ced26f71",
+    "ae3bd54e-06b6-8423-ba59-e6855f95f0f2",
+    "c14e9030-60d5-89f5-9488-84993d6fc6ca",
+    "cc12b08b-3900-8ebd-a414-82a98c8ef545",
+    "de62ed11-b5bf-859e-a3b1-be4ab531cadb",
+    "e44a2a88-cedb-889b-88ae-55199cbcbf3d",
+    "e9c4b84c-918e-86f8-ba83-c74038c94ec2",
+    "fda246df-187d-8f70-9d30-4aa7d32d63b8",
+    "fe932583-2509-8449-9c1d-bc059d54d4d0"
+  ],
+  "arms": {
+    "control": {
+      "arm": "scripted-control",
+      "metrics": {
+        "unsupported_claim_rate": {
+          "key": "unsupported_claim_rate",
+          "mean": 0,
+          "exampleCount": 24
+        },
+        "termination_correctness": {
+          "key": "termination_correctness",
+          "mean": 0,
+          "exampleCount": 24
+        },
+        "false_alert_correctness": {
+          "key": "false_alert_correctness",
+          "mean": 0,
+          "exampleCount": 3
+        },
+        "misleading_evidence_handling": {
+          "key": "misleading_evidence_handling",
+          "mean": 0,
+          "exampleCount": 3
+        },
+        "challenge_effect": {
+          "key": "challenge_effect",
+          "mean": 0,
+          "exampleCount": 3
+        }
+      },
+      "observedBaseline": {
+        "unsupported_claim_rate": 0,
+        "termination_correctness": 0,
+        "false_alert_correctness": 0,
+        "misleading_evidence_handling": 0,
+        "challenge_effect": 0
+      },
+      "movedMetrics": []
+    },
+    "model": {
+      "arm": "model",
+      "reportable": false,
+      "unreportableReason": "the model arm did not finish: model role interpret_residual_evidence produced output the domain refuses: [\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"predictionId\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
+      "usage": {
+        "calls": 4,
+        "inputTokens": 11445,
+        "outputTokens": 6160
+      }
+    }
+  },
+  "withheld": {
+    "evidence_coverage": "withheld: evidence_coverage compares the ground truth predicate against the evidence statement as an exact fingerprint, and those strings never match in this corpus, so a graph-executed run scores zero for a harness reason rather than a model one"
+  },
+  "verdict": "model-arm-refused"
+}
