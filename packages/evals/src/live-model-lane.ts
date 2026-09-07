@@ -171,7 +171,13 @@ export interface LiveModelLaneControlArm {
 
 export interface LiveModelLaneModelArm {
   readonly arm: 'model';
-  readonly metrics: LiveModelLaneMetrics;
+  /**
+   * ⚠ ABSENT when the arm refused, never zeroed. An arm that produced no score
+   * did not score zero on six axes, and six zeroes read as a model that
+   * answered badly rather than one that did not answer.
+   * see live-model-lane.test.mjs › "records a model arm that refused as unreportable rather than losing the run"
+   */
+  readonly metrics?: LiveModelLaneMetrics;
   readonly reportable: boolean;
   readonly unreportableReason?: string;
   readonly usage?: ModelUsageTotals;
@@ -180,7 +186,17 @@ export interface LiveModelLaneModelArm {
 export type LiveModelLaneVerdict =
   | 'model-quality'
   | 'harness-regression'
-  | 'control-baseline-undeclared';
+  | 'control-baseline-undeclared'
+  /**
+   * 🔴 The model arm threw rather than finishing — a role refused the model's
+   * answer, a provider call failed, a cap was hit mid-arm. This is a
+   * MEASUREMENT and not a lost run: `investigation-roles.ts` refuses a repair
+   * round on purpose, because "a role that could re-ask on a refused answer
+   * would hide the model-quality signal the lane is measuring". Before this
+   * verdict existed the refusal propagated out of the lane and destroyed the
+   * control arm's completed work along with it.
+   */
+  | 'model-arm-refused';
 
 export interface LiveModelLaneReport {
   readonly headSha: string;
@@ -403,16 +419,36 @@ export async function runLiveModelLane(
     .sort();
 
   const control = await options.runControlArm(plan);
-  const model = await options.runModelArm(plan);
+
+  // 🔴 The model arm is the one that can refuse, and its refusal is evidence.
+  // Caught HERE and nowhere deeper: a per-record catch would change what a
+  // benchmark result can be, and a retry would hide the very signal the roles
+  // decline to repair. The control arm has already finished at this point, and
+  // losing its work to the model's answer is the defect this catch removes.
+  let model;
+  let armRefusal;
+  try {
+    model = await options.runModelArm(plan);
+  } catch (error) {
+    armRefusal = error instanceof Error ? error.message : String(error);
+  }
 
   const controlExampleIds = exampleIdsOf(control);
-  const modelExampleIds = exampleIdsOf(model);
-  if (
-    controlExampleIds.join('|') !== modelExampleIds.join('|') ||
-    controlExampleIds.join('|') !== declaredExampleIds.join('|')
-  ) {
+  if (model !== undefined) {
+    const modelExampleIds = exampleIdsOf(model);
+    if (
+      controlExampleIds.join('|') !== modelExampleIds.join('|') ||
+      controlExampleIds.join('|') !== declaredExampleIds.join('|')
+    ) {
+      throw new Error(
+        'the control and model arms must cover the same examples as the declared plan: a comparison across two corpora is not a comparison',
+      );
+    }
+  } else if (controlExampleIds.join('|') !== declaredExampleIds.join('|')) {
+    // The control arm is still held to the declared corpus. A refused model arm
+    // excuses the comparison, never the arm that did finish.
     throw new Error(
-      'the control and model arms must cover the same examples as the declared plan: a comparison across two corpora is not a comparison',
+      'the control arm must cover the declared plan: a comparison across two corpora is not a comparison',
     );
   }
 
@@ -424,7 +460,12 @@ export async function runLiveModelLane(
 
   let verdict: LiveModelLaneVerdict = 'model-quality';
   let unreportableReason: string | undefined;
-  if (declaredBaseline === undefined) {
+  if (armRefusal !== undefined) {
+    // First, because it outranks the other two: an arm that never finished
+    // cannot be judged against a baseline it never reached.
+    verdict = 'model-arm-refused';
+    unreportableReason = `the model arm did not finish: ${armRefusal}`;
+  } else if (declaredBaseline === undefined) {
     verdict = 'control-baseline-undeclared';
     unreportableReason =
       'no control baseline was declared, so a metric that moved cannot be attributed to the model rather than to the harness';
@@ -457,7 +498,7 @@ export async function runLiveModelLane(
       },
       model: {
         arm: 'model',
-        metrics: summarize(model),
+        ...(model === undefined ? {} : { metrics: summarize(model) }),
         reportable: unreportableReason === undefined,
         ...(unreportableReason === undefined ? {} : { unreportableReason }),
         ...(usage === undefined ? {} : { usage }),

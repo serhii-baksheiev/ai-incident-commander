@@ -1073,3 +1073,92 @@ test('refuses without a credential when it is reached through a symlinked path',
     rmSync(linkRoot, { force: true, recursive: true });
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* A model arm that refuses is a measurement, not a lost run                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 🔴 **The lane could not record the signal its own design says it measures.**
+ *
+ * `investigation-roles.ts` states the policy deliberately: "One completion per
+ * role execution. No repair round, no retry: a role that could re-ask on a
+ * refused answer would hide the model-quality signal the lane is measuring." So
+ * a model answer the domain refuses IS the measurement.
+ *
+ * But the refusal propagated out of `runModelArm` as an exception and killed the
+ * whole lane, taking the control arm's completed work and every other record
+ * with it. Measured on a real one-shot hold-out run: the model produced
+ * unparseable JSON on one record after two minutes of provider calls, and the
+ * evaluation returned nothing at all — no report, no metrics, no record of what
+ * the model had done on the twenty-nine others.
+ *
+ * The lane already had the vocabulary for this and was not using it: an arm
+ * carries `reportable` and an `unreportableReason`, and a verdict says which of
+ * the three known reasons applied. A refused arm is a fourth, and it belongs in
+ * the same place — not in a retry, which the policy above forbids, and not in a
+ * per-record error path, which would change what a benchmark RESULT can be.
+ *
+ * ⚠ The metrics are ABSENT rather than zeroed. A model arm that failed did not
+ * score zero on six axes; it produced no score, and this repository's standing
+ * rule is that a missing measurement never becomes a zero.
+ */
+test('records a model arm that refused as unreportable rather than losing the run', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane({
+    ...corpusLaneOptions('calibration'),
+    async runModelArm() {
+      throw new Error(
+        'model role challenge_hypothesis produced output the domain refuses: the answer is not parseable JSON',
+      );
+    },
+  });
+
+  assert.equal(
+    report.arms.model.reportable,
+    false,
+    'a model arm that refused is not reportable, and saying so is the measurement',
+  );
+  assert.match(
+    report.arms.model.unreportableReason,
+    /not parseable JSON/,
+    `the reason must carry what the model actually did: ${report.arms.model.unreportableReason}`,
+  );
+  assert.equal(
+    report.arms.model.metrics,
+    undefined,
+    'an arm that produced no score must publish none: a missing measurement never becomes a zero, and six zeroes would read as a model that answered badly rather than one that did not answer',
+  );
+  assert.equal(
+    report.verdict,
+    'model-arm-refused',
+    'the verdict must name this reason rather than borrowing one of the three that describe the harness',
+  );
+  assert.ok(
+    report.arms.control.metrics,
+    'the control arm completed and its work must survive the model arm refusing',
+  );
+});
+
+test('keeps a refused model arm out of publication', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  let published = false;
+
+  const report = await runLiveModelLane({
+    ...corpusLaneOptions('calibration'),
+    async runModelArm() {
+      throw new Error('the model answered with something the domain refuses');
+    },
+    async publish() {
+      published = true;
+    },
+  });
+
+  assert.equal(report.arms.model.reportable, false);
+  assert.equal(
+    published,
+    true,
+    'the report is still published — a refused arm is evidence, and withholding it would lose the finding. What must not happen is publishing it AS a model-quality result, which the reportable flag and the verdict both say it is not',
+  );
+});
