@@ -179,7 +179,7 @@ const readOwnValue = (
  * **A claimed length alone does not get past this loop.** The descriptor read
  * falls through to the proxy's target, so the first index the target does not
  * own is refused — measured, a one-element target claiming `5e8` throws at index
- * 1 in 0 ms. Reaching a claimed length needs a proxy that ALSO fabricates an own
+ * 1. Reaching a claimed length needs a proxy that ALSO fabricates an own
  * descriptor at every index, and that shape does allocate one entry per index.
  * It is a real exposure, stated rather than closed: every caller of this
  * summarizer is in-process, so this is not a trust boundary, and a length cap
@@ -195,9 +195,10 @@ const readOwnValue = (
  * one thing a limits note must never be — it is the guard's own claim about how
  * far it can be trusted.
  *
- * A third version said it had dropped every number and kept three (`5e8`,
- * `index 1`, `0 ms`) nine lines above, which is the same defect wearing an
- * apology. The figure is true, so it stays and is pinned instead:
+ * A third version said it had dropped every number while the paragraph above
+ * still carried three (`5e8`, `index 1`, `0 ms`), which is the same defect
+ * wearing an apology. Two of those are true and now pinned; the timing figure
+ * is gone, because the row below bounds the walk and does not pin a duration:
  * see budget-policy.test.mjs › "refuses a proxied arms list at the first unowned index, whatever length it claims"
  * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
  * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
@@ -255,14 +256,35 @@ const ownNumber = (source: unknown, key: string): number | undefined => {
     : undefined;
 };
 
-/** How long a refused value may make the refusal that reports it. */
+/** How long any caller-supplied string may make the refusal that reports it. */
 const REFUSED_VALUE_LIMIT = 120;
+
+/**
+ * A caller string, cut to the bound without splitting a character.
+ *
+ * 🔴 One forward pass over CODE POINTS, and it stops at the bound rather than
+ * measuring the input first — so a ten-million-character argument costs the
+ * same as a short one. Slicing by code UNIT instead cut an astral character in
+ * half and left a lone high surrogate in the message: measured, a refusal
+ * carrying `'A' + '😀'.repeat(200)` came back with `isWellFormed()` false,
+ * which survives an assertion but not a re-encode.
+ * see budget-policy.test.mjs › "keeps a truncated refusal well-formed when the value is not ASCII"
+ */
+const truncateForRefusal = (text: string): string => {
+  if (text.length <= REFUSED_VALUE_LIMIT) return text;
+  let kept = '';
+  for (const character of text) {
+    if (kept.length + character.length > REFUSED_VALUE_LIMIT) break;
+    kept += character;
+  }
+  return `${kept}…`;
+};
 
 /**
  * Name a refused value without asking the caller how it prints.
  *
- * 🔴 **The refusal message is a call site the caller controls, and it was the
- * only one in this module.** `String(value)` runs `toString`/`Symbol.toPrimitive`
+ * 🔴 **The refusal message is a call site the caller controls, and this is the
+ * only one that runs the caller's CODE.** `String(value)` runs `toString`/`Symbol.toPrimitive`
  * — caller code, invoked inside the branch whose whole job is to reject that
  * caller. Three consequences, each measured on the built module before this
  * existed: a null-prototype object threw `TypeError: Cannot convert object to
@@ -283,10 +305,22 @@ const REFUSED_VALUE_LIMIT = 120;
 const describeRefusedValue = (value: unknown): string => {
   if (value === null) return 'null';
   const type = typeof value;
-  if (type === 'number' || type === 'boolean' || type === 'bigint') return String(value);
-  if (type !== 'string') return type;
-  const text = value as string;
-  return text.length > REFUSED_VALUE_LIMIT ? `${text.slice(0, REFUSED_VALUE_LIMIT)}…` : text;
+  // `number` and `boolean` are bounded BY THEIR TYPE — the longest
+  // `String(number)` is 24 characters (`-1.7976931348623157e+308`), a boolean
+  // is 5, `null` is 4 — so printing them costs nothing the caller chooses.
+  if (type === 'number' || type === 'boolean') return String(value);
+  if (type === 'string') return truncateForRefusal(value as string);
+  // 🔴 A BIGINT is reported by type, and the first version of this helper got
+  // that wrong: it grouped bigint with number as "a string form the caller
+  // cannot choose". A bigint's digits are exactly what the caller wrote —
+  // measured, `2n ** 20000000n` produced a 6 020 685-character refusal in
+  // 1529 ms, the same defect this helper exists to close. Truncating after
+  // `toString()` would still ALLOCATE those six megabytes, so the bound has to
+  // come before the rendering, and a bigint is never a budget anyway: the
+  // caller's whole diagnostic need is the category, which is what every other
+  // wrong-category value here already gets.
+  // see budget-policy.test.mjs › "bounds a refusal whose value is a bigint the caller sized"
+  return type;
 };
 
 /**
@@ -586,9 +620,16 @@ export function summarizeBudgetPolicyEvidence(
     }
     const experiment = armExperiment.value as BudgetPolicyArmExperiment;
     const parsed = parseBenchmarkBudgetPolicy(armPolicy.value);
+    // 🔴 The version is a CALLER string and it names five refusals below, so an
+    // unbounded one lets the caller pick this repository's log line. Measured
+    // before this bound: a ten-million-character version produced a 10 000 091
+    // -character duplicate-version refusal. Bound once here rather than at each
+    // site, so a refusal added later cannot forget it.
+    // see budget-policy.test.mjs › "bounds every refusal that names a caller-supplied string"
+    const armName = truncateForRefusal(parsed.policyVersion);
     if (seen.has(parsed.policyVersion)) {
       throw new Error(
-        `budget policy version ${parsed.policyVersion} appears on two arms: two rows under one version cannot be told apart`,
+        `budget policy version ${armName} appears on two arms: two rows under one version cannot be told apart`,
       );
     }
     seen.add(parsed.policyVersion);
@@ -605,7 +646,7 @@ export function summarizeBudgetPolicyEvidence(
     const ownStopKinds = readOwnValue(experiment as object, 'stopKindDistribution');
     if (!ownResults.present || !Array.isArray(ownResults.value)) {
       throw new Error(
-        `budget policy arm ${parsed.policyVersion} must own a results array: an inherited one is a measurement of runs the caller never handed over`,
+        `budget policy arm ${armName} must own a results array: an inherited one is a measurement of runs the caller never handed over`,
       );
     }
     if (
@@ -615,7 +656,7 @@ export function summarizeBudgetPolicyEvidence(
       Array.isArray(ownStopKinds.value)
     ) {
       throw new Error(
-        `budget policy arm ${parsed.policyVersion} must own a stopKindDistribution record: a distribution read off the prototype describes runs that did not happen, and an owned non-record is republished verbatim under a field declared as a record of counts`,
+        `budget policy arm ${armName} must own a stopKindDistribution record: a distribution read off the prototype describes runs that did not happen, and an owned non-record is republished verbatim under a field declared as a record of counts`,
       );
     }
 
@@ -633,12 +674,19 @@ export function summarizeBudgetPolicyEvidence(
     // Refused once per result rather than at the four read sites below, so the
     // key-derivation and value paths cannot disagree about it.
     // see budget-policy.test.mjs › "refuses a result whose measurements are a list instead of a record"
+    //
+    // ⚠ `Array.isArray` sees a real array and nothing else. An array-LIKE object
+    // reaches the same outcome by a route this does not close: measured,
+    // `resources: { 0: 7, length: 1 }` publishes axes named `"0"` and `"length"`,
+    // each with a mean. That predates this loop and is unchanged by it — stated
+    // rather than closed, because the shape has no honest producer here and a
+    // duck-typed check would start guessing at which records are lists.
     for (const [index, result] of results.entries()) {
       for (const field of ['metrics', 'resources'] as const) {
         const slot = readOwnValue(result as object, field);
         if (slot.present && Array.isArray(slot.value)) {
           throw new Error(
-            `budget policy arm ${parsed.policyVersion} has a result at index ${index} whose ${field} is a list: a record of measurements keyed by name is not a list of them, and republishing one keys the report by position instead of by what was measured`,
+            `budget policy arm ${armName} has a result at index ${index} whose ${field} is a list: a record of measurements keyed by name is not a list of them, and republishing one keys the report by position instead of by what was measured`,
           );
         }
       }
@@ -674,12 +722,12 @@ export function summarizeBudgetPolicyEvidence(
           // summing to `0.5`, a report whose own two halves disagree and which
           // no reader can catch from the report alone. The predicate that means
           // what the message says is the one the three budgets already use, and
-          // it is imported into this file.
+          // it is defined at the top of this file.
           // see budget-policy.test.mjs › "refuses a stop-kind count that is a finite number but not a count"
           const count = ownNumber(ownStopKinds.value as object, stopKind);
           if (count === undefined || !isLogicalCount(count)) {
             throw new Error(
-              `budget policy arm ${parsed.policyVersion} has a stopKindDistribution entry ${stopKind} that is not an own count: a stop-kind distribution is how many runs stopped each way, and anything else republished is a measurement-shaped value the report's own type forbids`,
+              `budget policy arm ${armName} has a stopKindDistribution entry ${truncateForRefusal(stopKind)} that is not an own count: a stop-kind distribution is how many runs stopped each way, and anything else republished is a measurement-shaped value the report's own type forbids`,
             );
           }
           return [stopKind, count];
