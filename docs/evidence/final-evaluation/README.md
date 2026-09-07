@@ -89,3 +89,5 @@ assumes covers more than it does.
    carrying no information about the candidate. The command runs both arms and
    requires the model arm; that is why it needs a provider credential and
    refuses without one.
+
+<!-- fingerprint invariance probe -->
