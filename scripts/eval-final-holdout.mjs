@@ -198,8 +198,14 @@ function claimRecord(path, body) {
  */
 /** The declared control-arm expectation, minus the `_`-prefixed rationale keys. */
 function readControlBaseline() {
+  // 🔴 Beside the records directory, never inside it. Placed within it, the
+  // record reader picked this file up and refused the whole run — "a final
+  // evaluation record must declare its own schemaVersion 1" — because it reads
+  // every `.json` there. The guard failed CLOSED and caught the mistake on the
+  // first dry run, which is the behaviour it was built for; the file simply does
+  // not belong among the records.
   const raw = JSON.parse(
-    readFileSync(join(EVIDENCE_DIR, 'control-baseline.json'), 'utf8'),
+    readFileSync(join(dirname(EVIDENCE_DIR), 'control-baseline.json'), 'utf8'),
   );
   return Object.fromEntries(
     Object.entries(raw).filter(([key]) => !key.startsWith('_')),

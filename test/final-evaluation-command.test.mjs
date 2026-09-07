@@ -258,9 +258,14 @@ test('reports a dry run with no provider credential, because a dry run claims no
 test('declares a control baseline for the hold-out, without which the model arm can never be reportable', () => {
   const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
   const baseline = JSON.parse(
-    readFileSync(join(REPO_ROOT, 'docs/evidence/final-evaluation/control-baseline.json'), 'utf8'),
+    readFileSync(join(REPO_ROOT, 'docs/evidence/control-baseline.json'), 'utf8'),
   );
 
+  assert.equal(
+    source.includes("join(EVIDENCE_DIR, 'control-baseline.json')"),
+    false,
+    'the baseline must not live inside the records directory: readRecords parses every .json there, so a baseline placed among the records refuses the whole run — measured on the first dry run after it was added',
+  );
   assert.match(
     source,
     /controlBaseline/,
