@@ -166,9 +166,9 @@ npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./la
 > Deciding whether a sentence asserts provider state is a judgement about
 > meaning, which `.claude/rules/invariants.md` puts in its "poor fit" column for
 > a mechanical check; the one narrow wording that IS decidable is kept out of the
-> gate document by `test/final-evaluation-command.test.mjs` › "keeps the phrase
-> is reachable out of the gate document outside its provider block", whose own
-> header records that six of seven measured wordings slip past it.
+> gate document by `test/final-evaluation-command.test.mjs` ›
+> `keeps the phrase "is reachable" out of the gate document outside its provider block`,
+> whose own header records that six of seven measured wordings slip past it.
 >
 > **So read provider state from `docs/evidence/`, not from a sentence.** Those
 > records carry the calls, and a stale comment cannot contradict a usage block.
