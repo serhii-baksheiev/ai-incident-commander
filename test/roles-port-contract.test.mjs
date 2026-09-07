@@ -1086,3 +1086,54 @@ test('treats a declared output-token cap of zero as zero, not as no cap at all',
     'an ABSENT cap is still unbounded: nothing was declared, so there is nothing to judge',
   );
 });
+
+/**
+ * The limit the ledger's own comment states, pinned — because a limits comment
+ * with nothing behind it is the thing `.claude/rules/invariants.md` calls a
+ * guard's claim about how far it can be trusted, and prose drifts.
+ *
+ * `record` retires the OLDEST outstanding estimate, whoever reserved it. So a
+ * caller that records without reserving frees another call's headroom. The port
+ * reserves and records in pairs, sequentially, which is what makes the
+ * accounting exact in production — but the hole is real and this row is the
+ * proof, reproduced from `code-reviewer`'s measurement at the AIC-19 gate.
+ */
+test('lets an unpaired record free another reservation headroom, which is the limit its comment states', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+  ledger.reserve(500);
+  ledger.reserve(500);
+  assert.throws(() => ledger.reserve(500), /budget/, 'the cap is fully committed');
+
+  ledger.record({ inputTokens: 0, outputTokens: 10 }); // no matching reserve
+
+  assert.doesNotThrow(
+    () => ledger.reserve(480),
+    'this is the documented hole: the unpaired record retired one of the in-flight estimates, so a third call is admitted and three calls at budget total 1,490 against a 1,000 cap',
+  );
+});
+
+/**
+ * ⚠ The ledger bounds CALLS and OUTPUT tokens. It does not bound input tokens,
+ * and this repository's own spend is the larger half on that axis — 622,792
+ * input against 243,028 output across every committed record.
+ *
+ * Stated and pinned rather than left for a reader to infer from an absence,
+ * because the framing around the caps is "the call cap does not bound spend",
+ * and someone reading that could reasonably assume the gap was closed on every
+ * axis. Raised by `code-reviewer` at the AIC-19 gate.
+ */
+test('bounds calls and output tokens, and does not bound input tokens', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 5, maxOutputTokens: 1000 });
+  ledger.reserve(1);
+  ledger.record({ inputTokens: 10_000_000, outputTokens: 1 });
+
+  assert.equal(ledger.read().inputTokens, 10_000_000);
+  assert.doesNotThrow(
+    () => ledger.reserve(1),
+    'there is no input-token bound: a caller that needs one has to add it, and nothing here should be read as providing it',
+  );
+});

@@ -146,19 +146,30 @@ npm run eval:live-model
 npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./lane-report.json
 ```
 
-> 🔴 **Read everything below in the present tense with this in front of it: no
-> model has ever executed these roles in this repository.** There is no provider
-> credential in this environment, so every test of this lane and of the three
-> roles drives an injected or fetch-stubbed port, and no HTTP request has left
-> this machine for a provider. The path is implemented and refuses correctly
-> without a credential; it is not evidence that a real model's output satisfies
-> the domain schemas, and no model-quality figure, token count or cost figure in
-> this repository was produced by a model. AIC-94's acceptance rows 1 and 2 are
-> **unproven** on that ground, not met.
+> 🔴 **A real model HAS executed these roles in this repository, and the two
+> things that fact does not license are worth stating first.**
 >
-> The same disclosure is at the top of `packages/evals/src/live-model-lane.ts`,
-> `scripts/eval-live-model.mjs`, `test/live-model-lane.test.mjs` and
-> `test/roles-model-nodes.test.mjs`.
+> ⚠ **This block used to say the opposite** — "no model has ever executed these
+> roles", "no HTTP request has left this machine for a provider", "no
+> model-quality figure, token count or cost figure in this repository was
+> produced by a model". All three were true when written and all three are now
+> false: `docs/evidence/` holds seventeen committed reports carrying 237 provider
+> calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
+> records. It also named four files as carrying the same disclosure; none of them
+> does any more. Found by `code-reviewer` at the AIC-19 gate, in a file no diff
+> had touched — which is how a disclosure goes stale: nothing edits it, so
+> nothing rechecks it.
+>
+> **What still holds.** The SUITE executes no model: every test of this lane and
+> of the three roles drives an injected or fetch-stubbed port, and `npm run check`
+> makes no network call. A green suite is therefore still not evidence that a real
+> model's output satisfies the domain schemas.
+>
+> **What the evidence directory is for.** That evidence lives in committed records
+> instead, each naming its candidate, its corpus and its verdict — and the current
+> verdict on the hold-out is a REFUSAL, not a pass. `docs/v0.2-exit-gate.md` is
+> the reading of them, and its provider-access block is the one place this
+> repository states whether the provider is reachable.
 
 The lane runs two arms over a corpus **the caller declares**, at one commit, in
 one process: a scripted control arm and a model arm that differ only in those

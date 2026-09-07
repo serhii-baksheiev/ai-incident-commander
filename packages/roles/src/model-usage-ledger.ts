@@ -112,6 +112,10 @@ export function createModelUsageLedger({
   let calls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  // ⚠ There is no INPUT-token bound, and this repository's spend is the larger
+  // half on that axis. Absence stated rather than left to be inferred, because
+  // the framing around these caps is "the call cap does not bound spend".
+  // see roles-port-contract.test.mjs › "bounds calls and output tokens, and does not bound input tokens"
   // The token half of the `reserved`/`calls` split above, for the same reason.
   // An in-flight completion has no recorded cost yet, so a cap that reads only
   // `outputTokens` cannot see it: measured at the AIC-19 gate, fifty concurrent
@@ -206,7 +210,8 @@ export function createModelUsageLedger({
       //
       // ⚠ It does NOT follow that a caller recording without reserving cannot
       // consume another call's headroom: `shift()` takes the oldest estimate
-      // whoever asked for it. `security-scanner` executed that at the AIC-19
+      // whoever asked for it.
+      // see roles-port-contract.test.mjs › "lets an unpaired record free another reservation headroom, which is the limit its comment states" `security-scanner` executed that at the AIC-19
       // gate — two 500-token reservations in flight, one unpaired record, then a
       // granted `reserve(480)` produced 1,490 recorded against a 1,000 cap. An
       // earlier version of this comment claimed the property anyway. The port is
