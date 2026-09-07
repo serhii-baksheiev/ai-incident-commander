@@ -668,10 +668,6 @@ test('stops at the declared call cap before issuing the request', async () => {
  * `reserve` DIRECTLY, so replacing the port's `ledger.reserve(request.maxOutputTokens)`
  * with `ledger.reserve()` left the whole suite green — measured by
  * `code-reviewer` at the AIC-19 gate.
- *
- * The transport here never settles, so nothing is ever recorded: every token the
- * cap sees is an in-flight estimate, which is the only state that tells the two
- * implementations apart.
  */
 test('reserves the requested output budget before the call, so in-flight completions count against the cap', async () => {
   const createReferenceModelPort = requireExport('createReferenceModelPort');

@@ -45,6 +45,7 @@ function laneOptionNames(source) {
   const file = ts.createSourceFile('eval-final-holdout.mjs', source, ts.ScriptTarget.Latest, true);
   const names = [];
 
+  let calls = 0;
   const visit = (node) => {
     if (
       ts.isCallExpression(node) &&
@@ -53,17 +54,32 @@ function laneOptionNames(source) {
       node.arguments.length > 0 &&
       ts.isObjectLiteralExpression(node.arguments[0])
     ) {
+      calls += 1;
       for (const property of node.arguments[0].properties) {
-        if (property.name && ts.isIdentifier(property.name)) names.push(property.name.text);
+        if (!property.name || !ts.isIdentifier(property.name)) continue;
+        // A name whose value is the `undefined` keyword is not a passed option:
+        // the lane receives nothing and answers `control-baseline-undeclared`
+        // exactly as if the key were absent. Measured — the first version of
+        // this helper read the name alone and `controlBaseline: undefined`
+        // passed it.
+        const initializer = ts.isPropertyAssignment(property) ? property.initializer : undefined;
+        if (initializer && initializer.kind === ts.SyntaxKind.UndefinedKeyword) continue;
+        if (initializer && ts.isIdentifier(initializer) && initializer.text === 'undefined') continue;
+        names.push(property.name.text);
       }
     }
     ts.forEachChild(node, visit);
   };
 
   visit(file);
-  assert.ok(
-    names.length > 0,
-    'the command must call runLiveModelLane with an options object: this helper reads the options off that call, so no call means the rows built on it are vacuous',
+  // Exactly one, not at least one. Unioning names across call sites lets a
+  // second call satisfy a row about the first — measured: an unused extra call
+  // passing `controlBaseline` kept this file green while the real call dropped
+  // it.
+  assert.equal(
+    calls,
+    1,
+    'the command must call runLiveModelLane exactly once with an options object: no call makes the rows built on this helper vacuous, and a second call lets one call site answer for another',
   );
   return names;
 }
@@ -494,6 +510,32 @@ test('both live commands declare the output-token ceiling, not only the one that
  * Both directions matter: a record added without a row makes the table
  * incomplete, and a row naming no record makes it fiction.
  */
+test('the gate document names every hold-out record, and every record it names exists', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
+
+  const onDisk = readdirSync(dir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.replace(/\.json$/, ''))
+    .sort();
+  const table = doc.slice(doc.indexOf('| record | candidate | status |'));
+  const named = [...table.matchAll(/^\| `([0-9a-f]{12})` \|/gm)]
+    .map((match) => match[1])
+    .sort();
+
+  assert.deepEqual(
+    named,
+    onDisk,
+    'the gate document\'s record table and docs/evidence/final-evaluation/ must name the same records: a record with no row makes the table\'s completeness claim false, and a row with no record makes it fiction',
+  );
+
+  const claimed = `${onDisk.length} attempts, every one recorded rather than tidied away`;
+  assert.ok(
+    doc.includes(claimed),
+    `the sentence above the table must state the number of records there are — expected "${claimed}"`,
+  );
+});
+
 /**
  * The ingestion claim is read off the records, not counted by hand.
  *
@@ -520,32 +562,6 @@ test('no hold-out record carries a published result, which is what the gate docu
     published,
     [],
     'a record carrying a published result would falsify the gate document\'s statement that no ingestion occurred during this gate — update the document from the records rather than leaving the sentence standing',
-  );
-});
-
-test('the gate document names every hold-out record, and every record it names exists', () => {
-  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
-  const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
-
-  const onDisk = readdirSync(dir)
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => name.replace(/\.json$/, ''))
-    .sort();
-  const table = doc.slice(doc.indexOf('| record | candidate | status |'));
-  const named = [...table.matchAll(/^\| `([0-9a-f]{12})` \|/gm)]
-    .map((match) => match[1])
-    .sort();
-
-  assert.deepEqual(
-    named,
-    onDisk,
-    'the gate document\'s record table and docs/evidence/final-evaluation/ must name the same records: a record with no row makes the table\'s completeness claim false, and a row with no record makes it fiction',
-  );
-
-  const claimed = `${onDisk.length} attempts, every one recorded rather than tidied away`;
-  assert.ok(
-    doc.includes(claimed),
-    `the sentence above the table must state the number of records there are — expected "${claimed}"`,
   );
 });
 
@@ -587,8 +603,12 @@ test('leaves the output-token ceiling above every live run this repository has r
   // 🔴 Projected over a FULL-LENGTH run, not compared against a total.
   //
   // The cap throws MID-RUN, so the question it has to survive is not "is it
-  // bigger than the largest run so far" — the largest recorded run is 47 calls
-  // against a 150-call cap. It is "can a legitimate full-length run reach it".
+  // bigger than the largest run so far" — a recorded run can finish well inside
+  // the call cap. It is "can a legitimate full-length run reach it". No figure
+  // for the largest recorded run is written here: the version that named one
+  // said 47 and was refuted by a record this same branch had already committed,
+  // and it survived the pass that removed the identical sentence from
+  // `live-model-lane.ts` — which is why the number is gone rather than corrected.
   // The first version of this row compared totals and reported a 5.19x margin
   // where the full-run margin was 1.52x, which would have aborted a hold-out
   // costing barely more per call than one already recorded, spending the corpus
