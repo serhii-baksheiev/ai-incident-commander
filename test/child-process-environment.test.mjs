@@ -152,6 +152,23 @@ function testSources() {
   // exactly the two files that run beside a live provider credential. Found by
   // a cold security review of the AIC-19 gate branch; the gap predates it.
   walk(join(projectRoot, 'scripts'));
+  // ⚠ And `infra/`, for the same reason `scripts/` is here: it does not run
+  // under `npm test`, and it spawns. `infra/postgres/tests/` starts a worker
+  // process in a lane an operator runs beside a live provider credential, so a
+  // later edit dropping `env: childEnv(...)` there would go unseen.
+  // Found by `security-scanner` at the AIC-55 gate.
+  walk(join(projectRoot, 'infra'));
+  // 🔴 **`incident-lab/` is NOT walked, and that is a stated gap rather than an
+  // oversight.** It spawns too, but through `promisify(execFile)` bound to
+  // `execFileAsync`, passing an `environment` VARIABLE rather than a literal
+  // `childEnv(...)` call. Measured at the AIC-55 gate: adding the tree plus an
+  // `Async` suffix to the pattern reported all eight of its call sites as
+  // unguarded, when every one of them is in fact guarded — the scan reads the
+  // call's argument text, not what a name was assigned. Covering it needs
+  // data-flow analysis, and `.claude/rules/invariants.md` asks a rule's
+  // precision to match the cost of a false positive: eight false blocks on
+  // correct code is worse than the gap. So the audit's reach is `test/`,
+  // `scripts/` and `infra/` — and this row's name should be read against that.
   return sources;
 }
 

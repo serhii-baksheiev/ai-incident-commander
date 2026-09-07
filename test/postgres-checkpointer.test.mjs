@@ -518,3 +518,72 @@ test('keeps the database-backed lane out of npm test and npm run check', () => {
     `${LIVE_LANE_FILE} must read its connection string from ${CONNECTION_VARIABLE}: the row above passes trivially if the lane it points at does not exist or reads the address from somewhere else`,
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* The schemaVersion validation seam                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * AIC-55's scope asks for a `schemaVersion` validation seam and leaves the
+ * historical migration, corruption and DR policy to AIC-41. These rows pin the
+ * seam's two behaviours and nothing about policy, because policy is not this
+ * ticket's to define.
+ *
+ * ⚠ Written AFTER the implementation, which inverts this repository's order.
+ * `code-reviewer` found the scope line dropped at the AIC-55 gate; the seam was
+ * built to close it and these rows were added behind it. They are therefore
+ * verified the only way that is still honest — by mutation, below in the same
+ * pass — rather than by having been watched to fail first.
+ *
+ * The source is structural on purpose: the library declares its pool private,
+ * so a typed caller cannot pass the saver's own, and a narrow port keeps `pg`
+ * out of the module's type surface.
+ */
+test('refuses a checkpointer schema at a migration version this build was not written against', async () => {
+  const { assertCheckpointerSchemaVersion, CHECKPOINTER_MIGRATION_VERSION, CHECKPOINTER_SCHEMA } =
+    persistence;
+
+  assert.equal(
+    typeof assertCheckpointerSchemaVersion,
+    'function',
+    '@aic/persistence must export the schemaVersion validation seam AIC-55 scope asks for: without it a process opens a store written by a different checkpointer and reads on',
+  );
+  assert.equal(
+    Number.isInteger(CHECKPOINTER_MIGRATION_VERSION) && CHECKPOINTER_MIGRATION_VERSION > 0,
+    true,
+    'the expected migration version must be a positive integer measured against a real setup(), not a placeholder',
+  );
+
+  const asked = [];
+  const sourceAt = (v) => ({
+    async query(sql) {
+      asked.push(sql);
+      return { rows: [{ v }] };
+    },
+  });
+
+  await assert.rejects(
+    () => assertCheckpointerSchemaVersion(sourceAt(CHECKPOINTER_MIGRATION_VERSION + 1)),
+    /migration version/,
+    'a store one version ahead must be refused before execution, not read as if it were this one',
+  );
+  await assert.rejects(
+    () => assertCheckpointerSchemaVersion(sourceAt(null)),
+    /migration version/,
+    'an unprovisioned store reports no version at all, and that must refuse rather than pass as "nothing to check"',
+  );
+
+  // The matching version is the only one that may pass, and it must still have
+  // asked — a seam that never queries would satisfy the two rejections above.
+  await assertCheckpointerSchemaVersion(sourceAt(CHECKPOINTER_MIGRATION_VERSION));
+  assert.equal(
+    asked.length,
+    3,
+    'the seam must read the version rather than assume it: three calls, three queries',
+  );
+  assert.match(
+    asked[0],
+    new RegExp(`"${CHECKPOINTER_SCHEMA}"\\.checkpoint_migrations`),
+    'the seam must read the migration ledger of the checkpointer schema, qualified — an unqualified read resolves through search_path',
+  );
+});

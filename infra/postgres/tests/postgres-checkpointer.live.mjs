@@ -38,7 +38,9 @@ import { childEnv } from '../../../test/fixtures/child-env.mjs';
 
 import {
   APPLICATION_SCHEMA,
+  CHECKPOINTER_MIGRATION_VERSION,
   CHECKPOINTER_SCHEMA,
+  assertCheckpointerSchemaVersion,
   createPostgresCheckpointer,
 } from '@aic/persistence';
 
@@ -202,10 +204,25 @@ function killIfAlive(worker) {
 
 test('refuses to run without a PostgreSQL connection string instead of skipping', () => {
   const connectionString = requireConnectionString();
-  assert.match(
-    connectionString,
-    /^postgres(?:ql)?:\/\//,
-    `${CONNECTION_VARIABLE} must be a PostgreSQL connection string; got something else entirely, which would fail later and further from the cause`,
+
+  // 🔴 The subject is never the assertion's argument, and that is the whole
+  // point of the shape below.
+  //
+  // `assert.match(connectionString, …)` puts the raw value in the
+  // AssertionError's `actual`, and node:test's reporter prints `actual:`
+  // whatever the custom message says. Measured: a value that merely misses the
+  // scheme — a JDBC-style URL, a `.env` value still wrapped in quotes, a
+  // leading newline from a secret manager — printed the entire connection
+  // string, password included, into output this repository routinely pastes
+  // into journals and PR bodies. Found by `security-scanner` at the AIC-55
+  // gate. Asserting on a derived BOOLEAN leaves `actual: false`, and the
+  // message carries only the scheme.
+  //
+  // `requireConnectionString` above already had this right; this row did not.
+  assert.equal(
+    /^postgres(?:ql)?:\/\//.test(connectionString),
+    true,
+    `${CONNECTION_VARIABLE} must be a PostgreSQL connection string; its scheme is "${connectionString.split(':')[0]}", which would fail later and further from the cause`,
   );
 });
 
@@ -396,3 +413,39 @@ test(
     }
   },
 );
+
+/**
+ * The seam against a real migration ledger, not a structural stand-in.
+ *
+ * `test/postgres-checkpointer.test.mjs` pins the seam's logic with a fake
+ * source; this row is the half that only a database can answer — that the
+ * version the library actually writes during `setup()` is the number this
+ * build expects. If a future checkpointer release adds a migration, that
+ * constant is stale and this row is what says so.
+ */
+test('agrees with the migration version a real setup() writes, and refuses any other', async (t) => {
+  const checkpointer = await checkpointerFor(t);
+  await checkpointer.setup();
+
+  await assertCheckpointerSchemaVersion(checkpointer.pool);
+
+  const { rows } = await checkpointer.pool.query(
+    `select max(v) as v from "${CHECKPOINTER_SCHEMA}".checkpoint_migrations`,
+  );
+  assert.equal(
+    rows[0].v,
+    CHECKPOINTER_MIGRATION_VERSION,
+    'the constant this build refuses against must be the version setup() really reaches: a constant nobody measured is a check that passes for the wrong reason',
+  );
+
+  // A version the store could plausibly drift to, rather than an absurd one.
+  await checkpointer.pool.query(
+    `insert into "${CHECKPOINTER_SCHEMA}".checkpoint_migrations (v) values ($1)`,
+    [CHECKPOINTER_MIGRATION_VERSION + 1],
+  );
+  await assert.rejects(
+    () => assertCheckpointerSchemaVersion(checkpointer.pool),
+    /migration version/,
+    'a store one migration ahead of this build must refuse before execution rather than be read as if it were this version',
+  );
+});
