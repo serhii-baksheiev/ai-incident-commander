@@ -160,9 +160,18 @@ npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./la
 > `scripts/eval-live-model.mjs`, `test/live-model-lane.test.mjs` and
 > `test/roles-model-nodes.test.mjs`.
 
-The lane runs two arms over the accepted hold-out corpus, at one commit, in one
-process: a scripted control arm and a model arm that differ only in those three
-roles. They are reported separately and per metric, with no composite anywhere.
+The lane runs two arms over a corpus **the caller declares**, at one commit, in
+one process: a scripted control arm and a model arm that differ only in those
+three roles. `npm run eval:live-model` declares `calibration`, so it is
+repeatable and never reaches the hold-out; the `final-evaluation` corpus —
+calibration ∪ hold-out — has one caller, and that caller is the one-shot gate
+command. An omitted corpus is refused rather than defaulted.
+
+⚠ This paragraph used to read "over the accepted hold-out corpus", and that was
+accurate: `scenarioSet` was a literal type with no alternative, so the
+repeatable diagnostic spent the one-shot hold-out every time it ran. Recorded
+rather than quietly reworded, because the sentence was true of a design that
+should not have been. They are reported separately and per metric, with no composite anywhere.
 If the control arm moves against its declared baseline, the regression is in the
 harness and the model arm's numbers are marked unreportable; with no declared
 baseline the model arm is unreportable for the same reason. Both arms are
