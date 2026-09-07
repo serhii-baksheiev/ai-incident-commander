@@ -197,8 +197,10 @@ const readOwnValue = (
  *
  * A third version said it had dropped every number while the paragraph above
  * still carried three (`5e8`, `index 1`, `0 ms`), which is the same defect
- * wearing an apology. Two of those are true and now pinned; the timing figure
- * is gone, because the row below bounds the walk and does not pin a duration:
+ * wearing an apology. Two of those are true and now pinned; the timing figure is
+ * gone, because the row below asserts only a coarse ceiling on the walk — enough
+ * to show it does not run to a claimed length, and nowhere near enough to back a
+ * figure of `0 ms`:
  * see budget-policy.test.mjs › "refuses a proxied arms list at the first unowned index, whatever length it claims"
  * see budget-policy.test.mjs › "refuses an arms list with a hole in it, naming the index"
  * see budget-policy.test.mjs › "refuses a results list whose hole is answered by the prototype, naming the index"
@@ -283,8 +285,12 @@ const truncateForRefusal = (text: string): string => {
 /**
  * Name a refused value without asking the caller how it prints.
  *
- * 🔴 **The refusal message is a call site the caller controls, and this is the
- * only one that runs the caller's CODE.** `String(value)` runs `toString`/`Symbol.toPrimitive`
+ * 🔴 **Among the refusal messages this module builds, this is the only one that
+ * ran the caller's CODE.** Not the only caller-controlled code path in the file:
+ * `readOwnValue` and `ownElements` invoke a caller `Proxy`'s traps, which the
+ * comment above `ownElements` states as an exposure it does not close. The claim
+ * here is about what a REFUSAL interpolates, and it is scoped that way because
+ * the wider reading would tell the next reader there is nothing else to look at. `String(value)` runs `toString`/`Symbol.toPrimitive`
  * — caller code, invoked inside the branch whose whole job is to reject that
  * caller. Three consequences, each measured on the built module before this
  * existed: a null-prototype object threw `TypeError: Cannot convert object to
