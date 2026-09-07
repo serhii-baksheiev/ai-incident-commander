@@ -574,3 +574,47 @@ test("reads the repository's own committed baseline from the calibration command
     'the calibration command must not parse the baseline itself: that second copy is what diverged',
   );
 });
+
+/**
+ * 🔴 Provider access is stated ONCE in the gate document, and this row is why.
+ *
+ * Four consecutive gate rounds found a passage asserting the provider was
+ * unreachable that a previous round's marking had missed. Each round marked the
+ * twins it could see; the next round found another. The document had the same
+ * fact spelled in five places, which `.claude/rules/invariants.md` names as the
+ * arrangement where "the one nobody is looking at is the one that is wrong".
+ *
+ * Prose about it was tried three times and did not hold, so this is the check
+ * instead: the assertion lives in the block at the top, and nowhere else. A
+ * historical section says what was measured at the time and points here.
+ */
+test('states provider access in exactly one place in the gate document', () => {
+  const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
+  const lines = doc.split('\n');
+
+  const blockHeading = lines.findIndex((line) =>
+    line.includes('Provider access — the one place this document states it'),
+  );
+  assert.notEqual(
+    blockHeading,
+    -1,
+    'the gate document must carry the single provider-access block: without it there is no one place, and the assertion scatters again',
+  );
+
+  // The block is the quoted region that opens with that heading.
+  let blockEnd = blockHeading;
+  while (blockEnd + 1 < lines.length && lines[blockEnd + 1].startsWith('>')) blockEnd += 1;
+
+  const asserts = /\b(is|are|remains?) (reachable|unreachable)\b|\bReachable\b|\bstill unreachable\b/i;
+  const strays = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (index >= blockHeading && index <= blockEnd) continue;
+    if (asserts.test(lines[index])) strays.push(`${index + 1}: ${lines[index].trim()}`);
+  }
+
+  assert.deepEqual(
+    strays,
+    [],
+    `provider access must be asserted only in the block at the top of docs/v0.2-exit-gate.md — a second spelling is the one that goes stale, and four gate rounds in a row found one that had. Point at the block instead:\n${strays.join('\n')}`,
+  );
+});
