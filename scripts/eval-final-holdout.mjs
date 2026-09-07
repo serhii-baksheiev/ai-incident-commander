@@ -196,6 +196,16 @@ function claimRecord(path, body) {
  * 'get')` at the first record of the control arm — before any model call and
  * before any publication — and it is why record `04cf86236c2f` is void.
  */
+/** The declared control-arm expectation, minus the `_`-prefixed rationale keys. */
+function readControlBaseline() {
+  const raw = JSON.parse(
+    readFileSync(join(EVIDENCE_DIR, 'control-baseline.json'), 'utf8'),
+  );
+  return Object.fromEntries(
+    Object.entries(raw).filter(([key]) => !key.startsWith('_')),
+  );
+}
+
 function scriptedNodes(record) {
   return replayBackedNodes(
     record,
@@ -322,6 +332,18 @@ async function main() {
     headSha: head,
     runsPerScenario,
     metadata: baseMetadata(),
+    // 🔴 Declared, or the model arm can never be reportable. The lane refuses to
+    // attribute a moved metric to the model rather than to the harness without
+    // a baseline, and answers `control-baseline-undeclared`. This command passed
+    // none — measured on a post-repair calibration run where the model arm
+    // COMPLETED all 24 examples and the verdict was still that, so a hold-out in
+    // that state would have spent the one shot on an arm unreportable by
+    // construction.
+    //
+    // Read from a committed file rather than observed at run time: observing it
+    // would compare the harness against itself.
+    // see final-evaluation-command.test.mjs › "declares a control baseline for the hold-out, without which the model arm can never be reportable"
+    controlBaseline: readControlBaseline(),
     modelUsage: () => ledger.read(),
     async runControlArm(plan) {
       return evals.runGraphBenchmarkExperiment({

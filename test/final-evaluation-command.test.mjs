@@ -238,3 +238,46 @@ test('reports a dry run with no provider credential, because a dry run claims no
     'the dry run must return BEFORE the credential is required: it claims nothing and calls nothing, and the README sends a reviewer to it as the way to check a record without a credential and without spending a corpus',
   );
 });
+
+/**
+ * 🔴 **Without a declared control baseline the hold-out could never satisfy
+ * AIC-19, however well the model did.**
+ *
+ * `runLiveModelLane` refuses to call the model arm reportable when no baseline
+ * is declared — a metric that moved could not be attributed to the model rather
+ * than to the harness — and returns `verdict: 'control-baseline-undeclared'`.
+ * The one-shot command passed none. Measured on a calibration run after the
+ * encoding repair: the model arm COMPLETED all 24 examples and the verdict was
+ * still `control-baseline-undeclared`, so a hold-out in that state would have
+ * spent the one shot and produced an unreportable arm by construction.
+ *
+ * The baseline is a committed artifact rather than a value observed at run time:
+ * observing it would make the harness-regression check compare a number against
+ * itself.
+ */
+test('declares a control baseline for the hold-out, without which the model arm can never be reportable', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+  const baseline = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'docs/evidence/final-evaluation/control-baseline.json'), 'utf8'),
+  );
+
+  assert.match(
+    source,
+    /controlBaseline/,
+    'the command must pass a control baseline to the lane: without one the lane answers control-baseline-undeclared and the model arm is unreportable whatever it scored',
+  );
+
+  const declared = Object.keys(baseline).filter((key) => !key.startsWith('_'));
+  assert.deepEqual(
+    declared.sort(),
+    ['termination_correctness', 'unsupported_claim_rate'],
+    'the declared axes must be the ones the lane compares — evidence_coverage is withheld, so declaring it would pin a number nothing reads',
+  );
+  for (const key of declared) {
+    assert.equal(
+      typeof baseline[key],
+      'number',
+      `${key} must declare a number: a baseline that is not a value cannot be compared against one`,
+    );
+  }
+});

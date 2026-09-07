@@ -1,0 +1,7 @@
+{
+  "_why": "The scripted control arm's expected metric means over the final-evaluation corpus, DECLARED so a harness regression is detectable. Without a declared baseline the lane refuses to call the model arm reportable at all — a metric that moved could not be attributed to the model rather than to the harness — so a hold-out run with no baseline can never satisfy AIC-19 however well the model does.",
+  "_measured": "Computed offline from the deterministic replay-backed control arm over scenarioSet final-evaluation, 30 records, no provider call. The same execution the suite performs on every `npm run check` via live-model-lane.test.mjs > 'measures the harness zero that makes evidence_coverage unreportable'.",
+  "_limit": "Zero is the WORST score for these axes, so this baseline pins a floor. A harness change that moves a metric UP is detected; one that pushes it further down cannot be, because there is no further down. README.md states this at length.",
+  "unsupported_claim_rate": 0,
+  "termination_correctness": 0
+}
