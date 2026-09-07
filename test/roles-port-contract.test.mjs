@@ -667,9 +667,13 @@ test('stops at the declared call cap before issuing the request', async () => {
  *
  * That sentence is false, and falsely about the thing this lane exists to
  * measure. The model did not produce bad JSON — it was interrupted. Measured on
- * a real calibration run: `outputTokens: 4132` against a
- * `DEFAULT_MAX_OUTPUT_TOKENS` of 4096, and the lane recorded the model arm as
- * unreportable for producing malformed output.
+ * a real calibration run: the lane recorded the model arm unreportable for
+ * producing malformed output, and the guard below removed the symptom.
+ *
+ * ⚠ An earlier version of this paragraph offered `outputTokens: 4132 against a
+ * 4096 budget` as the evidence. That figure is real but CUMULATIVE across three
+ * completions, so it says nothing about whether any single one hit the cap — a
+ * claim one notch wider than the number behind it, which a cold review caught.
  *
  * This repository already refuses the two neighbouring versions of this mistake
  * — a missing measurement never becomes a zero, and a model run that did not

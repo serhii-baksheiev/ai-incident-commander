@@ -617,7 +617,7 @@ test('routes a model-backed run to its challenge, with the leader the graph can 
  * That is a false statement about the one thing this lane measures.
  *
  * Measured on a real calibration run before the guard existed:
- * `outputTokens: 4132` against a `DEFAULT_MAX_OUTPUT_TOKENS` of 4096, and the
+ * a lane report recording the model as producing malformed output, and the
  * lane recorded the model arm unreportable for producing malformed output.
  *
  * This repository already refuses the two neighbours of this mistake — a

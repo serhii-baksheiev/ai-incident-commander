@@ -77,7 +77,7 @@ export interface ModelCompletion {
    * ordinary string, `JSON.parse` fails on the half-written object, and the role
    * reports "the answer is not parseable JSON" — a false statement about the one
    * thing this lane exists to measure. Measured on a real calibration run:
-   * `outputTokens: 4132` against a 4096 budget, reported as malformed output.
+   * a lane report recording the model as producing malformed output, reported as malformed output.
    *
    * Absent when the provider did not say, which is not the same as "the model
    * finished": a fake port in a test may omit it, and a role reads it as

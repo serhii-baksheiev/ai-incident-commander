@@ -86,8 +86,14 @@ assumes covers more than it does.
    that imports `runGraphBenchmarkExperiment` and passes
    `scenarioSet: 'final-evaluation'` is not refused. The audit row
    `final-evaluation-command.test.mjs › "reaches the final-evaluation corpus from
-   exactly one command in this repository"` catches a *committed* second caller;
-   it does not catch a scratch script or a `node -e`.
+   exactly one command in this repository"` catches a committed second caller
+   **only outside the trees it excludes** — `packages/evals/src/`, `test/`,
+   `docs/`, `.claude/`, every `*.md` and every `dist/`. A committed caller inside
+   any of those is not caught, and one already exists:
+   `test/benchmark-evaluation.test.mjs` calls
+   `runGraphBenchmarkExperiment({ scenarioSet: 'final-evaluation' })` on every
+   `npm run check` — deliberately, over replay-backed nodes, but the audit cannot
+   tell that from a real one. Nor does it catch a scratch script or a `node -e`.
 4. **It says nothing about whether the numbers are right.** The record proves
    *when* and *against what* the hold-out ran, not that the evaluation measured
    anything worth measuring.
