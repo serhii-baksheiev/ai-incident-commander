@@ -25,7 +25,13 @@ import { CREDENTIAL_FORBIDDEN_CHARACTERS, ownValue } from './own-value.js';
  *     shape is a second parser this lane does not need;
  *   - no retry: the live lane must report a provider refusal, never hide one
  *     behind a loop that eventually succeeds;
- *   - no tool use and no thinking configuration: the roles here ask for a
+ *   - no tool use, and no thinking configuration — which on the current
+ *     reference model means adaptive thinking runs by DEFAULT rather than that
+ *     no thinking happens. Its tokens count against `max_tokens`, which is why
+ *     `DEFAULT_MAX_OUTPUT_TOKENS` is sized for reasoning plus answer and not for
+ *     the answer alone. An earlier version of this sentence was written when
+ *     omitting the field meant no reasoning at all.
+ *   - the roles here ask for a
  *     structured answer, not for an agent.
  * see roles-boundary.test.mjs › "states the adapter limits in the adapter"
  */
