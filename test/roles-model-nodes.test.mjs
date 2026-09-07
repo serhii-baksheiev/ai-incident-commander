@@ -753,3 +753,63 @@ test('still refuses null in a required assessment field', async () => {
     'reading null as absent is correct for an OPTIONAL field and wrong for a required one: without this row the previous fix would trade a false accusation against the model for a silent acceptance of a broken assessment',
   );
 });
+
+/**
+ * 🔴 **A hand-written enum in the answer schema is a second spelling of a
+ * domain fact, and one of them went wrong within an hour.**
+ *
+ * The first version of the provider-enforced answer schemas restated the
+ * domain's vocabularies. `cost` was written `['cheap','moderate','expensive']`
+ * where the domain declares `['cheap','medium','expensive']`. The model then
+ * answered exactly what the schema asked for, the domain refused it, and the
+ * lane recorded the model arm unreportable — a harness defect charged to model
+ * quality, on the one axis this gate exists to report honestly.
+ *
+ * `.claude/rules/invariants.md`: "If two files enforce the same invariant, they
+ * will disagree — and the one nobody is looking at is the one that is wrong."
+ *
+ * This row reads the schema the roles actually send and compares each enum
+ * against the domain, so a domain change cannot leave a stale copy behind.
+ */
+test('derives every answer-schema enum from the domain rather than restating it', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { InvestigationTestSchema, EvidenceAssessmentSchema } = await import('@aic/domain');
+
+  const captured = [];
+  const capturingPort = {
+    async complete(request) {
+      captured.push(request.outputSchema);
+      throw new Error('stop here: this row reads the request, not the answer');
+    },
+  };
+
+  for (const make of [createModelChallengeHypothesis, createModelInterpretResidualEvidence]) {
+    try {
+      const node = make({ port: capturingPort, at });
+      await node(initialState(), 'h-1');
+    } catch {
+      // The port throws by design; the schema was captured first.
+    }
+  }
+
+  const [challengeSchema, assessmentSchema] = captured;
+
+  assert.deepEqual(
+    challengeSchema.properties.discriminatingTests.items.properties.cost.enum,
+    InvestigationTestSchema.shape.cost.options,
+    'the cost vocabulary must come from the domain: a restated one was wrong on its first day, and the model answering the schema exactly is then recorded as the model failing',
+  );
+  assert.deepEqual(
+    assessmentSchema.properties.assessments.items.properties.effect.enum,
+    EvidenceAssessmentSchema.shape.effect.options,
+    'the effect vocabulary must come from the domain',
+  );
+  assert.deepEqual(
+    assessmentSchema.properties.assessments.items.properties.strength.enum,
+    EvidenceAssessmentSchema.shape.strength.options,
+    'the strength vocabulary must come from the domain',
+  );
+});

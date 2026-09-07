@@ -104,6 +104,34 @@ import { ownValue } from './own-value.js';
  * field, which relocates the defect instead of removing it.
  * see roles-port-contract.test.mjs › "constrains the answer shape at the provider when a role declares one"
  */
+/**
+ * 🔴 **Every enum below is DERIVED from the domain schema, never restated.**
+ *
+ * The first version of these schemas hand-wrote them, and one was wrong within
+ * an hour: `cost` was spelled `['cheap', 'moderate', 'expensive']` where the
+ * domain declares `['cheap', 'medium', 'expensive']`. The model then answered
+ * exactly what the schema asked for and the domain refused it — a failure this
+ * lane would have recorded as the MODEL's, on the one axis it exists to report
+ * honestly.
+ *
+ * `.claude/rules/invariants.md` states the rule this broke: "One mechanism, one
+ * implementation. And one spelling of a fact… If two files enforce the same
+ * invariant, they will disagree — and the one nobody is looking at is the one
+ * that is wrong." Reading the options off the exported schema means a domain
+ * change cannot leave a stale copy here.
+ * see roles-model-nodes.test.mjs › "derives every answer-schema enum from the domain rather than restating it"
+ */
+const enumOf = (schema: unknown, field: string): readonly string[] => {
+  const shape = (schema as { shape?: Record<string, { options?: readonly string[] }> }).shape;
+  const options = shape?.[field]?.options;
+  if (options === undefined || options.length === 0) {
+    throw new Error(
+      `the domain schema does not declare an enum for ${field}: a hand-written fallback here is the second spelling this derivation exists to prevent`,
+    );
+  }
+  return options;
+};
+
 const HYPOTHESES_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
@@ -133,8 +161,8 @@ const ASSESSMENTS_SCHEMA = Object.freeze({
           evidenceId: { type: 'string' },
           hypothesisId: { type: 'string' },
           predictionId: { type: 'string' },
-          effect: { type: 'string', enum: ['supports', 'contradicts', 'neutral'] },
-          strength: { type: 'string', enum: ['high', 'medium', 'low'] },
+          effect: { type: 'string', enum: enumOf(EvidenceAssessmentSchema, 'effect') },
+          strength: { type: 'string', enum: enumOf(EvidenceAssessmentSchema, 'strength') },
           rationale: { type: 'string' },
         },
         required: ['id', 'evidenceId', 'hypothesisId', 'effect', 'strength', 'rationale'],
@@ -174,7 +202,9 @@ const CHALLENGE_SCHEMA = Object.freeze({
             },
             additionalProperties: false,
           },
-          cost: { type: 'string', enum: ['cheap', 'moderate', 'expensive'] },
+          cost: { type: 'string', enum: enumOf(InvestigationTestSchema, 'cost') },
+          // `planned` only: a test the model PROPOSES has not run, so the other
+          // three statuses the domain allows would be claims about execution.
           status: { type: 'string', enum: ['planned'] },
         },
         required: ['id', 'predictionId', 'tool', 'input', 'cost', 'status'],
