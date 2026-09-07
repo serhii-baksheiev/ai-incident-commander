@@ -171,7 +171,7 @@ export function decideFinalEvaluation(
       ? `the hold-out was claimed for candidate ${wanted} and that claim never completed: the corpus is spent when scenarios execute, not when the report is written, so the runs happened`
       : `the hold-out has already been evaluated for candidate ${wanted}`,
     remedy: claimedOnly
-      ? 'change what the graph does — which moves the candidate fingerprint — or, if that run produced no information at all, commit a void record naming the reason and a person, and have the diff reviewed'
+      ? 'change what the graph does — which moves the candidate fingerprint — or, if that run produced no information at all, commit a void record naming the reason and its author, and have the diff reviewed. A run that DID execute scenarios is not that case, however little it published'
       : 'change what the graph does, which moves the candidate fingerprint. There is no flag: a second evaluation of one candidate is what this refusal exists to prevent, and voiding a completed run is a committed record a reviewer argues with rather than a switch a run flips',
   });
 }

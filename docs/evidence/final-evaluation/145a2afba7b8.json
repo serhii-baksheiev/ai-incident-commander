@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "status": "claimed",
+  "candidate": {
+    "fingerprint": "sha256:145a2afba7b84e56c8b1ae72336cc010a9e6b4218973c75142ced5c4ea1db193",
+    "algorithm": "sha256-over-git-ls-tree",
+    "paths": [
+      "packages",
+      "apps",
+      "scripts",
+      "test/fixtures/benchmark-experiment.mjs",
+      "package-lock.json"
+    ],
+    "headSha": "6383f523aa564df39eb736cba0e3c482db460309",
+    "workingTreeClean": true
+  },
+  "corpus": {
+    "scenarioSet": "final-evaluation",
+    "calibration": [
+      "bad-deployment",
+      "db-pool-exhaustion",
+      "false-alert",
+      "deployment-caused-incident-a",
+      "dependency-caused-incident-b",
+      "multiple-plausible-causes",
+      "transient-self-resolved",
+      "challenge-keeps-leader"
+    ],
+    "holdout": [
+      "incomplete-evidence",
+      "challenge-changes-leader"
+    ],
+    "runsPerScenario": 3,
+    "exampleIds": [
+      "00d9e595-7c46-8b5f-abb8-5fbf5b1f98bf",
+      "048e04dd-21e3-87e1-b1c5-93ca52d5e713",
+      "06f9ca8a-08e1-8094-bd9b-ba047dbac3db",
+      "128a8860-cb97-80a2-bfae-a8d948fc7b9e",
+      "13f75678-c0cd-8ce7-a144-3b07160a7a40",
+      "19068399-86ca-809f-a82a-c5d4ec37794f",
+      "23378f65-8640-85b8-a0b9-e25a0c69e32b",
+      "2cfa8de8-cba1-8242-af1b-b49663e131c0",
+      "39798e4d-b217-808b-956e-ebd81fde418e",
+      "3e451d30-561f-8b4e-9461-37fe0c3b6137",
+      "3fabb8f1-1bd6-8fea-8d63-c97c9ec7fac3",
+      "43e98931-cb85-8a5c-91e8-b276e9e0e240",
+      "5574e81b-245c-8252-9dab-c5a460c2c008",
+      "583d4eac-cafd-8dd8-be9f-6a559d9e1e91",
+      "59d9d04d-fe52-8f0d-b5f3-74152b4866bf",
+      "602db4a5-7406-8e46-812e-e163dc6310e0",
+      "7b9efa5d-de95-8180-bef4-568a5f215cc9",
+      "85cc633e-09ce-82f5-a620-6db31f4a1858",
+      "86051c38-8cd2-86fb-a16b-78cb50878cb1",
+      "94f9d1cf-6914-87b2-a213-fbfb7a358cd1",
+      "98bbe90b-3b32-85a5-9be1-0f67ced26f71",
+      "a04042c6-0006-84eb-94f2-fb3a096ff6d0",
+      "ae3bd54e-06b6-8423-ba59-e6855f95f0f2",
+      "c14e9030-60d5-89f5-9488-84993d6fc6ca",
+      "cc12b08b-3900-8ebd-a414-82a98c8ef545",
+      "de62ed11-b5bf-859e-a3b1-be4ab531cadb",
+      "e44a2a88-cedb-889b-88ae-55199cbcbf3d",
+      "e9c4b84c-918e-86f8-ba83-c74038c94ec2",
+      "fda246df-187d-8f70-9d30-4aa7d32d63b8",
+      "fe932583-2509-8449-9c1d-bc059d54d4d0"
+    ],
+    "fingerprint": "sha256:4a20f08b5584b51379ddb51d049509c1710069fa5519a48e63cebc6b852ab356"
+  },
+  "claimedAt": "2026-09-07T06:02:17.366Z",
+  "interruption": {
+    "at": "2026-09-07T06:05:49.751102Z",
+    "error": "challenge target is not a current hypothesis",
+    "thrownAt": "packages/graph/src/investigation.ts:1387 and :1465, both guarding challengeTargetId against state.hypotheses",
+    "arm": "model",
+    "howTheArmWasIdentified": "Not inferred from the message. The lane runs the control arm at live-model-lane.ts:405 and the model arm at :406, and the control arm over this exact 30-record corpus is green on every `npm run check` \u2014 benchmark-evaluation.test.mjs > 'runs the complete expanded corpus through createInvestigationGraph and replay'. So the control arm completed and the refusal is the model arm's.",
+    "whatThisRunProduced": "Real model calls against the hold-out scenarios, and no evaluation. No metric was recorded, nothing was published \u2014 publication runs after both arms (live-model-lane.ts:472) and no aic-19 project exists in LangSmith, read back to confirm.",
+    "whyThisIsNotVoided": "The sibling record 04cf86236c2f IS void, because it crashed during node construction of the control arm's first record and nothing ran at all. This one is different and the difference is the whole point of the distinction: the model SAW the hold-out corpus. Calling that 'produced no information' would be false, and a void record is the one place in this mechanism where a false sentence buys a free re-run. It stays claimed. The fix for the defect below changes packages/, which moves the candidate fingerprint and admits the next run on its own terms \u2014 the design's normal path, not an exception granted to this record."
+  }
+}
