@@ -155,7 +155,7 @@ function laneOptions(overrides = {}) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* the credential refusal — the acceptance row this environment can reach      */
+/* the credential refusal                                                      */
 /* -------------------------------------------------------------------------- */
 
 test('refuses the lane with the named variable and touches nothing when no credential is set', async () => {
@@ -738,8 +738,10 @@ test('reports a publication refusal as a failure rather than as a published lane
 /* -------------------------------------------------------------------------- */
 
 /**
- * The command's credential-absent behaviour, which is the ONE end-to-end path of
- * this lane that this environment can execute.
+ * The command's credential-absent behaviour — the end-to-end path of this lane
+ * that the SUITE executes. The credentialed path is executed by the gate
+ * command instead, and its records are committed under
+ * `docs/evidence/final-evaluation/`.
  *
  * It spawns with the suite's allow-list environment, so the variable really is
  * absent rather than merely unset in this test's own scope.

@@ -131,9 +131,11 @@ export const LIVE_MODEL_LANE_MAX_MODEL_CALLS =
  * of this comment got that wrong in different ways: the first named a run that
  * was not the largest and derived a factor that did not follow, and the second
  * compared the ceiling against a recorded TOTAL — which is the wrong comparison
- * for a cap that throws MID-RUN. The largest recorded run is 47 calls against a
- * 150-call cap, so a ceiling that clears its total can still abort a
- * full-length one.
+ * for a cap that throws MID-RUN: a recorded run can finish inside the call cap
+ * and still cost more than a ceiling chosen to clear its TOTAL. No figure for
+ * the largest recorded run is written here — the version that named one was
+ * already false when it was written, refuted by a record this same branch had
+ * committed earlier.
  *
  * What has to hold is that a legitimate full-length run finishes. That is
  * MEASURED against the committed evidence — the heaviest per-call rate on record,

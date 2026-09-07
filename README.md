@@ -157,19 +157,21 @@ npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./la
 > calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
 > records.
 >
-> It also named four files as carrying the same disclosure, and all four are
-> corrected now — `packages/evals/src/live-model-lane.ts`,
-> `scripts/eval-live-model.mjs`, `test/live-model-lane.test.mjs` and
-> `test/roles-model-nodes.test.mjs`.
+> The same disclosure was written in other files, each in different words.
+> **No count of them is given here, and no sweep is declared complete.** Every
+> pass that declared one was followed by a pass that found another copy, in
+> wording the previous grep had not searched for and once in a file no pass had
+> opened. A total stated here would be the same claim again, so none is stated.
 >
-> ⚠ **Getting to that took three passes, and each one failed the same way.** The
-> first said none of the four still carried it; the second said two were already
-> corrected. Both were reached by grepping the old WORDING, and each stale copy
-> said the same thing in different words — the last of them, "an environment that
-> has neither", matched none of the phrasings the earlier sweeps searched for.
-> The sweep that worked searched for the CLAIM: every file asserting that the
-> environment lacks a credential or that no model has run, then reading each hit
-> to sort a conditional or past-tense mention from a present-tense assertion.
+> Deciding whether a sentence asserts provider state is a judgement about
+> meaning, which `.claude/rules/invariants.md` puts in its "poor fit" column for
+> a mechanical check; the one narrow wording that IS decidable is kept out of the
+> gate document by `test/final-evaluation-command.test.mjs` › "keeps the phrase
+> is reachable out of the gate document outside its provider block", whose own
+> header records that six of seven measured wordings slip past it.
+>
+> **So read provider state from `docs/evidence/`, not from a sentence.** Those
+> records carry the calls, and a stale comment cannot contradict a usage block.
 >
 > Found by `code-reviewer` at the AIC-19 gate, in a file no diff had touched —
 > which is how a disclosure goes stale: nothing edits it, so nothing rechecks it.

@@ -16,6 +16,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
 import {
   LIVE_MODEL_LANE_MAX_MODEL_CALLS,
   LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
@@ -28,6 +30,43 @@ import {
 import { childEnv } from './fixtures/child-env.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The property names of the options object the command hands `runLiveModelLane`.
+ *
+ * Parsed rather than grepped: a name that appears anywhere in the file satisfies
+ * a substring check, and the two things this file needs to tell apart — an
+ * option PASSED to the lane, and a local variable of the same name — differ only
+ * in position. `typescript` is a declared devDependency and is the parser
+ * `roles-boundary.test.mjs` and `model-run-identity-correspondence.test.mjs`
+ * already use for this kind of question.
+ */
+function laneOptionNames(source) {
+  const file = ts.createSourceFile('eval-final-holdout.mjs', source, ts.ScriptTarget.Latest, true);
+  const names = [];
+
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'runLiveModelLane' &&
+      node.arguments.length > 0 &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      for (const property of node.arguments[0].properties) {
+        if (property.name && ts.isIdentifier(property.name)) names.push(property.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(file);
+  assert.ok(
+    names.length > 0,
+    'the command must call runLiveModelLane with an options object: this helper reads the options off that call, so no call means the rows built on it are vacuous',
+  );
+  return names;
+}
 
 /** Every tracked source file, minus the trees a corpus name legitimately lives in. */
 function sourceFilesOutsideEvals() {
@@ -276,9 +315,14 @@ test('declares a control baseline for the hold-out, without which the model arm 
     false,
     'the baseline must not live inside the records directory: readRecords parses every .json there, so a baseline placed among the records refuses the whole run — measured on the first dry run after it was added',
   );
-  assert.match(
-    source,
-    /controlBaseline/,
+  // Read from the CALL, not from the file. The regex this replaced —
+  // `/controlBaseline/` over the whole source — was satisfied by the local
+  // declaration `const controlBaseline = readControlBaseline();` twenty lines
+  // above the call, so deleting the option from the options object left the
+  // whole suite green. Measured: `code-reviewer` removed the line at the AIC-19
+  // gate and got 935 pass / 0 fail.
+  assert.ok(
+    laneOptionNames(source).includes('controlBaseline'),
     'the command must pass a control baseline to the lane: without one the lane answers control-baseline-undeclared and the model arm is unreportable whatever it scored',
   );
 
@@ -450,6 +494,35 @@ test('both live commands declare the output-token ceiling, not only the one that
  * Both directions matter: a record added without a row makes the table
  * incomplete, and a row naming no record makes it fiction.
  */
+/**
+ * The ingestion claim is read off the records, not counted by hand.
+ *
+ * The sentence it holds is the load-bearing replacement for a withdrawn figure —
+ * it is what attributes the gate's two FAIL rows to the model rather than to the
+ * environment — and the hand-counted version of it ("all six carry
+ * `publication.status: \"absent\"`") was wrong in both halves at the AIC-19 gate:
+ * there were eight records, and four of them carried no `publication` block at
+ * all. A count in prose over a growing directory is the same defect this file's
+ * record-table row already exists to stop.
+ */
+test('no hold-out record carries a published result, which is what the gate document may say about ingestion', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const records = readdirSync(dir).filter((name) => name.endsWith('.json'));
+
+  assert.ok(records.length > 0, 'the records directory must not be empty: an empty one makes this row vacuous');
+
+  const published = records.filter((name) => {
+    const record = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    return record.publication !== undefined && record.publication.status !== 'absent';
+  });
+
+  assert.deepEqual(
+    published,
+    [],
+    'a record carrying a published result would falsify the gate document\'s statement that no ingestion occurred during this gate — update the document from the records rather than leaving the sentence standing',
+  );
+});
+
 test('the gate document names every hold-out record, and every record it names exists', () => {
   const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
   const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');

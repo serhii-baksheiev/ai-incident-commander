@@ -3,9 +3,15 @@
  *
  * The acceptance criterion this file pins is the one that is decidable without a
  * provider credential and without a network: an environment that carries no key
- * must produce a NAMED refusal rather than a silently disabled lane. Everything
- * else in the model path is unreachable here — see the run report — so the
- * refusal is the part that has to be mechanical.
+ * must produce a NAMED refusal rather than a silently disabled lane. That is why
+ * the refusal is the part made mechanical here.
+ *
+ * ⚠ This header used to add that everything else in the model path was
+ * "unreachable here". That was written for AIC-94 and is no longer true: the
+ * credentialed path has been executed and its records are committed under
+ * `docs/evidence/final-evaluation/`. What remains true is narrower — the SUITE
+ * reaches the provider from no test in this file; the rows below drive the model
+ * path through an INJECTED transport.
  *
  * The environment is an ARGUMENT everywhere in this file, never `process.env`,
  * which is what makes `resolveTracingConfig` in `packages/observability`
@@ -648,6 +654,57 @@ test('stops at the declared call cap before issuing the request', async () => {
     requests,
     1,
     'the capped call must never reach the transport: a cap checked after the request is a report, not a bound',
+  );
+});
+
+/**
+ * The port hands the ledger the budget of the call it is ABOUT to make.
+ *
+ * The output-token cap can only bound spend if it sees completions that are in
+ * flight; a reservation carrying no estimate degrades it to the recorded-only
+ * check that granted fifty concurrent calls against a thousand-token budget.
+ * `reference-model-port.ts` says so in the comment above the reserve, and until
+ * this row nothing pinned it: every other ledger row in this file calls
+ * `reserve` DIRECTLY, so replacing the port's `ledger.reserve(request.maxOutputTokens)`
+ * with `ledger.reserve()` left the whole suite green — measured by
+ * `code-reviewer` at the AIC-19 gate.
+ *
+ * The transport here never settles, so nothing is ever recorded: every token the
+ * cap sees is an in-flight estimate, which is the only state that tells the two
+ * implementations apart.
+ */
+test('reserves the requested output budget before the call, so in-flight completions count against the cap', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  const inner = createModelUsageLedger({ maxCalls: 4, maxOutputTokens: 1000 });
+
+  // A spy over the REAL ledger, not a stub: the delegation keeps the port's
+  // own accounting honest while the row reads what the port handed over.
+  //
+  // The property is read at the boundary rather than through the cap's refusal
+  // because the two implementations differ only in an argument. Driving the cap
+  // to refuse would mean holding calls in flight, and under the regression the
+  // refusal never comes — the call hangs, the event loop stalls, and every
+  // later test in this file is cancelled by the parent. A row that reports a
+  // regression as somebody else's failure is worse than no row.
+  const reserved = [];
+  const ledger = { ...inner, reserve(perCall) { reserved.push(perCall); inner.reserve(perCall); } };
+
+  const port = createReferenceModelPort({
+    apiKey: fakeApiKey(),
+    modelId: 'claude-under-test',
+    ledger,
+    async fetchImpl() {
+      return completionResponse({ text: 'answer' });
+    },
+  });
+
+  await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 400 });
+
+  assert.deepEqual(
+    reserved,
+    [400],
+    "the port must hand the ledger the budget of the call it is about to make: a reservation with no estimate leaves the output-token cap seeing only what has already come back, and a concurrent caller passes it entirely — the defect the reservation counter beside it was added to fix",
   );
 });
 
