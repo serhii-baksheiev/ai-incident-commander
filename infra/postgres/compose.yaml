@@ -1,0 +1,43 @@
+# The local PostgreSQL substrate for AIC-55.
+#
+# It is a DEVELOPMENT substrate and nothing else: one container, one database,
+# published only on loopback and only on a port the operator names. It follows
+# the shape of `incident-lab/compose.yaml` — required host port, healthcheck,
+# `restart: "no"` — so both Docker-backed lanes are started and reasoned about
+# the same way.
+#
+# Start it, then run the lane:
+#
+#   AIC_POSTGRES_HOST_PORT=5433 docker compose \
+#     --file infra/postgres/compose.yaml up --detach --wait
+#   AIC_POSTGRES_URL=postgresql://aic@127.0.0.1:5433/aic npm run test:live-postgres
+#   docker compose --file infra/postgres/compose.yaml down
+#
+# No credential appears in this file, and that is deliberate rather than an
+# omission: `POSTGRES_HOST_AUTH_METHOD: trust` means the container asks for
+# none, so there is nothing here for `.claude/rules/autonomy.md` ("Never" — no
+# secrets in config) to be violated by, and nothing for an operator to copy into
+# a real deployment by accident. A deployment that needs authentication is a
+# different file, written when there is something to deploy.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aic
+      POSTGRES_DB: aic
+      # Loopback-only, ephemeral, and empty of anything but checkpoints.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:${AIC_POSTGRES_HOST_PORT:?set AIC_POSTGRES_HOST_PORT}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "aic", "--dbname", "aic"]
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 1s
+    # No volume: the database lives in the container's writable layer and goes
+    # away with `down`. The restart acceptance row is about the AIC PROCESS
+    # restarting while the database keeps running, which is what the live lane
+    # drives; a lane that also needed the database to survive its own restart
+    # would need a volume here and a test that says so.
+    restart: "no"
