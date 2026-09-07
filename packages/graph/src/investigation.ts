@@ -222,18 +222,35 @@ const GRAPH_OWNED_CONTROL_FIELD_SET: ReadonlySet<string> = new Set(
  * counter it owns. A node cannot reach `control.llmCallsUsed` itself — see
  * `preserveGraphOwnedControl`.
  *
- * Nothing in this repository declares anything today, because no LLM execution
- * path exists — no `declaredLlmCalls` is set anywhere in `packages/`. That is
- * why `llmCallsUsed` stays 0 by construction rather than by estimate: an unused
- * channel reports nothing, where a synthesised count would be cost evidence
- * nobody measured. The boundary is here so a real provider, when one arrives,
- * reports through it instead of inventing its own.
+ * Two nodes declare through it since AIC-94 — `createModelGenerateHypotheses`
+ * and `createModelInterpretResidualEvidence` in `packages/roles`, each
+ * returning `declaredLlmCalls: 1`. `challenge_hypothesis` does not, and
+ * "deliberately" was the wrong word for it: it **cannot**. A `ChallengeResult`
+ * carries `alternative` and `discriminatingTests` and nothing else, and
+ * `parseChallengeResult` refuses a third key outright — so a model-backed
+ * challenge role that returned a count would fail at runtime, not opt in. The
+ * limit further down this block says exactly that; this line used to imply a
+ * choice a later session could reverse.
+ *
+ * The two roles that DO declare are model-backed and need a provider
+ * credential, and the arm the regression suite and the shipped benchmark run is
+ * the replay-backed one, which declares nothing — so `llmCallsUsed` reads 0 on every run of THAT
+ * arm by construction of it rather than by estimate. An unused channel reports
+ * nothing, where a synthesised count would be cost evidence nobody measured.
+ * see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"
+ *
+ * ⚠ The width matters, and two earlier wordings here were wrong at two
+ * different widths: the first said no producer existed at all, and the
+ * correction that replaced it said 0 on every BENCHMARK run. Neither holds. A
+ * benchmark run declares whatever the nodes handed to it declare, and a probe
+ * fixture drives the same calibration corpus to a non-zero count on all 24.
+ * see benchmark-resource-evidence.test.mjs › "sources graph resource evidence from the executed control block and the trials it produced"
  *
  * ⚠ A second limit, and it is not the same one: consumption is folded in AFTER
  * the node ran, so a single declaration larger than the remaining budget is
  * recorded in full and caught at the next check. That is detection, not
- * pre-authorisation. Unreachable while nothing declares; it is what a provider
- * node has to fix.
+ * pre-authorisation — and it is reachable today, by any node that declares more
+ * than the budget leaves.
  *
  * ⚠ Limit, by construction: `termination_check` and `challenge_hypothesis`
  * return their own decision types and so have no channel of their own. Their
@@ -840,8 +857,14 @@ function assertHumanHypothesisIdIsAvailable(
 /**
  * Reads a node's LLM declaration, and refuses anything that is not a count.
  *
- * Absent is the ordinary case and means zero — no node in this repository
- * declares anything. Present-but-not-a-count is a different case and throws:
+ * Absent is the ordinary case and means zero — a scripted node spends no LLM
+ * call and declares nothing. It is no longer the ONLY case: two model-backed
+ * roles have declared through here since AIC-94, which the
+ * `InvestigationNodeResult` docblock above names. This sentence said "no node in this
+ * repository declares anything" until that stopped being true, and it is the
+ * header of the function on the producer's own path — so a session reading
+ * that path was the one getting the retracted premise.
+ * Present-but-not-a-count is a different case and throws:
  * the node tried to report consumption and got the shape wrong, and folding
  * that into a graph-owned counter would corrupt the one number the budget is
  * decided from.

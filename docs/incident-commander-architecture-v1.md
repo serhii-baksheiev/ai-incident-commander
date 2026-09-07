@@ -267,16 +267,37 @@ count those calls when a provider arrives. Recorded here because the budget
 design is read here.
 
 **Token and currency cost are explicitly unsupported.** No axis carries either,
-and none is derived from a call count: with no LLM execution path there is no
-price to apply and no token to count, so any such figure would be invented. A
-zero LLM count is published as a real zero rather than converted into a zero
-cost.
+and none is derived from a call count. An execution path does exist — the
+reference model port, reached only by the live-model lane and only with a
+provider credential — but no benchmark run has ever taken it, so there is no
+observed token count and no price to apply, and any such figure would be
+invented rather than measured. A zero LLM count is published as a real zero
+rather than converted into a zero cost.
 
-`llmCallBudget` is a versioned safety cap, not a calibrated one: no LLM
-execution path exists yet — nothing in `packages/` sets `declaredLlmCalls`, so
-`llmCallsUsed` stays `0` by construction rather than by estimate.
+`llmCallBudget` is a versioned safety cap, not a calibrated one. Two
+model-backed roles in `packages/roles` have set `declaredLlmCalls` since
+AIC-94, but they need a provider credential and are not in the replay-backed
+arm the benchmark ships, so `llmCallsUsed` reads `0` on every run of **that
+arm** by construction of it rather than by estimate.
+
+⚠ The width of that sentence is the whole of it, and a wider spelling was
+wrong here until this was measured. It is **not** true that every benchmark run
+in this repository declares nothing: `runGraphBenchmarkExperiment` takes the
+nodes it is handed, and a fixture that declares drives the same calibration
+corpus to a non-zero count on all 24 runs.
+see benchmark-resource-evidence.test.mjs › "sources graph resource evidence from the executed control block and the trials it produced"
+
 see investigation-graph.test.mjs › "leaves llmCallsUsed at zero when no node
-declares an llm call"
+declares an llm call" — which pins that the GRAPH invents no consumption. That
+the shipped benchmark arm declares none, and so reads a real zero on every one
+of its runs, is a separate claim with its own row:
+see budget-policy.test.mjs › "measures a declared llm call count of zero on every run of the shipped arm"
+
+AIC-18 measured what would calibrate it and found nothing could: the edge that
+reads `llmCallBudget` is the `need-more-evidence` route, which no node outside
+the test tree returns. The per-budget calibration statements are published by
+`summarizeBudgetPolicyEvidence`.
+see budget-policy.test.mjs › "states in the report that llmCallBudget is not empirically calibrated, and why"
 
 `schemaVersion` is `3`: it moves whenever the strict control object gains a
 required field — `2` for the logical budget counters, `3` for `resumeCount`. The counters are required fields, so

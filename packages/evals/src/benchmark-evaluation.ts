@@ -30,6 +30,11 @@ import {
   type EvidenceFingerprint,
   type IncidentScenario,
 } from './replay-scenarios.js';
+import {
+  BENCHMARK_BUDGET_POLICY,
+  parseBenchmarkBudgetPolicy,
+  type BenchmarkBudgetPolicy,
+} from './budget-policy.js';
 
 export const BENCHMARK_METRIC_KEYS = [
   'unsupported_claim_rate',
@@ -637,7 +642,10 @@ export async function runBenchmarkExperiment(
   };
 }
 
-function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
+function initialBenchmarkState(
+  input: BenchmarkExecutionInput,
+  budgetPolicy: BenchmarkBudgetPolicy,
+): IncidentState {
   if (input.metadata.statusRulesVersion !== STATUS_RULES_VERSION) {
     throw new Error('benchmark status-rules version does not match the graph');
   }
@@ -655,9 +663,12 @@ function initialBenchmarkState(input: BenchmarkExecutionInput): IncidentState {
       schemaVersion: INCIDENT_STATE_SCHEMA_VERSION,
       statusRulesVersion: STATUS_RULES_VERSION,
       phase: 'normalizing',
-      maxIterations: 4,
-      llmCallBudget: 8,
-      reservedChallengeBudget: 2,
+      // From the policy the experiment declared, not from three literals here:
+      // a budget nobody can vary is a budget nobody can measure, which is how
+      // these three came to be unexamined in the first place (AIC-18).
+      maxIterations: budgetPolicy.maxIterations,
+      llmCallBudget: budgetPolicy.llmCallBudget,
+      reservedChallengeBudget: budgetPolicy.reservedChallengeBudget,
       challengeRounds: 0,
       iterationsUsed: 0,
       llmCallsUsed: 0,
@@ -730,6 +741,25 @@ function hypothesisStatus(
 type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
   BenchmarkScenarioSelection &
   Readonly<{
+    /**
+     * What this experiment allows a run to spend. Omitted, inherited rather than
+     * owned, or supplied as an own `undefined` — which is the same thing while
+     * this project does not set `exactOptionalPropertyTypes` — it is the
+     * shipped `BENCHMARK_BUDGET_POLICY`.
+     * An own ACCESSOR is refused outright, before any parse and whatever it
+     * would have computed: a policy a getter produces is not one this caller
+     * wrote down, and the version it keys published rows by would name a run
+     * nobody declared. Any other value is parsed and refused if it cannot be
+     * read; `null` in particular is a refusal, not a default.
+     *
+     * Four states, and the block at the read site says why each is what it is.
+     *
+     * ⚠ Only the GRAPH runner takes this. `runBenchmarkExperiment` drives an
+     * opaque `investigate` callback and starts no graph, so a policy handed to
+     * it would reach no control block and could not be observed — an option
+     * that silently does nothing is worse than one that does not exist.
+     */
+    budgetPolicy?: BenchmarkBudgetPolicy;
     createNodes(input: BenchmarkExecutionInput): InvestigationNodes;
     recordEvaluation(payload: Readonly<{
       record: BenchmarkRecord;
@@ -740,6 +770,63 @@ type GraphBenchmarkExperimentOptions = BenchmarkPlanOptions &
 export async function runGraphBenchmarkExperiment(
   options: GraphBenchmarkExperimentOptions,
 ): Promise<BenchmarkExperiment> {
+  // Parsed BEFORE anything runs: a malformed policy must not be discovered
+  // halfway through a corpus, with some runs already recorded under a version
+  // the experiment never executed.
+  // The refusal rows are generated from a table, so grep the MALFORMED_POLICIES
+  // labels in budget-policy.test.mjs rather than a whole test name.
+  //
+  // `Object.hasOwn` rather than `??`: an ABSENT option is the fail-open case and
+  // takes the shipped policy, while an option PRESENT in a shape this runner
+  // cannot read is the refusal case. `?? BENCHMARK_BUDGET_POLICY` cannot tell
+  // those apart, so an explicit `null` ran the whole corpus under a policy the
+  // caller never asked for -- measured, and it is why these two states are now
+  // separated.
+  // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
+  // ⚠ Four states, not two, and each of the last three cost a review round.
+  //
+  //   ABSENT (omitted, or inherited)  -> the shipped policy. Nothing was asked
+  //                                      for, so there is nothing to refuse.
+  //   own `undefined`                 -> also absent. Without
+  //                                      `exactOptionalPropertyTypes` this is
+  //                                      TypeScript's own spelling of an
+  //                                      omitted optional property, so refusing
+  //                                      it makes the declared type lie — and
+  //                                      the suite's own helper had to spread
+  //                                      around the refusal, which is the trap
+  //                                      showing itself.
+  //   own ACCESSOR                    -> REFUSED. A getter is present in a shape
+  //                                      this reader does not accept, and
+  //                                      `.claude/rules/invariants.md` calls that
+  //                                      the refusal case. It was silently
+  //                                      treated as absent until a review round
+  //                                      measured it: the seam never asked the
+  //                                      getter, and the corpus ran under the
+  //                                      shipped policy while the caller
+  //                                      believed it had supplied one.
+  //   own `null`, or any other value  -> PARSED, and refused if unreadable. A
+  //                                      caller that computed a policy and got
+  //                                      `null` asked for something; running the
+  //                                      corpus under the shipped policy while
+  //                                      it believes otherwise is the fail-open
+  //                                      this seam already had once.
+  //
+  // Own-read for the same reason the policy's own fields are own-read.
+  // see the MALFORMED_POLICIES label "an explicitly null policy" in budget-policy.test.mjs
+  // see budget-policy.test.mjs › "starts from the shipped policy when budgetPolicy is present but undefined"
+  // see budget-policy.test.mjs › "starts from the shipped policy when budgetPolicy is only inherited"
+  // see budget-policy.test.mjs › "refuses a budgetPolicy option that is an own accessor"
+  const declaredPolicy = Object.getOwnPropertyDescriptor(options, 'budgetPolicy');
+  if (declaredPolicy !== undefined && !Object.hasOwn(declaredPolicy, 'value')) {
+    throw new Error(
+      'budget policy option must be a value this caller wrote down, not an accessor: a policy a getter computes is not a policy the experiment can publish a version for',
+    );
+  }
+  const budgetPolicy =
+    declaredPolicy === undefined || declaredPolicy.value === undefined
+      ? BENCHMARK_BUDGET_POLICY
+      : parseBenchmarkBudgetPolicy(declaredPolicy.value);
+
   // Keyed by runId rather than returned through `investigate`, so the evidence
   // travels a path the opaque callback contract cannot reach.
   const measuredByRunId = new Map<string, MeasuredBenchmarkResources>();
@@ -797,7 +884,7 @@ export async function runGraphBenchmarkExperiment(
       });
       const finalState = await graph.execute({
         kind: 'start',
-        state: initialBenchmarkState(input),
+        state: initialBenchmarkState(input, budgetPolicy),
       });
       measuredByRunId.set(input.runId, {
         // The line that matters is WHO ORIGINATED THE NUMBER, not which channel
