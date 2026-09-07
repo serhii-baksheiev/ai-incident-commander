@@ -858,10 +858,22 @@ test('hands the provider a token budget large enough that the reference model wa
     ],
   ];
 
+  // `challenge_hypothesis` is in this list deliberately: it is the role its own
+  // rationale names as the one truncated at 4096, and the first draft of this
+  // row omitted it. All three read the same constant today, so a per-role
+  // override is exactly what a pin that skipped one would miss.
+  roles.push([
+    'createModelChallengeHypothesis',
+    {
+      alternative: { id: 'alt-1', statement: 'a different cause' },
+      discriminatingTests: [],
+    },
+  ]);
+
   for (const [name, answer] of roles) {
     const { port, requests } = fakePort([answer]);
     const node = requireExport(name)({ port, at });
-    await node(initialState()).catch(() => {});
+    await node(initialState(), 'h-1').catch(() => {});
 
     assert.equal(requests.length, 1, `${name} must have reached the port exactly once`);
     const budget = requests[0].maxOutputTokens;

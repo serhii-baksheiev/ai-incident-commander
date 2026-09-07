@@ -911,3 +911,81 @@ test('leaves a ledger with no declared token budget bounded by calls alone, so e
     'an absent token budget must mean no token bound at all: a missing measurement never becomes a zero, and a default cap here would refuse honest runs nobody asked to bound',
   );
 });
+
+/**
+ * 🔴 The token cap under CONCURRENCY, which the first version got wrong in the
+ * one way this file argues against eleven lines above the check.
+ *
+ * `reserve()` read `outputTokens`, which only `record()` advances — so N in-flight
+ * reservations all saw the same total and all passed. Measured by
+ * `security-scanner` and `code-reviewer` independently: 50 reservations granted
+ * against a 1000-token cap with zero recorded. That is exactly the shape the
+ * `reserved` counter beside it was added to fix, under a comment reading "a cap
+ * whose correctness depends on how its caller happens to loop is not a cap" — so
+ * the fix is the same shape, not a precondition written in prose.
+ *
+ * `reserve` now takes the per-call budget the caller is about to spend and
+ * accounts for it pessimistically; `record` reconciles the estimate against what
+ * the completion actually cost.
+ */
+test('bounds output tokens across concurrent reservations, not only after they are recorded', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+
+  // Every reservation taken BEFORE any completion comes back, which is what a
+  // concurrent caller does and what the previous check could not see.
+  let granted = 0;
+  for (let index = 0; index < 50; index += 1) {
+    try {
+      ledger.reserve(400);
+      granted += 1;
+    } catch {
+      break;
+    }
+  }
+
+  assert.ok(
+    granted < 50,
+    `a declared per-call budget must bound concurrent reservations: 400 tokens each against a 1000-token cap cannot grant 50 (granted ${granted})`,
+  );
+  assert.equal(
+    granted,
+    2,
+    'two reservations of 400 fit under a 1000-token budget and the third does not: the bound is on what is committed, not on what has come back',
+  );
+});
+
+test('reconciles a pessimistic reservation against what the completion actually cost', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+
+  // Reserved at the budget, spent far under it: the headroom must come back, or
+  // a cap sized on budgets rather than on spend would refuse honest runs.
+  ledger.reserve(400);
+  ledger.record({ inputTokens: 10, outputTokens: 10 });
+  ledger.reserve(400);
+  ledger.record({ inputTokens: 10, outputTokens: 10 });
+  ledger.reserve(400);
+  ledger.record({ inputTokens: 10, outputTokens: 10 });
+
+  assert.equal(ledger.read().outputTokens, 30);
+  assert.doesNotThrow(
+    () => ledger.reserve(400),
+    'three completions costing 10 tokens each must not exhaust a 1000-token budget: the reservation is an estimate, and recording replaces it',
+  );
+});
+
+test('refuses a usage record that would drive the accumulator backwards', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 4, maxOutputTokens: 100 });
+  ledger.reserve();
+
+  assert.throws(
+    () => ledger.record({ inputTokens: 0, outputTokens: -100_000 }),
+    /non-negative/,
+    'a negative usage count must be refused: it drives the accumulator below zero and disables the token bound permanently',
+  );
+});

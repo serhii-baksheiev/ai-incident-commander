@@ -197,16 +197,16 @@ function claimRecord(path, body) {
  * before any publication — and it is why record `04cf86236c2f` is void.
  */
 /** The declared control-arm expectation, minus the `_`-prefixed rationale keys. */
-function readControlBaseline() {
+export const CONTROL_BASELINE_PATH = join(dirname(EVIDENCE_DIR), 'control-baseline.json');
+
+export function readControlBaseline(path = CONTROL_BASELINE_PATH) {
   // 🔴 Beside the records directory, never inside it. Placed within it, the
   // record reader picked this file up and refused the whole run — "a final
   // evaluation record must declare its own schemaVersion 1" — because it reads
   // every `.json` there. The guard failed CLOSED and caught the mistake on the
   // first dry run, which is the behaviour it was built for; the file simply does
   // not belong among the records.
-  const raw = JSON.parse(
-    readFileSync(join(dirname(EVIDENCE_DIR), 'control-baseline.json'), 'utf8'),
-  );
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
   const declared = Object.fromEntries(
     Object.entries(raw).filter(([key]) => !key.startsWith('_')),
   );
@@ -218,7 +218,7 @@ function readControlBaseline() {
   // with the model arm reportable, against nothing.
   if (Object.keys(declared).length === 0) {
     throw new Error(
-      'the control baseline declares no axis: an empty declaration is not an undeclared baseline, so it passes the lane\'s undeclared-baseline guard while pinning nothing — give it an entry per axis the control arm observes, or delete the file and let the lane refuse the run by name',
+      'the control baseline declares no axis: an empty declaration is not an undeclared baseline, so it passes the lane\'s undeclared-baseline guard while pinning nothing — give it an entry per axis the control arm observes',
     );
   }
   return declared;

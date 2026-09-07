@@ -83,8 +83,7 @@ export const LIVE_MODEL_LANE_RUNS_PER_SCENARIO = 3 as const;
  * The run cap for ONE arm, derived from the accepted partition rather than typed
  * beside it: a scenario added to the hold-out policy raises this cap with it,
  * and a hand-written number would have silently capped the new scenario out.
- * see live-model-lane.test.mjs › "publishes the two caps it runs under rather
- * than leaving them implicit"
+ * see live-model-lane.test.mjs › "publishes every cap a run is under rather than leaving one implicit"
  */
 export const LIVE_MODEL_LANE_MAX_MODEL_RUNS =
   (BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
@@ -119,12 +118,16 @@ export const LIVE_MODEL_LANE_MAX_MODEL_CALLS =
  * alone went from roughly 614k to 2.4M output tokens, and nothing tracked the
  * quantity that had changed.
  *
- * The number is a CEILING chosen to bound spend, not a forecast. The largest
- * live run recorded in `docs/evidence/` produced 32,380 output tokens across 23
- * completions, so this leaves better than a tenfold margin over anything this
- * lane has actually cost while cutting the worst case by six. A run that needs
- * more STOPS at the next reservation rather than spending past the bound — the
- * same property that makes the call cap safe to pick.
+ * The number is a CEILING chosen to bound spend, not a forecast. It clears every
+ * live run this repository has recorded with margin to spare, and no figure for
+ * that margin is written here — a first version of this comment named a run that
+ * was not the largest and a factor that did not follow from it, and both gates
+ * took it. The margin is MEASURED against the committed evidence instead, so it
+ * cannot drift as runs are added.
+ * see final-evaluation-command.test.mjs › "leaves the output-token ceiling above every live run this repository has recorded"
+ *
+ * A run that needs more STOPS at the next reservation rather than spending past
+ * the bound — the same property that makes the call cap safe to pick.
  * see roles-port-contract.test.mjs › "stops reserving once the declared output-token budget is spent, not only once the calls are"
  */
 export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 400_000;
@@ -223,7 +226,11 @@ export interface LiveModelLaneReport {
   readonly experimentId: string;
   readonly credential: Readonly<{ variable: string; provider: string; modelId: string }>;
   readonly plan: LiveModelLanePlan;
-  readonly caps: Readonly<{ maxModelRuns: number; maxModelCalls: number }>;
+  readonly caps: Readonly<{
+    maxModelRuns: number;
+    maxModelCalls: number;
+    maxOutputTokens: number;
+  }>;
   readonly exampleIds: readonly string[];
   readonly arms: Readonly<{
     control: LiveModelLaneControlArm;
@@ -471,6 +478,22 @@ export async function runLiveModelLane(
 
   const control = await options.runControlArm(plan);
 
+  // 🔴 The baseline is judged against the control arm BEFORE the paid arm runs.
+  //
+  // Everything this needs is known the moment the deterministic control arm
+  // returns, and every refusal `movesAgainst` can raise — an unknown key, a
+  // withheld key, an axis the baseline does not declare — is a defect in the
+  // COMMITTED baseline file rather than anything the model did. Evaluated after
+  // the model arm, as the first version was, each of them destroyed a claimed
+  // one-shot hold-out to report a mistake that was already visible for free.
+  // Found by `security-scanner` at the AIC-19 gate.
+  // see live-model-lane.test.mjs › "judges the declared baseline before the paid arm runs, so a bad declaration costs no model call"
+  const controlMetrics = summarize(control);
+  const observedBaseline = baselineOf(controlMetrics);
+  const declaredBaseline = options.controlBaseline;
+  const movedMetrics =
+    declaredBaseline === undefined ? [] : movesAgainst(declaredBaseline, observedBaseline);
+
   // 🔴 The model arm is the one that can refuse, and its refusal is evidence.
   // Caught HERE and nowhere deeper: a per-record catch would change what a
   // benchmark result can be, and a retry would hide the very signal the roles
@@ -511,12 +534,6 @@ export async function runLiveModelLane(
       'the control arm must cover the declared plan: a comparison across two corpora is not a comparison',
     );
   }
-
-  const controlMetrics = summarize(control);
-  const observedBaseline = baselineOf(controlMetrics);
-  const declaredBaseline = options.controlBaseline;
-  const movedMetrics =
-    declaredBaseline === undefined ? [] : movesAgainst(declaredBaseline, observedBaseline);
 
   let verdict: LiveModelLaneVerdict = 'model-quality';
   let unreportableReason: string | undefined;
@@ -562,6 +579,11 @@ export async function runLiveModelLane(
     caps: {
       maxModelRuns: LIVE_MODEL_LANE_MAX_MODEL_RUNS,
       maxModelCalls: LIVE_MODEL_LANE_MAX_MODEL_CALLS,
+      // Published even though the LEDGER enforces it rather than this lane: a
+      // committed record that names two of the three bounds a run was under
+      // cannot be read to know what the third was. Added when a third bound
+      // appeared and this block did not move with it.
+      maxOutputTokens: LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
     },
     exampleIds: declaredExampleIds,
     arms: {

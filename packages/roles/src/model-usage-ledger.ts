@@ -26,7 +26,15 @@ export interface ModelUsageLedger {
    * see roles-port-contract.test.mjs › "stops at the declared call cap before
    * issuing the request"
    */
-  reserve(): void;
+  /**
+   * Claim capacity for one completion BEFORE the request goes out.
+   *
+   * `perCallOutputTokens` is the caller's own budget for the call it is about to
+   * make. It is optional and absent means zero, so a caller that does not
+   * declare one is bounded by calls alone — a missing measurement is never
+   * treated as a real number here.
+   */
+  reserve(perCallOutputTokens?: number): void;
   /** Charge one completed call. Refuses past the cap for the same reason. */
   record(usage: ModelUsage): void;
   read(): ModelUsageTotals;
@@ -104,27 +112,71 @@ export function createModelUsageLedger({
   let calls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  // The token half of the `reserved`/`calls` split above, for the same reason.
+  // An in-flight completion has no recorded cost yet, so a cap that reads only
+  // `outputTokens` cannot see it: measured at the AIC-19 gate, fifty concurrent
+  // reservations against a 1000-token cap were all granted. `reservedOutputTokens`
+  // carries the callers' own declared per-call budgets until `record` replaces
+  // each estimate with what the completion actually cost.
+  let reservedOutputTokens = 0;
+  // The estimates awaiting reconciliation, oldest first. Reservations and
+  // records pair up in order, so `record` retires the oldest estimate rather
+  // than subtracting what the completion cost — subtracting the ACTUAL cost
+  // leaves the difference reserved forever, which a first version did: three
+  // calls budgeted at 400 and costing 10 stranded 1,170 tokens of headroom.
+  // Bounded by `maxCalls`, which is validated above.
+  const pendingOutputTokens: number[] = [];
 
   return {
-    reserve() {
+    reserve(perCallOutputTokens) {
       if (reserved >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
-      // Checked on the NEXT reservation rather than mid-flight: a completion
-      // already in the air is billed whatever it returns, so refusing it after
-      // the fact would understate spend rather than prevent it.
-      if (maxOutputTokens !== undefined && outputTokens >= maxOutputTokens) {
-        throw new Error(
-          `the declared output-token budget is spent (${outputTokens} of ${maxOutputTokens} output tokens across ${calls} completions): refusing the next call rather than continuing, because the per-call token budget is not what bounds a run's cost`,
-        );
+      if (maxOutputTokens !== undefined) {
+        // The caller's declared budget for the call it is about to make. Absent,
+        // the estimate is zero and the bound degrades to the post-hoc check —
+        // which is why the port passes it. A pessimistic estimate can only
+        // refuse EARLY, never late, and `record` gives the headroom back.
+        const estimate =
+          perCallOutputTokens === undefined || !Number.isSafeInteger(perCallOutputTokens)
+            ? 0
+            : Math.max(0, perCallOutputTokens);
+        const committed = outputTokens + reservedOutputTokens + estimate;
+        if (committed > maxOutputTokens) {
+          throw new Error(
+            `the declared output-token budget is spent (${outputTokens} recorded plus ${reservedOutputTokens + estimate} reserved, against ${maxOutputTokens}, across ${calls} completions): refusing the next call rather than continuing, because the per-call token budget is not what bounds a run's cost`,
+          );
+        }
+        reservedOutputTokens += estimate;
+        pendingOutputTokens.push(estimate);
       }
       reserved += 1;
     },
     record(usage) {
-      // A caller that records without reserving still cannot exceed the cap.
+      // 🔴 Validated here, not trusted. A negative count drives the accumulator
+      // backwards and disables the token bound permanently — measured at the
+      // AIC-19 gate. The real caller validates first (`requireOwnCount` in the
+      // port), so this is the guard for every OTHER caller, present and future.
+      for (const key of ['inputTokens', 'outputTokens'] as const) {
+        const value = usage[key];
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new Error(
+            `a model usage record needs a non-negative safe integer ${key}: a count that is not one cannot be added to a total that bounds spend`,
+          );
+        }
+      }
+      // A caller that records without reserving still cannot exceed the CALL
+      // cap. It can exceed the token cap, because nothing reserved for it — the
+      // token bound is enforced at reservation, which is the only point before
+      // the money is spent.
       if (calls >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
       if (reserved <= calls) reserved = calls + 1;
       calls += 1;
       inputTokens += usage.inputTokens;
       outputTokens += usage.outputTokens;
+      // Retire the oldest outstanding estimate — this completion's — so the
+      // headroom it held returns. Never below zero: a caller that recorded
+      // without reserving must not mine headroom out of other reservations.
+      const estimate = pendingOutputTokens.shift() ?? 0;
+      reservedOutputTokens = Math.max(0, reservedOutputTokens - estimate);
     },
     read() {
       return { calls, inputTokens, outputTokens };

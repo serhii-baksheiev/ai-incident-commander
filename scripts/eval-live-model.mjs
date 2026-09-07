@@ -180,10 +180,21 @@ async function main() {
     maxOutputTokens: evals.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   });
   const declaredBaselinePath = option('control-baseline');
+  // 🔴 `_`-prefixed rationale is stripped here as it is in the hold-out reader.
+  // Without this, pointing `--control-baseline` at the repository's own
+  // committed `docs/evidence/control-baseline.json` is refused by the lane for
+  // declaring metrics it does not compare — `_why`, `_measured`, `_limit`,
+  // `_completeness`. It failed CLOSED, so nothing was published wrongly; it just
+  // made the one baseline this repository ships unusable from this command.
+  // see final-evaluation-command.test.mjs › "reads the repository's own committed baseline from the calibration command without refusing its rationale"
   const controlBaseline =
     declaredBaselinePath === undefined
       ? undefined
-      : JSON.parse(readFileSync(declaredBaselinePath, 'utf8'));
+      : Object.fromEntries(
+          Object.entries(
+            JSON.parse(readFileSync(declaredBaselinePath, 'utf8')),
+          ).filter(([key]) => !key.startsWith('_')),
+        );
 
   // Captured so `publish` sends the experiment that ran rather than a summary
   // of it: the LangSmith record has to be the runs, not the report about them.

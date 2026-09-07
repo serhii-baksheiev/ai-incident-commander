@@ -213,7 +213,10 @@ export function createReferenceModelPort({
   return {
     async complete(request) {
       // Before the request, not after it: an exhausted cap must cost nothing.
-      ledger.reserve();
+      // The per-call budget travels with the reservation so the token cap can
+      // see completions that are in flight — without it the bound only sees what
+      // has already come back, and a concurrent caller passes it entirely.
+      ledger.reserve(request.maxOutputTokens);
 
       const response = await transport(PROVIDER_MESSAGES_URL, {
         method: 'POST',

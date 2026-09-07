@@ -194,13 +194,19 @@ test('refuses the lane with the named variable and touches nothing when no crede
 /* the bounds                                                                 */
 /* -------------------------------------------------------------------------- */
 
-test('publishes the two caps it runs under rather than leaving them implicit', () => {
+test('publishes every cap a run is under rather than leaving one implicit', () => {
   const maxRuns = requireExport('LIVE_MODEL_LANE_MAX_MODEL_RUNS');
   const maxCalls = requireExport('LIVE_MODEL_LANE_MAX_MODEL_CALLS');
+  const maxOutputTokens = requireExport('LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS');
   const runsPerScenario = requireExport('LIVE_MODEL_LANE_RUNS_PER_SCENARIO');
 
   assert.equal(Number.isSafeInteger(maxRuns) && maxRuns > 0, true);
   assert.equal(Number.isSafeInteger(maxCalls) && maxCalls > 0, true);
+  assert.equal(
+    Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0,
+    true,
+    'the token ceiling is a third bound a run is under, and a record naming two of three cannot say what the third was',
+  );
   assert.equal(runsPerScenario, 3);
   assert.equal(
     maxRuns,
@@ -1245,5 +1251,40 @@ test('refuses a control baseline that leaves an observed axis undeclared, naming
       );
       return true;
     },
+  );
+});
+
+/**
+ * A bad baseline is a defect in a committed file, and it must not cost a model
+ * call to discover.
+ *
+ * Every refusal `movesAgainst` raises is decidable the moment the deterministic
+ * control arm returns. Evaluated after the model arm — as the first version of
+ * the completeness refusal was — an under-declared baseline destroyed a claimed
+ * one-shot hold-out to report a mistake that was free to see. Found by
+ * `security-scanner` at the AIC-19 gate.
+ */
+test('judges the declared baseline before the paid arm runs, so a bad declaration costs no model call', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  let modelArmRan = false;
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        laneOptions({
+          controlBaseline: { unsupported_claim_rate: 0 },
+          async runModelArm(plan) {
+            modelArmRan = true;
+            return scriptedExperiment('aic-19-should-not-run', perfect);
+          },
+        }),
+      ),
+    /does not declare/,
+  );
+
+  assert.equal(
+    modelArmRan,
+    false,
+    'the model arm must not have been reached: the baseline is a committed file, and refusing it after the paid arm spends a one-shot corpus to report a mistake already visible for free',
   );
 });

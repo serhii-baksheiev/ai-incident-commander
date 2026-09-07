@@ -10,12 +10,14 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   parseFinalEvaluationRecord,
   BEHAVIOR_METRIC_KEYS,
   BENCHMARK_METRIC_KEYS,
@@ -320,7 +322,11 @@ test('declares a control baseline for the hold-out, without which the model arm 
 test('reads the control baseline before it claims the candidate, because a broken baseline must not spend the one shot', () => {
   const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
 
-  const read = source.indexOf('readControlBaseline()');
+  // The CALL, not the declaration — `export function readControlBaseline(` sits
+  // earlier in the file, and matching it made this assertion unfailable on its
+  // first draft: `code-reviewer` proved it by moving the call below the claim
+  // and watching only the OTHER assertion redden.
+  const read = source.indexOf('const controlBaseline = readControlBaseline()');
   const claim = source.indexOf('claimRecord(path, base)');
 
   assert.notEqual(read, -1, 'the baseline read site must be findable for this row to mean anything');
@@ -348,14 +354,35 @@ test('reads the control baseline before it claims the candidate, because a broke
  * reportable against a baseline pinning no axis at all. Probed at the AIC-19
  * gate: `declared: {}` returned verdict `model-quality`, `reportable: true`.
  */
-test('refuses a control baseline that declares no axis at all, rather than passing an empty one to the lane', () => {
-  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+test('refuses a control baseline that declares no axis at all, rather than passing an empty one to the lane', async () => {
+  const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'aic-baseline-'));
 
-  assert.match(
-    source,
-    /declares no axis|no metric axis|declares nothing/,
-    'readControlBaseline must refuse a declaration with no axes: an empty object is not undefined, so it passes the control-baseline-undeclared guard while pinning nothing',
-  );
+  try {
+    for (const [name, body] of [
+      ['empty.json', '{}'],
+      ['rationale-only.json', '{"_why":"a note and nothing else"}'],
+      ['array.json', '[]'],
+    ]) {
+      const path = join(dir, name);
+      writeFileSync(path, body);
+      assert.throws(
+        () => readControlBaseline(path),
+        /declares no axis/,
+        `${name} declares no axis, and an empty object is not undefined — it passes the lane's control-baseline-undeclared guard while pinning nothing`,
+      );
+    }
+
+    const good = join(dir, 'good.json');
+    writeFileSync(good, '{"_why":"a note","unsupported_claim_rate":0}');
+    assert.deepEqual(
+      readControlBaseline(good),
+      { unsupported_claim_rate: 0 },
+      'a declaration with an axis must be returned with its `_`-prefixed rationale stripped',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 /**
@@ -445,5 +472,72 @@ test('the gate document names every hold-out record, and every record it names e
   assert.ok(
     doc.includes(claimed),
     `the sentence above the table must state the number of records there are — expected "${claimed}"`,
+  );
+});
+
+/**
+ * 🔴 The ceiling's margin, MEASURED against the committed evidence rather than
+ * written into a comment.
+ *
+ * The first version of the constant's rationale named "the largest live run
+ * recorded in `docs/evidence/`" and quoted a run that was not the largest, then
+ * derived a margin from it that did not follow. Both gates took it, and they
+ * disagreed with each other about the real figure — which is the argument for
+ * computing it rather than stating it.
+ *
+ * This also fails LOUDLY if a future run approaches the ceiling, which is the
+ * warning a comment cannot give: the cap throws mid-run, so a sweep that would
+ * hit it should redden here first.
+ */
+test('leaves the output-token ceiling above every live run this repository has recorded', () => {
+  const roots = ['docs/evidence/calibration', 'docs/evidence/final-evaluation'];
+  let largest = { outputTokens: 0, file: '(none)' };
+
+  for (const root of roots) {
+    for (const name of readdirSync(join(REPO_ROOT, root)).filter((f) => f.endsWith('.json'))) {
+      const parsed = JSON.parse(readFileSync(join(REPO_ROOT, root, name), 'utf8'));
+      for (const carrier of [parsed, parsed.report ?? {}]) {
+        const usage = carrier?.arms?.model?.usage;
+        if (usage && usage.outputTokens > largest.outputTokens) {
+          largest = { outputTokens: usage.outputTokens, file: `${root}/${name}` };
+        }
+      }
+    }
+  }
+
+  assert.ok(
+    largest.outputTokens > 0,
+    'no committed record carries a model-arm usage block, so this row would pass vacuously',
+  );
+  assert.ok(
+    LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS > largest.outputTokens * 2,
+    `the output-token ceiling (${LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS}) must stay clear of the largest live run this repository has recorded (${largest.outputTokens} in ${largest.file}): the cap throws mid-run, so a ceiling within reach of an ordinary sweep refuses honest work instead of bounding spend`,
+  );
+});
+
+/**
+ * The one baseline this repository ships must be usable from the command that
+ * takes a baseline path.
+ *
+ * `--control-baseline` passed the parsed file straight through, so pointing it
+ * at `docs/evidence/control-baseline.json` was refused by the lane for declaring
+ * `_why`, `_measured`, `_limit` and `_completeness` — metrics it does not
+ * compare. It failed closed, so nothing was published wrongly; it made the
+ * shipped baseline unusable from the cheap lane. Found by `code-reviewer`.
+ */
+test("reads the repository's own committed baseline from the calibration command without refusing its rationale", () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-live-model.mjs'), 'utf8');
+  const baseline = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'docs/evidence/control-baseline.json'), 'utf8'),
+  );
+
+  assert.ok(
+    Object.keys(baseline).some((key) => key.startsWith('_')),
+    'the committed baseline must carry rationale keys for this row to mean anything',
+  );
+  assert.match(
+    source,
+    /startsWith\('_'\)/,
+    "--control-baseline must strip `_`-prefixed rationale the way the hold-out reader does, or the repository's own baseline is refused by the lane as declaring metrics it does not compare",
   );
 });
