@@ -299,10 +299,15 @@ test('returns the completion text and the usage a node can declare', async () =>
     maxOutputTokens: 1024,
   });
 
+  // `stopReason` joins the pinned shape rather than being excluded from it: the
+  // shared fixture answers `end_turn`, and a completion that does NOT carry the
+  // provider's reason is how a truncation reached a role as an ordinary string
+  // and was reported as the model writing bad JSON.
   assert.deepEqual(completion, {
     text: '{"ok":true}',
     modelId: 'claude-under-test',
     usage: { inputTokens: 12, outputTokens: 4 },
+    stopReason: 'end_turn',
   });
   assert.deepEqual(ledger.read(), {
     calls: 1,
@@ -643,5 +648,62 @@ test('stops at the declared call cap before issuing the request', async () => {
     requests,
     1,
     'the capped call must never reach the transport: a cap checked after the request is a report, not a bound',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* A truncated answer is the harness's doing, not the model's                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 🔴 **The port ignored `stop_reason`, so a harness limit was reported as a
+ * model-quality failure.**
+ *
+ * Anthropic returns `stop_reason: "max_tokens"` when it cuts a completion off at
+ * the requested budget. The port read `text` and `usage` and nothing else, so a
+ * truncated answer reached the role as an ordinary string, `JSON.parse` failed
+ * on the half-written object, and the role reported "the answer is not
+ * parseable JSON".
+ *
+ * That sentence is false, and falsely about the thing this lane exists to
+ * measure. The model did not produce bad JSON — it was interrupted. Measured on
+ * a real calibration run: `outputTokens: 4132` against a
+ * `DEFAULT_MAX_OUTPUT_TOKENS` of 4096, and the lane recorded the model arm as
+ * unreportable for producing malformed output.
+ *
+ * This repository already refuses the two neighbouring versions of this mistake
+ * — a missing measurement never becomes a zero, and a model run that did not
+ * happen is never presented as model-quality evidence. A run that was CUT OFF
+ * being presented as a model failure is the same error wearing a third face.
+ */
+test('carries the reason a completion stopped, so a truncation is not read as the model answering badly', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+
+  const port = createReferenceModelPort({
+    apiKey: 'test-key-not-a-real-credential',
+    modelId: 'claude-under-test',
+    ledger: createModelUsageLedger({ maxCalls: 4 }),
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: '{"assessments":[{"id":"a-1",' }],
+          usage: { input_tokens: 10, output_tokens: 4096 },
+          stop_reason: 'max_tokens',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+  });
+
+  const completion = await port.complete({
+    system: 'irrelevant',
+    prompt: 'irrelevant',
+    maxOutputTokens: 4096,
+  });
+
+  assert.equal(
+    completion.stopReason,
+    'max_tokens',
+    'the port must carry why the provider stopped: without it a truncation is indistinguishable from a model that wrote malformed JSON, and the lane reports the second when the first is true',
   );
 });

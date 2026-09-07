@@ -606,3 +606,80 @@ test('routes a model-backed run to its challenge, with the leader the graph can 
     'the model-proposed hypothesis must be in the state the challenge ran against',
   );
 });
+
+/**
+ * 🔴 **A truncated answer is the harness cutting the model off, not the model
+ * answering badly — and the role used to report the second.**
+ *
+ * The port did not read `stop_reason`, so a completion the provider stopped at
+ * `max_tokens` arrived as an ordinary string, `JSON.parse` failed on the
+ * half-written object, and the role said "the answer is not parseable JSON".
+ * That is a false statement about the one thing this lane measures.
+ *
+ * Measured on a real calibration run before the guard existed:
+ * `outputTokens: 4132` against a `DEFAULT_MAX_OUTPUT_TOKENS` of 4096, and the
+ * lane recorded the model arm unreportable for producing malformed output.
+ *
+ * This repository already refuses the two neighbours of this mistake — a
+ * missing measurement never becomes a zero, and a model run that did not happen
+ * is never model-quality evidence. A run that was CUT OFF being reported as a
+ * model failure is the same error wearing a third face.
+ */
+test('refuses a truncated answer as a truncation rather than as malformed output', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+
+  const truncating = {
+    async complete() {
+      return {
+        text: '{"assessments":[{"id":"a-1",',
+        modelId: 'claude-under-test',
+        usage: { inputTokens: 10, outputTokens: 4096 },
+        stopReason: 'max_tokens',
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => createModelInterpretResidualEvidence({ port: truncating, at })(initialState()),
+    (error) => {
+      assert.match(
+        error.message,
+        /truncat|max_tokens|token budget/i,
+        `the refusal must name the truncation: ${error.message}`,
+      );
+      assert.doesNotMatch(
+        error.message,
+        /not parseable JSON/,
+        `a cut-off answer is not the model writing bad JSON, and reporting it as such attributes a harness limit to model quality: ${error.message}`,
+      );
+      return true;
+    },
+    'a completion the provider stopped at the token budget must be reported as that',
+  );
+});
+
+test('reads an unknown stop reason as not a truncation, so a malformed answer is still the model', () => {
+  // The other direction of the same false attribution: excusing genuinely bad
+  // output as a harness limit. The truncation set is deliberately narrow.
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const oddStop = {
+    async complete() {
+      return {
+        text: 'not json at all',
+        modelId: 'claude-under-test',
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: 'some_reason_this_code_does_not_know',
+      };
+    },
+  };
+
+  return assert.rejects(
+    () => createModelInterpretResidualEvidence({ port: oddStop, at })(initialState()),
+    /carries no JSON document|not parseable JSON/,
+    'an unknown stop reason must not excuse a malformed answer: guessing that way would attribute a model failure to the harness, which is this defect in reverse',
+  );
+});
