@@ -90,4 +90,19 @@ assumes covers more than it does.
    requires the model arm; that is why it needs a provider credential and
    refuses without one.
 
-<!-- fingerprint invariance probe -->
+## The invariance, measured rather than argued
+
+The claim above — that committing evidence does not unlock a re-run — was
+checked by doing it. A docs-only commit was made and the fingerprint recomputed
+on both sides:
+
+```
+before: sha256:04cf86236c2f5b5883877a4b1a7c0ce6252c8c259d5d645bf3bb5bd4efa45009  HEAD 52e2bc1
+after:  sha256:04cf86236c2f5b5883877a4b1a7c0ce6252c8c259d5d645bf3bb5bd4efa45009  HEAD 5b00b0e
+```
+
+HEAD moved and the candidate did not. Under the commit-SHA design those two
+lines would differ, and the second run would have been admitted.
+
+Reproduce it with `npm run eval:final-holdout -- --dry-run` before and after any
+commit that touches only this directory.
