@@ -1,11 +1,14 @@
 /**
  * AIC-94, step 8: the bounded live-model evaluation lane.
  *
- * 🔴 **Nothing in this file executes a model.** There is no provider credential
- * in this environment, so the two acceptance rows that need one — "a real model
- * executes the three roles" and "one live Incident Lab scenario completes" — are
- * not demonstrated anywhere in this repository, and this file must not be read
- * as demonstrating them. What it pins is everything the lane does AROUND the
+ * 🔴 **Nothing in this file executes a model**, and it must not be read as
+ * demonstrating that one can. Every row drives an injected or fetch-stubbed port.
+ *
+ * ⚠ **This header used to add "not demonstrated anywhere in this repository",
+ * and that is no longer true** — a model has executed these roles, and the
+ * records are committed under `docs/evidence/final-evaluation/`. What is
+ * demonstrated there is a REFUSAL rather than a pass; what is not demonstrated
+ * HERE is anything about a real model at all. What it pins is everything the lane does AROUND the
  * model: the refusal when no credential exists, the caps, the two-arm design
  * that separates a harness regression from a model-quality one, and the metric
  * this lane refuses to publish as model quality at all.

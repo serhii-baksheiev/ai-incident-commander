@@ -576,29 +576,35 @@ test("reads the repository's own committed baseline from the calibration command
 });
 
 /**
- * 🔴 Provider access is stated ONCE in the gate document, and this row is why.
+ * A LEXICAL guard on one phrasing, and its name says so because the first
+ * version's did not.
  *
- * Four consecutive gate rounds found a passage asserting the provider was
- * unreachable that a previous round's marking had missed. Each round marked the
- * twins it could see; the next round found another. The document had the same
- * fact spelled in five places, which `.claude/rules/invariants.md` names as the
- * arrangement where "the one nobody is looking at is the one that is wrong".
+ * ⚠ **This row does not enforce "provider access is stated once".** It was
+ * written claiming to, and `prose-reviewer` measured what it actually catches:
+ * seven plausible wordings appended to the document, six passed unnoticed —
+ * including the exact present-tense credit-balance probe the check was written
+ * to stop, which contains no form of the word "reachable". Only "The provider is
+ * reachable." reddened it.
  *
- * Prose about it was tried three times and did not hold, so this is the check
- * instead: the assertion lives in the block at the top, and nowhere else. A
- * historical section says what was measured at the time and points here.
+ * That invariant is not hookable. Deciding whether a sentence asserts provider
+ * state is a judgement about meaning, which `.claude/rules/invariants.md` puts
+ * in its "poor fit" column, and a guard that claims more than it delivers is
+ * worse than none — readers rely on cover that is not there. What survives is
+ * the narrow thing that IS decidable: the one wording most likely to be written
+ * again, kept out of the document outside its block. Everything wider is a
+ * review concern.
  */
-test('states provider access in exactly one place in the gate document', () => {
+test('keeps the phrase "is reachable" out of the gate document outside its provider block', () => {
   const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
   const lines = doc.split('\n');
 
   const blockHeading = lines.findIndex((line) =>
-    line.includes('Provider access — the one place this document states it'),
+    line.includes('## Provider access — read this before any ⛔ section below'),
   );
   assert.notEqual(
     blockHeading,
     -1,
-    'the gate document must carry the single provider-access block: without it there is no one place, and the assertion scatters again',
+    'the gate document must carry the provider-access block: a ⛔ section below defers to it, so removing it leaves those sections reading as current',
   );
 
   // The block is the quoted region that opens with that heading.
@@ -615,6 +621,6 @@ test('states provider access in exactly one place in the gate document', () => {
   assert.deepEqual(
     strays,
     [],
-    `provider access must be asserted only in the block at the top of docs/v0.2-exit-gate.md — a second spelling is the one that goes stale, and four gate rounds in a row found one that had. Point at the block instead:\n${strays.join('\n')}`,
+    `this exact wording belongs only in the provider-access block at the top of docs/v0.2-exit-gate.md — point at the block instead. ⚠ This row catches ONE phrasing and is not a guarantee that provider state is stated once; six of seven wordings measured at the AIC-19 gate slipped past it:\n${strays.join('\n')}`,
   );
 });

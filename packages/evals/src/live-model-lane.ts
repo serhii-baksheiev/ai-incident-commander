@@ -39,11 +39,19 @@ import type { GateMetricKey } from './benchmark-regression-gate.js';
  * scenarios from `BENCHMARK_SCENARIO_PARTITIONS` and REFUSES caller-supplied
  * ones. This module builds no second partition and takes none.
  *
- * ## 🔴 What this lane cannot demonstrate in this repository
+ * ## 🔴 What this lane's TESTS cannot demonstrate
  *
- * There is no provider credential in this environment. Every test of this module
- * drives injected arms, so nothing here has ever executed a model. The lane is
- * built so that it runs the moment a key exists; it is not evidence that it has.
+ * Every test of this module drives injected arms, so no test here executes a
+ * model and a green suite is not evidence that a real model's output satisfies
+ * the domain schemas.
+ *
+ * ⚠ **This paragraph used to say "nothing here has ever executed a model", and
+ * that stopped being true.** A model has since executed these roles: the
+ * committed records under `docs/evidence/final-evaluation/` carry the calls. The
+ * sentence survived because nothing edited this file, so nothing rechecked it —
+ * found by `prose-reviewer` at the AIC-19 gate, in the same round that found two
+ * more copies of it elsewhere. The claim that holds is about the SUITE, not about
+ * the repository.
  * The credential-absent path is the part that IS demonstrated:
  * see live-model-lane.test.mjs › "refuses the lane with the named variable and
  * touches nothing when no credential is set"
