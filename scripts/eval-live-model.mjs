@@ -86,9 +86,11 @@
  * detect.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { realpathSync, writeFileSync } from 'node:fs';
 import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+
+import { readControlBaseline } from './eval-final-holdout.mjs';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -174,12 +176,22 @@ async function main() {
   const config = resolveModelConfig(env);
   const ledger = createModelUsageLedger({
     maxCalls: evals.LIVE_MODEL_LANE_MAX_MODEL_CALLS,
+    // Both lanes, not just the hold-out: this is the command that runs the cheap
+    // calibration sweeps, so it is where an unbounded run is most likely to be
+    // started casually. A bound on one path only is a bound on neither.
+    maxOutputTokens: evals.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   });
   const declaredBaselinePath = option('control-baseline');
+  // 🔴 IMPORTED, not reimplemented. The first version of this read was a second
+  // copy of `readControlBaseline`, and the copies had already diverged — this one
+  // lacked the empty-declaration refusal. `.claude/rules/invariants.md`: one
+  // mechanism, one implementation, because the copy nobody is looking at is the
+  // one that is wrong. Found by `security-scanner` at the AIC-19 gate.
+  // see final-evaluation-command.test.mjs › "reads the repository's own committed baseline from the calibration command without refusing its rationale"
   const controlBaseline =
     declaredBaselinePath === undefined
       ? undefined
-      : JSON.parse(readFileSync(declaredBaselinePath, 'utf8'));
+      : readControlBaseline(declaredBaselinePath);
 
   // Captured so `publish` sends the experiment that ran rather than a summary
   // of it: the LangSmith record has to be the runs, not the report about them.

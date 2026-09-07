@@ -3,8 +3,14 @@
  *
  * Every assertion here runs against a FAKE port. The roles are written to
  * `ModelPort`, which names no provider, so the whole role layer is decidable
- * with no network and no credential — which is also why these roles can be
- * exercised at all in an environment that has neither.
+ * with no network and no credential — which is why this file needs neither.
+ *
+ * ⚠ That says nothing about the REPOSITORY. A real model has since executed
+ * these roles; the records are committed under `docs/evidence/final-evaluation/`.
+ * An earlier version of this sentence read "an environment that has neither",
+ * which described the whole environment and stopped being true. It was the third
+ * wording of one stale fact and the last of them found, by `prose-reviewer`, in
+ * the round after a README paragraph claimed the sweep for it was finished.
  *
  * Nothing in this file is a claim about model QUALITY. It pins the contract the
  * roles must satisfy whatever the model says: every value crosses the domain's
@@ -832,4 +838,59 @@ test('derives every answer-schema enum from the domain rather than restating it'
     EvidenceAssessmentSchema.shape.strength.options,
     'the strength vocabulary must come from the domain',
   );
+});
+
+/**
+ * 🔴 The token budget the roles hand the port, pinned — because the last time it
+ * was wrong the record blamed the model.
+ *
+ * The hold-out at candidate `872ef36dea33` refused the model arm with
+ * `stop_reason: max_tokens` at exactly 4096 output tokens, and the record read
+ * as a model-quality failure. The budget was raised to clear it. That raise was
+ * then MUTATION-PROVEN unpinned at the AIC-19 gate: setting the constant back to
+ * 4096 left the whole suite green, so nothing in this repository would have
+ * noticed the ceiling coming back.
+ *
+ * This row asserts the number the roles actually send, read off the request the
+ * port received, rather than the constant — a test that imports the constant and
+ * compares it to itself pins nothing.
+ */
+test('hands the provider a token budget large enough that the reference model was not cut off at 4096', async () => {
+  const roles = [
+    ['createModelGenerateHypotheses', { hypotheses: [{ id: 'h-1', statement: 's' }] }],
+    [
+      'createModelInterpretResidualEvidence',
+      { assessments: [{ id: 'e-1', supports: [], contradicts: [], rationale: 'r' }] },
+    ],
+  ];
+
+  // `challenge_hypothesis` is in this list deliberately: it is the role its own
+  // rationale names as the one truncated at 4096, and the first draft of this
+  // row omitted it. All three read the same constant today, so a per-role
+  // override is exactly what a pin that skipped one would miss.
+  roles.push([
+    'createModelChallengeHypothesis',
+    {
+      alternative: { id: 'alt-1', statement: 'a different cause' },
+      discriminatingTests: [],
+    },
+  ]);
+
+  for (const [name, answer] of roles) {
+    const { port, requests } = fakePort([answer]);
+    const node = requireExport(name)({ port, at });
+    await node(initialState(), 'h-1').catch(() => {});
+
+    assert.equal(requests.length, 1, `${name} must have reached the port exactly once`);
+    const budget = requests[0].maxOutputTokens;
+    assert.equal(
+      typeof budget,
+      'number',
+      `${name} must declare a token budget: absent, the provider applies its own and the roles no longer decide it`,
+    );
+    assert.ok(
+      budget > 4096,
+      `${name} must ask for more than 4096 output tokens: measured on the hold-out at candidate 872ef36dea33, the reference model stopped at exactly that ceiling with stop_reason max_tokens and the record recorded it as the model answering badly (got ${budget})`,
+    );
+  }
 });

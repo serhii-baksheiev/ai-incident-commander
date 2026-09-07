@@ -39,11 +39,19 @@ import type { GateMetricKey } from './benchmark-regression-gate.js';
  * scenarios from `BENCHMARK_SCENARIO_PARTITIONS` and REFUSES caller-supplied
  * ones. This module builds no second partition and takes none.
  *
- * ## 🔴 What this lane cannot demonstrate in this repository
+ * ## 🔴 What this lane's TESTS cannot demonstrate
  *
- * There is no provider credential in this environment. Every test of this module
- * drives injected arms, so nothing here has ever executed a model. The lane is
- * built so that it runs the moment a key exists; it is not evidence that it has.
+ * Every test of this module drives injected arms, so no test here executes a
+ * model and a green suite is not evidence that a real model's output satisfies
+ * the domain schemas.
+ *
+ * ⚠ **This paragraph used to say "nothing here has ever executed a model", and
+ * that stopped being true.** A model has since executed these roles: the
+ * committed records under `docs/evidence/final-evaluation/` carry the calls. The
+ * sentence survived because nothing edited this file, so nothing rechecked it —
+ * found by `prose-reviewer` at the AIC-19 gate, in the same round that found two
+ * more copies of it elsewhere. The claim that holds is about the SUITE, not about
+ * the repository.
  * The credential-absent path is the part that IS demonstrated:
  * see live-model-lane.test.mjs › "refuses the lane with the named variable and
  * touches nothing when no credential is set"
@@ -83,8 +91,7 @@ export const LIVE_MODEL_LANE_RUNS_PER_SCENARIO = 3 as const;
  * The run cap for ONE arm, derived from the accepted partition rather than typed
  * beside it: a scenario added to the hold-out policy raises this cap with it,
  * and a hand-written number would have silently capped the new scenario out.
- * see live-model-lane.test.mjs › "publishes the two caps it runs under rather
- * than leaving them implicit"
+ * see live-model-lane.test.mjs › "publishes every cap a run is under rather than leaving one implicit"
  */
 export const LIVE_MODEL_LANE_MAX_MODEL_RUNS =
   (BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
@@ -108,6 +115,39 @@ export const LIVE_MODEL_LANE_MAX_MODEL_RUNS =
  */
 export const LIVE_MODEL_LANE_MAX_MODEL_CALLS =
   LIVE_MODEL_LANE_MAX_MODEL_RUNS * 5;
+
+/**
+ * The OUTPUT-TOKEN cap for one lane execution — a second bound, because the
+ * first one counts the wrong thing.
+ *
+ * `LIVE_MODEL_LANE_MAX_MODEL_CALLS` bounds completions. It does not bound spend:
+ * the per-call token budget sits underneath it and moved, from 4096 to 16000, in
+ * the change that raised it for a real reason. Worst case under the call cap
+ * alone went from roughly 614k to 2.4M output tokens, and nothing tracked the
+ * quantity that had changed.
+ *
+ * The number is a CEILING chosen to bound a RUNAWAY run, not a forecast of a
+ * normal one, and no figure for its margin is written here. Two earlier versions
+ * of this comment got that wrong in different ways: the first named a run that
+ * was not the largest and derived a factor that did not follow, and the second
+ * compared the ceiling against a recorded TOTAL — which is the wrong comparison
+ * for a cap that throws MID-RUN: a recorded run can finish inside the call cap
+ * and still cost more than a ceiling chosen to clear its TOTAL. No figure for
+ * the largest recorded run is written here — the version that named one was
+ * already false when it was written, refuted by a record this same branch had
+ * committed earlier.
+ *
+ * What has to hold is that a legitimate full-length run finishes. That is
+ * MEASURED against the committed evidence — the heaviest per-call rate on record,
+ * projected over the call cap — so it cannot drift as runs are added, and it
+ * reddens if a future run approaches the ceiling.
+ * see final-evaluation-command.test.mjs › "leaves the output-token ceiling above every live run this repository has recorded"
+ *
+ * A run that needs more STOPS at the next reservation rather than spending past
+ * the bound — the same property that makes the call cap safe to pick.
+ * see roles-port-contract.test.mjs › "stops reserving once the declared output-token budget is spent, not only once the calls are"
+ */
+export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 800_000;
 
 /**
  * The metric this lane refuses to publish as model quality, and why.
@@ -203,7 +243,11 @@ export interface LiveModelLaneReport {
   readonly experimentId: string;
   readonly credential: Readonly<{ variable: string; provider: string; modelId: string }>;
   readonly plan: LiveModelLanePlan;
-  readonly caps: Readonly<{ maxModelRuns: number; maxModelCalls: number }>;
+  readonly caps: Readonly<{
+    maxModelRuns: number;
+    maxModelCalls: number;
+    maxOutputTokens: number;
+  }>;
   readonly exampleIds: readonly string[];
   readonly arms: Readonly<{
     control: LiveModelLaneControlArm;
@@ -342,6 +386,37 @@ function movesAgainst(
     );
   }
 
+  // 🔴 The third refusal, and the one that was missing: declaring too LITTLE.
+  //
+  // The two above cover declaring too much — a key the lane cannot compare, and
+  // a key it withholds. But this function walks the DECLARED keys, so an axis
+  // the control arm OBSERVED and the baseline omits is compared against nothing
+  // and can move freely. Measured at the AIC-19 gate by executing the lane: the
+  // committed baseline pinned two axes while the control arm emitted five, and a
+  // control arm whose `challenge_effect` had moved off its floor still produced
+  // `movedMetrics: []`, verdict `model-quality`, model arm reportable. That is a
+  // harness regression published as a model result — the single confound this
+  // whole lane exists to prevent, reached through the baseline rather than
+  // through the arms.
+  //
+  // Judged against what the run OBSERVED, not against the full metric union: an
+  // axis this corpus never produced is not one the baseline failed to cover, and
+  // demanding it would refuse honest runs on smaller corpora.
+  // see live-model-lane.test.mjs › "refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do"
+  const undeclared = Object.keys(observed)
+    .filter(
+      (key) =>
+        comparable.has(key) &&
+        !Object.hasOwn(LIVE_MODEL_LANE_WITHHELD_METRICS, key) &&
+        !Object.hasOwn(declared, key),
+    )
+    .sort();
+  if (undeclared.length > 0) {
+    throw new Error(
+      `the control baseline does not declare metrics the control arm observed: ${undeclared.join(', ')} — add an entry for each, because this comparison walks the declared keys and an observed axis with no declared expectation can move without the lane noticing`,
+    );
+  }
+
   const moved: GateMetricKey[] = [];
   for (const key of Object.keys(declared) as GateMetricKey[]) {
     const expected = declared[key];
@@ -420,6 +495,22 @@ export async function runLiveModelLane(
 
   const control = await options.runControlArm(plan);
 
+  // 🔴 The baseline is judged against the control arm BEFORE the paid arm runs.
+  //
+  // Everything this needs is known the moment the deterministic control arm
+  // returns, and every refusal `movesAgainst` can raise — an unknown key, a
+  // withheld key, an axis the baseline does not declare — is a defect in the
+  // COMMITTED baseline file rather than anything the model did. Evaluated after
+  // the model arm, as the first version was, each of them destroyed a claimed
+  // one-shot hold-out to report a mistake that was already visible for free.
+  // Found by `security-scanner` at the AIC-19 gate.
+  // see live-model-lane.test.mjs › "judges the declared baseline before the paid arm runs, so a bad declaration costs no model call"
+  const controlMetrics = summarize(control);
+  const observedBaseline = baselineOf(controlMetrics);
+  const declaredBaseline = options.controlBaseline;
+  const movedMetrics =
+    declaredBaseline === undefined ? [] : movesAgainst(declaredBaseline, observedBaseline);
+
   // 🔴 The model arm is the one that can refuse, and its refusal is evidence.
   // Caught HERE and nowhere deeper: a per-record catch would change what a
   // benchmark result can be, and a retry would hide the very signal the roles
@@ -460,12 +551,6 @@ export async function runLiveModelLane(
       'the control arm must cover the declared plan: a comparison across two corpora is not a comparison',
     );
   }
-
-  const controlMetrics = summarize(control);
-  const observedBaseline = baselineOf(controlMetrics);
-  const declaredBaseline = options.controlBaseline;
-  const movedMetrics =
-    declaredBaseline === undefined ? [] : movesAgainst(declaredBaseline, observedBaseline);
 
   let verdict: LiveModelLaneVerdict = 'model-quality';
   let unreportableReason: string | undefined;
@@ -511,6 +596,11 @@ export async function runLiveModelLane(
     caps: {
       maxModelRuns: LIVE_MODEL_LANE_MAX_MODEL_RUNS,
       maxModelCalls: LIVE_MODEL_LANE_MAX_MODEL_CALLS,
+      // Published even though the LEDGER enforces it rather than this lane: a
+      // committed record that names two of the three bounds a run was under
+      // cannot be read to know what the third was. Added when a third bound
+      // appeared and this block did not move with it.
+      maxOutputTokens: LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
     },
     exampleIds: declaredExampleIds,
     arms: {

@@ -146,19 +146,56 @@ npm run eval:live-model
 npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./lane-report.json
 ```
 
-> 🔴 **Read everything below in the present tense with this in front of it: no
-> model has ever executed these roles in this repository.** There is no provider
-> credential in this environment, so every test of this lane and of the three
-> roles drives an injected or fetch-stubbed port, and no HTTP request has left
-> this machine for a provider. The path is implemented and refuses correctly
-> without a credential; it is not evidence that a real model's output satisfies
-> the domain schemas, and no model-quality figure, token count or cost figure in
-> this repository was produced by a model. AIC-94's acceptance rows 1 and 2 are
-> **unproven** on that ground, not met.
+> 🔴 **A real model HAS executed these roles in this repository, and the two
+> things that fact does not license are worth stating first.**
 >
-> The same disclosure is at the top of `packages/evals/src/live-model-lane.ts`,
-> `scripts/eval-live-model.mjs`, `test/live-model-lane.test.mjs` and
-> `test/roles-model-nodes.test.mjs`.
+> ⚠ **This block used to say the opposite** — "no model has ever executed these
+> roles", "no HTTP request has left this machine for a provider", "no
+> model-quality figure, token count or cost figure in this repository was
+> produced by a model". All three were true when written and all three are now
+> false: `docs/evidence/` holds seventeen committed reports carrying 237 provider
+> calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
+> records.
+>
+> The same disclosure was written in other files, each in different words.
+> **No count of them is given here, and no sweep is declared complete.** Every
+> pass that declared one was followed by a pass that found another copy, in
+> wording the previous grep had not searched for and once in a file no pass had
+> opened. A total stated here would be the same claim again, so none is stated.
+>
+> Deciding whether a sentence asserts provider state is a judgement about
+> meaning, which `.claude/rules/invariants.md` puts in its "poor fit" column for
+> a mechanical check; the one narrow wording that IS decidable is kept out of the
+> gate document by `test/final-evaluation-command.test.mjs` ›
+> `keeps the phrase "is reachable" out of the gate document outside its provider block`,
+> whose own header records that six of seven measured wordings slip past it.
+>
+> **So read provider state from `docs/evidence/`, not from a sentence.** Those
+> records carry the calls, and a stale comment cannot contradict a usage block.
+>
+> Found by `code-reviewer` at the AIC-19 gate, in a file no diff had touched —
+> which is how a disclosure goes stale: nothing edits it, so nothing rechecks it.
+>
+> **What still holds.** The SUITE executes no model: every test of this lane and
+> of the three roles drives an injected or fetch-stubbed port, and **no HTTP
+> request leaves this machine for a provider during `npm run check`**. A green
+> suite is therefore still not evidence that a real model's output satisfies the
+> domain schemas.
+>
+> ⚠ That sentence is deliberately narrow. An earlier draft of it said `npm run
+> check` "makes no network call", which is false — `test/incident-lab-api-status.test.mjs`
+> starts a server on `127.0.0.1` and fetches it. The narrower claim is the one the
+> per-file stubs actually support, and it is the one the original disclosure made
+> before this rewrite widened it.
+>
+> **What the evidence directory is for.** That evidence lives in committed records
+> instead, each naming its candidate, its corpus and its verdict — and the current
+> verdict on the hold-out is a REFUSAL, not a pass. `docs/v0.2-exit-gate.md` is
+> the reading of them, and its provider-access block is where that document
+> states whether the provider is reachable. ⚠ Not the only place in the
+> REPOSITORY — source and test headers describe provider access too, and keeping
+> them true is a review concern rather than a mechanism. An earlier draft claimed
+> exclusivity here and was wrong at seven sites.
 
 The lane runs two arms over a corpus **the caller declares**, at one commit, in
 one process: a scripted control arm and a model arm that differ only in those
@@ -174,8 +211,11 @@ rather than quietly reworded, because the sentence was true of a design that
 should not have been. They are reported separately and per metric, with no composite anywhere.
 If the control arm moves against its declared baseline, the regression is in the
 harness and the model arm's numbers are marked unreportable; with no declared
-baseline the model arm is unreportable for the same reason. Both arms are
-bounded by an explicit run cap and completion cap, published in the report.
+baseline the model arm is unreportable for the same reason. The plan both arms
+run is bounded by a run cap; the model arm is bounded by a completion cap and an
+output-token cap as well, since it is the arm that holds the ledger. All three
+reach the report — held by `test/live-model-lane.test.mjs` › "emits every
+declared cap in the report a record is written from".
 
 🔴 **What the control arm can catch is narrower than "it moved".** Measured over
 the final-evaluation corpus, the replay-backed control scores a single value of

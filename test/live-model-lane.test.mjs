@@ -1,11 +1,14 @@
 /**
  * AIC-94, step 8: the bounded live-model evaluation lane.
  *
- * 🔴 **Nothing in this file executes a model.** There is no provider credential
- * in this environment, so the two acceptance rows that need one — "a real model
- * executes the three roles" and "one live Incident Lab scenario completes" — are
- * not demonstrated anywhere in this repository, and this file must not be read
- * as demonstrating them. What it pins is everything the lane does AROUND the
+ * 🔴 **Nothing in this file executes a model**, and it must not be read as
+ * demonstrating that one can. Every row drives an injected or fetch-stubbed port.
+ *
+ * ⚠ **This header used to add "not demonstrated anywhere in this repository",
+ * and that is no longer true** — a model has executed these roles, and the
+ * records are committed under `docs/evidence/final-evaluation/`. What is
+ * demonstrated there is a REFUSAL rather than a pass; what is not demonstrated
+ * HERE is anything about a real model at all. What it pins is everything the lane does AROUND the
  * model: the refusal when no credential exists, the caps, the two-arm design
  * that separates a harness regression from a model-quality one, and the metric
  * this lane refuses to publish as model quality at all.
@@ -152,7 +155,7 @@ function laneOptions(overrides = {}) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* the credential refusal — the acceptance row this environment can reach      */
+/* the credential refusal                                                      */
 /* -------------------------------------------------------------------------- */
 
 test('refuses the lane with the named variable and touches nothing when no credential is set', async () => {
@@ -194,13 +197,19 @@ test('refuses the lane with the named variable and touches nothing when no crede
 /* the bounds                                                                 */
 /* -------------------------------------------------------------------------- */
 
-test('publishes the two caps it runs under rather than leaving them implicit', () => {
+test('publishes every cap a run is under rather than leaving one implicit', () => {
   const maxRuns = requireExport('LIVE_MODEL_LANE_MAX_MODEL_RUNS');
   const maxCalls = requireExport('LIVE_MODEL_LANE_MAX_MODEL_CALLS');
+  const maxOutputTokens = requireExport('LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS');
   const runsPerScenario = requireExport('LIVE_MODEL_LANE_RUNS_PER_SCENARIO');
 
   assert.equal(Number.isSafeInteger(maxRuns) && maxRuns > 0, true);
   assert.equal(Number.isSafeInteger(maxCalls) && maxCalls > 0, true);
+  assert.equal(
+    Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0,
+    true,
+    'the token ceiling is a third bound a run is under, and a record naming two of three cannot say what the third was',
+  );
   assert.equal(runsPerScenario, 3);
   assert.equal(
     maxRuns,
@@ -208,6 +217,34 @@ test('publishes the two caps it runs under rather than leaving them implicit', (
       evals.BENCHMARK_SCENARIO_PARTITIONS.holdout.length * runsPerScenario,
     'the run cap is derived from the accepted partition, not typed beside it',
   );
+});
+
+/**
+ * 🔴 The caps a run REPORTS, not the constants it exports.
+ *
+ * The row above asserts the constants are positive integers and never touches a
+ * report — its name said "publishes" while it checked nothing published, and
+ * `code-reviewer` proved it by deleting `maxOutputTokens` from both the type and
+ * the emitted report and watching the whole suite stay green. Nothing in `test/`
+ * read `report.caps` at all.
+ *
+ * A committed record is the only place a reader learns what bounds a run was
+ * under, so a cap that exists and is not published is a bound nobody can check
+ * after the fact.
+ */
+test('emits every declared cap in the report a record is written from', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(laneOptions());
+
+  assert.deepEqual(
+    Object.keys(report.caps).sort(),
+    ['maxModelCalls', 'maxModelRuns', 'maxOutputTokens'],
+    'every bound a run is under must reach the report: a record naming two of three cannot say what the third was',
+  );
+  assert.equal(report.caps.maxModelRuns, requireExport('LIVE_MODEL_LANE_MAX_MODEL_RUNS'));
+  assert.equal(report.caps.maxModelCalls, requireExport('LIVE_MODEL_LANE_MAX_MODEL_CALLS'));
+  assert.equal(report.caps.maxOutputTokens, requireExport('LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS'));
 });
 
 test('refuses a run count above the declared cap before any arm executes', async () => {
@@ -271,8 +308,10 @@ function corpusLaneOptions(
  * `npm run eval:live-model` is a shipped, repeatable command, so a lane that
  * carries `'final-evaluation'` as a literal rather than as an option spends the
  * declared one-shot hold-out on every invocation — a diagnostic run, a retry, a
- * demonstration. That it has never happened here is an accident of this
- * environment having no provider credential, which is not a mechanism.
+ * demonstration. It had never happened here only because no provider credential
+ * existed — an accident of the environment, not a mechanism, and one that ended
+ * when this gate was executed. The literal is still the defect; the accident is
+ * no longer the reason it has not bitten.
  */
 test('runs the live model lane over calibration unless the caller declares the final-evaluation corpus', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
@@ -699,8 +738,10 @@ test('reports a publication refusal as a failure rather than as a published lane
 /* -------------------------------------------------------------------------- */
 
 /**
- * The command's credential-absent behaviour, which is the ONE end-to-end path of
- * this lane that this environment can execute.
+ * The command's credential-absent behaviour — the end-to-end path of this lane
+ * that the SUITE executes. The credentialed path is executed by the gate
+ * command instead, and its records are committed under
+ * `docs/evidence/final-evaluation/`.
  *
  * It spawns with the suite's allow-list environment, so the variable really is
  * absent rather than merely unset in this test's own scope.
@@ -1197,5 +1238,88 @@ test('refuses to call a lane reportable when the model arm returned no experimen
     report.arms.model.metrics,
     undefined,
     'and it must publish no metrics, so nothing downstream can read a number that was never measured',
+  );
+});
+
+/**
+ * 🔴 An OBSERVED axis the baseline does not declare is an axis nothing checks —
+ * and the lane published one as model quality.
+ *
+ * `movesAgainst` walks the DECLARED keys. It already refuses a key it cannot
+ * compare and a key it withholds, so the two ways of declaring too much are
+ * covered. Declaring too LITTLE was not: the committed hold-out baseline pinned
+ * two axes while the control arm emitted five, and a control arm whose
+ * `challenge_effect` moved off its floor produced `movedMetrics: []`, verdict
+ * `model-quality`, model arm reportable — a harness regression published as a
+ * model result, which is the one confound this lane exists to prevent.
+ *
+ * Found by `code-reviewer` at the AIC-19 gate by executing the lane, not by
+ * reading it. The refusal is on the OBSERVED set rather than on the full metric
+ * union, because an axis the run never produced is not an axis the baseline
+ * failed to cover.
+ */
+test('refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        laneOptions({
+          controlBaseline: { unsupported_claim_rate: 0 },
+        }),
+      ),
+    (error) => {
+      assert.match(
+        error.message,
+        /does not declare/,
+        'the refusal must say the baseline is incomplete, not that something moved',
+      );
+      assert.match(
+        error.message,
+        /termination_correctness/,
+        'the refusal must name the undeclared axis, because the remedy is to add that entry',
+      );
+      assert.doesNotMatch(
+        error.message,
+        /evidence_coverage/,
+        'a withheld axis is never observed and must not be demanded of the baseline',
+      );
+      return true;
+    },
+  );
+});
+
+/**
+ * A bad baseline is a defect in a committed file, and it must not cost a model
+ * call to discover.
+ *
+ * Every refusal `movesAgainst` raises is decidable the moment the deterministic
+ * control arm returns. Evaluated after the model arm — as the first version of
+ * the completeness refusal was — an under-declared baseline destroyed a claimed
+ * one-shot hold-out to report a mistake that was free to see. Found by
+ * `security-scanner` at the AIC-19 gate.
+ */
+test('judges the declared baseline before the paid arm runs, so a bad declaration costs no model call', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  let modelArmRan = false;
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        laneOptions({
+          controlBaseline: { unsupported_claim_rate: 0 },
+          async runModelArm(plan) {
+            modelArmRan = true;
+            return scriptedExperiment('aic-19-should-not-run', perfect);
+          },
+        }),
+      ),
+    /does not declare/,
+  );
+
+  assert.equal(
+    modelArmRan,
+    false,
+    'the model arm must not have been reached: the baseline is a committed file, and refusing it after the paid arm spends a one-shot corpus to report a mistake already visible for free',
   );
 });

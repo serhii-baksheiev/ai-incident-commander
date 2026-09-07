@@ -26,7 +26,10 @@ import { CREDENTIAL_FORBIDDEN_CHARACTERS, ownValue } from './own-value.js';
  *   - no retry: the live lane must report a provider refusal, never hide one
  *     behind a loop that eventually succeeds;
  *   - no tool use and no thinking configuration: the roles here ask for a
- *     structured answer, not for an agent.
+ *     structured answer, not for an agent. What a model does with the budget
+ *     when the field is absent is the provider's business and is not described
+ *     here — an earlier version of this bullet asserted it and had nothing
+ *     behind it.
  * see roles-boundary.test.mjs › "states the adapter limits in the adapter"
  */
 
@@ -210,7 +213,10 @@ export function createReferenceModelPort({
   return {
     async complete(request) {
       // Before the request, not after it: an exhausted cap must cost nothing.
-      ledger.reserve();
+      // The per-call budget travels with the reservation so the token cap can
+      // see completions that are in flight — without it the bound only sees what
+      // has already come back, and a concurrent caller passes it entirely.
+      ledger.reserve(request.maxOutputTokens);
 
       const response = await transport(PROVIDER_MESSAGES_URL, {
         method: 'POST',

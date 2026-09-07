@@ -188,6 +188,35 @@ function claimRecord(path, body) {
   }
 }
 
+/** Where the declared control-arm expectation lives: BESIDE the records, never among them. */
+export const CONTROL_BASELINE_PATH = join(dirname(EVIDENCE_DIR), 'control-baseline.json');
+
+/** The declared control-arm expectation, minus the `_`-prefixed rationale keys. */
+export function readControlBaseline(path = CONTROL_BASELINE_PATH) {
+  // 🔴 Beside the records directory, never inside it. Placed within it, the
+  // record reader picked this file up and refused the whole run — "a final
+  // evaluation record must declare its own schemaVersion 1" — because it reads
+  // every `.json` there. The guard failed CLOSED and caught the mistake on the
+  // first dry run, which is the behaviour it was built for; the file simply does
+  // not belong among the records.
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  const declared = Object.fromEntries(
+    Object.entries(raw).filter(([key]) => !key.startsWith('_')),
+  );
+  // 🔴 `{}` is not `undefined`, and only `undefined` reaches the lane's
+  // `control-baseline-undeclared` verdict. An empty declaration — an empty file,
+  // one carrying only `_`-prefixed rationale, or a JSON array — therefore walked
+  // past that guard and was accepted as a baseline pinning no axis at all.
+  // Probed at the AIC-19 gate: `declared: {}` returned verdict `model-quality`
+  // with the model arm reportable, against nothing.
+  if (Object.keys(declared).length === 0) {
+    throw new Error(
+      'the control baseline declares no axis: an empty declaration is not an undeclared baseline, so it passes the lane\'s undeclared-baseline guard while pinning nothing — give it an entry per axis the control arm observes',
+    );
+  }
+  return declared;
+}
+
 /**
  * The replay-backed lifecycle, with the two per-run maps it needs.
  *
@@ -308,9 +337,21 @@ async function main() {
   // 6. Claim BEFORE the first scenario. The corpus is spent when scenarios
   //    execute, not when the report is written, so a crash between here and the
   //    rewrite must leave a record that refuses the next run.
+  // 🔴 Read BEFORE the claim, for the reason twenty lines above: this throws on
+  // a missing or malformed file, and a claim written before it throws refuses
+  // this candidate forever with "the corpus is spent when scenarios execute …
+  // so the runs happened" — false about a run that executed nothing. The
+  // credential check was moved above the claim for exactly this, and the first
+  // version of this read reintroduced the shape one step later.
+  // see final-evaluation-command.test.mjs › "reads the control baseline before it claims the candidate, because a broken baseline must not spend the one shot"
+  const controlBaseline = readControlBaseline();
+
   claimRecord(path, base);
 
-  const ledger = createModelUsageLedger({ maxCalls: evals.LIVE_MODEL_LANE_MAX_MODEL_CALLS });
+  const ledger = createModelUsageLedger({
+    maxCalls: evals.LIVE_MODEL_LANE_MAX_MODEL_CALLS,
+    maxOutputTokens: evals.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
+  });
   let modelExperiment;
   let publication = null;
   let publicationSkipped;
@@ -322,6 +363,18 @@ async function main() {
     headSha: head,
     runsPerScenario,
     metadata: baseMetadata(),
+    // 🔴 Declared, or the model arm can never be reportable. The lane refuses to
+    // attribute a moved metric to the model rather than to the harness without
+    // a baseline, and answers `control-baseline-undeclared`. This command passed
+    // none — measured on a post-repair calibration run where the model arm
+    // COMPLETED all 24 examples and the verdict was still that, so a hold-out in
+    // that state would have spent the one shot on an arm unreportable by
+    // construction.
+    //
+    // Read from a committed file rather than observed at run time: observing it
+    // would compare the harness against itself.
+    // see final-evaluation-command.test.mjs › "declares a control baseline for the hold-out, without which the model arm can never be reportable"
+    controlBaseline,
     modelUsage: () => ledger.read(),
     async runControlArm(plan) {
       return evals.runGraphBenchmarkExperiment({

@@ -3,9 +3,15 @@
  *
  * The acceptance criterion this file pins is the one that is decidable without a
  * provider credential and without a network: an environment that carries no key
- * must produce a NAMED refusal rather than a silently disabled lane. Everything
- * else in the model path is unreachable here — see the run report — so the
- * refusal is the part that has to be mechanical.
+ * must produce a NAMED refusal rather than a silently disabled lane. That is why
+ * the refusal is the part made mechanical here.
+ *
+ * ⚠ This header used to add that everything else in the model path was
+ * "unreachable here". That was written for AIC-94 and is no longer true: the
+ * credentialed path has been executed and its records are committed under
+ * `docs/evidence/final-evaluation/`. What remains true is narrower — the SUITE
+ * reaches the provider from no test in this file; the rows below drive the model
+ * path through an INJECTED transport.
  *
  * The environment is an ARGUMENT everywhere in this file, never `process.env`,
  * which is what makes `resolveTracingConfig` in `packages/observability`
@@ -651,6 +657,53 @@ test('stops at the declared call cap before issuing the request', async () => {
   );
 });
 
+/**
+ * The port hands the ledger the budget of the call it is ABOUT to make.
+ *
+ * The output-token cap can only bound spend if it sees completions that are in
+ * flight; a reservation carrying no estimate degrades it to the recorded-only
+ * check that granted fifty concurrent calls against a thousand-token budget.
+ * `reference-model-port.ts` says so in the comment above the reserve, and until
+ * this row nothing pinned it: every other ledger row in this file calls
+ * `reserve` DIRECTLY, so replacing the port's `ledger.reserve(request.maxOutputTokens)`
+ * with `ledger.reserve()` left the whole suite green — measured by
+ * `code-reviewer` at the AIC-19 gate.
+ */
+test('reserves the requested output budget before the call, so in-flight completions count against the cap', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  const inner = createModelUsageLedger({ maxCalls: 4, maxOutputTokens: 1000 });
+
+  // A spy over the REAL ledger, not a stub: the delegation keeps the port's
+  // own accounting honest while the row reads what the port handed over.
+  //
+  // The property is read at the boundary rather than through the cap's refusal
+  // because the two implementations differ only in an argument. Driving the cap
+  // to refuse would mean holding calls in flight, and under the regression the
+  // refusal never comes — the call hangs, the event loop stalls, and every
+  // later test in this file is cancelled by the parent. A row that reports a
+  // regression as somebody else's failure is worse than no row.
+  const reserved = [];
+  const ledger = { ...inner, reserve(perCall) { reserved.push(perCall); inner.reserve(perCall); } };
+
+  const port = createReferenceModelPort({
+    apiKey: fakeApiKey(),
+    modelId: 'claude-under-test',
+    ledger,
+    async fetchImpl() {
+      return completionResponse({ text: 'answer' });
+    },
+  });
+
+  await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 400 });
+
+  assert.deepEqual(
+    reserved,
+    [400],
+    "the port must hand the ledger the budget of the call it is about to make: a reservation with no estimate leaves the output-token cap seeing only what has already come back, and a concurrent caller passes it entirely — the defect the reservation counter beside it was added to fix",
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* A truncated answer is the harness's doing, not the model's                  */
 /* -------------------------------------------------------------------------- */
@@ -863,5 +916,277 @@ test('reads the answer schema as an own property, never one the prototype suppli
     Object.hasOwn(sentBody, 'output_config'),
     false,
     'a schema reached through the prototype chain is a constraint nobody declared: sending it would have the provider enforce a shape the run never chose, and the refusals that followed would be recorded against the model',
+  );
+});
+
+/**
+ * 🔴 The cap counted CALLS, so raising the per-call token budget raised the
+ * worst case with nothing to stop it.
+ *
+ * `DEFAULT_MAX_OUTPUT_TOKENS` went 4096 → 16000 at the AIC-19 gate for a real
+ * reason — the reference model was being cut off and the record blamed it — but
+ * both `security-scanner` and `code-reviewer` observed the same consequence
+ * independently: worst-case output spend for one hold-out went from about 614k
+ * to 2.4M tokens, and the only bound in the system counts calls. A cap that does
+ * not track the quantity being raised is not a cap on it.
+ *
+ * The token cap refuses the NEXT reservation once the budget is spent, rather
+ * than trying to refuse mid-flight: a completion already in the air has been
+ * billed whatever it returns, and pretending otherwise would understate spend.
+ */
+test('stops reserving once the declared output-token budget is spent, not only once the calls are', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 100, maxOutputTokens: 1000 });
+
+  ledger.reserve();
+  ledger.record({ inputTokens: 10, outputTokens: 600 });
+  ledger.reserve();
+  ledger.record({ inputTokens: 10, outputTokens: 500 });
+
+  assert.equal(ledger.read().outputTokens, 1100);
+  assert.throws(
+    () => ledger.reserve(),
+    /token/i,
+    'the ledger must refuse the next reservation once the output-token budget is spent, and say so in terms of tokens rather than calls',
+  );
+});
+
+test('leaves a ledger with no declared token budget bounded by calls alone, so existing callers are unchanged', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 2 });
+  ledger.reserve();
+  ledger.record({ inputTokens: 10, outputTokens: 10_000_000 });
+
+  assert.doesNotThrow(
+    () => ledger.reserve(),
+    'an absent token budget must mean no token bound at all: a missing measurement never becomes a zero, and a default cap here would refuse honest runs nobody asked to bound',
+  );
+});
+
+/**
+ * 🔴 The token cap under CONCURRENCY, which the first version got wrong in the
+ * one way this file argues against eleven lines above the check.
+ *
+ * `reserve()` read `outputTokens`, which only `record()` advances — so N in-flight
+ * reservations all saw the same total and all passed. Measured by
+ * `security-scanner` and `code-reviewer` independently: 50 reservations granted
+ * against a 1000-token cap with zero recorded. That is exactly the shape the
+ * `reserved` counter beside it was added to fix, under a comment reading "a cap
+ * whose correctness depends on how its caller happens to loop is not a cap" — so
+ * the fix is the same shape, not a precondition written in prose.
+ *
+ * `reserve` now takes the per-call budget the caller is about to spend and
+ * accounts for it pessimistically; `record` reconciles the estimate against what
+ * the completion actually cost.
+ */
+test('bounds output tokens across concurrent reservations, not only after they are recorded', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+
+  // Every reservation taken BEFORE any completion comes back, which is what a
+  // concurrent caller does and what the previous check could not see.
+  let granted = 0;
+  for (let index = 0; index < 50; index += 1) {
+    try {
+      ledger.reserve(400);
+      granted += 1;
+    } catch {
+      break;
+    }
+  }
+
+  assert.ok(
+    granted < 50,
+    `a declared per-call budget must bound concurrent reservations: 400 tokens each against a 1000-token cap cannot grant 50 (granted ${granted})`,
+  );
+  assert.equal(
+    granted,
+    2,
+    'two reservations of 400 fit under a 1000-token budget and the third does not: the bound is on what is committed, not on what has come back',
+  );
+});
+
+test('reconciles a pessimistic reservation against what the completion actually cost', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+
+  // Reserved at the budget, spent far under it: the headroom must come back, or
+  // a cap sized on budgets rather than on spend would refuse honest runs.
+  ledger.reserve(400);
+  ledger.record({ inputTokens: 10, outputTokens: 10 });
+  ledger.reserve(400);
+  ledger.record({ inputTokens: 10, outputTokens: 10 });
+  ledger.reserve(400);
+  ledger.record({ inputTokens: 10, outputTokens: 10 });
+
+  assert.equal(ledger.read().outputTokens, 30);
+  assert.doesNotThrow(
+    () => ledger.reserve(400),
+    'three completions costing 10 tokens each must not exhaust a 1000-token budget: the reservation is an estimate, and recording replaces it',
+  );
+});
+
+test('refuses a usage record that would drive the accumulator backwards', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 4, maxOutputTokens: 100 });
+  ledger.reserve();
+
+  assert.throws(
+    () => ledger.record({ inputTokens: 0, outputTokens: -100_000 }),
+    /non-negative/,
+    'a negative usage count must be refused: it drives the accumulator below zero and disables the token bound permanently',
+  );
+});
+
+/**
+ * 🔴 A per-call budget that is PRESENT and unreadable is a refusal, not an
+ * absence — the distinction `.claude/rules/invariants.md` marks in red as the
+ * one that costs a credential when it is got backwards.
+ *
+ * The first version of `reserve` collapsed them: absent meant zero, and so did
+ * `1.5`, `NaN`, `Infinity`, `1e30`, `'16000'` and `null`. Measured by
+ * `security-scanner` at the AIC-19 gate — fifty grants against a 1000-token cap,
+ * the bound silently off, while the same unreadable value travelled to the
+ * provider as `max_tokens`. Both neighbours in this file already got it right:
+ * the constructor throws on an invalid cap and `record` throws on an invalid
+ * count.
+ */
+test('refuses a per-call budget it was handed and cannot read, rather than treating it as none', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  for (const unreadable of [1.5, Number.NaN, Number.POSITIVE_INFINITY, 1e30, '16000', null, -1]) {
+    const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+    assert.throws(
+      () => ledger.reserve(unreadable),
+      /cannot read|non-negative/,
+      `reserve(${String(unreadable)}) must be refused: it was HANDED a budget and could not read it, which is not the same as being handed none`,
+    );
+  }
+
+  // Absent stays fail-open, deliberately: nothing was handed, so there is
+  // nothing to judge, and a caller that declares no budget is bounded by calls.
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+  assert.doesNotThrow(
+    () => ledger.reserve(),
+    'an ABSENT budget is the fail-open case: the ledger was handed nothing to judge',
+  );
+});
+
+/**
+ * A reservation whose call never completes is never retired — stated here
+ * because the comment beside the check once claimed the opposite.
+ *
+ * The port reserves, then every throw after it — a non-ok response, a missing
+ * text block, an unreadable usage count — skips `record`. The estimate is
+ * stranded permanently. That is the SAFE direction (the bound refuses early,
+ * never late) but "record gives the headroom back" was unconditionally false,
+ * and the path had no test. Found by `code-reviewer` at the AIC-19 gate.
+ */
+test('strands the estimate of a call that never completed, refusing early rather than late', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+  ledger.reserve(400); // the provider throws; no record follows
+  ledger.reserve(400); // likewise
+
+  assert.equal(
+    ledger.read().outputTokens,
+    0,
+    'nothing was recorded, so nothing was spent as far as this ledger can prove',
+  );
+  assert.throws(
+    () => ledger.reserve(400),
+    /reserved/,
+    'two failed calls must still consume the budget they reserved: the ledger cannot know whether the provider billed them, and refusing early is the only safe reading',
+  );
+});
+
+/**
+ * A declared budget of ZERO is a budget of zero, not an absent one.
+ *
+ * `0 > 0` is false, so the first version granted reservations under a zero cap —
+ * a config that reads as "spend nothing" and permitted everything. Flagged by
+ * both `security-scanner` and `code-reviewer` at the AIC-19 gate as unreachable
+ * today and a surprising reading of `0`. Absent still means unbounded; that
+ * distinction is the point.
+ */
+test('treats a declared output-token cap of zero as zero, not as no cap at all', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const zero = createModelUsageLedger({ maxCalls: 5, maxOutputTokens: 0 });
+  assert.throws(
+    () => zero.reserve(1),
+    /budget/,
+    'a zero budget must refuse a call that declares a cost',
+  );
+  // The case the scanners actually found: with NO declared per-call budget the
+  // arithmetic was `0 + 0 + 0 > 0`, which is false, so the call went through a
+  // cap that reads as forbidding every call.
+  assert.throws(
+    () => createModelUsageLedger({ maxCalls: 5, maxOutputTokens: 0 }).reserve(),
+    /budget/,
+    'a zero budget must refuse a call that declares nothing either: zero is a number somebody wrote down, and only ABSENT means unbounded',
+  );
+
+  const absent = createModelUsageLedger({ maxCalls: 5 });
+  assert.doesNotThrow(
+    () => absent.reserve(1_000_000),
+    'an ABSENT cap is still unbounded: nothing was declared, so there is nothing to judge',
+  );
+});
+
+/**
+ * The limit the ledger's own comment states, pinned — because a limits comment
+ * with nothing behind it is the thing `.claude/rules/invariants.md` calls a
+ * guard's claim about how far it can be trusted, and prose drifts.
+ *
+ * `record` retires the OLDEST outstanding estimate, whoever reserved it. So a
+ * caller that records without reserving frees another call's headroom. The port
+ * reserves and records in pairs, sequentially, which is what makes the
+ * accounting exact in production — but the hole is real and this row is the
+ * proof, reproduced from `code-reviewer`'s measurement at the AIC-19 gate.
+ */
+test('lets an unpaired record free another reservation headroom, which is the limit its comment states', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+  ledger.reserve(500);
+  ledger.reserve(500);
+  assert.throws(() => ledger.reserve(500), /budget/, 'the cap is fully committed');
+
+  ledger.record({ inputTokens: 0, outputTokens: 10 }); // no matching reserve
+
+  assert.doesNotThrow(
+    () => ledger.reserve(480),
+    'this is the documented hole: the unpaired record retired one of the in-flight estimates, so a third call is admitted — 10 recorded plus three budgets of 500, 500 and 480 is 1,490 against a 1,000 cap',
+  );
+});
+
+/**
+ * ⚠ The ledger bounds CALLS and OUTPUT tokens. It does not bound input tokens,
+ * and this repository's own spend is the larger half on that axis — 622,792
+ * input against 243,028 output across every committed record.
+ *
+ * Stated and pinned rather than left for a reader to infer from an absence,
+ * because the framing around the caps is "the call cap does not bound spend",
+ * and someone reading that could reasonably assume the gap was closed on every
+ * axis. Raised by `code-reviewer` at the AIC-19 gate.
+ */
+test('bounds calls and output tokens, and does not bound input tokens', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 5, maxOutputTokens: 1000 });
+  ledger.reserve(1);
+  ledger.record({ inputTokens: 10_000_000, outputTokens: 1 });
+
+  assert.equal(ledger.read().inputTokens, 10_000_000);
+  assert.doesNotThrow(
+    () => ledger.reserve(1),
+    'there is no input-token bound: a caller that needs one has to add it, and nothing here should be read as providing it',
   );
 });

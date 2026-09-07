@@ -10,14 +10,79 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
+import {
+  LIVE_MODEL_LANE_MAX_MODEL_CALLS,
+  LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
+  parseFinalEvaluationRecord,
+  BEHAVIOR_METRIC_KEYS,
+  BENCHMARK_METRIC_KEYS,
+  LIVE_MODEL_LANE_WITHHELD_METRICS,
+} from '@aic/evals';
+
 import { childEnv } from './fixtures/child-env.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The property names of the options object the command hands `runLiveModelLane`.
+ *
+ * Parsed rather than grepped: a name that appears anywhere in the file satisfies
+ * a substring check, and the two things this file needs to tell apart — an
+ * option PASSED to the lane, and a local variable of the same name — differ only
+ * in position. `typescript` is a declared devDependency and is the parser
+ * `roles-boundary.test.mjs` and `model-run-identity-correspondence.test.mjs`
+ * already use for this kind of question.
+ */
+function laneOptionNames(source) {
+  const file = ts.createSourceFile('eval-final-holdout.mjs', source, ts.ScriptTarget.Latest, true);
+  const names = [];
+
+  let calls = 0;
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'runLiveModelLane' &&
+      node.arguments.length > 0 &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      calls += 1;
+      for (const property of node.arguments[0].properties) {
+        if (!property.name || !ts.isIdentifier(property.name)) continue;
+        // A name whose value is the `undefined` keyword is not a passed option:
+        // the lane receives nothing and answers `control-baseline-undeclared`
+        // exactly as if the key were absent. Measured — the first version of
+        // this helper read the name alone and `controlBaseline: undefined`
+        // passed it.
+        const initializer = ts.isPropertyAssignment(property) ? property.initializer : undefined;
+        if (initializer && initializer.kind === ts.SyntaxKind.UndefinedKeyword) continue;
+        if (initializer && ts.isIdentifier(initializer) && initializer.text === 'undefined') continue;
+        names.push(property.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(file);
+  // Exactly one, not at least one. Unioning names across call sites lets a
+  // second call satisfy a row about the first — measured: an unused extra call
+  // passing `controlBaseline` kept this file green while the real call dropped
+  // it.
+  assert.equal(
+    calls,
+    1,
+    'the command must call runLiveModelLane exactly once with an options object: no call makes the rows built on this helper vacuous, and a second call lets one call site answer for another',
+  );
+  return names;
+}
 
 /** Every tracked source file, minus the trees a corpus name legitimately lives in. */
 function sourceFilesOutsideEvals() {
@@ -236,5 +301,440 @@ test('reports a dry run with no provider credential, because a dry run claims no
     dryRunReturn < availabilityCheck,
     true,
     'the dry run must return BEFORE the credential is required: it claims nothing and calls nothing, and the README sends a reviewer to it as the way to check a record without a credential and without spending a corpus',
+  );
+});
+
+/**
+ * 🔴 **Without a declared control baseline the hold-out could never satisfy
+ * AIC-19, however well the model did.**
+ *
+ * `runLiveModelLane` refuses to call the model arm reportable when no baseline
+ * is declared — a metric that moved could not be attributed to the model rather
+ * than to the harness — and returns `verdict: 'control-baseline-undeclared'`.
+ * The one-shot command passed none. Measured on a calibration run after the
+ * encoding repair: the model arm COMPLETED all 24 examples and the verdict was
+ * still `control-baseline-undeclared`, so a hold-out in that state would have
+ * spent the one shot and produced an unreportable arm by construction.
+ *
+ * The baseline is a committed artifact rather than a value observed at run time:
+ * observing it would make the harness-regression check compare a number against
+ * itself.
+ */
+test('declares a control baseline for the hold-out, without which the model arm can never be reportable', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+  const baseline = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'docs/evidence/control-baseline.json'), 'utf8'),
+  );
+
+  assert.equal(
+    source.includes("join(EVIDENCE_DIR, 'control-baseline.json')"),
+    false,
+    'the baseline must not live inside the records directory: readRecords parses every .json there, so a baseline placed among the records refuses the whole run — measured on the first dry run after it was added',
+  );
+  // Read from the CALL, not from the file. The regex this replaced —
+  // `/controlBaseline/` over the whole source — was satisfied by the local
+  // declaration `const controlBaseline = readControlBaseline();` twenty lines
+  // above the call, so deleting the option from the options object left the
+  // whole suite green. Measured: `code-reviewer` removed the line at the AIC-19
+  // gate and got 935 pass / 0 fail.
+  assert.ok(
+    laneOptionNames(source).includes('controlBaseline'),
+    'the command must pass a control baseline to the lane: without one the lane answers control-baseline-undeclared and the model arm is unreportable whatever it scored',
+  );
+
+  // Derived from the lane's own exported keys rather than written out here.
+  // The hand-written pair this replaced asserted that the declared axes "must be
+  // the ones the lane compares" while naming two of the five, so the row read as
+  // covering the very gap it left open — the lane compared two axes and the
+  // control arm emitted five.
+  const compared = [...BENCHMARK_METRIC_KEYS, ...BEHAVIOR_METRIC_KEYS]
+    .filter((key) => !Object.hasOwn(LIVE_MODEL_LANE_WITHHELD_METRICS, key))
+    .sort();
+  const declared = Object.keys(baseline).filter((key) => !key.startsWith('_'));
+  assert.deepEqual(
+    declared.sort(),
+    compared,
+    'the declared axes must be exactly the ones the lane compares: a missing axis is compared against nothing and can move without the lane noticing, and a withheld one pins a number nothing reads',
+  );
+  for (const key of declared) {
+    assert.equal(
+      typeof baseline[key],
+      'number',
+      `${key} must declare a number: a baseline that is not a value cannot be compared against one`,
+    );
+  }
+});
+
+/**
+ * 🔴 The same defect as the credential's, one step later — and the file already
+ * carried the fix for the earlier one when this was written.
+ *
+ * `readControlBaseline` throws on a missing, unreadable or non-JSON baseline. It
+ * was first called while building the lane's argument object, which happens
+ * AFTER `claimRecord`. So a broken baseline wrote a `claimed` record, threw, and
+ * executed nothing — and `decideFinalEvaluation` then refuses that candidate
+ * forever with "the corpus is spent when scenarios execute … so the runs
+ * happened", which is false about a run that never started. `--dry-run` returns
+ * before the lane is built, so the documented way to see every guard's verdict
+ * without executing anything could not catch it either.
+ *
+ * Found by `code-reviewer` at the AIC-19 gate.
+ */
+test('reads the control baseline before it claims the candidate, because a broken baseline must not spend the one shot', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+
+  // The CALL, not the declaration — `export function readControlBaseline(` sits
+  // earlier in the file, and matching it made this assertion unfailable on its
+  // first draft: `code-reviewer` proved it by moving the call below the claim
+  // and watching only the OTHER assertion redden.
+  const read = source.indexOf('const controlBaseline = readControlBaseline()');
+  const claim = source.indexOf('claimRecord(path, base)');
+
+  assert.notEqual(read, -1, 'the baseline read site must be findable for this row to mean anything');
+  assert.notEqual(claim, -1, 'the claim site must be findable for this row to mean anything');
+  assert.equal(
+    read < claim,
+    true,
+    'the baseline must be READ before the claim: it throws on a missing or malformed file, and a claim written before it throws refuses the candidate forever with a reason that says the runs happened',
+  );
+  assert.equal(
+    source.slice(claim).includes('readControlBaseline()'),
+    false,
+    'there must be no second read after the claim: one call above the claim does not help if the value is re-read below it',
+  );
+});
+
+/**
+ * An empty declaration is not a declaration, and `{}` walks past the guard that
+ * exists to catch exactly that.
+ *
+ * The lane answers `control-baseline-undeclared` for `undefined`, which makes an
+ * unreportable arm say so. But `readControlBaseline` returned `{}` for a file
+ * that is empty, `_`-only, or a JSON array — and `{}` is not `undefined`, so the
+ * lane accepted it, compared nothing, and would have called the model arm
+ * reportable against a baseline pinning no axis at all. Probed at the AIC-19
+ * gate: `declared: {}` returned verdict `model-quality`, `reportable: true`.
+ */
+test('refuses a control baseline that declares no axis at all, rather than passing an empty one to the lane', async () => {
+  const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'aic-baseline-'));
+
+  try {
+    for (const [name, body] of [
+      ['empty.json', '{}'],
+      ['rationale-only.json', '{"_why":"a note and nothing else"}'],
+      ['array.json', '[]'],
+    ]) {
+      const path = join(dir, name);
+      writeFileSync(path, body);
+      assert.throws(
+        () => readControlBaseline(path),
+        /declares no axis/,
+        `${name} declares no axis, and an empty object is not undefined — it passes the lane's control-baseline-undeclared guard while pinning nothing`,
+      );
+    }
+
+    const good = join(dir, 'good.json');
+    writeFileSync(good, '{"_why":"a note","unsupported_claim_rate":0}');
+    assert.deepEqual(
+      readControlBaseline(good),
+      { unsupported_claim_rate: 0 },
+      'a declaration with an axis must be returned with its `_`-prefixed rationale stripped',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * 🔴 The placement claim, made mechanical.
+ *
+ * The row above asserts that one literal expression is absent from one caller.
+ * The commit that added it said it "pins the placement so the next person
+ * putting a helper file there learns it from a red test rather than from a
+ * refused hold-out run" — which it does not: any other spelling of the path, or
+ * any other helper file dropped into the records directory, leaves it green
+ * while `readRecords` maps every `.json` there through
+ * `parseFinalEvaluationRecord` and refuses the whole run.
+ *
+ * `prose-reviewer` and `code-reviewer` both took that sentence at the AIC-19
+ * gate. This row checks the directory itself, so the sentence is now true.
+ */
+test('every .json beside the hold-out records is a hold-out record, because the reader parses all of them', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const entries = readdirSync(dir).filter((name) => name.endsWith('.json'));
+
+  assert.ok(
+    entries.length > 0,
+    'the records directory must hold records for this row to mean anything',
+  );
+  for (const name of entries) {
+    const parsed = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    assert.doesNotThrow(
+      () => parseFinalEvaluationRecord(parsed),
+      `${name} sits among the hold-out records but is not one: readRecords parses every .json in this directory, so a helper file placed here refuses the next hold-out run entirely — put it beside the directory, not inside it`,
+    );
+  }
+});
+
+/**
+ * A bound on one live path only is a bound on neither.
+ *
+ * Both commands that reach a provider build a usage ledger, and the ledger's
+ * output-token cap is optional — absent means unbounded, deliberately. So the
+ * cap exists in this repository only where a command asks for it, and this row
+ * asserts that both of them do.
+ */
+test('both live commands declare the output-token ceiling, not only the one that spends the hold-out', () => {
+  for (const command of ['scripts/eval-final-holdout.mjs', 'scripts/eval-live-model.mjs']) {
+    const source = readFileSync(join(REPO_ROOT, command), 'utf8');
+    assert.match(
+      source,
+      /maxOutputTokens: evals\.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS/,
+      `${command} must bound output tokens as well as calls: the call cap does not bound spend, because the per-call token budget sits underneath it and has already moved once`,
+    );
+  }
+});
+
+/**
+ * 🔴 The gate document's record table against the records directory, red in
+ * BOTH directions.
+ *
+ * The table opened "Six attempts, every one recorded rather than tidied away"
+ * over six rows while the directory held eight — a document asserting
+ * completeness that was not complete, which `code-reviewer` took at the AIC-19
+ * gate. The count is the kind of fact `.claude/rules/invariants.md` says must
+ * have one source or a correspondence check between the copies; a table a reader
+ * needs cannot be generated, so it gets the check.
+ *
+ * Both directions matter: a record added without a row makes the table
+ * incomplete, and a row naming no record makes it fiction.
+ */
+test('the gate document names every hold-out record, and every record it names exists', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
+
+  const onDisk = readdirSync(dir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.replace(/\.json$/, ''))
+    .sort();
+  const table = doc.slice(doc.indexOf('| record | candidate | status |'));
+  const named = [...table.matchAll(/^\| `([0-9a-f]{12})` \|/gm)]
+    .map((match) => match[1])
+    .sort();
+
+  assert.deepEqual(
+    named,
+    onDisk,
+    'the gate document\'s record table and docs/evidence/final-evaluation/ must name the same records: a record with no row makes the table\'s completeness claim false, and a row with no record makes it fiction',
+  );
+
+  const claimed = `${onDisk.length} attempts, every one recorded rather than tidied away`;
+  assert.ok(
+    doc.includes(claimed),
+    `the sentence above the table must state the number of records there are — expected "${claimed}"`,
+  );
+});
+
+/**
+ * `npm test` builds first, and nothing else says so.
+ *
+ * 🔴 This is load-bearing and was invisible. The suite imports from `dist/`, so
+ * without a build step a mutation to a `.ts` source runs against the PREVIOUS
+ * build: the test passes, and the mutation is recorded as SURVIVED when it was
+ * never compiled. That produced two false measurements at the AIC-19 gate — a
+ * phantom flaky test in one round, and a `caps` field reported as unpinned in
+ * the next when the "mutation" was a compile error the run never saw. `cab2a36`
+ * added `pretest`; until this row, deleting it again reddened nothing.
+ */
+test('builds before it tests, because a suite that reads a stale dist reports mutations as survived', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+
+  assert.equal(
+    manifest.scripts.pretest,
+    'npm run build',
+    'npm test must build first: the suite imports from dist/, so without this a mutation to a .ts source is measured against the previous build and reported as survived',
+  );
+});
+
+/**
+ * The ingestion claim is read off the records, not counted by hand.
+ *
+ * The sentence it holds is the load-bearing replacement for a withdrawn figure —
+ * it is what attributes the gate's two FAIL rows to the model rather than to the
+ * environment — and the hand-counted version of it ("all six carry
+ * `publication.status: \"absent\"`") was wrong in both halves at the AIC-19 gate:
+ * there were eight records, and four of them carried no `publication` block at
+ * all. A count in prose over a growing directory is the same defect this file's
+ * record-table row already exists to stop.
+ */
+test('no hold-out record carries a published result, which is what the gate document may say about ingestion', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const records = readdirSync(dir).filter((name) => name.endsWith('.json'));
+
+  assert.ok(records.length > 0, 'the records directory must not be empty: an empty one makes this row vacuous');
+
+  const published = records.filter((name) => {
+    const record = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    return record.publication !== undefined && record.publication.status !== 'absent';
+  });
+
+  assert.deepEqual(
+    published,
+    [],
+    'a record carrying a published result would falsify the gate document\'s statement that no ingestion occurred during this gate — update the document from the records rather than leaving the sentence standing',
+  );
+});
+
+/**
+ * 🔴 The ceiling's margin, MEASURED against the committed evidence rather than
+ * written into a comment.
+ *
+ * The first version of the constant's rationale named "the largest live run
+ * recorded in `docs/evidence/`" and quoted a run that was not the largest, then
+ * derived a margin from it that did not follow. Both gates took it, and they
+ * disagreed with each other about the real figure — which is the argument for
+ * computing it rather than stating it.
+ *
+ * This also fails LOUDLY if a future run approaches the ceiling, which is the
+ * warning a comment cannot give: the cap throws mid-run, so a sweep that would
+ * hit it should redden here first.
+ */
+test('leaves the output-token ceiling above every live run this repository has recorded', () => {
+  const roots = ['docs/evidence/calibration', 'docs/evidence/final-evaluation'];
+  let heaviest = { perCall: 0, file: '(none)' };
+
+  for (const root of roots) {
+    for (const name of readdirSync(join(REPO_ROOT, root)).filter((f) => f.endsWith('.json'))) {
+      const parsed = JSON.parse(readFileSync(join(REPO_ROOT, root, name), 'utf8'));
+      for (const carrier of [parsed, parsed.report ?? {}]) {
+        const usage = carrier?.arms?.model?.usage;
+        if (!usage || !usage.calls) continue;
+        const perCall = usage.outputTokens / usage.calls;
+        if (perCall > heaviest.perCall) heaviest = { perCall, file: `${root}/${name}` };
+      }
+    }
+  }
+  const heaviestPerCall = heaviest.perCall;
+
+  assert.ok(
+    heaviestPerCall > 0,
+    'no committed record carries a model-arm usage block with a call count, so this row would pass vacuously',
+  );
+  // 🔴 Projected over a FULL-LENGTH run, not compared against a total.
+  //
+  // The cap throws MID-RUN, so the question it has to survive is not "is it
+  // bigger than the largest run so far" — a recorded run can finish well inside
+  // the call cap. It is "can a legitimate full-length run reach it". No figure
+  // for the largest recorded run is written here: the version that named one
+  // said 47 and was refuted by a record this same branch had already committed,
+  // and it survived the pass that removed the identical sentence from
+  // `live-model-lane.ts` — which is why the number is gone rather than corrected.
+  // The first version of this row compared totals and reported a 5.19x margin
+  // where the full-run margin was 1.52x, which would have aborted a hold-out
+  // costing barely more per call than one already recorded, spending the corpus
+  // and producing nothing.
+  const projected = Math.ceil(heaviestPerCall * LIVE_MODEL_LANE_MAX_MODEL_CALLS);
+  assert.ok(
+    LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS > projected * 2,
+    `the output-token ceiling (${LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS}) must leave a full-length run room to finish: the heaviest per-call rate this repository has recorded is ${Math.round(heaviestPerCall)} output tokens (${heaviest.file}), which over the ${LIVE_MODEL_LANE_MAX_MODEL_CALLS}-call cap projects to ${projected}. A ceiling within reach of that aborts an honest run mid-flight instead of bounding a runaway one`,
+  );
+});
+
+/**
+ * The one baseline this repository ships must be usable from the command that
+ * takes a baseline path.
+ *
+ * `--control-baseline` passed the parsed file straight through, so pointing it
+ * at `docs/evidence/control-baseline.json` was refused by the lane for declaring
+ * `_why`, `_measured`, `_limit` and `_completeness` — metrics it does not
+ * compare. It failed closed, so nothing was published wrongly; it made the
+ * shipped baseline unusable from the cheap lane. Found by `code-reviewer`.
+ */
+test("reads the repository's own committed baseline from the calibration command without refusing its rationale", async () => {
+  const { readControlBaseline, CONTROL_BASELINE_PATH } = await import(
+    '../scripts/eval-final-holdout.mjs'
+  );
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-live-model.mjs'), 'utf8');
+  const raw = JSON.parse(readFileSync(CONTROL_BASELINE_PATH, 'utf8'));
+
+  assert.ok(
+    Object.keys(raw).some((key) => key.startsWith('_')),
+    'the committed baseline must carry rationale keys for this row to mean anything',
+  );
+
+  // Behaviour first: the shipped file, through the shared reader, must come out
+  // as something the lane compares rather than as something it refuses.
+  const declared = readControlBaseline(CONTROL_BASELINE_PATH);
+  assert.equal(
+    Object.keys(declared).some((key) => key.startsWith('_')),
+    false,
+    "the reader must strip `_`-prefixed rationale, or the repository's own baseline is refused by the lane as declaring metrics it does not compare",
+  );
+
+  // And ONE implementation of it. A second copy had already diverged from this
+  // one — it lacked the empty-declaration refusal — which is the case
+  // `.claude/rules/invariants.md` names: the copy nobody is looking at is the
+  // one that is wrong.
+  assert.match(
+    source,
+    /import \{ readControlBaseline \} from '\.\/eval-final-holdout\.mjs'/,
+    'the calibration command must import the one baseline reader rather than carry its own',
+  );
+  assert.equal(
+    /control-baseline\.json'?,\s*'utf8'/.test(source) ||
+      /JSON\.parse\(readFileSync\(declaredBaselinePath/.test(source),
+    false,
+    'the calibration command must not parse the baseline itself: that second copy is what diverged',
+  );
+});
+
+/**
+ * A LEXICAL guard on one phrasing, and its name says so because the first
+ * version's did not.
+ *
+ * ⚠ **This row does not enforce "provider access is stated once".** It was
+ * written claiming to, and `prose-reviewer` measured what it actually catches:
+ * seven plausible wordings appended to the document, six passed unnoticed —
+ * including the exact present-tense credit-balance probe the check was written
+ * to stop, which contains no form of the word "reachable". Only "The provider is
+ * reachable." reddened it.
+ *
+ * That invariant is not hookable. Deciding whether a sentence asserts provider
+ * state is a judgement about meaning, which `.claude/rules/invariants.md` puts
+ * in its "poor fit" column, and a guard that claims more than it delivers is
+ * worse than none — readers rely on cover that is not there. What survives is
+ * the narrow thing that IS decidable: the one wording most likely to be written
+ * again, kept out of the document outside its block. Everything wider is a
+ * review concern.
+ */
+test('keeps the phrase "is reachable" out of the gate document outside its provider block', () => {
+  const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
+  const lines = doc.split('\n');
+
+  const blockHeading = lines.findIndex((line) =>
+    line.includes('## Provider access — read this before any ⛔ section below'),
+  );
+  assert.notEqual(
+    blockHeading,
+    -1,
+    'the gate document must carry the provider-access block: a ⛔ section below defers to it, so removing it leaves those sections reading as current',
+  );
+
+  // The block is the quoted region that opens with that heading.
+  let blockEnd = blockHeading;
+  while (blockEnd + 1 < lines.length && lines[blockEnd + 1].startsWith('>')) blockEnd += 1;
+
+  const asserts = /\b(is|are|remains?) (reachable|unreachable)\b|\bReachable\b|\bstill unreachable\b/i;
+  const strays = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (index >= blockHeading && index <= blockEnd) continue;
+    if (asserts.test(lines[index])) strays.push(`${index + 1}: ${lines[index].trim()}`);
+  }
+
+  assert.deepEqual(
+    strays,
+    [],
+    `this exact wording belongs only in the provider-access block at the top of docs/v0.2-exit-gate.md — point at the block instead. ⚠ This row catches ONE phrasing and is not a guarantee that provider state is stated once; six of seven wordings measured at the AIC-19 gate slipped past it:\n${strays.join('\n')}`,
   );
 });
