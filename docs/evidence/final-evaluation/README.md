@@ -89,7 +89,14 @@ assumes covers more than it does.
    them, tunes against them and *then* runs the evaluation once leaves a clean
    one-shot record. The corpus is protected from automated re-evaluation, not
    from reading.
-7. **A deterministic-only final evaluation would be worse than none.** The
+7. **`report.arms.model.unreportableReason` can be quoted from the provider.**
+   When the model arm ends on a transport or HTTP error, up to 400 characters of
+   the provider's own response body reach that field — and this file's records
+   are committed, so remote text enters this repository's history. It is capped
+   and never interpreted, but it is not authored here and should be read that
+   way. Found by a cold security review, which proved the path with a stub
+   provider echoing a canary into its 401 body.
+8. **A deterministic-only final evaluation would be worse than none.** The
    replay-backed control arm scores a single value of zero on every metric it
    emits over this corpus, so spending the one shot on it would produce a record
    carrying no information about the candidate. The command runs both arms and

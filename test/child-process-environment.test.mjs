@@ -146,6 +146,12 @@ function testSources() {
     }
   };
   walk(testRoot);
+  // ⚠ `scripts/` too, and it was not here before. Both commands under it spawn
+  // `git`, and both correctly pass `env: childEnv()` — but the audit walked
+  // `test/` only, so a future edit dropping that argument would go unnoticed in
+  // exactly the two files that run beside a live provider credential. Found by
+  // a cold security review of the AIC-19 gate branch; the gap predates it.
+  walk(join(projectRoot, 'scripts'));
   return sources;
 }
 
@@ -351,7 +357,11 @@ test('imports the child-environment fixture in every file that spawns a child pr
 
   const notImporting = [...spawningFiles].filter((path) => {
     const text = readFileSync(resolve(projectRoot, path), 'utf8');
-    return !/from\s+'(?:\.\/|\.\.\/)+fixtures\/child-env\.mjs'/.test(text);
+    // The optional `test/` segment is what a file OUTSIDE the test tree needs:
+    // `scripts/` reaches the fixture as `../test/fixtures/child-env.mjs`. Added
+    // with the walk over `scripts/` above — without it the widened audit would
+    // have reported two files that do exactly the right thing.
+    return !/from\s+'(?:\.\.?\/)+(?:test\/)?fixtures\/child-env\.mjs'/.test(text);
   });
 
   assert.deepEqual(

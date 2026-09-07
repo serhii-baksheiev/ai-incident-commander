@@ -180,3 +180,69 @@ test('refuses a re-run at a candidate whose claim never completed, and names bot
     `the remedy must name voiding, because a crashed run is the case a void record exists for: ${outcome.remedy}`,
   );
 });
+
+/**
+ * 🔴 **A directory the guard was handed and could not read is a REFUSAL, not an
+ * absence — and this module got that right for a FILE and wrong for the
+ * DIRECTORY holding it.**
+ *
+ * `readRecords` refuses a record it cannot parse, and the row above pins that.
+ * The `readdirSync` beside it caught every error and returned `[]`, while its
+ * own comment two lines below said "a directory that exists and cannot be read
+ * is not this branch". Measured: with `chmod 000` on the evidence directory, six
+ * records became zero and `decideFinalEvaluation` flipped from a refusal to
+ * `{ admit: true }` — so a permissions accident, a container volume mounted
+ * wrong, or the path replaced by a file silently re-spends the one-shot hold-out
+ * against a live provider, with no refusal and no trace.
+ *
+ * `.claude/rules/invariants.md` names this exact failure: a field that is ABSENT
+ * is the fail-open case; one that is PRESENT in a shape the guard cannot read is
+ * the refusal case, "and reporting that is the one thing it is for". Only
+ * `ENOENT` — the directory genuinely is not there — is an absence.
+ */
+test('refuses an evidence directory it cannot read, rather than reporting no records', async () => {
+  const { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { readRecords } = await import('../scripts/eval-final-holdout.mjs');
+
+  const root = mkdtempSync(join(tmpdir(), 'aic-19-unreadable-'));
+  const evidence = join(root, 'final-evaluation');
+  mkdirSync(evidence);
+  writeFileSync(
+    join(evidence, 'aaaaaaaaaaaa.json'),
+    `${JSON.stringify(recordFor('sha256:covered'))}\n`,
+  );
+
+  assert.equal(readRecords(evidence).length, 1, 'the readable directory is the control');
+
+  try {
+    chmodSync(evidence, 0o000);
+    assert.throws(
+      () => readRecords(evidence),
+      /could not be read|refusal/i,
+      'an unreadable directory must refuse: returning no records admits a re-run of an irreversible evaluation precisely when the evidence directory is in a state nobody understands',
+    );
+  } finally {
+    chmodSync(evidence, 0o755);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('reads a genuinely absent evidence directory as no records, which is the one fail-open case', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { readRecords } = await import('../scripts/eval-final-holdout.mjs');
+
+  const root = mkdtempSync(join(tmpdir(), 'aic-19-absent-'));
+  try {
+    assert.deepEqual(
+      readRecords(join(root, 'nothing-here')),
+      [],
+      'a directory that is not there has nothing to judge, exactly as an absent field does — the first run in a fresh checkout must not be refused',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

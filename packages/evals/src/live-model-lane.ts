@@ -430,7 +430,16 @@ export async function runLiveModelLane(
   try {
     model = await options.runModelArm(plan);
   } catch (error) {
-    armRefusal = error instanceof Error ? error.message : String(error);
+    // ⚠ Capped, because this string is PROVIDER-QUOTED and now persists.
+    // `ModelCompletionError` embeds up to 400 characters of the provider's HTTP
+    // error body, and this value reaches `unreportableReason` — which the
+    // one-shot command writes into a COMMITTED evidence record, to stdout and
+    // to `--out`. Before the arm-level catch that text reached stderr only. The
+    // cap bounds what a remote party can put into this repository's history; it
+    // does not sanitise, and the evidence README says the field is quoted from
+    // the provider rather than authored here.
+    const raw = error instanceof Error ? error.message : String(error);
+    armRefusal = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
   }
 
   const controlExampleIds = exampleIdsOf(control);

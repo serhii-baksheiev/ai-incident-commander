@@ -133,9 +133,25 @@ export function readRecords(directory = EVIDENCE_DIR) {
   let names;
   try {
     names = readdirSync(directory).filter((name) => name.endsWith('.json'));
-  } catch {
-    // An absent directory is genuinely no records — the fail-open case, and the
-    // only one. A directory that exists and cannot be read is not this branch.
+  } catch (error) {
+    // 🔴 Only ENOENT. An absent directory has nothing to judge — the fail-open
+    // case, and the only one; a fresh checkout must not be refused. Anything
+    // else is a directory this guard was HANDED and could not read, which is
+    // the refusal case: `.claude/rules/invariants.md` says reporting that is
+    // the one thing it is for.
+    //
+    // The bare `catch` this replaces claimed exactly the sentence above and did
+    // the opposite. Measured: `chmod 000` on the evidence directory turned six
+    // records into zero and flipped `decideFinalEvaluation` to `{admit: true}`,
+    // so a permissions accident or a path replaced by a file silently re-spent
+    // the one-shot hold-out against a live provider — no refusal, no trace.
+    // see final-evaluation-oneshot.test.mjs › "refuses an evidence directory it cannot read, rather than reporting no records"
+    // see final-evaluation-oneshot.test.mjs › "reads a genuinely absent evidence directory as no records, which is the one fail-open case"
+    if (error?.code !== 'ENOENT') {
+      throw new Error(
+        `the final evaluation evidence directory could not be read: an evidence directory in a state nobody understands is a refusal, not an absence — ${error.message}`,
+      );
+    }
     return [];
   }
   return names.map((name) => {
