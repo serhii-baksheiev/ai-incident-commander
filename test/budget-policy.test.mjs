@@ -3080,14 +3080,20 @@ test('never splits a character when it truncates a refusal', () => {
 });
 
 /**
- * The same bound, at the six refusal sites that interpolate a caller string
+ * The same bound, at the five refusal sites that interpolate a caller string
  * directly rather than through `describeRefusedValue`.
  *
+ * ⚠ Five SITES carrying six INTERPOLATIONS, which the first version of this
+ * sentence collapsed into "six sites". An arm's `policyVersion` is named at
+ * five throws; the last of them also names the stop-kind key, so that one line
+ * carries two. Counting interpolations and calling them sites is how the module
+ * comment and this docblock came to disagree — `budget-policy.ts` says "it
+ * names five refusals below", and it is right.
+ *
  * Round 12 bounded the value in the parse refusal and said, in the comment
- * above the helper, that it was "the only one in this module". Counted on the
- * parent commit, it was one of six: an arm's `policyVersion` reaches FIVE
- * refusals raw, and a stop-kind KEY — a string off `Object.keys`, so equally
- * the caller's — reaches one. A ten-million-character version produced a
+ * above the helper, that it was "the only one in this module". Counting the
+ * parse refusal itself, it was one of six such refusals on the parent commit:
+ * the five above, plus its own. A ten-million-character version produced a
  * 10 000 091-character refusal, and a ten-million-character stop-kind key
  * produced 10 000 249.
  *
