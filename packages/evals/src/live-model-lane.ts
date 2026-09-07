@@ -118,19 +118,26 @@ export const LIVE_MODEL_LANE_MAX_MODEL_CALLS =
  * alone went from roughly 614k to 2.4M output tokens, and nothing tracked the
  * quantity that had changed.
  *
- * The number is a CEILING chosen to bound spend, not a forecast. It clears every
- * live run this repository has recorded with margin to spare, and no figure for
- * that margin is written here — a first version of this comment named a run that
- * was not the largest and a factor that did not follow from it, and both gates
- * took it. The margin is MEASURED against the committed evidence instead, so it
- * cannot drift as runs are added.
+ * The number is a CEILING chosen to bound a RUNAWAY run, not a forecast of a
+ * normal one, and no figure for its margin is written here. Two earlier versions
+ * of this comment got that wrong in different ways: the first named a run that
+ * was not the largest and derived a factor that did not follow, and the second
+ * compared the ceiling against a recorded TOTAL — which is the wrong comparison
+ * for a cap that throws MID-RUN. The largest recorded run is 47 calls against a
+ * 150-call cap, so a ceiling that clears its total can still abort a
+ * full-length one.
+ *
+ * What has to hold is that a legitimate full-length run finishes. That is
+ * MEASURED against the committed evidence — the heaviest per-call rate on record,
+ * projected over the call cap — so it cannot drift as runs are added, and it
+ * reddens if a future run approaches the ceiling.
  * see final-evaluation-command.test.mjs › "leaves the output-token ceiling above every live run this repository has recorded"
  *
  * A run that needs more STOPS at the next reservation rather than spending past
  * the bound — the same property that makes the call cap safe to pick.
  * see roles-port-contract.test.mjs › "stops reserving once the declared output-token budget is spent, not only once the calls are"
  */
-export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 400_000;
+export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 800_000;
 
 /**
  * The metric this lane refuses to publish as model quality, and why.

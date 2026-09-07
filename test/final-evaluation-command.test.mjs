@@ -17,6 +17,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  LIVE_MODEL_LANE_MAX_MODEL_CALLS,
   LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   parseFinalEvaluationRecord,
   BEHAVIOR_METRIC_KEYS,
@@ -491,27 +492,38 @@ test('the gate document names every hold-out record, and every record it names e
  */
 test('leaves the output-token ceiling above every live run this repository has recorded', () => {
   const roots = ['docs/evidence/calibration', 'docs/evidence/final-evaluation'];
-  let largest = { outputTokens: 0, file: '(none)' };
+  let heaviest = { perCall: 0, file: '(none)' };
 
   for (const root of roots) {
     for (const name of readdirSync(join(REPO_ROOT, root)).filter((f) => f.endsWith('.json'))) {
       const parsed = JSON.parse(readFileSync(join(REPO_ROOT, root, name), 'utf8'));
       for (const carrier of [parsed, parsed.report ?? {}]) {
         const usage = carrier?.arms?.model?.usage;
-        if (usage && usage.outputTokens > largest.outputTokens) {
-          largest = { outputTokens: usage.outputTokens, file: `${root}/${name}` };
-        }
+        if (!usage || !usage.calls) continue;
+        const perCall = usage.outputTokens / usage.calls;
+        if (perCall > heaviest.perCall) heaviest = { perCall, file: `${root}/${name}` };
       }
     }
   }
+  const heaviestPerCall = heaviest.perCall;
 
   assert.ok(
-    largest.outputTokens > 0,
-    'no committed record carries a model-arm usage block, so this row would pass vacuously',
+    heaviestPerCall > 0,
+    'no committed record carries a model-arm usage block with a call count, so this row would pass vacuously',
   );
+  // 🔴 Projected over a FULL-LENGTH run, not compared against a total.
+  //
+  // The cap throws MID-RUN, so the question it has to survive is not "is it
+  // bigger than the largest run so far" — the largest recorded run is 47 calls
+  // against a 150-call cap. It is "can a legitimate full-length run reach it".
+  // The first version of this row compared totals and reported a 5.19x margin
+  // where the full-run margin was 1.52x, which would have aborted a hold-out
+  // costing barely more per call than one already recorded, spending the corpus
+  // and producing nothing.
+  const projected = Math.ceil(heaviestPerCall * LIVE_MODEL_LANE_MAX_MODEL_CALLS);
   assert.ok(
-    LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS > largest.outputTokens * 2,
-    `the output-token ceiling (${LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS}) must stay clear of the largest live run this repository has recorded (${largest.outputTokens} in ${largest.file}): the cap throws mid-run, so a ceiling within reach of an ordinary sweep refuses honest work instead of bounding spend`,
+    LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS > projected * 2,
+    `the output-token ceiling (${LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS}) must leave a full-length run room to finish: the heaviest per-call rate this repository has recorded is ${Math.round(heaviestPerCall)} output tokens (${heaviest.file}), which over the ${LIVE_MODEL_LANE_MAX_MODEL_CALLS}-call cap projects to ${projected}. A ceiling within reach of that aborts an honest run mid-flight instead of bounding a runaway one`,
   );
 });
 
