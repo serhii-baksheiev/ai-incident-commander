@@ -797,6 +797,26 @@ test('derives every answer-schema enum from the domain rather than restating it'
 
   const [challengeSchema, assessmentSchema] = captured;
 
+  // 🔴 All THREE roles, not two. Deleting `outputSchema: HYPOTHESES_SCHEMA` left
+  // the suite at 911/911: that wiring was demonstrated by nothing, while the
+  // other two reddened only incidentally through the enum comparisons below.
+  // A schema a role does not send is a constraint the provider never applies.
+  const hypothesesNode = requireExport('createModelGenerateHypotheses')({
+    port: capturingPort,
+    at,
+  });
+  try {
+    await hypothesesNode(initialState());
+  } catch {
+    // the port throws by design; the schema was captured first
+  }
+  const hypothesesSchema = captured[captured.length - 1];
+  assert.equal(
+    hypothesesSchema?.properties?.hypotheses?.items?.properties?.statement?.type,
+    'string',
+    'generate_hypotheses must send its schema too: a role that declares none asks the provider to enforce nothing, and the encoding failure this repair removes comes straight back for that role',
+  );
+
   assert.deepEqual(
     challengeSchema.properties.discriminatingTests.items.properties.cost.enum,
     InvestigationTestSchema.shape.cost.options,

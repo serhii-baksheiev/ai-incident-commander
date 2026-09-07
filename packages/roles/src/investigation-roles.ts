@@ -50,12 +50,20 @@ import { ownValue } from './own-value.js';
  *
  * ## Limits, stated
  *
- *   - **The answer is JSON in text, not a provider structured-output feature.**
- *     A structured-output request is a second wire shape this repository cannot
- *     exercise without a credential, so the roles ask for JSON and parse it
- *     tolerantly — first `{` to last `}`, one forward scan.
+ *   - **The answer shape is enforced by the PROVIDER, and the tolerant parse is
+ *     the belt beside those braces.** Each role declares a JSON schema, sent as
+ *     `output_config.format`, so a malformed answer is refused before it reaches
+ *     here. The first-`{`-to-last-`}` scan stays for the answer the schema does
+ *     not cover and for a provider that ignores the field.
+ *     see roles-port-contract.test.mjs › "constrains the answer shape at the provider when a role declares one"
  *     see roles-model-nodes.test.mjs › "reads a JSON answer the model wrapped in
  *     prose or a fenced block"
+ *
+ *     ⚠ This bullet used to read "The answer is JSON in text, not a provider
+ *     structured-output feature… this repository cannot exercise without a
+ *     credential". Both halves stopped being true when the schemas landed —
+ *     ninety lines below it — and the row named above exercises the wire shape
+ *     with an injected transport and no credential at all.
  *   - **One completion per role execution.** No repair round, no retry: a role
  *     that could re-ask on a refused answer would hide the model-quality signal
  *     the lane is measuring.
@@ -124,12 +132,24 @@ import { ownValue } from './own-value.js';
 const enumOf = (schema: unknown, field: string): readonly string[] => {
   const shape = (schema as { shape?: Record<string, { options?: readonly string[] }> }).shape;
   const options = shape?.[field]?.options;
-  if (options === undefined || options.length === 0) {
+  // ⚠ `.options` is an array of SCHEMAS on a union or discriminated union, not
+  // of strings — zod uses the same property name for both. No domain field is a
+  // union today, so this is latent; the string check makes the refusal total
+  // rather than resting on that staying true.
+  if (
+    options === undefined ||
+    options.length === 0 ||
+    !options.every((value) => typeof value === 'string')
+  ) {
     throw new Error(
       `the domain schema does not declare an enum for ${field}: a hand-written fallback here is the second spelling this derivation exists to prevent`,
     );
   }
-  return options;
+  // Copied, not handed over: `.options` is the array zod itself holds, so
+  // returning it puts a live domain object inside a schema this module ships to
+  // a caller. Measured before the copy: mutating it through the handed-over
+  // schema persisted into every later request in the process.
+  return Object.freeze([...options]);
 };
 
 const HYPOTHESES_SCHEMA = Object.freeze({
@@ -191,7 +211,11 @@ const CHALLENGE_SCHEMA = Object.freeze({
         properties: {
           id: { type: 'string' },
           predictionId: { type: 'string' },
-          tool: { type: 'string' },
+          // `minLength` matches the domain's `ToolIdSchema` (`z.string().min(1)`).
+          // Without it a schema-valid empty tool id reached the domain and was
+          // refused there — the schema permitting what the domain rejects, which
+          // is the shape this whole repair exists to remove.
+          tool: { type: 'string', minLength: 1 },
           input: {
             type: 'object',
             properties: {

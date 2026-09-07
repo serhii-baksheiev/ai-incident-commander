@@ -809,3 +809,59 @@ test('sends no output_config when a role declares no shape', async () => {
     'an absent schema must send no output_config at all: an empty one is a constraint nobody declared',
   );
 });
+
+/**
+ * 🔴 **The own-read on `outputSchema`, pinned.**
+ *
+ * A polluted `Object.prototype.outputSchema` would otherwise make every role
+ * send a constraint no caller declared — and the provider would then enforce a
+ * shape the run never chose, turning the answers into refusals attributed to the
+ * model. The guard was correct when measured directly and demonstrated by
+ * nothing: replacing `ownValue(request, 'outputSchema')` with
+ * `request.outputSchema` left the suite at 911/911.
+ *
+ * Both sibling own-reads in this package carry a named row each; this one had a
+ * comment making the claim and no test behind it, which `.claude/rules/invariants.md`
+ * calls a guess rather than a check.
+ */
+test('reads the answer schema as an own property, never one the prototype supplied', async () => {
+  const createReferenceModelPort = requireExport('createReferenceModelPort');
+  const createModelUsageLedger = requireExport('createModelUsageLedger');
+  let sentBody;
+
+  const port = createReferenceModelPort({
+    apiKey: 'test-key-not-a-real-credential',
+    modelId: 'claude-under-test',
+    ledger: createModelUsageLedger({ maxCalls: 4 }),
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: '{}' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+
+  const planted = { type: 'object', properties: {}, additionalProperties: false };
+  // eslint-disable-next-line no-extend-native
+  Object.defineProperty(Object.prototype, 'outputSchema', {
+    value: planted,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    await port.complete({ system: 's', prompt: 'p', maxOutputTokens: 64 });
+  } finally {
+    delete Object.prototype.outputSchema;
+  }
+
+  assert.equal(
+    Object.hasOwn(sentBody, 'output_config'),
+    false,
+    'a schema reached through the prototype chain is a constraint nobody declared: sending it would have the provider enforce a shape the run never chose, and the refusals that followed would be recorded against the model',
+  );
+});
