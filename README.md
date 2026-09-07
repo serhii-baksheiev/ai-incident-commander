@@ -212,7 +212,13 @@ should not have been. They are reported separately and per metric, with no compo
 If the control arm moves against its declared baseline, the regression is in the
 harness and the model arm's numbers are marked unreportable; with no declared
 baseline the model arm is unreportable for the same reason. Both arms are
-bounded by an explicit run cap and completion cap, published in the report.
+bounded by **three** explicit caps — a run cap, a completion cap and an
+output-token cap — all published in the report, held by
+`test/live-model-lane.test.mjs` › "publishes every cap a run is under rather than
+leaving one implicit". The third one is why the count is not written out again
+anywhere else: this sentence said "run cap and completion cap" for one round
+after the output-token cap shipped, which is the drift that row now catches on
+the report and a cold reader caught here.
 
 🔴 **What the control arm can catch is narrower than "it moved".** Measured over
 the final-evaluation corpus, the replay-backed control scores a single value of

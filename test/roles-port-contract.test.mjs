@@ -1163,7 +1163,7 @@ test('lets an unpaired record free another reservation headroom, which is the li
 
   assert.doesNotThrow(
     () => ledger.reserve(480),
-    'this is the documented hole: the unpaired record retired one of the in-flight estimates, so a third call is admitted and three calls at budget total 1,490 against a 1,000 cap',
+    'this is the documented hole: the unpaired record retired one of the in-flight estimates, so a third call is admitted — 10 recorded plus three budgets of 500, 500 and 480 is 1,490 against a 1,000 cap',
   );
 });
 
