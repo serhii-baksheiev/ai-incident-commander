@@ -833,3 +833,46 @@ test('derives every answer-schema enum from the domain rather than restating it'
     'the strength vocabulary must come from the domain',
   );
 });
+
+/**
+ * 🔴 The token budget the roles hand the port, pinned — because the last time it
+ * was wrong the record blamed the model.
+ *
+ * The hold-out at candidate `872ef36dea33` refused the model arm with
+ * `stop_reason: max_tokens` at exactly 4096 output tokens, and the record read
+ * as a model-quality failure. The budget was raised to clear it. That raise was
+ * then MUTATION-PROVEN unpinned at the AIC-19 gate: setting the constant back to
+ * 4096 left the whole suite green, so nothing in this repository would have
+ * noticed the ceiling coming back.
+ *
+ * This row asserts the number the roles actually send, read off the request the
+ * port received, rather than the constant — a test that imports the constant and
+ * compares it to itself pins nothing.
+ */
+test('hands the provider a token budget large enough that the reference model was not cut off at 4096', async () => {
+  const roles = [
+    ['createModelGenerateHypotheses', { hypotheses: [{ id: 'h-1', statement: 's' }] }],
+    [
+      'createModelInterpretResidualEvidence',
+      { assessments: [{ id: 'e-1', supports: [], contradicts: [], rationale: 'r' }] },
+    ],
+  ];
+
+  for (const [name, answer] of roles) {
+    const { port, requests } = fakePort([answer]);
+    const node = requireExport(name)({ port, at });
+    await node(initialState()).catch(() => {});
+
+    assert.equal(requests.length, 1, `${name} must have reached the port exactly once`);
+    const budget = requests[0].maxOutputTokens;
+    assert.equal(
+      typeof budget,
+      'number',
+      `${name} must declare a token budget: absent, the provider applies its own and the roles no longer decide it`,
+    );
+    assert.ok(
+      budget > 4096,
+      `${name} must ask for more than 4096 output tokens: measured on the hold-out at candidate 872ef36dea33, the reference model stopped at exactly that ceiling with stop_reason max_tokens and the record recorded it as the model answering badly (got ${budget})`,
+    );
+  }
+});

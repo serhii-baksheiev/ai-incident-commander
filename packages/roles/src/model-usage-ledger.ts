@@ -60,9 +60,26 @@ export interface ModelUsageLedger {
  */
 export function createModelUsageLedger({
   maxCalls,
-}: Readonly<{ maxCalls: number }>): ModelUsageLedger {
+  maxOutputTokens,
+}: Readonly<{ maxCalls: number; maxOutputTokens?: number }>): ModelUsageLedger {
   if (!Number.isSafeInteger(maxCalls) || maxCalls < 0) {
     throw new Error('a model call cap must be a non-negative safe integer');
+  }
+  // 🔴 Optional, and ABSENT means unbounded rather than zero.
+  //
+  // A default here would refuse honest runs nobody asked to bound, and this
+  // repository's standing rule is that a missing measurement never becomes a
+  // zero. The bound exists because the cap counted CALLS while the per-call
+  // token budget was raised beneath it: `DEFAULT_MAX_OUTPUT_TOKENS` went
+  // 4096 → 16000 at the AIC-19 gate, taking one hold-out's worst-case output
+  // spend from roughly 614k to 2.4M tokens with nothing tracking the quantity
+  // that moved. Observed by `security-scanner` and `code-reviewer` separately.
+  // see roles-port-contract.test.mjs › "stops reserving once the declared output-token budget is spent, not only once the calls are"
+  if (
+    maxOutputTokens !== undefined &&
+    (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 0)
+  ) {
+    throw new Error('a model output-token cap must be a non-negative safe integer');
   }
 
   // 🔴 TWO counters, and the split is the whole point.
@@ -91,6 +108,14 @@ export function createModelUsageLedger({
   return {
     reserve() {
       if (reserved >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
+      // Checked on the NEXT reservation rather than mid-flight: a completion
+      // already in the air is billed whatever it returns, so refusing it after
+      // the fact would understate spend rather than prevent it.
+      if (maxOutputTokens !== undefined && outputTokens >= maxOutputTokens) {
+        throw new Error(
+          `the declared output-token budget is spent (${outputTokens} of ${maxOutputTokens} output tokens across ${calls} completions): refusing the next call rather than continuing, because the per-call token budget is not what bounds a run's cost`,
+        );
+      }
       reserved += 1;
     },
     record(usage) {

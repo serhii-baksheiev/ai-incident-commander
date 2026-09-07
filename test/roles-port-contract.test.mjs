@@ -865,3 +865,49 @@ test('reads the answer schema as an own property, never one the prototype suppli
     'a schema reached through the prototype chain is a constraint nobody declared: sending it would have the provider enforce a shape the run never chose, and the refusals that followed would be recorded against the model',
   );
 });
+
+/**
+ * 🔴 The cap counted CALLS, so raising the per-call token budget raised the
+ * worst case with nothing to stop it.
+ *
+ * `DEFAULT_MAX_OUTPUT_TOKENS` went 4096 → 16000 at the AIC-19 gate for a real
+ * reason — the reference model was being cut off and the record blamed it — but
+ * both `security-scanner` and `code-reviewer` observed the same consequence
+ * independently: worst-case output spend for one hold-out went from about 614k
+ * to 2.4M tokens, and the only bound in the system counts calls. A cap that does
+ * not track the quantity being raised is not a cap on it.
+ *
+ * The token cap refuses the NEXT reservation once the budget is spent, rather
+ * than trying to refuse mid-flight: a completion already in the air has been
+ * billed whatever it returns, and pretending otherwise would understate spend.
+ */
+test('stops reserving once the declared output-token budget is spent, not only once the calls are', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 100, maxOutputTokens: 1000 });
+
+  ledger.reserve();
+  ledger.record({ inputTokens: 10, outputTokens: 600 });
+  ledger.reserve();
+  ledger.record({ inputTokens: 10, outputTokens: 500 });
+
+  assert.equal(ledger.read().outputTokens, 1100);
+  assert.throws(
+    () => ledger.reserve(),
+    /token/i,
+    'the ledger must refuse the next reservation once the output-token budget is spent, and say so in terms of tokens rather than calls',
+  );
+});
+
+test('leaves a ledger with no declared token budget bounded by calls alone, so existing callers are unchanged', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 2 });
+  ledger.reserve();
+  ledger.record({ inputTokens: 10, outputTokens: 10_000_000 });
+
+  assert.doesNotThrow(
+    () => ledger.reserve(),
+    'an absent token budget must mean no token bound at all: a missing measurement never becomes a zero, and a default cap here would refuse honest runs nobody asked to bound',
+  );
+});

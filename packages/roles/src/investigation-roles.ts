@@ -244,21 +244,19 @@ const CHALLENGE_SCHEMA = Object.freeze({
 export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.2' as const;
 
 /**
- * 🔴 **Raised from 4096, because the reference model spends this budget on
- * THINKING before it answers.**
+ * 🔴 **Raised from 4096, and pinned, because at 4096 the record blamed the model.**
  *
  * Measured on the one-shot hold-out at candidate `872ef36dea33`:
  * `challenge_hypothesis` stopped with `stop_reason: max_tokens` at exactly 4096
- * output tokens. The current reference model runs adaptive thinking by default,
- * and thinking tokens count against `max_tokens`, so a budget sized for the
- * answer alone truncates the answer.
+ * output tokens, the lane refused the arm, and the record read as a
+ * model-quality failure. At this budget the same corpus ran to a refusal that
+ * was the model's own.
  *
- * That truncation reached the lane as a refusal and the record as an
- * unreportable model arm — a harness limit charged to model quality, which is
- * the shape this branch has now removed eight times. The guard that names it
- * correctly was added earlier in the same work; this raises the ceiling that
- * made the guard fire.
- * see roles-model-nodes.test.mjs › "refuses a truncated answer as a truncation rather than as malformed output"
+ * ⚠ **What consumed the 4096 is not recorded anywhere here**, so no claim about
+ * it is made: the record carries the stop reason and the count, not a breakdown.
+ * An earlier version of this comment asserted a cause, and `prose-reviewer` took
+ * it as an unbacked claim about a third-party provider — correctly.
+ * see roles-model-nodes.test.mjs › "hands the provider a token budget large enough that the reference model was not cut off at 4096"
  */
 const DEFAULT_MAX_OUTPUT_TOKENS = 16_000;
 

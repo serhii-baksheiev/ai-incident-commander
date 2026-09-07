@@ -174,6 +174,10 @@ async function main() {
   const config = resolveModelConfig(env);
   const ledger = createModelUsageLedger({
     maxCalls: evals.LIVE_MODEL_LANE_MAX_MODEL_CALLS,
+    // Both lanes, not just the hold-out: this is the command that runs the cheap
+    // calibration sweeps, so it is where an unbounded run is most likely to be
+    // started casually. A bound on one path only is a bound on neither.
+    maxOutputTokens: evals.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   });
   const declaredBaselinePath = option('control-baseline');
   const controlBaseline =

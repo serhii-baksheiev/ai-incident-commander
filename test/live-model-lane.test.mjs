@@ -1199,3 +1199,51 @@ test('refuses to call a lane reportable when the model arm returned no experimen
     'and it must publish no metrics, so nothing downstream can read a number that was never measured',
   );
 });
+
+/**
+ * 🔴 An OBSERVED axis the baseline does not declare is an axis nothing checks —
+ * and the lane published one as model quality.
+ *
+ * `movesAgainst` walks the DECLARED keys. It already refuses a key it cannot
+ * compare and a key it withholds, so the two ways of declaring too much are
+ * covered. Declaring too LITTLE was not: the committed hold-out baseline pinned
+ * two axes while the control arm emitted five, and a control arm whose
+ * `challenge_effect` moved off its floor produced `movedMetrics: []`, verdict
+ * `model-quality`, model arm reportable — a harness regression published as a
+ * model result, which is the one confound this lane exists to prevent.
+ *
+ * Found by `code-reviewer` at the AIC-19 gate by executing the lane, not by
+ * reading it. The refusal is on the OBSERVED set rather than on the full metric
+ * union, because an axis the run never produced is not an axis the baseline
+ * failed to cover.
+ */
+test('refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        laneOptions({
+          controlBaseline: { unsupported_claim_rate: 0 },
+        }),
+      ),
+    (error) => {
+      assert.match(
+        error.message,
+        /does not declare/,
+        'the refusal must say the baseline is incomplete, not that something moved',
+      );
+      assert.match(
+        error.message,
+        /termination_correctness/,
+        'the refusal must name the undeclared axis, because the remedy is to add that entry',
+      );
+      assert.doesNotMatch(
+        error.message,
+        /evidence_coverage/,
+        'a withheld axis is never observed and must not be demanded of the baseline',
+      );
+      return true;
+    },
+  );
+});

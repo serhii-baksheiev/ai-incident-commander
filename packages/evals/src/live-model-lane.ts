@@ -110,6 +110,26 @@ export const LIVE_MODEL_LANE_MAX_MODEL_CALLS =
   LIVE_MODEL_LANE_MAX_MODEL_RUNS * 5;
 
 /**
+ * The OUTPUT-TOKEN cap for one lane execution — a second bound, because the
+ * first one counts the wrong thing.
+ *
+ * `LIVE_MODEL_LANE_MAX_MODEL_CALLS` bounds completions. It does not bound spend:
+ * the per-call token budget sits underneath it and moved, from 4096 to 16000, in
+ * the change that raised it for a real reason. Worst case under the call cap
+ * alone went from roughly 614k to 2.4M output tokens, and nothing tracked the
+ * quantity that had changed.
+ *
+ * The number is a CEILING chosen to bound spend, not a forecast. The largest
+ * live run recorded in `docs/evidence/` produced 32,380 output tokens across 23
+ * completions, so this leaves better than a tenfold margin over anything this
+ * lane has actually cost while cutting the worst case by six. A run that needs
+ * more STOPS at the next reservation rather than spending past the bound — the
+ * same property that makes the call cap safe to pick.
+ * see roles-port-contract.test.mjs › "stops reserving once the declared output-token budget is spent, not only once the calls are"
+ */
+export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 400_000;
+
+/**
  * The metric this lane refuses to publish as model quality, and why.
  *
  * `evaluateEvidenceCoverage` compares an exact `[kind, source, predicate]`
@@ -339,6 +359,37 @@ function movesAgainst(
   if (withheld.length > 0) {
     throw new Error(
       `the control baseline declares metrics this lane withholds: ${withheld.join(', ')} — remove the entry, because a withheld metric never reaches the comparison and a baseline that pins one cannot fail`,
+    );
+  }
+
+  // 🔴 The third refusal, and the one that was missing: declaring too LITTLE.
+  //
+  // The two above cover declaring too much — a key the lane cannot compare, and
+  // a key it withholds. But this function walks the DECLARED keys, so an axis
+  // the control arm OBSERVED and the baseline omits is compared against nothing
+  // and can move freely. Measured at the AIC-19 gate by executing the lane: the
+  // committed baseline pinned two axes while the control arm emitted five, and a
+  // control arm whose `challenge_effect` had moved off its floor still produced
+  // `movedMetrics: []`, verdict `model-quality`, model arm reportable. That is a
+  // harness regression published as a model result — the single confound this
+  // whole lane exists to prevent, reached through the baseline rather than
+  // through the arms.
+  //
+  // Judged against what the run OBSERVED, not against the full metric union: an
+  // axis this corpus never produced is not one the baseline failed to cover, and
+  // demanding it would refuse honest runs on smaller corpora.
+  // see live-model-lane.test.mjs › "refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do"
+  const undeclared = Object.keys(observed)
+    .filter(
+      (key) =>
+        comparable.has(key) &&
+        !Object.hasOwn(LIVE_MODEL_LANE_WITHHELD_METRICS, key) &&
+        !Object.hasOwn(declared, key),
+    )
+    .sort();
+  if (undeclared.length > 0) {
+    throw new Error(
+      `the control baseline does not declare metrics the control arm observed: ${undeclared.join(', ')} — add an entry for each, because this comparison walks the declared keys and an observed axis with no declared expectation can move without the lane noticing`,
     );
   }
 

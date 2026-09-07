@@ -15,6 +15,13 @@ import { dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import {
+  parseFinalEvaluationRecord,
+  BEHAVIOR_METRIC_KEYS,
+  BENCHMARK_METRIC_KEYS,
+  LIVE_MODEL_LANE_WITHHELD_METRICS,
+} from '@aic/evals';
+
 import { childEnv } from './fixtures/child-env.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -272,11 +279,19 @@ test('declares a control baseline for the hold-out, without which the model arm 
     'the command must pass a control baseline to the lane: without one the lane answers control-baseline-undeclared and the model arm is unreportable whatever it scored',
   );
 
+  // Derived from the lane's own exported keys rather than written out here.
+  // The hand-written pair this replaced asserted that the declared axes "must be
+  // the ones the lane compares" while naming two of the five, so the row read as
+  // covering the very gap it left open — the lane compared two axes and the
+  // control arm emitted five.
+  const compared = [...BENCHMARK_METRIC_KEYS, ...BEHAVIOR_METRIC_KEYS]
+    .filter((key) => !Object.hasOwn(LIVE_MODEL_LANE_WITHHELD_METRICS, key))
+    .sort();
   const declared = Object.keys(baseline).filter((key) => !key.startsWith('_'));
   assert.deepEqual(
     declared.sort(),
-    ['termination_correctness', 'unsupported_claim_rate'],
-    'the declared axes must be the ones the lane compares — evidence_coverage is withheld, so declaring it would pin a number nothing reads',
+    compared,
+    'the declared axes must be exactly the ones the lane compares: a missing axis is compared against nothing and can move without the lane noticing, and a withheld one pins a number nothing reads',
   );
   for (const key of declared) {
     assert.equal(
@@ -285,4 +300,150 @@ test('declares a control baseline for the hold-out, without which the model arm 
       `${key} must declare a number: a baseline that is not a value cannot be compared against one`,
     );
   }
+});
+
+/**
+ * 🔴 The same defect as the credential's, one step later — and the file already
+ * carried the fix for the earlier one when this was written.
+ *
+ * `readControlBaseline` throws on a missing, unreadable or non-JSON baseline. It
+ * was first called while building the lane's argument object, which happens
+ * AFTER `claimRecord`. So a broken baseline wrote a `claimed` record, threw, and
+ * executed nothing — and `decideFinalEvaluation` then refuses that candidate
+ * forever with "the corpus is spent when scenarios execute … so the runs
+ * happened", which is false about a run that never started. `--dry-run` returns
+ * before the lane is built, so the documented way to see every guard's verdict
+ * without executing anything could not catch it either.
+ *
+ * Found by `code-reviewer` at the AIC-19 gate.
+ */
+test('reads the control baseline before it claims the candidate, because a broken baseline must not spend the one shot', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+
+  const read = source.indexOf('readControlBaseline()');
+  const claim = source.indexOf('claimRecord(path, base)');
+
+  assert.notEqual(read, -1, 'the baseline read site must be findable for this row to mean anything');
+  assert.notEqual(claim, -1, 'the claim site must be findable for this row to mean anything');
+  assert.equal(
+    read < claim,
+    true,
+    'the baseline must be READ before the claim: it throws on a missing or malformed file, and a claim written before it throws refuses the candidate forever with a reason that says the runs happened',
+  );
+  assert.equal(
+    source.slice(claim).includes('readControlBaseline()'),
+    false,
+    'there must be no second read after the claim: one call above the claim does not help if the value is re-read below it',
+  );
+});
+
+/**
+ * An empty declaration is not a declaration, and `{}` walks past the guard that
+ * exists to catch exactly that.
+ *
+ * The lane answers `control-baseline-undeclared` for `undefined`, which makes an
+ * unreportable arm say so. But `readControlBaseline` returned `{}` for a file
+ * that is empty, `_`-only, or a JSON array — and `{}` is not `undefined`, so the
+ * lane accepted it, compared nothing, and would have called the model arm
+ * reportable against a baseline pinning no axis at all. Probed at the AIC-19
+ * gate: `declared: {}` returned verdict `model-quality`, `reportable: true`.
+ */
+test('refuses a control baseline that declares no axis at all, rather than passing an empty one to the lane', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+
+  assert.match(
+    source,
+    /declares no axis|no metric axis|declares nothing/,
+    'readControlBaseline must refuse a declaration with no axes: an empty object is not undefined, so it passes the control-baseline-undeclared guard while pinning nothing',
+  );
+});
+
+/**
+ * 🔴 The placement claim, made mechanical.
+ *
+ * The row above asserts that one literal expression is absent from one caller.
+ * The commit that added it said it "pins the placement so the next person
+ * putting a helper file there learns it from a red test rather than from a
+ * refused hold-out run" — which it does not: any other spelling of the path, or
+ * any other helper file dropped into the records directory, leaves it green
+ * while `readRecords` maps every `.json` there through
+ * `parseFinalEvaluationRecord` and refuses the whole run.
+ *
+ * `prose-reviewer` and `code-reviewer` both took that sentence at the AIC-19
+ * gate. This row checks the directory itself, so the sentence is now true.
+ */
+test('every .json beside the hold-out records is a hold-out record, because the reader parses all of them', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const entries = readdirSync(dir).filter((name) => name.endsWith('.json'));
+
+  assert.ok(
+    entries.length > 0,
+    'the records directory must hold records for this row to mean anything',
+  );
+  for (const name of entries) {
+    const parsed = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    assert.doesNotThrow(
+      () => parseFinalEvaluationRecord(parsed),
+      `${name} sits among the hold-out records but is not one: readRecords parses every .json in this directory, so a helper file placed here refuses the next hold-out run entirely — put it beside the directory, not inside it`,
+    );
+  }
+});
+
+/**
+ * A bound on one live path only is a bound on neither.
+ *
+ * Both commands that reach a provider build a usage ledger, and the ledger's
+ * output-token cap is optional — absent means unbounded, deliberately. So the
+ * cap exists in this repository only where a command asks for it, and this row
+ * asserts that both of them do.
+ */
+test('both live commands declare the output-token ceiling, not only the one that spends the hold-out', () => {
+  for (const command of ['scripts/eval-final-holdout.mjs', 'scripts/eval-live-model.mjs']) {
+    const source = readFileSync(join(REPO_ROOT, command), 'utf8');
+    assert.match(
+      source,
+      /maxOutputTokens: evals\.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS/,
+      `${command} must bound output tokens as well as calls: the call cap does not bound spend, because the per-call token budget sits underneath it and has already moved once`,
+    );
+  }
+});
+
+/**
+ * 🔴 The gate document's record table against the records directory, red in
+ * BOTH directions.
+ *
+ * The table opened "Six attempts, every one recorded rather than tidied away"
+ * over six rows while the directory held eight — a document asserting
+ * completeness that was not complete, which `code-reviewer` took at the AIC-19
+ * gate. The count is the kind of fact `.claude/rules/invariants.md` says must
+ * have one source or a correspondence check between the copies; a table a reader
+ * needs cannot be generated, so it gets the check.
+ *
+ * Both directions matter: a record added without a row makes the table
+ * incomplete, and a row naming no record makes it fiction.
+ */
+test('the gate document names every hold-out record, and every record it names exists', () => {
+  const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
+  const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
+
+  const onDisk = readdirSync(dir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.replace(/\.json$/, ''))
+    .sort();
+  const table = doc.slice(doc.indexOf('| record | candidate | status |'));
+  const named = [...table.matchAll(/^\| `([0-9a-f]{12})` \|/gm)]
+    .map((match) => match[1])
+    .sort();
+
+  assert.deepEqual(
+    named,
+    onDisk,
+    'the gate document\'s record table and docs/evidence/final-evaluation/ must name the same records: a record with no row makes the table\'s completeness claim false, and a row with no record makes it fiction',
+  );
+
+  const claimed = `${onDisk.length} attempts, every one recorded rather than tidied away`;
+  assert.ok(
+    doc.includes(claimed),
+    `the sentence above the table must state the number of records there are — expected "${claimed}"`,
+  );
 });

@@ -1,7 +1,11 @@
 {
-  "_why": "The scripted control arm's expected metric means over the final-evaluation corpus, DECLARED so a harness regression is detectable. Without a declared baseline the lane refuses to call the model arm reportable at all — a metric that moved could not be attributed to the model rather than to the harness — so a hold-out run with no baseline can never satisfy AIC-19 however well the model does.",
-  "_measured": "Computed offline from the deterministic replay-backed control arm over scenarioSet final-evaluation, 30 records, no provider call. The same execution the suite performs on every `npm run check` via live-model-lane.test.mjs > 'measures the harness zero that makes evidence_coverage unreportable'.",
+  "_why": "The scripted control arm's expected metric means over the final-evaluation corpus, DECLARED so a harness regression is detectable. Without a declared baseline the lane refuses to call the model arm reportable at all \u2014 a metric that moved could not be attributed to the model rather than to the harness \u2014 so a hold-out run with no baseline can never satisfy AIC-19 however well the model does.",
+  "_measured": "Read off the control arm of the committed hold-out record docs/evidence/final-evaluation/cf68c16c8592.json, whose observedBaseline carries these five axes over 30 records with no provider call. The first version of this file declared only the first two while the control arm emitted all five, and the lane compared the two: found by executing the lane at the AIC-19 gate, and now refused by the lane itself rather than by this comment.",
   "_limit": "Zero is the WORST score for these axes, so this baseline pins a floor. A harness change that moves a metric UP is detected; one that pushes it further down cannot be, because there is no further down. README.md states this at length.",
+  "_completeness": "Every axis the control arm observes must appear here. That is enforced, not remembered: see live-model-lane.test.mjs > 'refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do'.",
   "unsupported_claim_rate": 0,
-  "termination_correctness": 0
+  "termination_correctness": 0,
+  "false_alert_correctness": 0,
+  "misleading_evidence_handling": 0,
+  "challenge_effect": 0
 }
