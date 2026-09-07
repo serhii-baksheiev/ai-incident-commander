@@ -90,6 +90,8 @@ import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { readControlBaseline } from './eval-final-holdout.mjs';
+
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
 import * as observability from '@aic/observability';
@@ -180,21 +182,16 @@ async function main() {
     maxOutputTokens: evals.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   });
   const declaredBaselinePath = option('control-baseline');
-  // 🔴 `_`-prefixed rationale is stripped here as it is in the hold-out reader.
-  // Without this, pointing `--control-baseline` at the repository's own
-  // committed `docs/evidence/control-baseline.json` is refused by the lane for
-  // declaring metrics it does not compare — `_why`, `_measured`, `_limit`,
-  // `_completeness`. It failed CLOSED, so nothing was published wrongly; it just
-  // made the one baseline this repository ships unusable from this command.
+  // 🔴 IMPORTED, not reimplemented. The first version of this read was a second
+  // copy of `readControlBaseline`, and the copies had already diverged — this one
+  // lacked the empty-declaration refusal. `.claude/rules/invariants.md`: one
+  // mechanism, one implementation, because the copy nobody is looking at is the
+  // one that is wrong. Found by `security-scanner` at the AIC-19 gate.
   // see final-evaluation-command.test.mjs › "reads the repository's own committed baseline from the calibration command without refusing its rationale"
   const controlBaseline =
     declaredBaselinePath === undefined
       ? undefined
-      : Object.fromEntries(
-          Object.entries(
-            JSON.parse(readFileSync(declaredBaselinePath, 'utf8')),
-          ).filter(([key]) => !key.startsWith('_')),
-        );
+      : readControlBaseline(declaredBaselinePath);
 
   // Captured so `publish` sends the experiment that ran rather than a summary
   // of it: the LangSmith record has to be the runs, not the report about them.

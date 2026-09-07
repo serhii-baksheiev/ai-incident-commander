@@ -24,6 +24,7 @@
     "lint:config": "node scripts/check-domain-manifest.mjs && node scripts/check-domain-tsconfig.mjs",
     "build": "tsc -b",
     "clean": "tsc -b --clean",
+    "pretest": "npm run build",
     "test": "node --import ./test/fixtures/no-ambient-tracing.mjs --test",
     "test:live-lab": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs --test --test-concurrency=1 incident-lab/tests/*.live.mjs",
     "live-lab:regenerate": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs incident-lab/bin/regenerate.mjs",

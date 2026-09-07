@@ -989,3 +989,100 @@ test('refuses a usage record that would drive the accumulator backwards', async 
     'a negative usage count must be refused: it drives the accumulator below zero and disables the token bound permanently',
   );
 });
+
+/**
+ * 🔴 A per-call budget that is PRESENT and unreadable is a refusal, not an
+ * absence — the distinction `.claude/rules/invariants.md` marks in red as the
+ * one that costs a credential when it is got backwards.
+ *
+ * The first version of `reserve` collapsed them: absent meant zero, and so did
+ * `1.5`, `NaN`, `Infinity`, `1e30`, `'16000'` and `null`. Measured by
+ * `security-scanner` at the AIC-19 gate — fifty grants against a 1000-token cap,
+ * the bound silently off, while the same unreadable value travelled to the
+ * provider as `max_tokens`. Both neighbours in this file already got it right:
+ * the constructor throws on an invalid cap and `record` throws on an invalid
+ * count.
+ */
+test('refuses a per-call budget it was handed and cannot read, rather than treating it as none', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  for (const unreadable of [1.5, Number.NaN, Number.POSITIVE_INFINITY, 1e30, '16000', null, -1]) {
+    const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+    assert.throws(
+      () => ledger.reserve(unreadable),
+      /cannot read|non-negative/,
+      `reserve(${String(unreadable)}) must be refused: it was HANDED a budget and could not read it, which is not the same as being handed none`,
+    );
+  }
+
+  // Absent stays fail-open, deliberately: nothing was handed, so there is
+  // nothing to judge, and a caller that declares no budget is bounded by calls.
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+  assert.doesNotThrow(
+    () => ledger.reserve(),
+    'an ABSENT budget is the fail-open case: the ledger was handed nothing to judge',
+  );
+});
+
+/**
+ * A reservation whose call never completes is never retired — stated here
+ * because the comment beside the check once claimed the opposite.
+ *
+ * The port reserves, then every throw after it — a non-ok response, a missing
+ * text block, an unreadable usage count — skips `record`. The estimate is
+ * stranded permanently. That is the SAFE direction (the bound refuses early,
+ * never late) but "record gives the headroom back" was unconditionally false,
+ * and the path had no test. Found by `code-reviewer` at the AIC-19 gate.
+ */
+test('strands the estimate of a call that never completed, refusing early rather than late', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const ledger = createModelUsageLedger({ maxCalls: 50, maxOutputTokens: 1000 });
+  ledger.reserve(400); // the provider throws; no record follows
+  ledger.reserve(400); // likewise
+
+  assert.equal(
+    ledger.read().outputTokens,
+    0,
+    'nothing was recorded, so nothing was spent as far as this ledger can prove',
+  );
+  assert.throws(
+    () => ledger.reserve(400),
+    /reserved/,
+    'two failed calls must still consume the budget they reserved: the ledger cannot know whether the provider billed them, and refusing early is the only safe reading',
+  );
+});
+
+/**
+ * A declared budget of ZERO is a budget of zero, not an absent one.
+ *
+ * `0 > 0` is false, so the first version granted reservations under a zero cap —
+ * a config that reads as "spend nothing" and permitted everything. Flagged by
+ * both `security-scanner` and `code-reviewer` at the AIC-19 gate as unreachable
+ * today and a surprising reading of `0`. Absent still means unbounded; that
+ * distinction is the point.
+ */
+test('treats a declared output-token cap of zero as zero, not as no cap at all', async () => {
+  const { createModelUsageLedger } = await import('@aic/roles');
+
+  const zero = createModelUsageLedger({ maxCalls: 5, maxOutputTokens: 0 });
+  assert.throws(
+    () => zero.reserve(1),
+    /budget/,
+    'a zero budget must refuse a call that declares a cost',
+  );
+  // The case the scanners actually found: with NO declared per-call budget the
+  // arithmetic was `0 + 0 + 0 > 0`, which is false, so the call went through a
+  // cap that reads as forbidding every call.
+  assert.throws(
+    () => createModelUsageLedger({ maxCalls: 5, maxOutputTokens: 0 }).reserve(),
+    /budget/,
+    'a zero budget must refuse a call that declares nothing either: zero is a number somebody wrote down, and only ABSENT means unbounded',
+  );
+
+  const absent = createModelUsageLedger({ maxCalls: 5 });
+  assert.doesNotThrow(
+    () => absent.reserve(1_000_000),
+    'an ABSENT cap is still unbounded: nothing was declared, so there is nothing to judge',
+  );
+});

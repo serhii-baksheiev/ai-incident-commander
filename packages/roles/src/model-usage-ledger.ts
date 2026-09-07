@@ -131,16 +131,45 @@ export function createModelUsageLedger({
     reserve(perCallOutputTokens) {
       if (reserved >= maxCalls) throw new ModelCallBudgetExceededError(maxCalls);
       if (maxOutputTokens !== undefined) {
-        // The caller's declared budget for the call it is about to make. Absent,
-        // the estimate is zero and the bound degrades to the post-hoc check —
-        // which is why the port passes it. A pessimistic estimate can only
-        // refuse EARLY, never late, and `record` gives the headroom back.
-        const estimate =
-          perCallOutputTokens === undefined || !Number.isSafeInteger(perCallOutputTokens)
-            ? 0
-            : Math.max(0, perCallOutputTokens);
+        // 🔴 ABSENT is fail-open; PRESENT-and-unreadable is a refusal.
+        //
+        // The first version collapsed them, and `.claude/rules/invariants.md`
+        // marks that exact collapse in red as the one that costs a credential.
+        // Measured by `security-scanner`: `1.5`, `NaN`, `Infinity`, `1e30`,
+        // `'16000'` and `null` each became a zero estimate, so fifty
+        // reservations passed a 1000-token cap with the bound silently off —
+        // while the same unreadable value travelled on to the provider as
+        // `max_tokens`. Both neighbours already refuse: the constructor on an
+        // invalid cap, `record` on an invalid count.
+        // see roles-port-contract.test.mjs › "refuses a per-call budget it was handed and cannot read, rather than treating it as none"
+        if (
+          perCallOutputTokens !== undefined &&
+          (!Number.isSafeInteger(perCallOutputTokens) || perCallOutputTokens < 0)
+        ) {
+          throw new Error(
+            'a per-call output-token budget must be a non-negative safe integer: the ledger was handed one it cannot read, which is not the same as being handed none — treating it as none would bound this call by nothing',
+          );
+        }
+        // Absent means nothing was handed, so there is nothing to judge and the
+        // bound degrades to the post-hoc check.
+        //
+        // A pessimistic estimate can only refuse EARLY, never late. `record`
+        // returns the headroom of a call that COMPLETES; a call that throws
+        // never reaches `record`, so its estimate is stranded for the life of
+        // the ledger. That is deliberate — the ledger cannot know whether the
+        // provider billed a failed request — and it is the safe direction, but
+        // an earlier version of this sentence said the headroom always came
+        // back, which was unconditionally false.
+        // see roles-port-contract.test.mjs › "strands the estimate of a call that never completed, refusing early rather than late"
+        const estimate = perCallOutputTokens ?? 0;
+        // A declared cap of ZERO means spend nothing, and it has to refuse a
+        // reservation that declares no per-call budget too — otherwise
+        // `0 + 0 + 0 > 0` is false and the first call passes a cap that reads as
+        // forbidding all of them. Absent stays unbounded; zero is a number
+        // somebody wrote down. Flagged by both scanners at the AIC-19 gate.
+        // see roles-port-contract.test.mjs › "treats a declared output-token cap of zero as zero, not as no cap at all"
         const committed = outputTokens + reservedOutputTokens + estimate;
-        if (committed > maxOutputTokens) {
+        if (maxOutputTokens === 0 || committed > maxOutputTokens) {
           throw new Error(
             `the declared output-token budget is spent (${outputTokens} recorded plus ${reservedOutputTokens + estimate} reserved, against ${maxOutputTokens}, across ${calls} completions): refusing the next call rather than continuing, because the per-call token budget is not what bounds a run's cost`,
           );
@@ -173,8 +202,16 @@ export function createModelUsageLedger({
       inputTokens += usage.inputTokens;
       outputTokens += usage.outputTokens;
       // Retire the oldest outstanding estimate — this completion's — so the
-      // headroom it held returns. Never below zero: a caller that recorded
-      // without reserving must not mine headroom out of other reservations.
+      // headroom it held returns, and never below zero.
+      //
+      // ⚠ It does NOT follow that a caller recording without reserving cannot
+      // consume another call's headroom: `shift()` takes the oldest estimate
+      // whoever asked for it. `security-scanner` executed that at the AIC-19
+      // gate — two 500-token reservations in flight, one unpaired record, then a
+      // granted `reserve(480)` produced 1,490 recorded against a 1,000 cap. An
+      // earlier version of this comment claimed the property anyway. The port is
+      // the only production caller and it reserves and records in pairs,
+      // sequentially, which is what makes the accounting exact here.
       const estimate = pendingOutputTokens.shift() ?? 0;
       reservedOutputTokens = Math.max(0, reservedOutputTokens - estimate);
     },

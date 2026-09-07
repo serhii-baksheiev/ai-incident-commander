@@ -216,6 +216,34 @@ test('publishes every cap a run is under rather than leaving one implicit', () =
   );
 });
 
+/**
+ * 🔴 The caps a run REPORTS, not the constants it exports.
+ *
+ * The row above asserts the constants are positive integers and never touches a
+ * report — its name said "publishes" while it checked nothing published, and
+ * `code-reviewer` proved it by deleting `maxOutputTokens` from both the type and
+ * the emitted report and watching the whole suite stay green. Nothing in `test/`
+ * read `report.caps` at all.
+ *
+ * A committed record is the only place a reader learns what bounds a run was
+ * under, so a cap that exists and is not published is a bound nobody can check
+ * after the fact.
+ */
+test('emits every declared cap in the report a record is written from', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(laneOptions());
+
+  assert.deepEqual(
+    Object.keys(report.caps).sort(),
+    ['maxModelCalls', 'maxModelRuns', 'maxOutputTokens'],
+    'every bound a run is under must reach the report: a record naming two of three cannot say what the third was',
+  );
+  assert.equal(report.caps.maxModelRuns, requireExport('LIVE_MODEL_LANE_MAX_MODEL_RUNS'));
+  assert.equal(report.caps.maxModelCalls, requireExport('LIVE_MODEL_LANE_MAX_MODEL_CALLS'));
+  assert.equal(report.caps.maxOutputTokens, requireExport('LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS'));
+});
+
 test('refuses a run count above the declared cap before any arm executes', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
   let armsRun = 0;

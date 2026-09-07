@@ -537,19 +537,40 @@ test('leaves the output-token ceiling above every live run this repository has r
  * compare. It failed closed, so nothing was published wrongly; it made the
  * shipped baseline unusable from the cheap lane. Found by `code-reviewer`.
  */
-test("reads the repository's own committed baseline from the calibration command without refusing its rationale", () => {
-  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-live-model.mjs'), 'utf8');
-  const baseline = JSON.parse(
-    readFileSync(join(REPO_ROOT, 'docs/evidence/control-baseline.json'), 'utf8'),
+test("reads the repository's own committed baseline from the calibration command without refusing its rationale", async () => {
+  const { readControlBaseline, CONTROL_BASELINE_PATH } = await import(
+    '../scripts/eval-final-holdout.mjs'
   );
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-live-model.mjs'), 'utf8');
+  const raw = JSON.parse(readFileSync(CONTROL_BASELINE_PATH, 'utf8'));
 
   assert.ok(
-    Object.keys(baseline).some((key) => key.startsWith('_')),
+    Object.keys(raw).some((key) => key.startsWith('_')),
     'the committed baseline must carry rationale keys for this row to mean anything',
   );
+
+  // Behaviour first: the shipped file, through the shared reader, must come out
+  // as something the lane compares rather than as something it refuses.
+  const declared = readControlBaseline(CONTROL_BASELINE_PATH);
+  assert.equal(
+    Object.keys(declared).some((key) => key.startsWith('_')),
+    false,
+    "the reader must strip `_`-prefixed rationale, or the repository's own baseline is refused by the lane as declaring metrics it does not compare",
+  );
+
+  // And ONE implementation of it. A second copy had already diverged from this
+  // one — it lacked the empty-declaration refusal — which is the case
+  // `.claude/rules/invariants.md` names: the copy nobody is looking at is the
+  // one that is wrong.
   assert.match(
     source,
-    /startsWith\('_'\)/,
-    "--control-baseline must strip `_`-prefixed rationale the way the hold-out reader does, or the repository's own baseline is refused by the lane as declaring metrics it does not compare",
+    /import \{ readControlBaseline \} from '\.\/eval-final-holdout\.mjs'/,
+    'the calibration command must import the one baseline reader rather than carry its own',
+  );
+  assert.equal(
+    /control-baseline\.json'?,\s*'utf8'/.test(source) ||
+      /JSON\.parse\(readFileSync\(declaredBaselinePath/.test(source),
+    false,
+    'the calibration command must not parse the baseline itself: that second copy is what diverged',
   );
 });

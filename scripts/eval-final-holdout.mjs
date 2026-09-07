@@ -188,17 +188,10 @@ function claimRecord(path, body) {
   }
 }
 
-/**
- * The replay-backed lifecycle, with the two per-run maps it needs.
- *
- * ⚠ `replayBackedNodes` takes three arguments, and the first version of this
- * file passed one. The crash was `Cannot read properties of undefined (reading
- * 'get')` at the first record of the control arm — before any model call and
- * before any publication — and it is why record `04cf86236c2f` is void.
- */
-/** The declared control-arm expectation, minus the `_`-prefixed rationale keys. */
+/** Where the declared control-arm expectation lives: BESIDE the records, never among them. */
 export const CONTROL_BASELINE_PATH = join(dirname(EVIDENCE_DIR), 'control-baseline.json');
 
+/** The declared control-arm expectation, minus the `_`-prefixed rationale keys. */
 export function readControlBaseline(path = CONTROL_BASELINE_PATH) {
   // 🔴 Beside the records directory, never inside it. Placed within it, the
   // record reader picked this file up and refused the whole run — "a final
@@ -224,6 +217,14 @@ export function readControlBaseline(path = CONTROL_BASELINE_PATH) {
   return declared;
 }
 
+/**
+ * The replay-backed lifecycle, with the two per-run maps it needs.
+ *
+ * ⚠ `replayBackedNodes` takes three arguments, and the first version of this
+ * file passed one. The crash was `Cannot read properties of undefined (reading
+ * 'get')` at the first record of the control arm — before any model call and
+ * before any publication — and it is why record `04cf86236c2f` is void.
+ */
 function scriptedNodes(record) {
   return replayBackedNodes(
     record,
