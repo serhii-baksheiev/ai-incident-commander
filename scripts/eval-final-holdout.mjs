@@ -275,6 +275,7 @@ async function main() {
   const ledger = createModelUsageLedger({ maxCalls: evals.LIVE_MODEL_LANE_MAX_MODEL_CALLS });
   let modelExperiment;
   let publication = null;
+  let publicationSkipped;
 
   const report = await evals.runLiveModelLane({
     env,
@@ -313,10 +314,23 @@ async function main() {
     ...(flag('publish')
       ? {
           async publish(laneReport) {
-            if (!laneReport.arms.model.reportable) {
-              throw new Error(
-                `refusing to publish an unreportable model arm: ${laneReport.arms.model.unreportableReason}`,
-              );
+            // 🔴 Skipped, not thrown. The sibling command throws here, and that
+            // is right for a diagnostic: an unreportable arm must never reach
+            // LangSmith as a model-quality result. But this command's throw
+            // destroyed the RECORD — the one artifact the one-shot protocol
+            // exists to produce — and a run that measured something and then
+            // erased the measurement is the worst of the three outcomes.
+            //
+            // When the model arm refused there is also nothing to publish:
+            // `modelExperiment` is never assigned, because the assignment is
+            // the awaited call that threw. Publishing the CONTROL arm instead
+            // would be worse than publishing nothing — AIC-19 forbids
+            // presenting harness-only results as model judgement quality.
+            if (!laneReport.arms.model.reportable || modelExperiment === undefined) {
+              publicationSkipped =
+                laneReport.arms.model.unreportableReason ??
+                'the model arm produced no experiment to publish';
+              return;
             }
             publication = await observability.persistBenchmarkExperiment({
               datasetName: `aic-19-final-holdout-${laneReport.headSha.slice(0, 12)}`,
@@ -338,7 +352,14 @@ async function main() {
     report,
     publication:
       publication === null
-        ? { status: 'absent', absentReason: flag('publish') ? 'the publish step did not run' : 'the run was not asked to publish (--publish was not passed)' }
+        ? {
+            status: 'absent',
+            absentReason:
+              publicationSkipped ??
+              (flag('publish')
+                ? 'the publish step did not run'
+                : 'the run was not asked to publish (--publish was not passed)'),
+          }
         : { status: 'published', ...publication },
     acceptance: [
       {
