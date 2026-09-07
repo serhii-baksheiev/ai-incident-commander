@@ -510,27 +510,6 @@ test('both live commands declare the output-token ceiling, not only the one that
  * Both directions matter: a record added without a row makes the table
  * incomplete, and a row naming no record makes it fiction.
  */
-/**
- * `npm test` builds first, and nothing else says so.
- *
- * 🔴 This is load-bearing and was invisible. The suite imports from `dist/`, so
- * without a build step a mutation to a `.ts` source runs against the PREVIOUS
- * build: the test passes, and the mutation is recorded as SURVIVED when it was
- * never compiled. That produced two false measurements at the AIC-19 gate — a
- * phantom flaky test in one round, and a `caps` field reported as unpinned in
- * the next when the "mutation" was a compile error the run never saw. `cab2a36`
- * added `pretest`; until this row, deleting it again reddened nothing.
- */
-test('builds before it tests, because a suite that reads a stale dist reports mutations as survived', () => {
-  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-
-  assert.equal(
-    manifest.scripts.pretest,
-    'npm run build',
-    'npm test must build first: the suite imports from dist/, so without this a mutation to a .ts source is measured against the previous build and reported as survived',
-  );
-});
-
 test('the gate document names every hold-out record, and every record it names exists', () => {
   const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
   const doc = readFileSync(join(REPO_ROOT, 'docs/v0.2-exit-gate.md'), 'utf8');
@@ -554,6 +533,27 @@ test('the gate document names every hold-out record, and every record it names e
   assert.ok(
     doc.includes(claimed),
     `the sentence above the table must state the number of records there are — expected "${claimed}"`,
+  );
+});
+
+/**
+ * `npm test` builds first, and nothing else says so.
+ *
+ * 🔴 This is load-bearing and was invisible. The suite imports from `dist/`, so
+ * without a build step a mutation to a `.ts` source runs against the PREVIOUS
+ * build: the test passes, and the mutation is recorded as SURVIVED when it was
+ * never compiled. That produced two false measurements at the AIC-19 gate — a
+ * phantom flaky test in one round, and a `caps` field reported as unpinned in
+ * the next when the "mutation" was a compile error the run never saw. `cab2a36`
+ * added `pretest`; until this row, deleting it again reddened nothing.
+ */
+test('builds before it tests, because a suite that reads a stale dist reports mutations as survived', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+
+  assert.equal(
+    manifest.scripts.pretest,
+    'npm run build',
+    'npm test must build first: the suite imports from dist/, so without this a mutation to a .ts source is measured against the previous build and reported as survived',
   );
 });
 
