@@ -683,3 +683,73 @@ test('reads an unknown stop reason as not a truncation, so a malformed answer is
     'an unknown stop reason must not excuse a malformed answer: guessing that way would attribute a model failure to the harness, which is this defect in reverse',
   );
 });
+
+/**
+ * 🔴 **An optional field the prompt asks for, refused in its ordinary JSON
+ * spelling — and the refusal landed on the model.**
+ *
+ * The role's own prompt declares `"predictionId":"<id, optional>"`. A model
+ * answering `null` for an optional field is writing ordinary JSON, and the role
+ * treated only `undefined` as absent, so the value reached
+ * `EvidenceAssessmentSchema` and was refused: "expected string, received null".
+ * The lane then recorded the model arm unreportable.
+ *
+ * Measured on a real calibration run. It is the same shape as the truncation
+ * defect one row up: a harness contract the model was never told about, charged
+ * to model quality. For an OPTIONAL field, `null` and absent are the same claim.
+ *
+ * ⚠ This does not widen the schema. A `null` in a REQUIRED field is still
+ * refused, and the row below holds that line — otherwise this fix would trade a
+ * false accusation for a silent acceptance.
+ */
+test('reads null as absent for an optional assessment field, as any JSON author would write it', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { port } = fakePort([
+    {
+      assessments: [{
+        id: 'a-1',
+        evidenceId: 'e-1',
+        hypothesisId: 'h-1',
+        predictionId: null,
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'the evidence bears on the hypothesis',
+      }],
+    },
+  ]);
+
+  const result = await createModelInterpretResidualEvidence({ port, at })(initialState());
+
+  assert.equal(result.assessments.length, 1, 'the assessment must survive an optional field spelled null');
+  assert.equal(
+    Object.hasOwn(result.assessments[0], 'predictionId'),
+    false,
+    'an optional field the model declined must be ABSENT in the stamped assessment, not carried as null: absent is what "no prediction" means to everything downstream',
+  );
+});
+
+test('still refuses null in a required assessment field', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { port } = fakePort([
+    {
+      assessments: [{
+        id: 'a-1',
+        evidenceId: null,
+        hypothesisId: 'h-1',
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'the evidence bears on the hypothesis',
+      }],
+    },
+  ]);
+
+  await assert.rejects(
+    () => createModelInterpretResidualEvidence({ port, at })(initialState()),
+    /evidenceId/,
+    'reading null as absent is correct for an OPTIONAL field and wrong for a required one: without this row the previous fix would trade a false accusation against the model for a silent acceptance of a broken assessment',
+  );
+});

@@ -303,7 +303,20 @@ export function createModelInterpretResidualEvidence({
           );
         }
       }
-      const predictionId = ownValue(candidate, 'predictionId');
+      // 🔴 `null` is absent for an OPTIONAL field, because that is how a JSON
+      // author spells "no value" — and this role's own prompt asks for
+      // `"predictionId":"<id, optional>"`. Treating only `undefined` as absent
+      // sent the model's `null` into the schema, which refused it, and the lane
+      // then recorded the model arm unreportable for a contract the model was
+      // never told about. Measured on a real calibration run.
+      //
+      // This does not widen the schema: a `null` in a REQUIRED field still
+      // reaches it and is still refused.
+      // see roles-model-nodes.test.mjs › "reads null as absent for an optional assessment field, as any JSON author would write it"
+      // see roles-model-nodes.test.mjs › "still refuses null in a required assessment field"
+      const declaredPredictionId = ownValue(candidate, 'predictionId');
+      const predictionId =
+        declaredPredictionId === null ? undefined : declaredPredictionId;
       return parseWith(role, EvidenceAssessmentSchema, {
         id: ownValue(candidate, 'id'),
         evidenceId: ownValue(candidate, 'evidenceId'),
