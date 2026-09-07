@@ -141,3 +141,69 @@ test('states its limits beside the records, and every limit names something a re
     );
   }
 });
+
+/**
+ * 🔴 **An unconfigured run claimed the candidate and then refused, leaving a
+ * record that asserted the opposite of what happened.**
+ *
+ * `resolveModelConfig` does not throw — it returns `{ available: false }` — so
+ * reading it and moving on left the real refusal inside `runLiveModelLane`,
+ * seven lines AFTER `claimRecord`. Measured under `env -i` with no credential:
+ * the command wrote a `claimed` record and exited 1 having executed no scenario
+ * and made no provider call. The next run was then refused with "the corpus is
+ * spent when scenarios execute … so the runs happened" — false, over a run that
+ * never started, and its only remedy a hand-written void record.
+ *
+ * The command's own header promised the opposite: "an unconfigured run creates
+ * no dataset, no project, no run and no record."
+ */
+test('refuses an unconfigured run before it claims the candidate', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+
+  // The CALL, not the definition: `function claimRecord(path, body)` appears
+  // earlier in the file than `main()` does, and matching it made this row pass
+  // for the wrong reason on its first draft.
+  const availabilityCheck = source.indexOf('config.available !== true');
+  const claim = source.indexOf('claimRecord(path, base)');
+
+  assert.notEqual(availabilityCheck, -1, 'the command must CHECK availability, not merely resolve it: resolveModelConfig returns a value rather than throwing');
+  assert.notEqual(claim, -1, 'the claim site must be findable for this row to mean anything');
+  assert.equal(
+    availabilityCheck < claim,
+    true,
+    'the credential refusal must come BEFORE the claim: a claim asserts that scenarios executed, and writing one for a run that never started makes the next refusal a false statement',
+  );
+});
+
+/**
+ * The documented safe invocation, checked against npm's own behaviour.
+ *
+ * `npm run <script> --dry-run` gives the flag to NPM, not to the script. The
+ * evidence README said exactly that form while promising "without executing
+ * anything", two lines from the correct one further down. A cold review measured
+ * it taking the real path.
+ */
+test('documents the dry-run invocation in the form npm actually forwards', () => {
+  const readme = readFileSync(
+    join(REPO_ROOT, 'docs/evidence/final-evaluation/README.md'),
+    'utf8',
+  );
+
+  // Only fenced blocks: those are the forms a reader COPIES. The prose above
+  // them quotes the broken invocation deliberately, to say what it does, and a
+  // scan that could not tell an instruction from a warning would force the
+  // warning out of the file that most needs it.
+  const fenced = [...readme.matchAll(/```[a-z]*\n([\s\S]*?)```/g)]
+    .map(([, body]) => body)
+    .join('\n');
+
+  for (const match of fenced.matchAll(/npm run eval:final-holdout([^\n]*)/g)) {
+    const tail = match[1];
+    if (!tail.includes('--dry-run')) continue;
+    assert.match(
+      tail,
+      /--\s+--dry-run/,
+      `every documented dry-run invocation must pass the flag through npm with a bare --, or npm consumes it and the run takes the real path: found "npm run eval:final-holdout${tail}"`,
+    );
+  }
+});

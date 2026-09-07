@@ -469,11 +469,26 @@ export async function runLiveModelLane(
 
   let verdict: LiveModelLaneVerdict = 'model-quality';
   let unreportableReason: string | undefined;
-  if (armRefusal !== undefined) {
+  if (armRefusal !== undefined || model === undefined) {
     // First, because it outranks the other two: an arm that never finished
     // cannot be judged against a baseline it never reached.
+    // 🔴 `model === undefined` as well as a thrown refusal. `metrics` keyed off
+    // the arm being absent while `reportable` keyed only off a THROW, so an arm
+    // that RETURNED a non-experiment produced `verdict: 'model-quality'` with no
+    // metrics and `reportable: true` — a report saying the lane measured model
+    // quality while carrying nothing but the control arm. That is the
+    // harness-only-as-model-quality shape AIC-19 forbids by name, and it became
+    // an evidence record whose acceptance row read `met: true`.
+    //
+    // On `main` this failed closed by accident: `exampleIdsOf(model)` threw a
+    // TypeError before any of it. Making the arm optional removed that accident,
+    // so the property is asserted here instead.
+    // see live-model-lane.test.mjs › "refuses to call a lane reportable when the model arm returned no experiment"
     verdict = 'model-arm-refused';
-    unreportableReason = `the model arm did not finish: ${armRefusal}`;
+    unreportableReason =
+      armRefusal === undefined
+        ? 'the model arm returned no experiment: a lane with no model measurement is not a model-quality result, whatever the control arm did'
+        : `the model arm did not finish: ${armRefusal}`;
   } else if (declaredBaseline === undefined) {
     verdict = 'control-baseline-undeclared';
     unreportableReason =

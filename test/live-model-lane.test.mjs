@@ -1162,3 +1162,40 @@ test('keeps a refused model arm out of publication', async () => {
     'the report is still published — a refused arm is evidence, and withholding it would lose the finding. What must not happen is publishing it AS a model-quality result, which the reportable flag and the verdict both say it is not',
   );
 });
+
+/**
+ * 🔴 **`reportable` could be true with no model arm at all.**
+ *
+ * Making the arm's `metrics` optional keyed absence off `model === undefined`,
+ * while `reportable` kept keying off a THROWN refusal. So an arm that RETURNED a
+ * non-experiment produced `verdict: 'model-quality'`, no metrics, and
+ * `reportable: true` — a report claiming the lane measured model quality while
+ * carrying nothing but the control arm, which becomes an evidence record whose
+ * acceptance row reads `met: true`. That is the harness-only-as-model-quality
+ * shape AIC-19 forbids by name.
+ *
+ * On `main` this failed closed by accident — `exampleIdsOf(model)` threw first.
+ * Making the arm optional removed the accident, so the property is asserted.
+ */
+test('refuses to call a lane reportable when the model arm returned no experiment', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane({
+    ...corpusLaneOptions('calibration'),
+    async runModelArm() {
+      return undefined;
+    },
+  });
+
+  assert.equal(
+    report.arms.model.reportable,
+    false,
+    'a lane with no model measurement is not a model-quality result, whatever the control arm did',
+  );
+  assert.equal(report.verdict, 'model-arm-refused');
+  assert.equal(
+    report.arms.model.metrics,
+    undefined,
+    'and it must publish no metrics, so nothing downstream can read a number that was never measured',
+  );
+});

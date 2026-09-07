@@ -34,10 +34,15 @@
  * that mechanism is unrelated to this verdict.)
  *
  * 🔴 **With no provider credential this command exits non-zero and touches
- * nothing** — no dataset, no project, no run, no model call. That refusal is the
- * only part of this command that has ever been executed in this repository:
- * there is no `ANTHROPIC_API_KEY` in this environment, so no run of this lane
- * has produced a model number, and none of its output should be read as one.
+ * nothing** — no dataset, no project, no run, no model call.
+ *
+ * ⚠ That refusal used to be the only part of this command ever executed here,
+ * and this paragraph said so. It stopped being true during AIC-19: a credential
+ * was configured, and this lane has since run against a live provider — see the
+ * usage figures in `docs/evidence/final-evaluation/`. The sentence is corrected
+ * rather than deleted because a reader who remembers the old one should be told
+ * it changed, and because "no run has produced a model number" is exactly the
+ * kind of claim that reads as reassurance long after it stops holding.
  *
  * Flags:
  *   --control-baseline <path>  JSON `{ "<metric>": <mean>, … }`. Without it the

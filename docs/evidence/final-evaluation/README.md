@@ -4,9 +4,20 @@ AIC-19 requires a **declared one-shot final hold-out evaluation**. This
 directory is where the one shot is recorded. One file per candidate, committed,
 named after the first twelve characters of the candidate fingerprint.
 
-Run it with `npm run eval:final-holdout`. Run `npm run eval:final-holdout
---dry-run` to see every guard's verdict without executing anything — that is
-also how a reviewer checks a record without spending a corpus.
+Run it with `npm run eval:final-holdout`. To see every guard's verdict without
+executing anything, the flag needs `--` in front of it so npm forwards it rather
+than consuming it:
+
+```sh
+npm run eval:final-holdout -- --dry-run
+```
+
+⚠ Written as `npm run eval:final-holdout --dry-run`, npm eats the flag and the
+script takes the REAL path. This file said exactly that, two lines from the
+correct form further down, and a cold review measured it: the run reached the
+one-shot refusal and was stopped only because that candidate happened to be
+spent. On an admitted candidate with a credential present, the sentence
+promising "without executing anything" would have spent the hold-out.
 
 ## Why the key is a candidate fingerprint and not the commit SHA
 
