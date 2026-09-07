@@ -30,7 +30,8 @@
     "live-lab:validate-candidates": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs incident-lab/bin/validate-candidates.mjs",
     "eval:live-model": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-live-model.mjs",
     "check": "npm run lint && npm run build && npm test",
-    "cli": "node apps/cli/dist/index.js"
+    "cli": "node apps/cli/dist/index.js",
+    "eval:final-holdout": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

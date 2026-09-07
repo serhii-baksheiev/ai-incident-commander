@@ -337,13 +337,31 @@ export function replayBackedNodes(record, traces, replayCounts) {
     evaluate_predictions: visit('evaluate_predictions'),
     interpret_residual_evidence: visit('interpret_residual_evidence'),
     derive_hypothesis_state: visit('derive_hypothesis_state'),
-    async termination_check() {
+    // 🔴 Read from the state, not from the constant this fixture's own
+    // `generate_hypotheses` writes. The two used to share `leaderId`, an
+    // undeclared coupling that held only while BOTH nodes came from here — and
+    // the model arm of `eval:live-model` and `eval:final-holdout` swaps exactly
+    // one of them. The scripted terminator then named a hypothesis the model
+    // never minted, and the graph refused it at `investigation.ts:1387`. That
+    // refusal was correct: a node named a hypothesis the state does not contain.
+    //
+    // Deriving it keeps the property that matters — trusted harness code, never
+    // the model, chooses the challenge target — while dropping the assumption
+    // that one particular producer wrote it.
+    // see benchmark-evaluation.test.mjs › "completes a replay-backed run whose hypothesis producer was swapped, as the model arm swaps it"
+    async termination_check(state) {
       traces.get(record.runId).push('termination_check');
-      return { route: 'terminal', stopKind: 'sufficient', leaderId };
+      return {
+        route: 'terminal',
+        stopKind: 'sufficient',
+        leaderId: state.hypotheses[0]?.id ?? leaderId,
+      };
     },
-    async challenge_hypothesis(_state, challengedLeaderId) {
+    async challenge_hypothesis(state, challengedLeaderId) {
       traces.get(record.runId).push('challenge_hypothesis');
-      assert.equal(challengedLeaderId, leaderId);
+      // Compared against the same derived value, so the self-check survives a
+      // swapped producer instead of asserting which producer ran.
+      assert.equal(challengedLeaderId, state.hypotheses[0]?.id ?? leaderId);
       return {
         alternative: {
           id: `alternative-${record.runId}`,

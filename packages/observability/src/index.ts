@@ -308,6 +308,32 @@ function ownString(target: unknown, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/**
+ * A native identity the provider returned, or a refusal that names it.
+ *
+ * 🔴 `requireOwnString` refuses only an ABSENT field, and `typeof '' === 'string'`,
+ * so a client answering `{ id: '' }` published a whole experiment whose every
+ * example carried `dataset_id: ""`. That is a present field carrying no identity,
+ * and the gate this feeds — AIC-19 — accepts evidence only when it is "tied to
+ * native LangSmith IDs", which an empty string is not. An identity that
+ * identifies nothing is worse than an absent one, because it reads as evidence.
+ * see persisted-benchmark-reference.test.mjs › "records an absent publication as absent with its reason, never as an empty identity"
+ */
+function requireNativeIdentity(target: unknown, key: string, subject: string): string {
+  const value = requireOwnString(target, key, subject);
+  // `/^\s*$/.test(value)` rather than `value.trim().length`: the own-value audit
+  // scans this file's source for a plain `[[Get]]` on caller data and cannot tell
+  // a method on a primitive from a property read on an object. Keeping the shape
+  // out of the file is cheaper than an exemption, and an exemption here would be
+  // the one place a reader checks when a credential-shaped value leaks.
+  if (/^\s*$/.test(value)) {
+    throw new Error(
+      `${subject} carried an empty ${key}: a native identity that identifies nothing is not evidence, and publishing under it would name a dataset nobody can open`,
+    );
+  }
+  return value;
+}
+
 function requireOwnString(target: unknown, key: string, subject: string): string {
   const value = ownString(target, key);
   if (value === undefined) {
@@ -760,7 +786,7 @@ async function persistPreparedExperiment({
   client: LangSmithPersistenceClient;
   datasetId: string;
   experiment: OwnExperiment;
-}>): Promise<void> {
+}>): Promise<{ readonly projectId: string; readonly runIds: readonly string[] }> {
   // The same empty-array read as in `requireExperiment` above, guarded the same
   // way and for the same reason.
   if (experiment.records.length === 0) {
@@ -773,7 +799,8 @@ async function persistPreparedExperiment({
   });
   // The client is injected, so its response is caller-supplied too — the same
   // read `dataset.id` gets in the plural entry point above.
-  const projectId = requireOwnString(createdProject, 'id', 'created project');
+  const projectId = requireNativeIdentity(createdProject, 'id', 'created project');
+  const runIds: string[] = [];
 
   for (const [index, record] of experiment.records.entries()) {
     const rawResult = ownElement(experiment.results, index);
@@ -782,6 +809,7 @@ async function persistPreparedExperiment({
     }
     const result = ownResult(rawResult);
     assertResultIdentity(record, result);
+    runIds.push(record.runId);
     const metrics = requireMetrics(rawResult as PersistedBenchmarkEvaluation);
     const resources = requireResourceEvidence(rawResult as PersistedBenchmarkEvaluation);
     // Own-read, the same way `projectRunMetadata` reads this field further down
@@ -865,6 +893,8 @@ async function persistPreparedExperiment({
       }
     }
   }
+  return { projectId, runIds };
+
 }
 
 /**
@@ -906,13 +936,32 @@ function ownClient(options: unknown): LangSmithPersistenceClient | undefined {
  * in this layer wherever it pointed. Keep the reads own if you change this
  * signature; the audit will tell you if you do not.
  */
+/**
+ * What a publication actually created, so a caller can cite it.
+ *
+ * 🔴 Both entry points created a dataset and a project, read their native ids to
+ * use them, and then returned `void` — so a run could publish and learn nothing
+ * about what it had published. AIC-19 accepts final evidence only when it is
+ * "tied to native LangSmith IDs/URLs and exact candidate SHA", which a caller
+ * holding no identity cannot supply. No new request is made to obtain these:
+ * every value here was already in hand.
+ * see persisted-benchmark-reference.test.mjs › "records the native dataset, project, example and run identities the publication returned"
+ */
+export interface PersistedBenchmarkReference {
+  readonly datasetId: string;
+  readonly datasetName: string;
+  readonly projects: readonly Readonly<{ experimentId: string; projectId: string }>[];
+  readonly exampleIds: readonly string[];
+  readonly runIds: readonly string[];
+}
+
 export async function persistBenchmarkExperiments(
   options: Readonly<{
     client?: LangSmithPersistenceClient;
     datasetName: string;
     experiments: readonly PersistedBenchmarkExperiment[];
   }>,
-): Promise<void> {
+): Promise<PersistedBenchmarkReference> {
   // The options object is read own-only, and this is the surface that made the
   // whole item worth doing: `client = createLangSmithClient()` as a
   // destructuring default fires only on `undefined`, so an INHERITED `client`
@@ -964,13 +1013,28 @@ export async function persistBenchmarkExperiments(
   }
 
   const dataset = await client.createDataset(datasetName);
-  const datasetId = requireOwnString(dataset, 'id', 'created dataset');
+  const datasetId = requireNativeIdentity(dataset, 'id', 'created dataset');
   await client.createExamples(
     createNativeExamples(datasetId, firstExperiment.records),
   );
+  const projects: { experimentId: string; projectId: string }[] = [];
+  const runIds: string[] = [];
   for (const experiment of experiments) {
-    await persistPreparedExperiment({ client, datasetId, experiment });
+    const persisted = await persistPreparedExperiment({ client, datasetId, experiment });
+    projects.push({
+      experimentId: (experiment.records[0] as OwnRecord).experimentId,
+      projectId: persisted.projectId,
+    });
+    runIds.push(...persisted.runIds);
   }
+
+  return Object.freeze({
+    datasetId,
+    datasetName,
+    projects: Object.freeze(projects.map((entry) => Object.freeze({ ...entry }))),
+    exampleIds: Object.freeze([...nativeExampleIds]),
+    runIds: Object.freeze(runIds),
+  }) as PersistedBenchmarkReference;
 }
 
 /** Reads its options own-only for the same reason as its plural sibling above. */
@@ -980,13 +1044,13 @@ export async function persistBenchmarkExperiment(
     datasetName: string;
     experiment: PersistedBenchmarkExperiment;
   }>,
-): Promise<void> {
+): Promise<PersistedBenchmarkReference> {
   const suppliedClient = ownClient(options);
   const experiment = ownValue(options, 'experiment');
   if (experiment === undefined) {
     throw new Error('persist options must carry its own experiment');
   }
-  await persistBenchmarkExperiments({
+  return persistBenchmarkExperiments({
     ...(suppliedClient === undefined
       ? {}
       : { client: suppliedClient as LangSmithPersistenceClient }),

@@ -534,3 +534,222 @@ test('declares the asymmetry between the two consumption channels in the ledger 
   );
   assert.match(text, /declaredLlmCalls/);
 });
+
+/**
+ * 🔴 **The hole that let a broken lane reach a one-shot hold-out run.**
+ *
+ * The row above is the ONLY place this file drives the graph, and its
+ * `termination_check` returns no `leaderId`, so `routeChallenge` is never
+ * entered. `live-model-lane.test.mjs` compares the two arms as OBJECTS, with a
+ * port that throws if called. Between them, `modelNodes` was asserted about
+ * everywhere and EXECUTED through `createInvestigationGraph` nowhere.
+ *
+ * What that hid: the replay fixture hard-codes `leader-${runId}` in
+ * `generate_hypotheses` and names the same constant from `termination_check`.
+ * The model arm swaps the first and keeps the second, so the scripted
+ * terminator named a hypothesis the model never minted and the graph refused it
+ * — correctly, at `investigation.ts:1387`. The suite stayed green at 893/893
+ * while `npm run eval:live-model` could not complete a single model-arm record.
+ *
+ * This row closes the hole rather than the symptom: it drives a model-backed
+ * `generate_hypotheses` all the way to a challenge, which is the path no test
+ * took.
+ */
+test('routes a model-backed run to its challenge, with the leader the graph can see', async () => {
+  const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
+  const { port } = fakePort([
+    { hypotheses: [{ id: 'h-model-1', statement: 'a cause the model named' }] },
+  ]);
+
+  const nodes = Object.fromEntries(
+    lifecycleNodes.map((name) => [name, async () => ({})]),
+  );
+  nodes.generate_hypotheses = createModelGenerateHypotheses({ port, at });
+  // The shape the replay fixture uses: a terminal decision that names a leader.
+  // Derived from the state rather than from a constant, which is the whole
+  // difference between a harness that survives a role swap and one that does not.
+  nodes.termination_check = async (state) => ({
+    route: 'terminal',
+    stopKind: 'sufficient',
+    leaderId: state.hypotheses[0]?.id,
+  });
+  let challengedWith;
+  nodes.challenge_hypothesis = async (_state, leaderId) => {
+    challengedWith = leaderId;
+    return {
+      alternative: {
+        id: 'alt-1',
+        statement: 'an alternative the challenge proposed',
+        createdBy: 'challenge',
+      },
+      discriminatingTests: [{
+        id: 'challenge-test-1',
+        predictionId: 'challenge-prediction-1',
+        tool: 'logs.search',
+        input: { probe: true },
+        cost: 'cheap',
+        status: 'planned',
+      }],
+    };
+  };
+
+  const graph = createInvestigationGraph({ nodes });
+  const result = await graph.execute({ kind: 'start', state: initialState() });
+
+  assert.equal(
+    challengedWith,
+    'h-model-1',
+    'the challenge must target a hypothesis the model actually minted: a terminator naming an id from another producer is the defect this row exists for',
+  );
+  assert.ok(
+    result.hypotheses.some(({ id }) => id === 'h-model-1'),
+    'the model-proposed hypothesis must be in the state the challenge ran against',
+  );
+});
+
+/**
+ * 🔴 **A truncated answer is the harness cutting the model off, not the model
+ * answering badly — and the role used to report the second.**
+ *
+ * The port did not read `stop_reason`, so a completion the provider stopped at
+ * `max_tokens` arrived as an ordinary string, `JSON.parse` failed on the
+ * half-written object, and the role said "the answer is not parseable JSON".
+ * That is a false statement about the one thing this lane measures.
+ *
+ * Measured on a real calibration run before the guard existed:
+ * a lane report recording the model as producing malformed output, and the
+ * lane recorded the model arm unreportable for producing malformed output.
+ *
+ * This repository already refuses the two neighbours of this mistake — a
+ * missing measurement never becomes a zero, and a model run that did not happen
+ * is never model-quality evidence. A run that was CUT OFF being reported as a
+ * model failure is the same error wearing a third face.
+ */
+test('refuses a truncated answer as a truncation rather than as malformed output', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+
+  const truncating = {
+    async complete() {
+      return {
+        text: '{"assessments":[{"id":"a-1",',
+        modelId: 'claude-under-test',
+        usage: { inputTokens: 10, outputTokens: 4096 },
+        stopReason: 'max_tokens',
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => createModelInterpretResidualEvidence({ port: truncating, at })(initialState()),
+    (error) => {
+      assert.match(
+        error.message,
+        /truncat|max_tokens|token budget/i,
+        `the refusal must name the truncation: ${error.message}`,
+      );
+      assert.doesNotMatch(
+        error.message,
+        /not parseable JSON/,
+        `a cut-off answer is not the model writing bad JSON, and reporting it as such attributes a harness limit to model quality: ${error.message}`,
+      );
+      return true;
+    },
+    'a completion the provider stopped at the token budget must be reported as that',
+  );
+});
+
+test('reads an unknown stop reason as not a truncation, so a malformed answer is still the model', () => {
+  // The other direction of the same false attribution: excusing genuinely bad
+  // output as a harness limit. The truncation set is deliberately narrow.
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const oddStop = {
+    async complete() {
+      return {
+        text: 'not json at all',
+        modelId: 'claude-under-test',
+        usage: { inputTokens: 10, outputTokens: 5 },
+        stopReason: 'some_reason_this_code_does_not_know',
+      };
+    },
+  };
+
+  return assert.rejects(
+    () => createModelInterpretResidualEvidence({ port: oddStop, at })(initialState()),
+    /carries no JSON document|not parseable JSON/,
+    'an unknown stop reason must not excuse a malformed answer: guessing that way would attribute a model failure to the harness, which is this defect in reverse',
+  );
+});
+
+/**
+ * 🔴 **An optional field the prompt asks for, refused in its ordinary JSON
+ * spelling — and the refusal landed on the model.**
+ *
+ * The role's own prompt declares `"predictionId":"<id, optional>"`. A model
+ * answering `null` for an optional field is writing ordinary JSON, and the role
+ * treated only `undefined` as absent, so the value reached
+ * `EvidenceAssessmentSchema` and was refused: "expected string, received null".
+ * The lane then recorded the model arm unreportable.
+ *
+ * Measured on a real calibration run. It is the same shape as the truncation
+ * defect one row up: a harness contract the model was never told about, charged
+ * to model quality. For an OPTIONAL field, `null` and absent are the same claim.
+ *
+ * ⚠ This does not widen the schema. A `null` in a REQUIRED field is still
+ * refused, and the row below holds that line — otherwise this fix would trade a
+ * false accusation for a silent acceptance.
+ */
+test('reads null as absent for an optional assessment field, as any JSON author would write it', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { port } = fakePort([
+    {
+      assessments: [{
+        id: 'a-1',
+        evidenceId: 'e-1',
+        hypothesisId: 'h-1',
+        predictionId: null,
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'the evidence bears on the hypothesis',
+      }],
+    },
+  ]);
+
+  const result = await createModelInterpretResidualEvidence({ port, at })(initialState());
+
+  assert.equal(result.assessments.length, 1, 'the assessment must survive an optional field spelled null');
+  assert.equal(
+    Object.hasOwn(result.assessments[0], 'predictionId'),
+    false,
+    'an optional field the model declined must be ABSENT in the stamped assessment, not carried as null: absent is what "no prediction" means to everything downstream',
+  );
+});
+
+test('still refuses null in a required assessment field', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { port } = fakePort([
+    {
+      assessments: [{
+        id: 'a-1',
+        evidenceId: null,
+        hypothesisId: 'h-1',
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'the evidence bears on the hypothesis',
+      }],
+    },
+  ]);
+
+  await assert.rejects(
+    () => createModelInterpretResidualEvidence({ port, at })(initialState()),
+    /evidenceId/,
+    'reading null as absent is correct for an OPTIONAL field and wrong for a required one: without this row the previous fix would trade a false accusation against the model for a silent acceptance of a broken assessment',
+  );
+});

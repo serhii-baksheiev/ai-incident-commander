@@ -6,6 +6,7 @@ import {
 
 import {
   BENCHMARK_METRIC_KEYS,
+  createCalibrationBenchmarkPlan,
   createFinalEvaluationBenchmarkPlan,
   type BenchmarkExperiment,
   type BenchmarkVersions,
@@ -140,8 +141,11 @@ const COMPARED_METRIC_KEYS: readonly GateMetricKey[] = [
   ...BEHAVIOR_METRIC_KEYS,
 ];
 
+/** The two corpora a lane may declare. There is no third, and no default. */
+export type LiveModelLaneScenarioSet = 'calibration' | 'final-evaluation';
+
 export interface LiveModelLanePlan {
-  readonly scenarioSet: 'final-evaluation';
+  readonly scenarioSet: LiveModelLaneScenarioSet;
   readonly runsPerScenario: number;
   readonly metadata: BenchmarkVersions;
 }
@@ -167,7 +171,13 @@ export interface LiveModelLaneControlArm {
 
 export interface LiveModelLaneModelArm {
   readonly arm: 'model';
-  readonly metrics: LiveModelLaneMetrics;
+  /**
+   * ⚠ ABSENT when the arm refused, never zeroed. An arm that produced no score
+   * did not score zero on six axes, and six zeroes read as a model that
+   * answered badly rather than one that did not answer.
+   * see live-model-lane.test.mjs › "records a model arm that refused as unreportable rather than losing the run"
+   */
+  readonly metrics?: LiveModelLaneMetrics;
   readonly reportable: boolean;
   readonly unreportableReason?: string;
   readonly usage?: ModelUsageTotals;
@@ -176,7 +186,17 @@ export interface LiveModelLaneModelArm {
 export type LiveModelLaneVerdict =
   | 'model-quality'
   | 'harness-regression'
-  | 'control-baseline-undeclared';
+  | 'control-baseline-undeclared'
+  /**
+   * 🔴 The model arm threw rather than finishing — a role refused the model's
+   * answer, a provider call failed, a cap was hit mid-arm. This is a
+   * MEASUREMENT and not a lost run: `investigation-roles.ts` refuses a repair
+   * round on purpose, because "a role that could re-ask on a refused answer
+   * would hide the model-quality signal the lane is measuring". Before this
+   * verdict existed the refusal propagated out of the lane and destroyed the
+   * control arm's completed work along with it.
+   */
+  | 'model-arm-refused';
 
 export interface LiveModelLaneReport {
   readonly headSha: string;
@@ -198,6 +218,23 @@ export interface LiveModelLaneOptions {
   readonly experimentId: string;
   /** The exact commit both arms ran at — a comparison across commits is none. */
   readonly headSha: string;
+  /**
+   * 🔴 **Which corpus, declared by the caller, with no default.**
+   *
+   * This was the literal `'final-evaluation'` — so every invocation of the
+   * shipped `eval:live-model` command spent the hold-out, repeatably and with
+   * nothing guarding it. It had never happened here only because no provider
+   * credential existed, which is an accident of an environment rather than a
+   * mechanism.
+   *
+   * An OMITTED value is refused rather than defaulted, for the reason
+   * `createExecutionBenchmarkPlan` already refuses one: a corpus nobody wrote
+   * down is a corpus nobody chose, and the cheaper of the two mistakes to make
+   * silently is the one that spends the hold-out.
+   * see live-model-lane.test.mjs › "refuses a lane whose scenario set the caller did not declare"
+   * see live-model-lane.test.mjs › "touches no hold-out scenario when the caller declares calibration"
+   */
+  readonly scenarioSet?: LiveModelLaneScenarioSet;
   readonly runsPerScenario?: number;
   readonly metadata: BenchmarkVersions;
   readonly controlBaseline?: Readonly<Partial<Record<GateMetricKey, number>>>;
@@ -334,11 +371,27 @@ export async function runLiveModelLane(
 ): Promise<LiveModelLaneReport> {
   const config = requireModelConfig(options.env);
 
+  // Read own-only and refused when absent, BEFORE either arm is invoked, so a
+  // lane that did not say which corpus it wanted runs nothing at all.
+  const declaredScenarioSet = Object.hasOwn(options, 'scenarioSet')
+    ? options.scenarioSet
+    : undefined;
+  if (
+    declaredScenarioSet !== 'calibration' &&
+    declaredScenarioSet !== 'final-evaluation'
+  ) {
+    throw new Error(
+      'the live model lane requires an explicit calibration or final-evaluation scenarioSet: the final-evaluation corpus includes the hold-out, and a corpus nobody declared is one nobody chose',
+    );
+  }
+
   const runsPerScenario =
     options.runsPerScenario ?? LIVE_MODEL_LANE_RUNS_PER_SCENARIO;
   const scenarioCount =
-    BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
-    BENCHMARK_SCENARIO_PARTITIONS.holdout.length;
+    declaredScenarioSet === 'calibration'
+      ? BENCHMARK_SCENARIO_PARTITIONS.calibration.length
+      : BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
+        BENCHMARK_SCENARIO_PARTITIONS.holdout.length;
   const plannedRuns = scenarioCount * runsPerScenario;
   if (plannedRuns > LIVE_MODEL_LANE_MAX_MODEL_RUNS) {
     throw new Error(
@@ -347,13 +400,17 @@ export async function runLiveModelLane(
   }
 
   const plan: LiveModelLanePlan = {
-    scenarioSet: 'final-evaluation',
+    scenarioSet: declaredScenarioSet,
     runsPerScenario,
     metadata: options.metadata,
   };
   // Built here as well as inside each arm, so the lane knows the corpus it is
   // comparing over rather than inferring it from whichever arm answered first.
-  const declaredExampleIds = createFinalEvaluationBenchmarkPlan({
+  const buildPlan =
+    declaredScenarioSet === 'calibration'
+      ? createCalibrationBenchmarkPlan
+      : createFinalEvaluationBenchmarkPlan;
+  const declaredExampleIds = buildPlan({
     experimentId: options.experimentId,
     runsPerScenario,
     metadata: options.metadata,
@@ -362,16 +419,45 @@ export async function runLiveModelLane(
     .sort();
 
   const control = await options.runControlArm(plan);
-  const model = await options.runModelArm(plan);
+
+  // 🔴 The model arm is the one that can refuse, and its refusal is evidence.
+  // Caught HERE and nowhere deeper: a per-record catch would change what a
+  // benchmark result can be, and a retry would hide the very signal the roles
+  // decline to repair. The control arm has already finished at this point, and
+  // losing its work to the model's answer is the defect this catch removes.
+  let model;
+  let armRefusal;
+  try {
+    model = await options.runModelArm(plan);
+  } catch (error) {
+    // ⚠ Capped, because this string is PROVIDER-QUOTED and now persists.
+    // `ModelCompletionError` embeds up to 400 characters of the provider's HTTP
+    // error body, and this value reaches `unreportableReason` — which the
+    // one-shot command writes into a COMMITTED evidence record, to stdout and
+    // to `--out`. Before the arm-level catch that text reached stderr only. The
+    // cap bounds what a remote party can put into this repository's history; it
+    // does not sanitise, and the evidence README says the field is quoted from
+    // the provider rather than authored here.
+    const raw = error instanceof Error ? error.message : String(error);
+    armRefusal = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
+  }
 
   const controlExampleIds = exampleIdsOf(control);
-  const modelExampleIds = exampleIdsOf(model);
-  if (
-    controlExampleIds.join('|') !== modelExampleIds.join('|') ||
-    controlExampleIds.join('|') !== declaredExampleIds.join('|')
-  ) {
+  if (model !== undefined) {
+    const modelExampleIds = exampleIdsOf(model);
+    if (
+      controlExampleIds.join('|') !== modelExampleIds.join('|') ||
+      controlExampleIds.join('|') !== declaredExampleIds.join('|')
+    ) {
+      throw new Error(
+        'the control and model arms must cover the same examples as the declared plan: a comparison across two corpora is not a comparison',
+      );
+    }
+  } else if (controlExampleIds.join('|') !== declaredExampleIds.join('|')) {
+    // The control arm is still held to the declared corpus. A refused model arm
+    // excuses the comparison, never the arm that did finish.
     throw new Error(
-      'the control and model arms must cover the same examples as the declared plan: a comparison across two corpora is not a comparison',
+      'the control arm must cover the declared plan: a comparison across two corpora is not a comparison',
     );
   }
 
@@ -383,7 +469,27 @@ export async function runLiveModelLane(
 
   let verdict: LiveModelLaneVerdict = 'model-quality';
   let unreportableReason: string | undefined;
-  if (declaredBaseline === undefined) {
+  if (armRefusal !== undefined || model === undefined) {
+    // First, because it outranks the other two: an arm that never finished
+    // cannot be judged against a baseline it never reached.
+    // 🔴 `model === undefined` as well as a thrown refusal. `metrics` keyed off
+    // the arm being absent while `reportable` keyed only off a THROW, so an arm
+    // that RETURNED a non-experiment produced `verdict: 'model-quality'` with no
+    // metrics and `reportable: true` — a report saying the lane measured model
+    // quality while carrying nothing but the control arm. That is the
+    // harness-only-as-model-quality shape AIC-19 forbids by name, and it became
+    // an evidence record whose acceptance row read `met: true`.
+    //
+    // On `main` this failed closed by accident: `exampleIdsOf(model)` threw a
+    // TypeError before any of it. Making the arm optional removed that accident,
+    // so the property is asserted here instead.
+    // see live-model-lane.test.mjs › "refuses to call a lane reportable when the model arm returned no experiment"
+    verdict = 'model-arm-refused';
+    unreportableReason =
+      armRefusal === undefined
+        ? 'the model arm returned no experiment: a lane with no model measurement is not a model-quality result, whatever the control arm did'
+        : `the model arm did not finish: ${armRefusal}`;
+  } else if (declaredBaseline === undefined) {
     verdict = 'control-baseline-undeclared';
     unreportableReason =
       'no control baseline was declared, so a metric that moved cannot be attributed to the model rather than to the harness';
@@ -416,7 +522,7 @@ export async function runLiveModelLane(
       },
       model: {
         arm: 'model',
-        metrics: summarize(model),
+        ...(model === undefined ? {} : { metrics: summarize(model) }),
         reportable: unreportableReason === undefined,
         ...(unreportableReason === undefined ? {} : { unreportableReason }),
         ...(usage === undefined ? {} : { usage }),

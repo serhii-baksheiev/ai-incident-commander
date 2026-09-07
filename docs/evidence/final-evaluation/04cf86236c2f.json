@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "status": "void",
+  "candidate": {
+    "fingerprint": "sha256:04cf86236c2f5b5883877a4b1a7c0ce6252c8c259d5d645bf3bb5bd4efa45009",
+    "algorithm": "sha256-over-git-ls-tree",
+    "paths": [
+      "packages",
+      "apps",
+      "scripts",
+      "test/fixtures/benchmark-experiment.mjs",
+      "package-lock.json"
+    ],
+    "headSha": "040056322870c185d2d0361eac2d670e455300f7",
+    "workingTreeClean": true
+  },
+  "corpus": {
+    "scenarioSet": "final-evaluation",
+    "calibration": [
+      "bad-deployment",
+      "db-pool-exhaustion",
+      "false-alert",
+      "deployment-caused-incident-a",
+      "dependency-caused-incident-b",
+      "multiple-plausible-causes",
+      "transient-self-resolved",
+      "challenge-keeps-leader"
+    ],
+    "holdout": [
+      "incomplete-evidence",
+      "challenge-changes-leader"
+    ],
+    "runsPerScenario": 3,
+    "exampleIds": [
+      "00d9e595-7c46-8b5f-abb8-5fbf5b1f98bf",
+      "048e04dd-21e3-87e1-b1c5-93ca52d5e713",
+      "06f9ca8a-08e1-8094-bd9b-ba047dbac3db",
+      "128a8860-cb97-80a2-bfae-a8d948fc7b9e",
+      "13f75678-c0cd-8ce7-a144-3b07160a7a40",
+      "19068399-86ca-809f-a82a-c5d4ec37794f",
+      "23378f65-8640-85b8-a0b9-e25a0c69e32b",
+      "2cfa8de8-cba1-8242-af1b-b49663e131c0",
+      "39798e4d-b217-808b-956e-ebd81fde418e",
+      "3e451d30-561f-8b4e-9461-37fe0c3b6137",
+      "3fabb8f1-1bd6-8fea-8d63-c97c9ec7fac3",
+      "43e98931-cb85-8a5c-91e8-b276e9e0e240",
+      "5574e81b-245c-8252-9dab-c5a460c2c008",
+      "583d4eac-cafd-8dd8-be9f-6a559d9e1e91",
+      "59d9d04d-fe52-8f0d-b5f3-74152b4866bf",
+      "602db4a5-7406-8e46-812e-e163dc6310e0",
+      "7b9efa5d-de95-8180-bef4-568a5f215cc9",
+      "85cc633e-09ce-82f5-a620-6db31f4a1858",
+      "86051c38-8cd2-86fb-a16b-78cb50878cb1",
+      "94f9d1cf-6914-87b2-a213-fbfb7a358cd1",
+      "98bbe90b-3b32-85a5-9be1-0f67ced26f71",
+      "a04042c6-0006-84eb-94f2-fb3a096ff6d0",
+      "ae3bd54e-06b6-8423-ba59-e6855f95f0f2",
+      "c14e9030-60d5-89f5-9488-84993d6fc6ca",
+      "cc12b08b-3900-8ebd-a414-82a98c8ef545",
+      "de62ed11-b5bf-859e-a3b1-be4ab531cadb",
+      "e44a2a88-cedb-889b-88ae-55199cbcbf3d",
+      "e9c4b84c-918e-86f8-ba83-c74038c94ec2",
+      "fda246df-187d-8f70-9d30-4aa7d32d63b8",
+      "fe932583-2509-8449-9c1d-bc059d54d4d0"
+    ],
+    "fingerprint": "sha256:4a20f08b5584b51379ddb51d049509c1710069fa5519a48e63cebc6b852ab356"
+  },
+  "claimedAt": "2026-09-07T05:59:51.438Z",
+  "voidedAt": "2026-09-07T06:00:54.353075Z",
+  "voidReason": "The command crashed before any scenario executed. `scriptedNodes` called `replayBackedNodes(record)` with one argument where it takes three, so node construction threw `Cannot read properties of undefined (reading 'get')` at the first record of the CONTROL arm. The control arm runs before the model arm (live-model-lane.ts:405-406) and publication runs after both (:472), so no model call was issued, nothing was published, and no evaluation was produced. The corpus yielded no information, which is what a void record is for. Fixed in the same branch; the fix moves the candidate fingerprint, so the next run would have been admitted regardless \u2014 this record is written anyway, because a stranded claim that is merely outrun is still a claim nobody accounted for.",
+  "voidedBy": "the autonomous run executing AIC-19, under the owner's standing delegation \u2014 NOT a human reviewer. Stated exactly: the honesty here rests on this being a committed diff a reviewer reads in the pull request, not on who typed it."
+}

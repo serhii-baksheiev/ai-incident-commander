@@ -69,6 +69,23 @@ export interface ModelCompletion {
   readonly text: string;
   readonly modelId: string;
   readonly usage: ModelUsage;
+  /**
+   * 🔴 Why the provider stopped, carried so a TRUNCATION is not read as the
+   * model answering badly.
+   *
+   * Without it a completion cut off at `max_tokens` reaches a role as an
+   * ordinary string, `JSON.parse` fails on the half-written object, and the role
+   * reports "the answer is not parseable JSON" — a false statement about the one
+   * thing this lane exists to measure. Measured on a real calibration run before
+   * this field existed: the lane recorded the model arm unreportable for
+   * producing malformed output, and adding the field removed the symptom.
+   *
+   * Absent when the provider did not say, which is not the same as "the model
+   * finished": a fake port in a test may omit it, and a role reads it as
+   * unknown rather than as complete.
+   * see roles-port-contract.test.mjs › "carries the reason a completion stopped, so a truncation is not read as the model answering badly"
+   */
+  readonly stopReason?: string;
 }
 
 /**
@@ -221,8 +238,21 @@ export function createReferenceModelPort({
         outputTokens: requireOwnCount(usageBlock, 'output_tokens'),
       };
 
+      // Own-read like every other field off a provider answer: an inherited
+      // `stop_reason` would be a claim about a completion nobody made.
+      const stopReasonSlot = ownValue(payload, 'stop_reason');
+      const stopReason =
+        typeof stopReasonSlot === 'string' && stopReasonSlot.length > 0
+          ? stopReasonSlot
+          : undefined;
+
       ledger.record(usage);
-      return { text, modelId, usage };
+      return {
+        text,
+        modelId,
+        usage,
+        ...(stopReason === undefined ? {} : { stopReason }),
+      };
     },
   };
 }

@@ -2031,3 +2031,69 @@ test('disables LangSmith runtime metadata injection in the default client', () =
     'Client.createRun must not append runtime or environment keys after the AIC-10 allowlist boundary',
   );
 });
+
+/**
+ * 🔴 **The fixture's own coupling, and the row that would have stopped a broken
+ * lane reaching a one-shot hold-out run.**
+ *
+ * `replayBackedNodes` mints `leader-${runId}` in `generate_hypotheses` and names
+ * that same constant from `termination_check`. Nothing declared the coupling, so
+ * swapping ONE of the two — which is exactly what the model arm of
+ * `eval:live-model` and `eval:final-holdout` do — left the scripted terminator
+ * naming a hypothesis the replacement never minted. The graph refused it at
+ * `investigation.ts:1387`, correctly.
+ *
+ * The suite could not see this. `roles-model-nodes.test.mjs` drives the graph
+ * once with a terminator that returns no `leaderId`, so the challenge route is
+ * never entered; `live-model-lane.test.mjs` compares the two arms as objects,
+ * with a port that throws if called. So `modelNodes` was asserted about
+ * everywhere and executed through `createInvestigationGraph` nowhere, and the
+ * suite stayed green while the shipped lane could not finish one record.
+ *
+ * This row swaps the same node the arms swap, over the fixture's own nodes,
+ * through the real graph.
+ */
+test('completes a replay-backed run whose hypothesis producer was swapped, as the model arm swaps it', async () => {
+  const runGraphBenchmarkExperiment = requireFunction(
+    evals,
+    'runGraphBenchmarkExperiment',
+    '@aic/evals',
+  );
+  const traces = new Map();
+  const replayCounts = new Map();
+
+  const experiment = await runGraphBenchmarkExperiment({
+    experimentId: 'swapped-producer-v0.2',
+    scenarioSet: 'ad-hoc',
+    scenarios: acceptedV01Scenarios(),
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    createNodes(record) {
+      traces.set(record.runId, []);
+      replayCounts.set(record.runId, 0);
+      // A stand-in for the model role: a DIFFERENT producer, minting its own id.
+      // No port and no network — what matters is only that the id is not the
+      // fixture's constant, which is the one thing the model arm guarantees.
+      return {
+        ...replayBackedNodes(record, traces, replayCounts),
+        async generate_hypotheses() {
+          traces.get(record.runId).push('generate_hypotheses');
+          return {
+            hypotheses: [{
+              id: `not-the-fixtures-constant-${record.runId}`,
+              statement: 'a cause some other producer named',
+              createdBy: 'initial',
+            }],
+          };
+        },
+      };
+    },
+    async recordEvaluation() {},
+  });
+
+  assert.equal(
+    experiment.results.length,
+    15,
+    'a run whose hypothesis producer was swapped must still complete: the fixture may not require that one node wrote the id another node names',
+  );
+});

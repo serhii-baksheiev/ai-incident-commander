@@ -57,16 +57,43 @@ function fakeApiKeyCarrying(controlCharacter) {
 }
 
 /**
- * A scripted experiment over the real final-evaluation plan.
+ * The plan for one declared corpus, dispatched exactly as
+ * `scripts/eval-live-model.mjs` dispatches it — each arm hands `plan.scenarioSet`
+ * on rather than choosing a corpus of its own.
  *
- * The plan comes from `createFinalEvaluationBenchmarkPlan`, so the hold-out
- * policy is the one already accepted in `BENCHMARK_SCENARIO_PARTITIONS` and this
- * lane never builds a second partition.
+ * Both plans come from the accepted `BENCHMARK_SCENARIO_PARTITIONS`, so nothing
+ * in this file builds a second partition.
  */
-function scriptedExperiment(experimentId, scoreFor, { omitMetrics = [] } = {}) {
-  const records = evals.createFinalEvaluationBenchmarkPlan({
+function planFor(scenarioSet, options) {
+  if (scenarioSet === 'calibration') {
+    return evals.createCalibrationBenchmarkPlan(options);
+  }
+  assert.equal(
+    scenarioSet,
+    'final-evaluation',
+    'the lane knows two corpora, and a row asking for a third is asking about a lane that does not exist',
+  );
+  return evals.createFinalEvaluationBenchmarkPlan(options);
+}
+
+/**
+ * A scripted experiment over the real plan for the declared corpus.
+ *
+ * The default is the final-evaluation plan, which is what every row written
+ * before the corpus became a caller-declared option runs over.
+ */
+function scriptedExperiment(
+  experimentId,
+  scoreFor,
+  {
+    omitMetrics = [],
+    scenarioSet = 'final-evaluation',
+    runsPerScenario = 3,
+  } = {},
+) {
+  const records = planFor(scenarioSet, {
     experimentId,
-    runsPerScenario: 3,
+    runsPerScenario,
     metadata: benchmarkVersions,
   });
   const omitted = new Set(omitMetrics);
@@ -100,6 +127,10 @@ const perfect = (key) => (key === 'unsupported_claim_rate' ? 0 : 1);
 function laneOptions(overrides = {}) {
   return {
     env: { [MODEL_API_KEY_VARIABLE]: fakeApiKey() },
+    // Declared, not defaulted: the hold-out corpus is spent by whoever asks for
+    // it by name, and every row below that means the full corpus says so here
+    // rather than relying on the lane to assume it.
+    scenarioSet: 'final-evaluation',
     experimentId: 'aic-94-live-model',
     headSha: HEAD_SHA,
     metadata: benchmarkVersions,
@@ -196,6 +227,195 @@ test('refuses a run count above the declared cap before any arm executes', async
     /cap/i,
   );
   assert.equal(armsRun, 0);
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-19: the corpus is declared by the caller, and spending it is a choice   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A lane whose arms build their plan from the corpus the LANE declared.
+ *
+ * This is the shape `scripts/eval-live-model.mjs` runs: each arm passes
+ * `plan.scenarioSet` on to `runGraphBenchmarkExperiment` instead of naming a
+ * corpus of its own, so an arm cannot reach a scenario the caller did not ask
+ * for. `plans` and `scenarioIds` are the two things a row needs to see — which
+ * plan each arm was handed, and which scenarios that plan really covers.
+ */
+function corpusLaneOptions(
+  scenarioSet,
+  { plans = [], scenarioIds = [], runsPerScenario = 3, ...overrides } = {},
+) {
+  const arm = (armExperimentId) => async (plan) => {
+    plans.push(plan);
+    const experiment = scriptedExperiment(armExperimentId, perfect, {
+      scenarioSet: plan.scenarioSet,
+      runsPerScenario: plan.runsPerScenario,
+    });
+    scenarioIds.push(...experiment.records.map((record) => record.scenario.id));
+    return experiment;
+  };
+
+  return laneOptions({
+    scenarioSet,
+    runsPerScenario,
+    runControlArm: arm('aic-19-live-model-control'),
+    runModelArm: arm('aic-19-live-model-model'),
+    ...overrides,
+  });
+}
+
+/**
+ * The hold-out corpus is spent by whoever names it, and by nobody else.
+ *
+ * `npm run eval:live-model` is a shipped, repeatable command, so a lane that
+ * carries `'final-evaluation'` as a literal rather than as an option spends the
+ * declared one-shot hold-out on every invocation — a diagnostic run, a retry, a
+ * demonstration. That it has never happened here is an accident of this
+ * environment having no provider credential, which is not a mechanism.
+ */
+test('runs the live model lane over calibration unless the caller declares the final-evaluation corpus', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  for (const scenarioSet of ['calibration', 'final-evaluation']) {
+    const plans = [];
+    const report = await runLiveModelLane(corpusLaneOptions(scenarioSet, { plans }));
+
+    assert.deepEqual(
+      plans.map((plan) => plan.scenarioSet),
+      [scenarioSet, scenarioSet],
+      'both arms run the corpus the caller declared: an arm that received a different one is comparing a different corpus',
+    );
+    assert.equal(
+      report.plan.scenarioSet,
+      scenarioSet,
+      'the corpus the report declares is the one the caller asked for, not a constant the lane carries',
+    );
+  }
+});
+
+test('refuses a lane whose scenario set the caller did not declare', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const touched = [];
+
+  const declared = laneOptions({
+    async runControlArm() {
+      touched.push('control');
+      return scriptedExperiment('unreached', perfect);
+    },
+    async runModelArm() {
+      touched.push('model');
+      return scriptedExperiment('unreached', perfect);
+    },
+    async publish() {
+      touched.push('publish');
+    },
+  });
+  // The key is REMOVED rather than set to undefined. An omitted corpus is the
+  // case under test: a caller who wrote `scenarioSet: undefined` at least wrote
+  // the word, and the one this refusal exists for wrote nothing.
+  const { scenarioSet: _omitted, ...undeclared } = declared;
+
+  await assert.rejects(
+    () => runLiveModelLane(undeclared),
+    (error) => {
+      // The shape `createExecutionBenchmarkPlan` already refuses an omitted
+      // scenarioSet in, minus `ad-hoc`, which this lane does not offer: the
+      // refusal names the corpora a caller may declare rather than picking one.
+      assert.match(error.message, /explicit/i);
+      assert.match(error.message, /calibration/);
+      assert.match(error.message, /final-evaluation/);
+      return true;
+    },
+  );
+
+  assert.deepEqual(
+    touched,
+    [],
+    'an undeclared corpus must cost no scenario, exactly as an unconfigured credential costs none: a refusal after the first run has already spent what it was refusing',
+  );
+});
+
+test('touches no hold-out scenario when the caller declares calibration', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const scenarioIds = [];
+
+  await runLiveModelLane(corpusLaneOptions('calibration', { scenarioIds }));
+
+  assert.deepEqual(
+    [...new Set(scenarioIds)].sort(),
+    [...evals.BENCHMARK_SCENARIO_PARTITIONS.calibration].sort(),
+    'a calibration lane covers the calibration partition exactly — no subset, and nothing from beside it',
+  );
+  assert.deepEqual(
+    [...evals.BENCHMARK_SCENARIO_PARTITIONS.holdout].sort(),
+    ['challenge-changes-leader', 'incomplete-evidence'],
+    'the two scenarios named below are the declared hold-out, so this row cannot go stale by naming ids that moved',
+  );
+  for (const holdoutScenarioId of [
+    'incomplete-evidence',
+    'challenge-changes-leader',
+  ]) {
+    assert.equal(
+      scenarioIds.includes(holdoutScenarioId),
+      false,
+      `${holdoutScenarioId} is hold-out: a diagnostic lane that touches it has spent the one-shot evaluation the v0.2 exit gate rests on`,
+    );
+  }
+});
+
+test('derives the declared example ids and the run cap from the corpus the caller declared', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const runsPerScenario = 3;
+
+  assert.deepEqual(
+    [
+      evals.BENCHMARK_SCENARIO_PARTITIONS.calibration.length,
+      evals.BENCHMARK_SCENARIO_PARTITIONS.calibration.length +
+        evals.BENCHMARK_SCENARIO_PARTITIONS.holdout.length,
+    ],
+    [8, 10],
+    'the two scenario counts this row expects are the accepted partition’s, not numbers of its own',
+  );
+
+  for (const [scenarioSet, scenarioCount] of [
+    ['calibration', 8],
+    ['final-evaluation', 10],
+  ]) {
+    const report = await runLiveModelLane(
+      corpusLaneOptions(scenarioSet, { runsPerScenario }),
+    );
+
+    assert.deepEqual(
+      report.exampleIds,
+      planFor(scenarioSet, {
+        experimentId: 'aic-94-live-model',
+        runsPerScenario,
+        metadata: benchmarkVersions,
+      })
+        .map(({ exampleId }) => exampleId)
+        .sort(),
+      `the declared example ids are the ${scenarioSet} corpus’s: a lane that publishes ten scenarios’ identities for an eight-scenario run has published a corpus it never ran`,
+    );
+    assert.equal(
+      report.exampleIds.length,
+      scenarioCount * runsPerScenario,
+      `${String(scenarioCount)} scenarios at ${String(runsPerScenario)} runs each`,
+    );
+  }
+
+  await assert.rejects(
+    () => runLiveModelLane(corpusLaneOptions('calibration', { runsPerScenario: 9 })),
+    (error) => {
+      assert.match(error.message, /cap/i);
+      assert.match(
+        error.message,
+        /\b72\b/,
+        'nine runs over the eight calibration scenarios is 72 — a cap counted against a constant ten-scenario corpus reports 90 and refuses runs the caller never asked for',
+      );
+      return true;
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -852,4 +1072,130 @@ test('refuses without a credential when it is reached through a symlinked path',
   } finally {
     rmSync(linkRoot, { force: true, recursive: true });
   }
+});
+
+/* -------------------------------------------------------------------------- */
+/* A model arm that refuses is a measurement, not a lost run                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 🔴 **The lane could not record the signal its own design says it measures.**
+ *
+ * `investigation-roles.ts` states the policy deliberately: "One completion per
+ * role execution. No repair round, no retry: a role that could re-ask on a
+ * refused answer would hide the model-quality signal the lane is measuring." So
+ * a model answer the domain refuses IS the measurement.
+ *
+ * But the refusal propagated out of `runModelArm` as an exception and killed the
+ * whole lane, taking the control arm's completed work and every other record
+ * with it. Measured on a real one-shot hold-out run: the model produced
+ * unparseable JSON on one record after two minutes of provider calls, and the
+ * evaluation returned nothing at all — no report, no metrics, no record of what
+ * the model had done on the twenty-nine others.
+ *
+ * The lane already had the vocabulary for this and was not using it: an arm
+ * carries `reportable` and an `unreportableReason`, and a verdict says which of
+ * the three known reasons applied. A refused arm is a fourth, and it belongs in
+ * the same place — not in a retry, which the policy above forbids, and not in a
+ * per-record error path, which would change what a benchmark RESULT can be.
+ *
+ * ⚠ The metrics are ABSENT rather than zeroed. A model arm that failed did not
+ * score zero on six axes; it produced no score, and this repository's standing
+ * rule is that a missing measurement never becomes a zero.
+ */
+test('records a model arm that refused as unreportable rather than losing the run', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane({
+    ...corpusLaneOptions('calibration'),
+    async runModelArm() {
+      throw new Error(
+        'model role challenge_hypothesis produced output the domain refuses: the answer is not parseable JSON',
+      );
+    },
+  });
+
+  assert.equal(
+    report.arms.model.reportable,
+    false,
+    'a model arm that refused is not reportable, and saying so is the measurement',
+  );
+  assert.match(
+    report.arms.model.unreportableReason,
+    /not parseable JSON/,
+    `the reason must carry what the model actually did: ${report.arms.model.unreportableReason}`,
+  );
+  assert.equal(
+    report.arms.model.metrics,
+    undefined,
+    'an arm that produced no score must publish none: a missing measurement never becomes a zero, and six zeroes would read as a model that answered badly rather than one that did not answer',
+  );
+  assert.equal(
+    report.verdict,
+    'model-arm-refused',
+    'the verdict must name this reason rather than borrowing one of the three that describe the harness',
+  );
+  assert.ok(
+    report.arms.control.metrics,
+    'the control arm completed and its work must survive the model arm refusing',
+  );
+});
+
+test('keeps a refused model arm out of publication', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  let published = false;
+
+  const report = await runLiveModelLane({
+    ...corpusLaneOptions('calibration'),
+    async runModelArm() {
+      throw new Error('the model answered with something the domain refuses');
+    },
+    async publish() {
+      published = true;
+    },
+  });
+
+  assert.equal(report.arms.model.reportable, false);
+  assert.equal(
+    published,
+    true,
+    'the report is still published — a refused arm is evidence, and withholding it would lose the finding. What must not happen is publishing it AS a model-quality result, which the reportable flag and the verdict both say it is not',
+  );
+});
+
+/**
+ * 🔴 **`reportable` could be true with no model arm at all.**
+ *
+ * Making the arm's `metrics` optional keyed absence off `model === undefined`,
+ * while `reportable` kept keying off a THROWN refusal. So an arm that RETURNED a
+ * non-experiment produced `verdict: 'model-quality'`, no metrics, and
+ * `reportable: true` — a report claiming the lane measured model quality while
+ * carrying nothing but the control arm, which becomes an evidence record whose
+ * acceptance row reads `met: true`. That is the harness-only-as-model-quality
+ * shape AIC-19 forbids by name.
+ *
+ * On `main` this failed closed by accident — `exampleIdsOf(model)` threw first.
+ * Making the arm optional removed the accident, so the property is asserted.
+ */
+test('refuses to call a lane reportable when the model arm returned no experiment', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane({
+    ...corpusLaneOptions('calibration'),
+    async runModelArm() {
+      return undefined;
+    },
+  });
+
+  assert.equal(
+    report.arms.model.reportable,
+    false,
+    'a lane with no model measurement is not a model-quality result, whatever the control arm did',
+  );
+  assert.equal(report.verdict, 'model-arm-refused');
+  assert.equal(
+    report.arms.model.metrics,
+    undefined,
+    'and it must publish no metrics, so nothing downstream can read a number that was never measured',
+  );
 });

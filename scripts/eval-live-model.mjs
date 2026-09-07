@@ -4,7 +4,17 @@
  *
  * `npm run eval:live-model`
  *
- * Two arms over the accepted hold-out corpus, at one commit, in one process:
+ * Two arms over the CALIBRATION corpus, at one commit, in one process.
+ *
+ * 🔴 It used to be the hold-out corpus, and that was the defect rather than the
+ * design: this command is a repeatable diagnostic, the lane's `scenarioSet` was
+ * the literal `'final-evaluation'` with no way to ask for anything else, and
+ * `final-evaluation` is calibration ∪ hold-out. So every invocation spent the
+ * one-shot hold-out, and nothing said so. It had never happened here only
+ * because no provider credential existed — an accident of the environment, not
+ * a guard. The corpus is declared by the caller now, and the hold-out has one
+ * caller: `scripts/eval-final-holdout.mjs`.
+ *
  *
  *   - a SCRIPTED control arm — the deterministic nodes the regression suite
  *     already uses — and
@@ -24,10 +34,15 @@
  * that mechanism is unrelated to this verdict.)
  *
  * 🔴 **With no provider credential this command exits non-zero and touches
- * nothing** — no dataset, no project, no run, no model call. That refusal is the
- * only part of this command that has ever been executed in this repository:
- * there is no `ANTHROPIC_API_KEY` in this environment, so no run of this lane
- * has produced a model number, and none of its output should be read as one.
+ * nothing** — no dataset, no project, no run, no model call.
+ *
+ * ⚠ That refusal used to be the only part of this command ever executed here,
+ * and this paragraph said so. It stopped being true during AIC-19: a credential
+ * was configured, and this lane has since run against a live provider — see the
+ * usage figures in `docs/evidence/final-evaluation/`. The sentence is corrected
+ * rather than deleted because a reader who remembers the old one should be told
+ * it changed, and because "no run has produced a model number" is exactly the
+ * kind of claim that reads as reassurance long after it stops holding.
  *
  * Flags:
  *   --control-baseline <path>  JSON `{ "<metric>": <mean>, … }`. Without it the
@@ -172,6 +187,10 @@ async function main() {
 
   const report = await evals.runLiveModelLane({
     env,
+    // Declared, never defaulted. This command is run repeatedly and must never
+    // reach the hold-out; the lane refuses an omitted value rather than
+    // choosing one.
+    scenarioSet: 'calibration',
     experimentId: `aic-94-live-model-${headSha().slice(0, 12)}`,
     headSha: headSha(),
     metadata: baseMetadata,

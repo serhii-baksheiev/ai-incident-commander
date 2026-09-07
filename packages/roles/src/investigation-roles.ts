@@ -10,7 +10,7 @@ import {
 import type { ChallengeResult, InvestigationNodeResult } from '@aic/graph';
 
 import { ModelRoleOutputError } from './model-errors.js';
-import type { ModelPort } from './reference-model-port.js';
+import type { ModelCompletion, ModelPort } from './reference-model-port.js';
 import { ownValue } from './own-value.js';
 
 /**
@@ -91,6 +91,39 @@ const JSON_ONLY = 'Answer with one JSON document and nothing else. No prose, no 
  * around the document is accommodated; one that answers with no document at all
  * is refused rather than defaulted.
  */
+/**
+ * The provider's own word for "I was cut off".
+ *
+ * Anthropic answers `max_tokens`; the set is kept narrow and any unknown value
+ * is treated as NOT a truncation, because guessing the other way would excuse a
+ * genuinely malformed answer as a harness limit — which is the same false
+ * attribution in the opposite direction.
+ */
+const TRUNCATED_STOP_REASONS = Object.freeze(['max_tokens']);
+
+/**
+ * Refuse a completion the provider cut off, BEFORE trying to read it.
+ *
+ * 🔴 A truncated answer is the harness's doing, not the model's. Reporting it as
+ * "the answer is not parseable JSON" attributes a token budget to model quality,
+ * and this lane exists to measure exactly that quality. Measured on a real
+ * calibration run before this guard existed, the lane recorded the model arm
+ * unreportable for producing malformed output — where the provider had in fact
+ * cut the answer off.
+ * see roles-model-nodes.test.mjs › "refuses a truncated answer as a truncation rather than as malformed output"
+ */
+function refuseTruncated(role: string, completion: ModelCompletion): void {
+  if (
+    completion.stopReason !== undefined &&
+    TRUNCATED_STOP_REASONS.includes(completion.stopReason)
+  ) {
+    throw new ModelRoleOutputError(
+      role,
+      `the provider stopped the answer at the token budget (stop reason ${completion.stopReason}, ${completion.usage.outputTokens} output tokens): the answer was truncated, which is this harness cutting the model off rather than the model answering badly`,
+    );
+  }
+}
+
 function parseJsonDocument(role: string, text: string): unknown {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -179,6 +212,7 @@ export function createModelGenerateHypotheses({
       maxOutputTokens,
     });
 
+    refuseTruncated(role, completion);
     const document = parseJsonDocument(role, completion.text);
     // 🔴 An id already in state is REFUSED, not merged.
     //
@@ -251,6 +285,7 @@ export function createModelInterpretResidualEvidence({
       maxOutputTokens,
     });
 
+    refuseTruncated(role, completion);
     const document = parseJsonDocument(role, completion.text);
     const stampedAt = at();
     const assessments: EvidenceAssessment[] = ownArray(
@@ -269,7 +304,20 @@ export function createModelInterpretResidualEvidence({
           );
         }
       }
-      const predictionId = ownValue(candidate, 'predictionId');
+      // 🔴 `null` is absent for an OPTIONAL field, because that is how a JSON
+      // author spells "no value" — and this role's own prompt asks for
+      // `"predictionId":"<id, optional>"`. Treating only `undefined` as absent
+      // sent the model's `null` into the schema, which refused it, and the lane
+      // then recorded the model arm unreportable for a contract the model was
+      // never told about. Measured on a real calibration run.
+      //
+      // This does not widen the schema: a `null` in a REQUIRED field still
+      // reaches it and is still refused.
+      // see roles-model-nodes.test.mjs › "reads null as absent for an optional assessment field, as any JSON author would write it"
+      // see roles-model-nodes.test.mjs › "still refuses null in a required assessment field"
+      const declaredPredictionId = ownValue(candidate, 'predictionId');
+      const predictionId =
+        declaredPredictionId === null ? undefined : declaredPredictionId;
       return parseWith(role, EvidenceAssessmentSchema, {
         id: ownValue(candidate, 'id'),
         evidenceId: ownValue(candidate, 'evidenceId'),
@@ -325,6 +373,7 @@ export function createModelChallengeHypothesis({
       maxOutputTokens,
     });
 
+    refuseTruncated(role, completion);
     const document = parseJsonDocument(role, completion.text);
     const candidate = ownValue(document, 'alternative');
     const alternative = parseWith(role, HypothesisSchema, {
