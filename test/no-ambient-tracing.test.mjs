@@ -91,7 +91,7 @@ test('the CI step that runs the suite goes through npm test, not node --test', a
     bypassing,
     [],
     'a CI step invoking `node --test` directly skips the no-ambient-tracing preload, so a ' +
-      'self-hosted runner with LANGSMITH_* exported writes every CI run into a real workspace ' +
+      'runner with LANGSMITH_* exported writes every CI run into a real workspace ' +
       'under a real API key',
   );
   // The invariant is that the suite runs THROUGH THE PRELOAD, not that it runs
@@ -111,7 +111,7 @@ test('the CI step that runs the suite goes through npm test, not node --test', a
     true,
     'the CI suite step must run through the no-ambient-tracing preload — `npm test`, or an ' +
       'explicit `node --import ./test/fixtures/no-ambient-tracing.mjs --test`. Without it a ' +
-      'self-hosted runner with LANGSMITH_* exported writes every CI run into a real workspace ' +
+      'runner with LANGSMITH_* exported writes every CI run into a real workspace ' +
       'under a real API key',
   );
 });
