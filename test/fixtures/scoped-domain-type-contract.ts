@@ -133,13 +133,8 @@ void registry;
 void intake;
 void intakeWithoutScope;
 
-/**
- * AIC-96 slice 2: `IncidentSchema` (`packages/domain/src/contracts.ts`) moves
- * from a bare `{ id }` to requiring the same `primaryScope` `IncidentIntake`
- * already carries above. Until that lands, `Incident` has no such
- * requirement and this `@ts-expect-error` is unsatisfied — `tsc` reports it
- * as an unused directive, which is this row's red today.
- */
+// `IncidentSchema` requires the same `primaryScope` `IncidentIntake` carries
+// above (AIC-96), so an `Incident` without one is a type error.
 // @ts-expect-error every Incident carries a primaryScope
 const incidentWithoutScope: Incident = {
   id: 'incident-without-scope',
