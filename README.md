@@ -414,3 +414,7 @@ npm run cli -- --help
 npm run cli -- start --run-id demo --checkpoint ./checkpoints.sqlite
 npm run cli -- resume --run-id demo --checkpoint ./checkpoints.sqlite
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Serhii Baksheiev.
