@@ -285,7 +285,6 @@ The architecture freeze means structural changes must be justified by benchmark 
 | [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain contracts, graph topology, persistence, tools, evals, roadmap, and Definition of Done |
 | [PLAN.md](PLAN.md) | Standing execution conventions and the journal pointer; the queue itself is whatever `.claude/queue.json` names, currently Jira |
 | [Journal](journal/README.md) | Human-readable run history and journal conventions |
-| [Self-hosted runner](RUNNER.md) | Linux ARM64 CI VM on an Apple Silicon macOS host, security boundary, and operations |
 
 ## Repository shape
 
@@ -378,7 +377,7 @@ CI is covered by the same preload, because the workflow runs the suite through
 `npm test` rather than invoking the runner directly — › "the CI step that runs
 the suite goes through npm test, not node --test" reads
 `.github/workflows/ci.yml` and refuses a step that would bypass it. That check
-matters on a self-hosted runner, which inherits the machine's environment.
+matters on any runner whose environment carries tracing variables.
 
 ⚠ What the preload does **not** clear is `LANGSMITH_API_KEY` itself. That is the
 right scope for flag-gated tracing — a key alone traces nothing — but a
