@@ -193,9 +193,13 @@ function main() {
     // repo" and waves through, running the whole Definition-of-Done suite
     // against a tree it never managed to read.
     //
-    // 🔴 Limit: only THIS command is sanitised. The Definition-of-Done checks
-    // below run with the environment as given, because they are the project's
-    // own commands and their environment is the project's business.
+    // 🔴 Limit: only THIS command is sanitised beyond `RIG_RUN_DIR`. The
+    // Definition-of-Done checks below run with the environment as given,
+    // because they are the project's own commands and their environment is
+    // the project's business — except `RIG_RUN_DIR`, which names the
+    // directory of the workflow run executing this very hook and belongs to
+    // the run, not to the project's own commands.
+    //   see hooks.test.ts (absent in a generated rig) › "never lets a Definition-of-Done check see RIG_RUN_DIR, even though the hook itself is given one"
     // `timeout` below is the preamble's own leash: this is the one call that
     // runs before the budget's clock starts. A repository slow enough to exceed
     // it throws into the catch and the checks run anyway — the safe direction,
@@ -264,7 +268,15 @@ function main() {
 
   const budget = budgetMs(process.env);
   if (budget.notice) process.stderr.write(`gate-stop-dod: ${budget.notice}\n`);
-  const deadline = Date.now() + budget.ms;
+  // Elapsed time, so the monotonic clock: a step of the wall clock must neither
+  // lengthen nor shorten the budget.
+  const deadline = performance.now() + budget.ms;
+
+  // Computed once, not per check: `RIG_RUN_DIR` names the workflow run
+  // directory of the run executing this hook, and it is the one variable the
+  // project's own commands never get — see the 🔴 limit above.
+  const envForChecks = { ...process.env };
+  delete envForChecks.RIG_RUN_DIR;
 
   for (const command of usable) {
     // A 1 ms floor rather than a branch for "the budget is already gone": the
@@ -274,9 +286,10 @@ function main() {
     const result = spawnSync(command, {
       cwd: PROJECT_ROOT,
       shell: true,
+      env: envForChecks,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: Math.max(1, deadline - Date.now()),
+      timeout: Math.max(1, Math.ceil(deadline - performance.now())),
       // Output volume is not a verdict — below this bound. Past it the child is
       // killed and its result is unknown, which the error branch treats as
       // unmeasured rather than as a failure or a pass. The old 1 MB default

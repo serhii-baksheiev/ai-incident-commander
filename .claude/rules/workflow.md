@@ -7,7 +7,9 @@ Red → Green → Refactor, in that order, every time:
 1. **Red** — write the test that describes the behavior; run it; watch it fail.
    Use the `test-writer` agent for this step: it writes the failing test and is
    scoped so it cannot "helpfully" write the implementation too.
-2. **Green** — the minimum implementation that makes the test pass.
+2. **Green** — the minimum implementation that makes the test pass. Use the
+   `implementation-agent` for this step: it starts from the failing test and
+   never edits a test to reach green.
 3. **Refactor** — clean up with the tests staying green.
 
 No implementation before its failing test exists. A bug fix starts with a test
@@ -34,9 +36,31 @@ that reproduces the bug.
 The session that wrote the code is measurably worse at reviewing it: it
 carries its own reasoning in context and will not challenge its own decisions
 the way a cold reader does. That is *why* `code-reviewer` is a separate
-subagent with a fresh context, and why the `pr-ship` gate fans reviewers out
-instead of self-checking. This isolation is load-bearing, not ceremony — do
-not "optimise" it away by reviewing in the authoring session.
+subagent with a fresh context. **The `pr-ship` skill, which fans reviewers
+out automatically, ships only with the opt-in workflow layer** (`init
+--layer workflow`; `AGENTS.md`'s "The opt-in workflow layer" section) —
+without it, the session itself dispatches `code-reviewer` (and
+`security-scanner`/`prose-reviewer` when their triggers fire) directly,
+before opening or merging a PR. Either way, this isolation is load-bearing,
+not ceremony — do not "optimise" it away by reviewing in the authoring
+session.
+
+A reviewer whose definition pins its model is never dispatched with a call-site
+`model`: which model reads a change is the routing policy's decision, not the
+dispatching session's, and `guard-subagent-model` refuses the override
+(`docs/decisions/subagent-routing.md`).
+
+## Review findings
+
+A blocking finding — from `code-reviewer`, `security-scanner`,
+`prose-reviewer`, or a review a repository rule names — is **resolved with
+evidence, not argued away**. It closes one of two ways: the change is fixed
+and the reviewer reads the fixed head, or the finding's premise is shown
+false with something the reviewer can re-check — a `file:line`, a test name,
+a command and its output. A reply that disagrees with neither is not a
+resolution, and neither is softening the flagged sentence or dropping the
+reviewer from the fan-out. This holds with or without the opt-in workflow
+layer, whoever drives the fan-out.
 
 ## PR flow
 
@@ -56,6 +80,13 @@ travels one path to merge, in this order:
    | `fast-path` | documentation outside the rulebook, and derived files under those same two rules | `prose-reviewer` |
    | `model` | everything else, including anything unclassifiable | `code-reviewer`, **always** |
 
+   **`.claude/scripts/decision-router.mjs` ships with the opt-in workflow
+   layer** (`init --layer workflow`; `AGENTS.md`'s "The opt-in workflow layer"
+   section). Without it, this table is still the rule — it is just applied by
+   a human or the session rather than by the script, and the safe default on
+   any doubt is `model`, exactly as the script's own refusal-to-decide reads
+   below.
+
    `.claude/scripts/decision-router.mjs` decides this from the **committed**
    diff's paths — an uncommitted edit is not routed — and **risk flags escalate
    ahead of all three**: a file under a declared elevated path, a dependency
@@ -65,8 +96,8 @@ travels one path to merge, in this order:
    so it never reaches the prose lane; `.md`/`.mdx` files and test paths that
    provision nothing are inert, so a README inside an elevated directory does
    not escalate on that ground alone. **Rulebook paths are exempt from that
-   carve-out** — `CLAUDE.md`, anything under `.claude/`, and the decision
-   records under `docs/decisions/`, which are extracted rationale and reviewed
+   carve-out** — `CLAUDE.md`, `AGENTS.md`, anything under `.claude/`, and the
+   decision records under `docs/decisions/`, which are extracted rationale and reviewed
    like the rules they explain. The inert set is otherwise those two extensions
    and test paths exactly — **not** the router's own notion of prose, which is
    `.md`/`.txt`. Neither set contains the other, and reconciling them breaks a
@@ -91,19 +122,29 @@ travels one path to merge, in this order:
      parsing, file handling, or outbound calls;
    - `prose-reviewer` when it touches the documents that instruct agents — a
      rule file, a skill, an agent spec, a decision record under
-     `docs/decisions/`, `CLAUDE.md`, the README. In this layer the prose *is*
+     `docs/decisions/`, `CLAUDE.md`, `AGENTS.md`, the README. In this layer the prose *is*
      the implementation, and it fails the same way code does: silently, in the
      direction of false confidence;
-   - an infrastructure review when it touches infrastructure (the stack layer
-     names the reviewing agent for the target).
+   - any additional review a repository rule explicitly names for the touched
+     surface.
 
-   The `pr-ship` skill drives this fan-out and returns a SHIP / HOLD verdict
-   with named blockers; blocking findings are resolved, not argued with.
+   **The `pr-ship` skill ships only with the opt-in workflow layer**
+   (`init --layer workflow`) and, where installed, drives this fan-out and
+   returns a SHIP / HOLD verdict with named blockers. **Without the layer,
+   the session itself drives the same fan-out** — dispatch each reviewer the
+   table and the triggers above name, read every verdict, and resolve every
+   blocking finding the same way `pr-ship` would; nothing about the review
+   floor changes with or without the skill. Blocking findings are resolved
+   as "Review findings" above says, either way.
 
    **A verdict is a block, not a sentence.** Every gate ends its report with one
-   fenced `json` block of the shape `.claude/scripts/lib/verdict.mjs` defines,
-   and `pr-ship` runs `node .claude/scripts/verdict.mjs check` on each answer
-   **before** it decides anything from it. A report that does not parse — no
+   fenced `json` block of the shape `.claude/scripts/lib/verdict.mjs` defines
+   (Core — `verdict.mjs` and its two dependencies ship unconditionally,
+   `docs/decisions/workflow-layer-split.md` explains why), and `node
+   .claude/scripts/verdict.mjs check` runs on each answer **before** anything
+   is decided from it — `pr-ship` runs it when the layer is installed; the
+   session runs the same command by hand otherwise. A report that does not
+   parse — no
    block, a word no gate returns, a blocker naming no rule, a stop naming no
    blocker — is `incomplete`: the reviewer did not answer, which is neither a
    pass nor a stop. Reading it as a pass is the failure the check exists to
@@ -113,17 +154,19 @@ travels one path to merge, in this order:
 3. **Merge — on an explicit, non-lazy criterion.** Do not trust a watcher
    command that can exit before the checks have even registered. Confirm that
    the **required** check completed successfully **for this commit** — a list
-   that is merely "not failing yet" is not a pass. The concrete command is
-   stack-specific and lives in `stack/*`; the criterion here does not name one.
+   that is merely "not failing yet" is not a pass. The concrete command is the
+   repository's documented check command when it names one; otherwise query
+   the hosting service's check runs by the exact head SHA.
 
-**Post-merge tail:** verify the deployed surface is healthy (the target's
-post-deploy verdict — `autonomy.md`), then close the task **through the queue
-adapter** — `close(ticket, …)`, whose answer the `loop` skill says how to read.
+**Post-merge tail:** when the repository's own documentation declares a runtime
+or other operational surface, run the health check it documents (the post-deploy
+verdict — `autonomy.md`). Then close the task **through the queue adapter** —
+`close(ticket, …)`, whose answer the `loop` skill says how to read.
 Hand-editing `PLAN.md` closes nothing while the config names a tracker. A
 follow-up the run found is **proposed, never filed**: it goes through the capped
 triage proposal the `loop` skill defines, because the queue is human-filled and
-the agent authors no work for itself. Merge is not the finish line; a healthy
-runtime and an honest plan are.
+the agent authors no work for itself. Merge is not the finish line; the queue
+and every declared operational check must reflect reality.
 
 ## PR policy
 
@@ -140,7 +183,7 @@ A change is done when **all** of these hold:
 - [ ] A test written first demonstrates the new behavior (and failed before the change)
 - [ ] The full test suite is green — nothing skipped, nothing weakened
 - [ ] Lint and typecheck are clean
-- [ ] Layer boundaries respected (no new cross-layer imports; core still pure)
+- [ ] Repository-specific invariants and declared boundaries remain satisfied
 - [ ] No secrets, credentials, or personal data in code, config, or fixtures
 - [ ] Docs touched by the change (README, rules) are updated
 - [ ] The autonomy tier of the change was checked and honored (`autonomy.md`)

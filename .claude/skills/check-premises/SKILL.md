@@ -28,7 +28,7 @@ same four steps with the diff as the code, and §4 carries what is different.
 
 **What "rulebook prose" means here is not a new list** — it is the set
 `.claude/rules/workflow.md` already uses for the `prose-reviewer` trigger: a rule
-file, a skill, an agent spec, a decision record, `CLAUDE.md`, the README. Where a
+file, a skill, an agent spec, a decision record, `CLAUDE.md`, `AGENTS.md`, the README. Where a
 rulebook file exists twice (a template source and a generated copy), check the
 **source**; the copy is composed from it. A comment in a test or a hook is in scope
 too when it asserts behaviour — the file it lives in does not change what a claim is.
@@ -36,8 +36,8 @@ too when it asserts behaviour — the file it lives in does not change what a cl
 🔴 **`PREMISE FALSE` belongs to the first entry point only.** At the second one the
 claims are your own and the remedy is an edit, so a false one is not an escalation:
 it is `UNMEASURED`'s neighbour — delete or correct the sentence and carry on. Reading
-it as the escalation `loop` §6 defines would send a finished branch back to the queue
-over one sentence.
+it as the escalation `loop` §6 (opt-in workflow layer) defines would send a
+finished branch back to the queue over one sentence.
 
 ## Why it sits here and not in review
 
@@ -91,13 +91,40 @@ At the **second** entry point this inverts for one case: a test is exactly what 
 a behaviour claim, so reading it is the point. The rule above is about not letting a
 test's *name* stand in for what the code does; §4 says which artifacts count.
 
+### External premises
+
+A claim about something this repository does not contain — an external API, a
+CLI, a library — is a premise like any other, and §2 decides whether it is
+load-bearing. "The provider accepts a `--json` flag" or "the SDK retries on 429"
+changes what gets built if it is false. The code here cannot settle it, so this
+is the one case where documentation is the evidence, and it is recorded in four
+parts:
+
+- **version** — the exact version this project uses (the lockfile, the installed
+  binary's own version output), not "latest";
+- **source** — an authoritative one for that version: the vendor's reference
+  documentation, its changelog, or the tool's own `--help`;
+- **date** — when you read it, because documentation changes under a fixed URL;
+- **quote** or pointer — the sentence that says it, short enough to re-check, or
+  the exact section it sits in.
+
+A complete record that supports the claim lets it hold. One that contradicts it
+is `PREMISE FALSE`, and the work stops exactly as it does for a claim the code
+contradicts. The four parts go in the report's `evidence`, and in the blocker's
+`note` when there is one.
+
+A claim missing any of the four stays `UNVERIFIABLE`: being widely believed, or
+true of an earlier version, does not promote it to a fact. This skill adds no
+network tooling — where the session cannot reach the source, the claim is
+`UNVERIFIABLE` and travels as a labelled assumption, as §4 says.
+
 ## 4. The verdict
 
 | Verdict | When | What happens next |
 | --- | --- | --- |
 | `PREMISES HOLD` | every load-bearing claim checked out, or there were none | proceed to the Red step |
-| `PREMISE FALSE` | a load-bearing claim is contradicted by the code | **stop and report** |
-| `UNVERIFIABLE` | a load-bearing claim could not be decided from the code | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
+| `PREMISE FALSE` | a load-bearing claim is contradicted by the code — or, for an external premise, by its four-part record | **stop and report** |
+| `UNVERIFIABLE` | a load-bearing claim could not be decided from the code — or, for an external premise, has no complete four-part record | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
 | `UNMEASURED` | **second entry point only:** a sentence you wrote asserts behaviour, and nothing you can point at backs it | **delete the sentence, or turn it into a pointer to the test that proves it** — before the gate |
 
 🔴 **The edit belongs to the calling session, not to this skill.** It reports; the
@@ -185,9 +212,13 @@ inside the block; both forms are the contract.
   actually says, and `file`/`line` is the citation §3 requires.
 - `PREMISES_HOLD` carries an empty `blockers` list; the other three name at
   least one. A stop verdict without one is not an answer the caller can act on,
-  and the caller is what checks: the `loop` skill runs
-  `node .claude/scripts/verdict.mjs check <report> check-premises` on what you
-  return. Nothing in this skill runs it — this skill writes nothing at all.
+  and the caller is what checks: `node .claude/scripts/verdict.mjs check
+  <report> check-premises` on what you return — `verdict.mjs` is Core and runs
+  standalone, so the caller is whichever session invoked this skill (this is a
+  Core skill, meant to run with no queue and no loop); the `loop` skill (opt-in
+  workflow layer) runs the same command the same way when it is the one that
+  invoked you. Nothing in this skill runs it — this skill writes nothing at
+  all.
 - **`headSha` is the commit you read** — `git rev-parse HEAD` in the checkout
   you examined. A premise check answers about a tree, and the tree moves.
 
@@ -219,7 +250,9 @@ is invisible to every gate downstream.
 - **It reads the code, so it only catches what the code can contradict.** A claim
   about runtime behaviour ("this times out in production"), about intent, or
   about a system this repository does not contain is `UNVERIFIABLE` here, not
-  false — say so rather than guessing.
+  false — say so rather than guessing. For an external API, CLI or library the
+  way out is the four-part record "External premises" asks for, which can make
+  the claim hold or prove it false.
 - **Each entry point is one pass, at its own end of the task.** A premise that goes
   false *between* them — a merge lands, a dependency moves — is a staleness stop rule
   (`.claude/rules/autonomy.md`), not this skill. Neither pass watches the other's
@@ -231,6 +264,6 @@ is invisible to every gate downstream.
   when a task starts building on an unchecked claim, and no artifact outlives the
   step — so a run that skipped it and a run that passed it look identical
   afterwards. That is the honest description of every rule of this shape here
-  (the `loop` skill says the same about its own no-hand-feeding rule), and it is
-  why the citation matters: a `file:line` in the report is the one part of this a
-  later reader can re-check.
+  (the `loop` skill — opt-in workflow layer — says the same about its own
+  no-hand-feeding rule), and it is why the citation matters: a `file:line` in
+  the report is the one part of this a later reader can re-check.

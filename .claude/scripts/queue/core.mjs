@@ -485,6 +485,18 @@ export const hygieneOf = (ticket, { owner = null } = {}) => {
     };
   }
 
+  const removed = removedDependencyIn(body, ticket);
+  if (removed) {
+    return {
+      kind: 'link-contradicted-by-body',
+      id: ticket.id,
+      why:
+        `body line ${removed.line} declares "The Blocks link ${removed.source} -> ` +
+        `${removed.target} is removed", but that dependency is still carried in ` +
+        `${removed.direction}. Reconcile the declaration and link before relying on either`,
+    };
+  }
+
   return null;
 };
 
@@ -501,6 +513,37 @@ export const hygieneOf = (ticket, { owner = null } = {}) => {
  * there is no ambiguous split to backtrack over.
  */
 const BLOCKER_IN_BODY = /^[-*\t ]{0,4}(?:blocked by|depends on|blocker)[ \t:]{0,8}[#A-Za-z0-9]/im;
+
+// See test/template/queue.test.ts (absent in a generated rig) ›
+// "reports its carried outgoing Blocks link that its own body says was removed".
+const REMOVAL_ID = '(?:[A-Z][A-Z0-9_]{0,31}-[0-9]{1,16}|#[0-9]{1,16})';
+const REMOVED_DEPENDENCY = new RegExp(
+  `^[ \\t]{0,4}(?:[-*][ \\t]{1,4})?The[ \\t]{1,8}Blocks[ \\t]{1,8}link[ \\t]{1,8}` +
+    `(${REMOVAL_ID})[ \\t]{1,8}->[ \\t]{1,8}(${REMOVAL_ID})[ \\t]{1,8}is[ \\t]{1,8}removed` +
+    '(?=[ \\t]{0,8}(?:$|[.;(]))',
+  'i',
+);
+const dependencyId = (value) => String(value).replace(/^#/, '').toUpperCase();
+const removedDependencyIn = (body, ticket) => {
+  const ownId = dependencyId(ticket.id);
+  const outgoingIds = new Set((ticket.blocks ?? []).map(dependencyId));
+  const incomingIds = new Set((ticket.blockedBy ?? []).map((link) => dependencyId(link.id)));
+  const lines = body.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = REMOVED_DEPENDENCY.exec(lines[index]);
+    if (!match) continue;
+    const [, source, target] = match;
+    const outgoing =
+      dependencyId(source) === ownId &&
+      outgoingIds.has(dependencyId(target));
+    const incoming =
+      dependencyId(target) === ownId &&
+      incomingIds.has(dependencyId(source));
+    if (outgoing || incoming)
+      return { source, target, line: index + 1, direction: outgoing ? 'blocks' : 'blockedBy' };
+  }
+  return null;
+};
 
 /** The item saying, in its own words, that it was broken into other items. */
 const SPLIT_IN_BODY = /\b(?:split into|split up into|broken into|broken up into|superseded by|subtasks?:)/i;
@@ -590,13 +633,12 @@ const clearsSpacing = (lastCompletedTier) =>
  * items with the whole suite green throughout, and its `budget` stop arriving "later
  * than it should have".
  *
- * Two is the cap because the second round is what verifies the first round's fixes.
- * A third is a decision for a human rather than another pass to buy — and the
- * refusal says only that the count is spent, never that the fixes "are not
- * converging": on one branch a granted third round found that round 2's fix had
- * opened the mirror of the bug it closed (AR-115).
+ * Three is the cap: the second round verifies the first round's fixes, and the
+ * third lets a round-2 fix be read once more before the item needs a human. A
+ * project that wants a different cap sets `options.maxGateRounds` instead of
+ * changing this default.
  */
-export const DEFAULT_MAX_GATE_ROUNDS = 2;
+export const DEFAULT_MAX_GATE_ROUNDS = 3;
 
 /**
  * Is this round allowed, and if not, what stops?
