@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -7,17 +7,47 @@ import { fileURLToPath } from 'node:url';
 // The CI contract for a PUBLIC repository. Every pull request can come from an
 // untrusted contributor, so ordinary PR validation runs on a disposable
 // GitHub-hosted runner with a read-only token, no secrets, and no expression
-// that splices contributor-controlled text into a shell. The workflow is read
-// as text on purpose: no YAML dependency is installed, and the checks below are
-// line-shaped enough not to need one.
+// expanded inside a shell script. The workflow is read as text on purpose: no
+// YAML dependency is installed, and the checks below are line-shaped enough not
+// to need one.
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const workflowPath = resolve(projectRoot, '.github/workflows/ci.yml');
+const workflowsDirectoryPath = resolve(projectRoot, '.github/workflows');
+const workflowPath = resolve(workflowsDirectoryPath, 'ci.yml');
 const readmePath = resolve(projectRoot, 'README.md');
 const runnerGuidePath = resolve(projectRoot, 'RUNNER.md');
 const runnerDirectoryPath = resolve(projectRoot, '.github/runner');
 
 const HOSTED_RUNNER = 'ubuntu-24.04';
+
+// One spelling of each security rule, shared by the ci.yml contract and by the
+// every-workflow-file sweep below, so the two cannot drift apart.
+const SELF_HOSTED = /self-hosted/i;
+const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run', 'issue_comment'];
+const WRITE_SCOPE = /:[ \t]*['"]?write\b/;
+const WRITE_ALL = /write-all/;
+const PINNED_ACTION = /^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/;
+const SECRET_REFERENCE = /\bsecrets\s*(?:\.|\[|:)/;
+const TOKEN_REFERENCE = /\bgithub\.token\b/;
+
+// Any expression at all inside a run script. Recognising only the "untrusted"
+// contexts was tried and lost to bracket access (github.event['pull_request']),
+// a `}` inside a quoted format() argument, toJSON(github.event), and
+// github.ref_name. The workflow has no legitimate need for one: a value a
+// script needs travels through env:, where the shell sees it as data.
+const EXPRESSION_IN_SCRIPT = /\$\{\{/;
+
+// What the retired self-hosted preflight checked, by the words it used to check
+// it. Deliberately not a bare `sudo`: an ordinary `sudo apt-get` is legitimate
+// on the hosted runner and has nothing to do with the retired machine.
+const RETIRED_RUNNER_RESIDUE = [
+  ['the dedicated aic-runner identity', /aic-runner/],
+  ['Lima mount inspection', /\bfindmnt\b/],
+  ['the host filesystem mount types', /\b(?:virtiofs|fuse\.sshfs)\b/],
+  ['the passwordless-sudo check', /\bsudo\s+-n\b|passwordless\s+sudo/i],
+  ['the Lima VM', /\blima\b/i],
+  ['the ARM64 architecture requirement', /\b(?:ARM64|aarch64)\b/i],
+];
 
 function readRequired(path, message) {
   assert.equal(existsSync(path), true, message);
@@ -100,7 +130,44 @@ function extractRunScripts(workflow) {
   return scripts;
 }
 
-const UNTRUSTED_EXPRESSION = /\$\{\{[^}]*\b(?:github\.event\.|github\.head_ref\b)/;
+// Every `uses:` reference, comments excluded, with any trailing `# vX.Y` note dropped.
+function extractUses(workflow) {
+  return workflow
+    .split('\n')
+    .filter((line) => !isComment(line))
+    .map((line) => line.match(/^\s*(?:-\s+)?uses:\s*(\S+?)\s*(?:#.*)?$/)?.[1])
+    .filter((value) => value !== undefined);
+}
+
+// A plain scalar as YAML would read it: a trailing ` # comment` dropped, then
+// one pair of surrounding quotes. `false # note`, `'false'` and `"false"` are
+// all the boolean false to the workflow parser, so they must be to the test.
+function scalarValue(raw) {
+  return raw
+    .replace(/\s+#.*$/, '')
+    .trim()
+    .replace(/^(['"])(.*)\1$/, '$2')
+    .trim();
+}
+
+// The security-critical subset of this contract, applied to any workflow text.
+// Returns one finding per rule broken; an empty list is a pass.
+function publicSafetyViolations(workflow) {
+  const findings = [];
+  if (SELF_HOSTED.test(workflow)) findings.push('targets a self-hosted runner');
+  for (const trigger of PRIVILEGED_TRIGGERS) {
+    if (new RegExp(`\\b${trigger}\\b`).test(workflow)) findings.push(`uses the ${trigger} trigger`);
+  }
+  if (WRITE_SCOPE.test(workflow) || WRITE_ALL.test(workflow)) findings.push('grants a write permission');
+  const unpinned = extractUses(workflow).filter((ref) => !PINNED_ACTION.test(ref));
+  if (unpinned.length > 0) findings.push(`uses an action not pinned to a 40-hex SHA: ${unpinned.join(', ')}`);
+  if (extractRunScripts(workflow).some((script) => EXPRESSION_IN_SCRIPT.test(script))) {
+    findings.push('expands a ${{ }} expression inside a run script');
+  }
+  if (SECRET_REFERENCE.test(workflow)) findings.push('references secrets');
+  if (TOKEN_REFERENCE.test(workflow)) findings.push('references github.token');
+  return findings;
+}
 
 test('the run-script reader sees single-line and literal-block scripts, so the injection guard is not vacuous', () => {
   const synthetic = [
@@ -115,6 +182,10 @@ test('the run-script reader sees single-line and literal-block scripts, so the i
     '      - name: folded',
     '        run: >-',
     '          echo ${{ github.head_ref }}',
+    '      - run: echo "${{ github.event[\'pull_request\'].title }}"',
+    '      - run: echo "${{ format(\'{0}\', github.event.pull_request.title) }}"',
+    '      - run: echo \'${{ toJSON(github.event) }}\'',
+    '      - run: git checkout ${{ github.ref_name }}',
     '      - name: after',
     '        run: "npm test"',
   ].join('\n');
@@ -126,16 +197,92 @@ test('the run-script reader sees single-line and literal-block scripts, so the i
       'echo one',
       'echo "${{ github.event.pull_request.title }}"\necho two',
       'echo ${{ github.head_ref }}',
+      'echo "${{ github.event[\'pull_request\'].title }}"',
+      'echo "${{ format(\'{0}\', github.event.pull_request.title) }}"',
+      'echo \'${{ toJSON(github.event) }}\'',
+      'git checkout ${{ github.ref_name }}',
       'npm test',
     ],
     'the reader must return every run script whole, or an injected expression in a block ' +
       'scalar passes the guard unseen',
   );
   assert.deepEqual(
-    scripts.map((script) => UNTRUSTED_EXPRESSION.test(script)),
-    [false, true, true, false],
-    'the injection pattern must flag github.event.* and github.head_ref inside a run script',
+    scripts.map((script) => EXPRESSION_IN_SCRIPT.test(script)),
+    [false, true, true, true, true, true, true, false],
+    'the guard must flag every ${{ }} inside a run script, including bracket access, format(), ' +
+      'toJSON() and github.ref_name, which a list of "untrusted" contexts let through',
   );
+});
+
+test('the cancel-in-progress reader sees a commented or quoted false as false', () => {
+  assert.deepEqual(
+    [
+      ' false',
+      ' false # superseded runs are kept',
+      " 'false'",
+      ' "false"',
+      " ${{ github.ref != 'refs/heads/main' }}",
+    ].map(scalarValue),
+    ['false', 'false', 'false', 'false', "${{ github.ref != 'refs/heads/main' }}"],
+    'a trailing comment or a pair of quotes must not hide a false from the concurrency check',
+  );
+});
+
+test('the residue markers name the retired preflight, and not an ordinary sudo on the hosted runner', () => {
+  const retiredPreflight = [
+    'if [[ "$runner_user" != aic-runner ]]; then',
+    'mount_table=$(findmnt -rn -o FSTYPE,TARGET,SOURCE)',
+    'virtiofs|9p|fuse.sshfs)',
+    "if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then",
+    "printf '::error::runner identity has passwordless sudo\\n'",
+    "printf '::error::Lima host filesystem mount detected: %s\\n'",
+    'runs-on: [self-hosted, Linux, ARM64, ai-incident-commander]',
+  ];
+  const unmatched = retiredPreflight.filter(
+    (line) => !RETIRED_RUNNER_RESIDUE.some(([, pattern]) => pattern.test(line)),
+  );
+  assert.deepEqual(unmatched, [], 'every line of the retired preflight must still be recognised');
+
+  const hostedSudo = 'sudo apt-get install -y --no-install-recommends jq';
+  assert.deepEqual(
+    RETIRED_RUNNER_RESIDUE.filter(([, pattern]) => pattern.test(hostedSudo)).map(([residue]) => residue),
+    [],
+    'a plain sudo is legitimate on the hosted runner; refusing it would blame the retired runner ' +
+      'for a step that has nothing to do with it',
+  );
+});
+
+test('the every-workflow sweep names each security rule a workflow breaks, so it is not vacuous', () => {
+  const unsafe = [
+    'on:',
+    '  pull_request_target:',
+    '  workflow_run:',
+    '  issue_comment:',
+    'permissions:',
+    "  contents: 'write'",
+    'jobs:',
+    '  x:',
+    '    runs-on: [self-hosted]',
+    '    steps:',
+    '      - uses: actions/checkout@v4',
+    '      - run: echo ${{ github.ref_name }}',
+    '      - env:',
+    '          A: ${{ secrets.NPM_TOKEN }}',
+    '          B: ${{ github.token }}',
+    '        run: npm test',
+  ].join('\n');
+
+  assert.deepEqual(publicSafetyViolations(unsafe), [
+    'targets a self-hosted runner',
+    'uses the pull_request_target trigger',
+    'uses the workflow_run trigger',
+    'uses the issue_comment trigger',
+    'grants a write permission',
+    'uses an action not pinned to a 40-hex SHA: actions/checkout@v4',
+    'expands a ${{ }} expression inside a run script',
+    'references secrets',
+    'references github.token',
+  ]);
 });
 
 test('triggers only on pull_request and on pushes to main, never on a privileged event', () => {
@@ -164,7 +311,7 @@ test('triggers only on pull_request and on pushes to main, never on a privileged
     /^\s{4}branches:\s*\[\s*main\s*\]\s*$/m,
     'push CI must be limited to main, the branch the repository releases from',
   );
-  for (const privileged of ['pull_request_target', 'workflow_run', 'issue_comment']) {
+  for (const privileged of PRIVILEGED_TRIGGERS) {
     assert.doesNotMatch(
       workflow,
       new RegExp(`\\b${privileged}\\b`),
@@ -189,7 +336,7 @@ test('every job runs on the pinned GitHub-hosted ubuntu-24.04 image and nothing 
   }
   assert.doesNotMatch(
     workflow,
-    /self-hosted/,
+    SELF_HOSTED,
     'no job may target a self-hosted runner: untrusted PR code would execute on private hardware',
   );
   assert.doesNotMatch(
@@ -218,10 +365,10 @@ test('grants the token contents: read only, at the top level, with no job wideni
     /^permissions:\s*\n\s{2}contents:\s*read\s*$/m,
     'the contents scope must be read: a PR from an untrusted contributor must not be able to write',
   );
-  assert.doesNotMatch(workflow, /write-all/, 'write-all hands every scope to untrusted PR code');
+  assert.doesNotMatch(workflow, WRITE_ALL, 'write-all hands every scope to untrusted PR code');
   assert.doesNotMatch(
     workflow,
-    /:[ \t]*write\b/,
+    WRITE_SCOPE,
     'no scope anywhere in the workflow may be write: untrusted PR code runs with this token',
   );
   assert.doesNotMatch(
@@ -240,10 +387,23 @@ test('cancels superseded runs in one concurrency group per workflow and ref', ()
     /^\s{2}group:\s*.*github\.workflow.*github\.ref.*$/m,
     'the concurrency group must be keyed on workflow and ref, so pushes to one PR queue together',
   );
-  assert.match(
-    workflow,
-    /^[ \t]{2}cancel-in-progress:[ \t]*(?!false[ \t]*$)\S.*$/m,
-    'superseded runs must be cancellable, so a burst of PR pushes cannot pile up hosted minutes',
+  const cancelValues = workflow
+    .split('\n')
+    .filter((line) => !isComment(line))
+    .map((line) => line.match(/^[ \t]{2}cancel-in-progress:(.*)$/)?.[1])
+    .filter((value) => value !== undefined)
+    .map(scalarValue);
+  assert.equal(
+    cancelValues.length,
+    1,
+    'concurrency must set cancel-in-progress exactly once: a second key silently overrides the first',
+  );
+  assert.notEqual(cancelValues[0], '', 'cancel-in-progress must have a value');
+  assert.doesNotMatch(
+    cancelValues[0],
+    /^false$/i,
+    'superseded runs must be cancellable, so a burst of PR pushes cannot pile up hosted minutes; ' +
+      'a trailing comment or quotes around false still mean false',
   );
 });
 
@@ -270,14 +430,10 @@ test('every job has an explicit timeout of at most 30 minutes', () => {
 
 test('pins every action to a full 40-character commit SHA', () => {
   const workflow = readWorkflow();
-  const uses = workflow
-    .split('\n')
-    .filter((line) => !isComment(line))
-    .map((line) => line.match(/^\s*(?:-\s+)?uses:\s*(\S+?)\s*(?:#.*)?$/)?.[1])
-    .filter((value) => value !== undefined);
+  const uses = extractUses(workflow);
 
   assert.equal(uses.length > 0, true, 'the workflow must use at least checkout and setup-node');
-  const unpinned = uses.filter((ref) => !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(ref));
+  const unpinned = uses.filter((ref) => !PINNED_ACTION.test(ref));
   assert.deepEqual(
     unpinned,
     [],
@@ -307,28 +463,43 @@ test('references no secret or token, because ordinary PR validation needs none',
 
   assert.doesNotMatch(
     workflow,
-    /\bsecrets\s*(?:\.|\[|:)/,
+    SECRET_REFERENCE,
     'the workflow must not reference secrets: CI on a public repository runs untrusted PR code, ' +
       'and ordinary validation (install, lint, build, test) needs no credential',
   );
   assert.doesNotMatch(
     workflow,
-    /\bgithub\.token\b/,
+    TOKEN_REFERENCE,
     'the workflow must not hand github.token to a step: it is the same credential as ' +
       'secrets.GITHUB_TOKEN under another name',
   );
 });
 
-test('splices no untrusted pull request field into a run script', () => {
+test('expands no ${{ }} expression inside a run script', () => {
   const scripts = extractRunScripts(readWorkflow());
 
   assert.equal(scripts.length > 0, true, 'the workflow must run at least one script');
-  const injected = scripts.filter((script) => UNTRUSTED_EXPRESSION.test(script));
+  const expanded = scripts.filter((script) => EXPRESSION_IN_SCRIPT.test(script));
   assert.deepEqual(
-    injected,
+    expanded,
     [],
-    '`${{ github.event.* }}` and `${{ github.head_ref }}` are contributor-controlled on a public ' +
-      'repository; expanded inside `run:` they become shell source. Pass them through env: instead',
+    'an expression inside `run:` is substituted into shell source before the shell runs, and on a ' +
+      'public repository much of the context (event payload, ref names) is contributor-controlled. ' +
+      'Pass any value a script needs through env: instead',
+  );
+});
+
+test('no step or job may continue on error, so a red lint, build or test cannot report green', () => {
+  const continuing = readWorkflow()
+    .split('\n')
+    .filter((line) => !isComment(line) && /\bcontinue-on-error\s*:/.test(line))
+    .map((line) => line.trim());
+
+  assert.deepEqual(
+    continuing,
+    [],
+    'continue-on-error turns a failing step or job into a passing check; the PR gate is only a ' +
+      'gate if every stage of it can fail the run. Its default, false, needs no key',
   );
 });
 
@@ -354,13 +525,7 @@ test('installs cleanly, then lints, builds and tests, in that order', () => {
 test('the workflow carries none of the self-hosted runner preflight', () => {
   const workflow = readWorkflow();
 
-  for (const [residue, pattern] of [
-    ['the dedicated aic-runner identity', /aic-runner/],
-    ['Lima mount inspection', /\bfindmnt\b/],
-    ['the passwordless-sudo check', /\bsudo\b/],
-    ['the Lima VM', /\blima\b/i],
-    ['the ARM64 architecture requirement', /\b(?:ARM64|aarch64)\b/i],
-  ]) {
+  for (const [residue, pattern] of RETIRED_RUNNER_RESIDUE) {
     assert.doesNotMatch(
       workflow,
       pattern,
@@ -368,6 +533,30 @@ test('the workflow carries none of the self-hosted runner preflight', () => {
         'fails every run or checks nothing',
     );
   }
+});
+
+test('every workflow file, not only ci.yml, keeps the public-repository security rules', () => {
+  const workflowFiles = readdirSync(workflowsDirectoryPath)
+    .filter((name) => /\.ya?ml$/i.test(name))
+    .sort();
+
+  assert.equal(
+    workflowFiles.includes('ci.yml'),
+    true,
+    'the sweep must at least see ci.yml, or it is reading the wrong directory',
+  );
+  const findings = workflowFiles.flatMap((name) =>
+    publicSafetyViolations(readFileSync(resolve(workflowsDirectoryPath, name), 'utf8')).map(
+      (finding) => `${name}: ${finding}`,
+    ),
+  );
+  assert.deepEqual(
+    findings,
+    [],
+    'GitHub runs every file in .github/workflows/ on this public repository, so a second workflow ' +
+      'can reopen what ci.yml closes: private hardware, a privileged trigger, a write token, an ' +
+      'unpinned action, an expression in a shell, or a credential',
+  );
 });
 
 test('the repository no longer ships the private runner guide or VM definition', () => {
