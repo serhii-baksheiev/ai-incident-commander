@@ -1,11 +1,11 @@
-# ADR 0001 — Standalone integration boundary and Service × Environment scope
+# Integration boundary — AIC as a standalone service, scoped by Service × Environment
 
 - **Status:** Accepted, 2026-09-23 (AIC-97). The decisions below were accepted by
   the owner on 2026-09-04 in the triage of the v0.3 Integration Boundary epic
   (AIC-95); this record makes them the reference the implementation tickets are
   built against.
 - **Scope:** v0.3. What changes at v1.0 is named where it applies.
-- **Referenced by:** AIC-96 (scoped domain types), AIC-100 (source adapter
+- **Built against by:** AIC-96 (scoped domain types), AIC-100 (source adapter
   contract), AIC-98 (read-only adapters), AIC-99 (onboarding CLI), AIC-101
   (onboarding gate), AIC-21 and AIC-25 (Safe Operations), AIC-43 (domain API),
   AIC-46 (secret handling), AIC-59 (artifact provenance).
@@ -41,8 +41,8 @@ investigates, and what owns what at that connection?**
 5. **AIC storage is the source of truth; YAML is an idempotent import.** A
    declarative file can be applied to create or update registrations, and
    applying the same file twice changes nothing. The registry lives in AIC's
-   database, not in the file, and drift between the two is reported rather than
-   silently resolved in the file's favour.
+   database, not in the file, and drift between the two is reported (AIC-99,
+   acceptance 2) rather than silently resolved in the file's favour.
 6. **Nothing mandatory is installed in the consumer repository** — no file, no
    agent, no runtime, no CI step. Onboarding a service leaves its repository
    byte-identical, which is what the AIC-101 gate has to prove.
@@ -63,10 +63,10 @@ investigates, and what owns what at that connection?**
 | Service | the AIC installation (implicit workspace, decision 9) | identity is server-assigned; repository names are aliases (decision 4) |
 | Environment | exactly one Service | an Environment never moves between Services |
 | SourceBinding | exactly one Environment | a binding to a source of evidence, versioned by adapter |
-| CredentialRef | the SourceBinding or action that uses it | holds a reference to a secret, never the secret |
+| CredentialRef | exactly one Environment | a first-class record holding a reference to a secret, never the secret; a SourceBinding refers to one read `CredentialRef`, the `ActionPolicy` refers to the write `CredentialRef`s, and a `ProposedAction` only refers to one — nothing but the Environment owns it |
 | ActionPolicy | exactly one Environment | which action types are allowed there |
 | Incident | its `primaryScope` Environment | intake carries `idempotencyKey` so repeated intake does not create a second Incident |
-| Evidence | the run that collected it | carries the provenance of the SourceBinding it came from |
+| Evidence | the run that collected it | carries its provenance as a snapshot taken at fetch time (see Trust boundary), not as a live pointer |
 
 The consumer's service, repository and infrastructure remain owned by the
 consumer; AIC owns only its own records about them.
@@ -79,8 +79,10 @@ consumer; AIC owns only its own records about them.
   redacted before any of those are persisted (AIC-46 owns the production backend
   and lifecycle).
 - **Read and write are separate credentials.** A read binding's credential must
-  never be able to execute an action; a `SAFE_WRITE` action requires a distinct write
-  `CredentialRef` and an `ActionPolicy` that allows the action type (AIC-25).
+  never be able to execute an action; a `SAFE_WRITE` action requires a write
+  `CredentialRef` distinct from every read-binding credential, referenced by an
+  `ActionPolicy` that allows the action type (AIC-25). One `CredentialRef` is
+  never both.
 - **A source that cannot be reached, or refuses the credential, yields no
   negative evidence.** Unavailable, denied and timed-out outcomes are
   "untestable", never a finding about the service (AIC-100).
@@ -92,14 +94,21 @@ consumer; AIC owns only its own records about them.
 
 ## Removal semantics
 
-Removing an Environment, or a Service with all its Environments, removes what
-lets AIC act on it: its active SourceBindings, its ActionPolicy and its
-CredentialRefs. Records that audit what already happened — incidents, runs,
-Evidence and action history — are kept under the audit rules AIC-46 defines,
-because deleting them would erase the provenance of past decisions. After
-removal, no binding, policy or credential reference for that Environment is
-active, and the consumer's repository is unchanged, as it was never written to
-(decision 6).
+Removing an Environment, or a Service with all its Environments, deletes what
+lets AIC act on it — its SourceBindings, its ActionPolicy and its
+CredentialRefs — from the active registry, and releases the secret each
+CredentialRef pointed to (AIC-99, acceptance 5). Nothing can then select, check
+or use them.
+
+What audits the past is kept: incidents, runs, Evidence and action history,
+under the audit rules AIC-99 preserves and AIC-46 hardens. Deleting them would
+erase the provenance of past decisions. Evidence stays readable after removal
+because its provenance is a snapshot of identifiers and adapter version taken
+at fetch time, not a pointer into the rows that were removed.
+
+After removal, no binding, policy or credential reference for that Environment
+remains active, and the consumer's repository is unchanged, as it was never
+written to (decision 6).
 
 ## Connector triggers
 
@@ -119,9 +128,9 @@ storage is the one place its state and evidence live.
 
 ## Terminology
 
-The domain contracts (AIC-96), the source-adapter contract (AIC-100), the
-onboarding CLI (AIC-99) and the domain API (AIC-43) use these names exactly as
-written here:
+No code defines these yet. The domain contracts (AIC-96), the source-adapter
+contract (AIC-100), the onboarding CLI (AIC-99) and the domain API (AIC-43)
+must use them exactly as written here:
 
 | Term | Meaning |
 | --- | --- |
@@ -139,8 +148,8 @@ The planned onboarding commands (AIC-99) use the same nouns:
 
 ## Consequences
 
-- AIC-96 adds the scoped domain types and one explicit v0.2 → v0.3 state
-  transition; AIC-21 and AIC-25 read `ActionPolicy` and `primaryScope` from them
+- AIC-96 adds the scoped domain types and the explicit v0.2 → v0.3 state and
+  schema version transition its scope names; AIC-21 and AIC-25 read `ActionPolicy` and `primaryScope` from them
   rather than from a global allow-list.
 - Every evidence source goes through the adapter contract of AIC-100; tools
   assembled by a caller for one run are replaced, while deterministic replay is

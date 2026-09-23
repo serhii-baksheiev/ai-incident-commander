@@ -281,6 +281,7 @@ The architecture freeze means structural changes must be justified by benchmark 
 | Document | Purpose |
 | --- | --- |
 | [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain contracts, graph topology, persistence, tools, evals, roadmap, and Definition of Done |
+| [Integration boundary](docs/decisions/integration-boundary.md) | How AIC connects to the systems it investigates in v0.3: a standalone service scoped by Service × Environment |
 | [PLAN.md](PLAN.md) | Standing execution conventions and the journal pointer; the queue itself is whatever `.claude/queue.json` names, currently Jira |
 | [Journal](journal/README.md) | Human-readable run history and journal conventions |
 

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const adrPath = join(projectRoot, 'docs', 'adr', '0001-standalone-integration-boundary.md');
+const adrPath = join(projectRoot, 'docs', 'decisions', 'integration-boundary.md');
 const readAdr = () => readFileSync(adrPath, 'utf8');
 
 /** The text under one `## ` heading, up to the next `## ` heading. */
@@ -42,12 +42,31 @@ test('records every decision AIC-97 lists, each under the Decisions section', ()
   }
 });
 
-test('makes ownership, the trust boundary, removal semantics and the connector triggers explicit sections', () => {
+test('makes ownership, the trust boundary, removal semantics and the connector triggers explicit, each with its substance', () => {
   const adr = readAdr();
   for (const heading of ['Ownership', 'Trust boundary', 'Removal semantics', 'Connector triggers']) {
     const body = section(adr, heading).trim();
     assert.ok(body.length > 0, `"## ${heading}" must not be empty`);
   }
+
+  const ownership = section(adr, 'Ownership');
+  for (const [row, pattern] of [
+    ['an Environment belongs to exactly one Service', /\|\s*Environment\s*\|\s*exactly one Service\s*\|/],
+    ['a SourceBinding belongs to exactly one Environment', /\|\s*SourceBinding\s*\|\s*exactly one Environment\s*\|/],
+    ['a CredentialRef belongs to exactly one Environment', /\|\s*CredentialRef\s*\|\s*exactly one Environment\s*\|/],
+    ['an ActionPolicy belongs to exactly one Environment', /\|\s*ActionPolicy\s*\|\s*exactly one Environment\s*\|/],
+  ]) {
+    assert.match(ownership, pattern, `the Ownership table must say: ${row}`);
+  }
+
+  const trust = section(adr, 'Trust boundary');
+  assert.match(trust, /CredentialRef[\s\S]*?reference/i, 'credentials must cross the boundary as references');
+  assert.match(trust, /write\s+`?CredentialRef`?\s+distinct from every read/i, 'a write credential must be distinct from every read credential');
+  assert.match(trust, /untestable/i, 'an unreachable or refusing source must yield untestable, not negative, evidence');
+
+  const removal = section(adr, 'Removal semantics');
+  assert.match(removal, /SourceBindings[\s\S]*?ActionPolicy[\s\S]*?CredentialRefs/, 'removal must name the bindings, the policy and the credential references it removes');
+  assert.match(removal, /audit/i, 'removal must say what audits the past is kept');
 
   const triggers = section(adr, 'Connector triggers');
   for (const trigger of [/network-inaccessible|not reachable|unreachable/i, /push-only/i, /perimeter/i]) {
@@ -88,7 +107,7 @@ test('is reachable from the architecture document it amends', () => {
   const architecture = readFileSync(join(projectRoot, 'docs', 'incident-commander-architecture-v1.md'), 'utf8');
   assert.match(
     architecture,
-    /adr\/0001-standalone-integration-boundary\.md/,
+    /decisions\/integration-boundary\.md/,
     'a reader of the canonical architecture must be pointed at the decision that bounds v0.3 integration',
   );
 });
