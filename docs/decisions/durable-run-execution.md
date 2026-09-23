@@ -14,11 +14,9 @@
 
 ## Context
 
-Up to v0.2 a run lives in one process: the LangGraph checkpointer persists
-orchestration state, and a resumed run continues from its last checkpoint.
-Nothing records which worker owns a run, nothing stops a worker that has lost
-the run from writing to it, and nothing distinguishes "this external call
-already happened and its result is committed" from "this node has not run yet".
+Up to v0.2 the only persisted run state is the LangGraph checkpoint: the
+persistence package exports a SQLite and a PostgreSQL checkpointer and no run,
+ownership or committed-result record (`packages/persistence/src/index.ts`).
 v0.3 adds operational actions (AIC-20), and a run that can act on a production
 system must not repeat an observation or a provider call because a worker
 crashed between committing a result and checkpointing it.
