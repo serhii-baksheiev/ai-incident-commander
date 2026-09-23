@@ -82,7 +82,7 @@ const CANCEL_IN_PROGRESS_ALLOWED = new Set(['true', "${{ github.ref != 'refs/hea
 const RETIRED_RUNNER_RESIDUE = [
   ['the dedicated aic-runner identity', /aic-runner/],
   ['Lima mount inspection', /\bfindmnt\b/],
-  ['the host filesystem mount types', /\b(?:virtiofs|fuse\.sshfs)\b/],
+  ['the host filesystem mount types', /\b(?:virtiofs|9p|fuse\.sshfs)\b/],
   ['the passwordless-sudo check', /\bsudo\s+-n\b|passwordless\s+sudo/i],
   ['the Lima VM', /\blima\b/i],
   ['the ARM64 architecture requirement', /\b(?:ARM64|aarch64)\b/i],
@@ -101,6 +101,7 @@ const PERMISSIONS_UNREADABLE_MESSAGE =
 const PERMISSIONS_NOT_CONTENTS_READ_MESSAGE = 'grants a permission other than exactly contents: read at the top level';
 const PERMISSIONS_JOB_LEVEL_MESSAGE = 'declares job-level permissions, which can widen the top-level grant';
 const JOBS_UNREADABLE_MESSAGE = 'declares no readable top-level `jobs:` block';
+const CONTAINER_MESSAGE = 'runs a job in a container image, which a mutable tag can change under it';
 const EXPRESSION_OUTSIDE_CONCURRENCY_MESSAGE = 'uses a ${{ }} expression outside the top-level concurrency: block';
 const CONTINUE_ON_ERROR_MESSAGE = 'sets continue-on-error';
 
@@ -196,13 +197,16 @@ function extractRunScripts(workflow) {
   return scripts;
 }
 
-// Every `uses:` reference, comments excluded, with any trailing `# vX.Y` note dropped.
+// Every `uses:` reference, comments excluded — scanned over the whole text
+// rather than anchored to a line, so a block step (`- uses: x`), a flow-mapping
+// step (`- { uses: x }`) and a value continued onto the next line are all read,
+// and a quoted ref is unquoted the way YAML reads it.
 function extractUses(workflow) {
-  return workflow
+  const text = workflow
     .split('\n')
     .filter((line) => !isComment(line))
-    .map((line) => line.match(/^\s*(?:-\s+)?uses:\s*(\S+?)\s*(?:#.*)?$/)?.[1])
-    .filter((value) => value !== undefined);
+    .join('\n');
+  return [...text.matchAll(/\buses:\s*(['"]?[^\s,}#]+['"]?)/g)].map((match) => scalarValue(match[1]));
 }
 
 // A plain scalar as YAML would read it: a trailing ` # comment` dropped, then
@@ -247,8 +251,10 @@ function runsOnViolations(workflow) {
   if (jobs === null || jobs.size === 0) return [JOBS_UNREADABLE_MESSAGE];
   const findings = [];
   for (const [name, body] of jobs) {
-    const runsOnLines = body.filter((line) => /^\s*runs-on:/.test(line)).map((line) => line.trim());
-    if (runsOnLines.length !== 1 || runsOnLines[0] !== `runs-on: ${HOSTED_RUNNER}`) {
+    const runsOnLines = body
+      .filter((line) => /^\s*runs-on:/.test(line))
+      .map((line) => scalarValue(line.replace(/^\s*runs-on:/, '')));
+    if (runsOnLines.length !== 1 || runsOnLines[0] !== HOSTED_RUNNER) {
       findings.push(runsOnMessage(name));
     }
   }
@@ -312,6 +318,7 @@ function publicSafetyViolations(workflow) {
   if (SECRET_REFERENCE.test(workflow)) findings.push('references secrets');
   if (TOKEN_REFERENCE.test(workflow)) findings.push('references github.token');
   if (CONTINUE_ON_ERROR.test(workflow)) findings.push(CONTINUE_ON_ERROR_MESSAGE);
+  if (/^\s*container:/m.test(workflow)) findings.push(CONTAINER_MESSAGE);
   return findings;
 }
 
@@ -416,9 +423,16 @@ test('the trigger allowlist admits only pull_request and push, and fails closed 
     'a trigger outside {pull_request, push} must be named, even when `on:` itself is a readable block',
   );
 
+  assert.deepEqual(
+    onTriggerViolations(['on:', '  push:', "    branches: ['**']"].join('\n')),
+    [PUSH_NOT_MAIN_MESSAGE],
+    'a push trigger not restricted to main must be named',
+  );
+
   const unreadableShapes = {
     'a flow sequence': 'on: [push, discussion_comment]',
     'a bare scalar': 'on: pull_request',
+    'a header with a comment-only body': ['on:', '# nothing here', 'jobs:'].join('\n'),
   };
   for (const [shape, workflow] of Object.entries(unreadableShapes)) {
     assert.deepEqual(
@@ -432,7 +446,26 @@ test('the trigger allowlist admits only pull_request and push, and fails closed 
 
 test('triggers only on pull_request and on pushes to main, never on a privileged event', () => {
   const workflow = readWorkflow();
+  const triggers = topLevelBlock(workflow, 'on');
 
+  assert.notEqual(triggers, null, 'the workflow must declare its triggers as a top-level `on:` block');
+  assert.deepEqual(
+    [...triggers.keys()].sort(),
+    ['pull_request', 'push'],
+    'ci.yml must run on BOTH pull_request and push: the allowlist below only refuses extra ' +
+      'triggers, so this exact set is what keeps CI from being switched off',
+  );
+  assert.deepEqual(
+    triggers.get('pull_request').filter((line) => line.trim() !== ''),
+    [],
+    'pull_request must carry no filter (paths, paths-ignore, types, branches): a filter can stop ' +
+      'CI from running on a pull request at all',
+  );
+  assert.match(
+    triggers.get('push').join('\n'),
+    PUSH_BRANCHES_MAIN,
+    'push must be restricted to branches: [main]',
+  );
   assert.deepEqual(
     onTriggerViolations(workflow),
     [],
@@ -547,6 +580,27 @@ test('cancel-in-progress admits only `true` or the branch-aware expression, reje
     '`${{ false }}` reads as a live expression under rule 5\'s concurrency exemption, and must still ' +
       'be refused here by value, not by shape',
   );
+});
+
+test('every job has an explicit timeout of at most 30 minutes', () => {
+  const jobs = extractJobs(readWorkflow());
+
+  for (const [name, body] of jobs) {
+    const timeouts = body
+      .map((line) => line.match(/^\s{4}timeout-minutes:\s*(\d+)\s*$/)?.[1])
+      .filter((value) => value !== undefined)
+      .map(Number);
+    assert.equal(
+      timeouts.length,
+      1,
+      `job ${name} needs an explicit timeout-minutes, or a hung PR run holds a runner for six hours`,
+    );
+    assert.equal(
+      timeouts[0] > 0 && timeouts[0] <= 30,
+      true,
+      `job ${name} timeout must be positive and no longer than 30 minutes, got ${timeouts[0]}`,
+    );
+  }
 });
 
 test('every job must run on exactly ubuntu-24.04, refusing a custom label and a runner group alike', () => {
@@ -917,6 +971,42 @@ test('the every-workflow sweep names each allowlist rule a workflow breaks, so i
     'references github.token',
     CONTINUE_ON_ERROR_MESSAGE,
   ]);
+
+  const compliantHead = ['on:', '  pull_request:', 'permissions:', '  contents: read', 'jobs:', '  x:'];
+  const pinningShapes = {
+    'a flow-mapping step': ['      - { uses: evil/action@main, with: { a: b } }'],
+    'a value continued onto the next line': ['      - uses:', '          evil/action@main'],
+  };
+  for (const [shape, steps] of Object.entries(pinningShapes)) {
+    const workflow = [...compliantHead, `    runs-on: ${HOSTED_RUNNER}`, '    steps:', ...steps].join('\n');
+    assert.deepEqual(
+      publicSafetyViolations(workflow),
+      ['uses an action not pinned to a 40-hex SHA: evil/action@main'],
+      `an unpinned action written as ${shape} must be named like a block-form one`,
+    );
+  }
+
+  const quotedPinned = [
+    ...compliantHead,
+    `    runs-on: ${HOSTED_RUNNER} # hosted`,
+    '    steps:',
+    `      - uses: "actions/checkout@${'a'.repeat(40)}"`,
+  ].join('\n');
+  assert.deepEqual(
+    publicSafetyViolations(quotedPinned),
+    [],
+    'a quoted pinned ref and a commented runner are what YAML reads as compliant, so neither is a finding',
+  );
+
+  const containerized = [...compliantHead, `    runs-on: ${HOSTED_RUNNER}`, '    container: attacker/image:latest'].join('\n');
+  assert.deepEqual(publicSafetyViolations(containerized), [CONTAINER_MESSAGE]);
+
+  assert.ok(
+    publicSafetyViolations(['on:', '  pull_request:', 'permissions:', '  contents: read'].join('\n')).includes(
+      JOBS_UNREADABLE_MESSAGE,
+    ),
+    'a workflow with no readable jobs: block must be refused, not pass with nothing to check',
+  );
 });
 
 test('the workflow-file lister reads every .yml and .yaml file in a directory, not only ci.yml', () => {
