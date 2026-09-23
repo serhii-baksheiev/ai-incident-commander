@@ -402,6 +402,17 @@ test('a different inputFingerprint for an already-committed key throws Execution
     before,
     'the stored row must be byte-for-byte unchanged after a refused integrity violation: a committed result is immutable',
   );
+
+  const { rows: violations } = await store.pool.query(
+    "select payload from aic_app.run_events where run_id = $1 and type = 'execution.integrity_violation'",
+    [runId],
+  );
+  assert.equal(
+    violations.length,
+    1,
+    'a refused input-fingerprint mismatch is an integrity event decision 12 records as durable evidence, not only an exception the caller may drop',
+  );
+  assert.equal(violations[0].payload.execKey, execKey);
 });
 
 test('a concurrent commit for the same key with a DIFFERENT result throws ExecutionIntegrityViolation, leaves the stored bytes unchanged, and records an execution.integrity_violation event', async (t) => {
