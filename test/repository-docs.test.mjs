@@ -29,9 +29,14 @@ test('records the persistent checkpointer milestone', () => {
     readme,
     /\| Product implementation \| [^|\n]*canonical domain contracts[^|\n]*persistent SQLite checkpointer[^|\n]*kill\/resume spike[^|\n]*\|/i,
   );
-  assert.match(
-    readme,
-    /\| Completed implementation milestone \| \[AIC-4[^\]]*persistent[^\]]*checkpointer[^\]]*kill\/resume\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-4\) \|/i,
+  const milestoneRow = readme.match(
+    /^\| Completed implementation milestone \| \[?AIC-4\b[^|\n]*persistent[^|\n]*checkpointer[^|\n]*kill\/resume[^|\n]*\|$/im,
+  );
+  assert.notEqual(milestoneRow, null, 'the AIC-4 milestone row must remain, with its id and title');
+  assert.doesNotMatch(
+    milestoneRow[0],
+    /atlassian\.net/i,
+    'the AIC-4 milestone row must not link the private issue-tracker site',
   );
 });
 
@@ -41,9 +46,14 @@ test('records the independently implemented AIC-5 read-only live and replay mile
     readme,
     /\| Product implementation \| (?=[^|\n]*read-only tool registry)(?=[^|\n]*live)(?=[^|\n]*replay)[^|\n]*implemented[^|\n]*\|/i,
   );
-  assert.match(
-    readme,
-    /\| [^|\n]*(?:completed|implemented)[^|\n]*milestone[^|\n]* \| \[AIC-5[^\]]*read-only[^\]]*(?:record\s*\/\s*replay|live[^\]]*replay)[^\]]*\]\(https:\/\/sbaksheiev\.atlassian\.net\/browse\/AIC-5\) \|/i,
+  const milestoneRow = readme.match(
+    /^\| [^|\n]*(?:completed|implemented)[^|\n]*milestone[^|\n]* \| \[?AIC-5\b[^|\n]*read-only[^|\n]*(?:record\s*\/\s*replay|live[^|\n]*replay)[^|\n]*\|$/im,
+  );
+  assert.notEqual(milestoneRow, null, 'the AIC-5 milestone row must remain, with its id and title');
+  assert.doesNotMatch(
+    milestoneRow[0],
+    /atlassian\.net/i,
+    'the AIC-5 milestone row must not link the private issue-tracker site',
   );
 });
 
@@ -131,7 +141,10 @@ test('records the completed AIC-2 delivery before the preserved layered-boundary
   const historicalJournal = journal.slice(historicalOffset);
   assert.equal(
     createHash('sha256').update(historicalJournal).digest('hex'),
-    '099241784f51508256c57f6c213135afcaddb884026893331fe48cda5d2a94e7',
+    // Re-pinned once, deliberately: the public-readiness sanitation replaced private
+    // tracker links with bare AIC-<n> keys and one home path with `~`; any other
+    // edit to this history still fails here.
+    'b10b78c7948236d2759052fc631ceadeec72c5895ba1db5489b25be74ac1d096',
     'the prior layered-boundary hold and all older journal history must remain byte-for-byte',
   );
 });
@@ -178,7 +191,10 @@ test('records the continuous Rovo repeated-escalation stop before preserving the
   const historicalJournal = journal.slice(historicalOffset);
   if (
     createHash('sha256').update(historicalJournal).digest('hex') !==
-    'f764a5258edbb263da6b4634f98a05f8bc4e9c99c0a2ba54d2bd54c4c01eb624'
+    // Re-pinned once, deliberately: the public-readiness sanitation replaced private
+    // tracker links with bare AIC-<n> keys and one home path with `~`; any other
+    // edit to this history still fails here.
+    'e2d4d70565b5e8d5e8109910732fd28438db1c6c593e058001e8d639a2ed0911'
   ) {
     problems.push('must preserve the entire existing journal body byte-for-byte after the new entry');
   }
@@ -267,7 +283,10 @@ test('records the completed AIC-3 delivery before preserving the existing journa
   const historicalJournal = journal.slice(historicalOffset);
   if (
     createHash('sha256').update(historicalJournal).digest('hex') !==
-    '60cf9666abce33493ae89c77558b3d5dff8bb289c0b27b7e5ac24b14facccb7a'
+    // Re-pinned once, deliberately: the public-readiness sanitation replaced private
+    // tracker links with bare AIC-<n> keys and one home path with `~`; any other
+    // edit to this history still fails here.
+    'fa1b09262078db7ea1dcc5196d83c884396701899b5795682684c7b378eecf6b'
   ) {
     problems.push('must preserve the entire existing journal body byte-for-byte');
   }
@@ -435,7 +454,10 @@ test('preserves the Agent Rig refresh final gate hold in its historical journal 
   const historicalOffset = journal.indexOf(historicalMarker);
   const historicalJournal = journal.slice(historicalOffset);
   const historicalHash = createHash('sha256').update(historicalJournal).digest('hex');
-  if (historicalHash !== '7b6be138bf75d48c4ee629f7ab7d30689c2992c5ebb9f2340419f8bddb529f9a') {
+  // Re-pinned once, deliberately: the public-readiness sanitation replaced private
+  // tracker links with bare AIC-<n> keys and one home path with `~`; any other
+  // edit to this history still fails here.
+  if (historicalHash !== '38b5aaf745fbcc0ae3dbdb206f14f27a29adbc025e4b3eed4af563cbbcda6765') {
     problems.push('must preserve the prior journal history byte-for-byte after the new entry');
   }
 

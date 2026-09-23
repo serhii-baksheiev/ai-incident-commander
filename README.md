@@ -6,8 +6,6 @@
   </p>
   <p>
     <a href="docs/incident-commander-architecture-v1.md">Architecture v1</a>
-    ·
-    <a href="https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards">Jira project</a>
   </p>
 </div>
 
@@ -272,9 +270,9 @@ added to a type but not to an allowlist is dropped without a word.
 | Architecture | **Frozen for v0.1 implementation** |
 | Repository and engineering guardrails | Scaffolded; Definition-of-Done command gate not configured |
 | Product implementation | Canonical domain contracts, a persistent SQLite checkpointer with a kill/resume spike, and a read-only tool registry with live and replay adapters implemented — see [`resumes the persisted run after process death without duplicate records or budget drift`](test/persistent-resume.test.mjs) and [`replays a recorded live response without invoking the live tool again`](test/tool-registry-replay.test.mjs) |
-| Scaffold milestone | [AIC-2 — scaffold repository and enforce architecture boundaries](https://sbaksheiev.atlassian.net/browse/AIC-2) |
-| Completed implementation milestone | [AIC-4 — persistent checkpointer and kill/resume](https://sbaksheiev.atlassian.net/browse/AIC-4) |
-| Completed implementation milestone | [AIC-5 — read-only tool registry and live record / replay adapters](https://sbaksheiev.atlassian.net/browse/AIC-5) |
+| Scaffold milestone | AIC-2 — scaffold repository and enforce architecture boundaries |
+| Completed implementation milestone | AIC-4 — persistent checkpointer and kill/resume |
+| Completed implementation milestone | AIC-5 — read-only tool registry and live record / replay adapters |
 
 The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
 
@@ -403,7 +401,7 @@ a decision to take deliberately, not a side effect of turning tracing on.
 
 ## Engineering workflow
 
-Work is tracked in the [AIC Jira project](https://sbaksheiev.atlassian.net/jira/software/projects/AIC/boards) and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
+Work is tracked in a private Jira project — the `AIC-<n>` identifiers in commits, pull requests and the journal are its issue keys — and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
 
 From a clean checkout:
 
