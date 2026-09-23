@@ -50,7 +50,7 @@ was indistinguishable from the rule working.
 
 **One path is excluded from the table above, and only from it.** Every task
 writes `.rig/claims/<ticket>.json` — the `loop` skill requires the record and
-`CLAUDE.md` declares the whole of `.rig/` elevated — so before AIC-70 every
+`AGENTS.md` declares the whole of `.rig/` elevated — so before AIC-70 every
 close recorded `elevated-mechanism` for a reason that had nothing to do with the
 work (`see test/queue-tier-spacing.test.mjs › "spaces the next item when no
 ticket is given, rather than guessing"`, which pins that answer for an ordinary
@@ -84,7 +84,7 @@ did not before.
 drops inert paths *before* this classification runs, and a non-rulebook `.md` is
 inert — so `scripts/notes.md` under a declared directory records `normal`, not
 `elevated-prose`. In practice the only markdown that ever reaches the split is
-**rulebook** markdown: `CLAUDE.md` anywhere, everything under `.claude/`, and the
+**rulebook** markdown: `CLAUDE.md` or `AGENTS.md` anywhere, everything under `.claude/`, and the
 decision records. That is pre-existing sweep behaviour, restated here because the
 table above reads more broadly than the code behaves.
 

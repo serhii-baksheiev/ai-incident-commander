@@ -63,7 +63,7 @@ const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * because of what the work touched.
  *
  * Every task writes `.rig/claims/<ticket>.json` — the `loop` skill requires the
- * record, and `CLAUDE.md` declares the whole of `.rig/` elevated. So before
+ * record, and `AGENTS.md` declares the whole of `.rig/` elevated. So before
  * AIC-70 every close recorded `elevated-mechanism`, and a ration that fires on
  * every item spaces nothing: it is indistinguishable from a ration that is off
  * (`see test/queue-tier-spacing.test.mjs › "spaces the next item when no ticket

@@ -14,6 +14,7 @@
   "files": {
     ".agents/skills/check-premises/SKILL.md": "ee3ad33f4269cc197d3b0d953802158cee6bc8a9b30c07892448ba6fb1d385e7",
     ".agents/skills/diagnose/SKILL.md": "c1499c7ce9c9e5fc61c7a323246d9c3005acdeec82d3ec74c074cc3e89b5ad2a",
+    ".agents/skills/loop/SKILL.md": "2951717ead40a5c310aaa4c29df0755f808146c64f2688447f5d6e1f98d33060",
     ".agents/skills/new-invariant/SKILL.md": "641aa59c25a7a15c56eeddc57baa26112289b8917434b2709484c925c64c54a4",
     ".agents/skills/new-invariant/guard-invariant.example.mjs": "0fec41841de1fc07f4da08d023fdda2906c62e3c71b22827c874f2809719b955",
     ".agents/skills/new-invariant/guard-invariant.example.test.mjs": "7bef9179c5b56d280d462cf21fb2c38dc4cb759b671b114b3995aac93720caf8",
@@ -73,6 +74,7 @@
     ".claude/settings.json": "a13952579f1752862133a5746f2c0e8696b9548c2c18eb6ff0bb6a54772cea3c",
     ".claude/skills/check-premises/SKILL.md": "ee3ad33f4269cc197d3b0d953802158cee6bc8a9b30c07892448ba6fb1d385e7",
     ".claude/skills/diagnose/SKILL.md": "c1499c7ce9c9e5fc61c7a323246d9c3005acdeec82d3ec74c074cc3e89b5ad2a",
+    ".claude/skills/loop/SKILL.md": "2951717ead40a5c310aaa4c29df0755f808146c64f2688447f5d6e1f98d33060",
     ".claude/skills/new-invariant/SKILL.md": "641aa59c25a7a15c56eeddc57baa26112289b8917434b2709484c925c64c54a4",
     ".claude/skills/new-invariant/guard-invariant.example.mjs": "0fec41841de1fc07f4da08d023fdda2906c62e3c71b22827c874f2809719b955",
     ".claude/skills/new-invariant/guard-invariant.example.test.mjs": "7bef9179c5b56d280d462cf21fb2c38dc4cb759b671b114b3995aac93720caf8",

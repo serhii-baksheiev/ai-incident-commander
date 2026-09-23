@@ -24,14 +24,12 @@ required by the workflow. The hooks are wired in `.claude/settings.json`.
 
 ## What was installed here, and what was not
 
-`create-agent-rig` installed the **process** layer (generator evidence, absent
-in a generated rig: `test/e2e/init.test.ts` › "installs the process layer and
-leaves architecture rules out"):
-how work is done, what may be done alone, when to stop, and the gates in between.
-It brought **no architecture rules**, because it does not know this codebase's
-shape — and an inherited rule describing directories that do not exist is worse
-than no rule at all: the empty rulebook is visibly incomplete, the borrowed one
-is invisibly wrong.
+`create-agent-rig init` brought the **process** layer: how work is done, what
+may be done alone, when to stop, and the gates in between. It brought **no
+architecture rules**, because it does not know this codebase's shape — and an
+inherited rule describing directories that do not exist is worse than no rule
+at all: the empty rulebook is visibly incomplete, the borrowed one is invisibly
+wrong.
 
 ```
 .claude/rules/     how work happens (workflow), what needs a human (autonomy),
@@ -78,36 +76,31 @@ it a hook via the `new-invariant` skill.
   `.claude/rules/workflow.md` ("Branches and commits", "PR flow"). When another
   session may touch this repo at the same time, the branch lives in its own
   worktree — the `worktree-task` skill has the lifecycle and the cleanup.
-- **Gates.** Every change reaches `code-reviewer` unless it is pure
-  documentation outside the rulebook, in which case `prose-reviewer` alone is
-  the floor; `security-scanner` runs in addition whenever a change touches
-  auth, secrets, parsing, or outbound calls, and `prose-reviewer` runs in
-  addition whenever it touches the documents that instruct agents — rules,
-  skills, agent specs, this file, the README. Those last two **may only
-  add** — nothing narrows the `code-reviewer` floor. With the opt-in workflow
-  layer installed, `decision-router` automates *which* of the cheaper lanes a
-  change earns (`deterministic` → `fast-path` → `model`) and the `pr-ship`
-  skill drives the fan-out; without it, the same floor applies and a human or
-  the session decides which reviewers a change needs, by the same triggers.
+- **Gates.** Every PR is routed before it is reviewed — the
+  `decision-router` picks the cheapest lane the change earns
+  (`deterministic` → `fast-path` → `model`), and risk flags escalate ahead of
+  all three. `code-reviewer` runs on the `model` lane, which is **everything the
+  two cheap lanes did not claim** — code, a rulebook document, an unclassifiable
+  path, a derived artifact git does not report as drift, or anything a risk flag
+  escalated;
+  `security-scanner` when a change touches auth, secrets, parsing, or outbound
+  calls; `prose-reviewer` when it touches the documents that instruct agents —
+  rules, skills, agent specs, this file, the README. Those last two are
+  **lane-independent and may only add** — the lane is a floor, never a ceiling.
   `.claude/rules/workflow.md` carries the ladder and what the cheap lanes give
-  up. Blocking findings are resolved, not argued with. **No hook launches a
-  reviewer** — a gate here is a session or a skill following a written rule,
-  so "the gate ran" is a claim, not a guarantee. That is the honest reading of
-  every gate in this file.
+  up. Blocking findings are resolved, not argued with, and the
+  `pr-ship` skill drives the fan-out. **No hook launches them** — a gate here is
+  a session following a written rule, so "the gate ran" is a claim, not a
+  guarantee. That is the honest reading of every gate in this file.
 - **Enforcement is mechanical.** `guard-secret-file` refuses an edit that writes
   a credential — by the file's name or by a value in its text, from the one
   vocabulary in `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses
   pre-commit bypasses;
   `guard-bash` refuses the "Never" tier — force-pushing a shared branch, a
   production deploy, a filesystem wipe — and carries the kill switch;
-  `gate-stop-dod` refuses to end the session when a configured
-  Definition-of-Done check fails; without `dod-checks.json` it is deliberately
-  inert (generator evidence, absent in a generated rig:
-  `test/template/hooks.test.ts` › "stays silent when there is no config at all —
-  nothing to gate is the design, not a swallowed error");
-  `inject-rules` puts the autonomy rules back in front of the agent at the start
-  of every session, minus the parts that file marks as reference. If a hook
-  blocks you, fix the cause; never route around a hook.
+  `gate-stop-dod` refuses to end the session while a Definition-of-Done check
+  fails; `inject-rules` puts the autonomy rules back in front of the agent at
+  the start of every session, minus the parts that file marks as reference. If a hook blocks you, fix the cause; never route around a hook.
 - **Enforcement is a pattern you can apply again.** Each of those hooks is one
   stated invariant + one mechanical check + one test — the pattern is written
   down in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
@@ -139,9 +132,28 @@ has, and keeps, the workflow layer: the queue adapter and `loop`, the
 `reconcile-external-prs.mjs`, `run-state.mjs`, the run journal, revalidation
 and claim-records. Where a rig file says "workflow layer only", it applies here.
 
+**One project overlay on the `loop` skill: the close step passes `ticket`
+(AIC-70).** Both `loop/SKILL.md` copies are the release's bytes, so `upgrade`
+keeps refreshing them; this repository's addition to them lives here instead.
+When the close step runs `recordCompletedTier({ … })` from
+`.claude/scripts/queue/state.mjs`, **add `ticket: "<item-id>"` to that call.**
+Every task writes its own `.rig/claims/<item-id>.json` because the procedure
+requires it, and `.rig/` is elevated here; with `ticket`, that one record stops
+spacing the next item and is still named in `elevatedPaths` —
+`test/queue-tier-spacing.test.mjs` › "does not space the next item when the only
+elevated path is the task's own claim record" and › "still names the claim
+record in elevatedPaths, because the gate asks a different question". Without
+it, the ration fires on every close — › "spaces the next item when no ticket is
+given, rather than guessing". Only the item's own record is excluded — ›
+"spaces the next item for a claim record that is not this task's". An id the
+module cannot recognise applies no exclusion and comes back as `ticketIgnored`
+(› "records a conservative tier for an id it cannot recognise, and never leaves
+the ration unwritten"); an empty string is one of those ids, so read the field
+with `'ticketIgnored' in result`.
+
 ⚠ **`npx create-agent-rig doctor` reports `workflow: fail` in this repository,
-and that is expected.** That check compares every `.claude/scripts/` file with
-the release's bytes, and one of them is ours: `.claude/scripts/queue/state.mjs`
+and that is expected.** That check compares every `.claude/scripts/` file the
+release installs with the release's bytes, and one of them is ours: `.claude/scripts/queue/state.mjs`
 carries AIC-70's claim-record exclusion (`test/queue-tier-spacing.test.mjs` ›
 "does not space the next item when the only elevated path is the task's own
 claim record"). Reverting the file to the release bytes would make the doctor
