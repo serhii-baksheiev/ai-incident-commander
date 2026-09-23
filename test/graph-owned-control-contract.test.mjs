@@ -13,6 +13,7 @@ import {
 import * as graphPackage from '@aic/graph';
 
 import { childEnv } from './fixtures/child-env.mjs';
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compilerPath = resolve(projectRoot, 'node_modules/typescript/bin/tsc');
@@ -40,7 +41,7 @@ const lifecycleNodes = [
 const TERMINAL_STOP_KIND = 'stalled';
 
 const initialState = () => ({
-  incident: { id: 'incident-graph-owned-control' },
+  incident: scopedIncident('incident-graph-owned-control'),
   hypotheses: [],
   predictions: [],
   tests: [],

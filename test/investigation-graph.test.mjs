@@ -8,6 +8,8 @@ import {
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
 
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
+
 const lifecycleNodes = [
   'normalize_incident',
   'collect_baseline',
@@ -24,7 +26,7 @@ const lifecycleNodes = [
 ];
 
 const initialState = () => ({
-  incident: { id: 'incident-graph-skeleton' },
+  incident: scopedIncident('incident-graph-skeleton'),
   hypotheses: [],
   predictions: [],
   tests: [],

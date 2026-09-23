@@ -33,6 +33,8 @@ import {
 import { createInvestigationGraph } from '@aic/graph';
 import * as roles from '@aic/roles';
 
+import { TEST_PRIMARY_SCOPE, scopedIncident } from './fixtures/scoped-incident.mjs';
+
 const lifecycleNodes = [
   'normalize_incident',
   'collect_baseline',
@@ -49,7 +51,7 @@ const lifecycleNodes = [
 ];
 
 const initialState = () => ({
-  incident: { id: 'incident-model-roles' },
+  incident: scopedIncident('incident-model-roles'),
   hypotheses: [],
   predictions: [],
   tests: [],
@@ -150,6 +152,46 @@ test('produces hypotheses the domain schema accepts and declares the call it mad
     requests[0].prompt,
     /checkout-v42/,
     'the role must show the model the evidence the state carries',
+  );
+});
+
+/**
+ * AIC-96 slice 2: `describeState` serializes `state.incident` verbatim into
+ * the prompt (`packages/roles/src/investigation-roles.ts`), so a
+ * `primaryScope` added to that incident reaches the model unless the
+ * projection is taught to strip it. The scope decides which Service and
+ * Environment an action runs against — the model has no business reading it,
+ * let alone deciding from it.
+ */
+test('does not show the model the incident primaryScope, only its id', async () => {
+  const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
+  const { port, requests } = fakePort([
+    { hypotheses: [{ id: 'h-1', statement: 'a plausible cause' }] },
+  ]);
+  const node = createModelGenerateHypotheses({ port, at });
+
+  await node(initialState());
+
+  assert.equal(requests.length, 1);
+  assert.match(
+    requests[0].prompt,
+    /incident-model-roles/,
+    'the incident id must still reach the model: this is not a test that the incident disappears',
+  );
+  assert.doesNotMatch(
+    requests[0].prompt,
+    /primaryScope/,
+    'the primaryScope key must not reach the model prompt',
+  );
+  assert.doesNotMatch(
+    requests[0].prompt,
+    new RegExp(TEST_PRIMARY_SCOPE.serviceId),
+    'the scope serviceId must not reach the model prompt',
+  );
+  assert.doesNotMatch(
+    requests[0].prompt,
+    new RegExp(TEST_PRIMARY_SCOPE.environmentId),
+    'the scope environmentId must not reach the model prompt',
   );
 });
 

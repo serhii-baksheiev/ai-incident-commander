@@ -38,6 +38,8 @@ import {
 } from '@aic/domain';
 import * as graphPackage from '@aic/graph';
 
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
+
 const lifecycleNodes = [
   'normalize_incident',
   'collect_baseline',
@@ -90,7 +92,7 @@ const INCIDENTAL_REFUSALS =
   /invalid investigation execution input|incompatible persisted state|invalid logical iteration counter|invalid iteration budget|invalid llm call budget|invalid llm call counter|invalid reserved challenge budget|invalid challenge round counter|invalid resume counter|interactive runId must match/;
 
 const initialState = () => ({
-  incident: { id: 'incident-graph-input-own-control' },
+  incident: scopedIncident('incident-graph-input-own-control'),
   hypotheses: [],
   predictions: [],
   tests: [],

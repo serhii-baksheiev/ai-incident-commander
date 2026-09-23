@@ -30,6 +30,7 @@ import type {
   ActionPolicy,
   CredentialRef,
   Environment,
+  Incident,
   IncidentIntake,
   IntakeDerivedIncident,
   PrimaryScope,
@@ -131,6 +132,19 @@ void credentialRefWithValue;
 void registry;
 void intake;
 void intakeWithoutScope;
+
+/**
+ * AIC-96 slice 2: `IncidentSchema` (`packages/domain/src/contracts.ts`) moves
+ * from a bare `{ id }` to requiring the same `primaryScope` `IncidentIntake`
+ * already carries above. Until that lands, `Incident` has no such
+ * requirement and this `@ts-expect-error` is unsatisfied — `tsc` reports it
+ * as an unused directive, which is this row's red today.
+ */
+// @ts-expect-error every Incident carries a primaryScope
+const incidentWithoutScope: Incident = {
+  id: 'incident-without-scope',
+};
+void incidentWithoutScope;
 
 // The return type of incidentFromIntake is nameable by its consumers.
 const derived: IntakeDerivedIncident = {
