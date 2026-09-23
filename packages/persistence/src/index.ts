@@ -82,7 +82,7 @@ export function createPostgresCheckpointer(connectionString: string): PostgresSa
  * Measured, not read off a changelog: `setup()` against an empty PostgreSQL 17
  * leaves `max(v) = 4` in `<schema>.checkpoint_migrations`, which is the library's
  * own version ledger.
- * see postgres-checkpointer.live.mjs › "refuses a checkpointer schema whose migration version is not the one this repository was built against"
+ * see infra/postgres/tests/postgres-checkpointer.live.mjs › "agrees with the migration version a real setup() writes, and refuses any other"
  */
 export const CHECKPOINTER_MIGRATION_VERSION = 4 as const;
 

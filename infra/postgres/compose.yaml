@@ -11,7 +11,11 @@
 #   AIC_POSTGRES_HOST_PORT=5433 docker compose \
 #     --file infra/postgres/compose.yaml up --detach --wait
 #   AIC_POSTGRES_URL=postgresql://aic@127.0.0.1:5433/aic npm run test:live-postgres
-#   docker compose --file infra/postgres/compose.yaml down
+#   AIC_POSTGRES_HOST_PORT=5433 docker compose \
+#     --file infra/postgres/compose.yaml down
+#
+# The port variable is required by EVERY compose subcommand, `down` included:
+# the `:?` interpolation below is evaluated before compose knows which one ran.
 #
 # No credential appears in this file, and that is deliberate rather than an
 # omission: `POSTGRES_HOST_AUTH_METHOD: trust` means the container asks for

@@ -457,7 +457,10 @@ test('agrees with the migration version a real setup() writes, and refuses any o
       'a store one migration ahead of this build must refuse before execution rather than be read as if it were this version',
     );
   } finally {
-    await client.query('rollback');
-    client.release();
+    try {
+      await client.query('rollback');
+    } finally {
+      client.release();
+    }
   }
 });
