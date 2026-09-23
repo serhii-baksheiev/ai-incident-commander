@@ -65,7 +65,7 @@ investigates, and what owns what at that connection?**
 | SourceBinding | exactly one Environment | a binding to a source of evidence, versioned by adapter |
 | CredentialRef | exactly one Environment | a first-class record holding a reference to a secret, never the secret; a SourceBinding refers to one read `CredentialRef`, the `ActionPolicy` refers to the write `CredentialRef`s, and a `ProposedAction` only refers to one — nothing but the Environment owns it |
 | ActionPolicy | exactly one Environment | which action types are allowed there |
-| Incident | its `primaryScope` Environment | intake carries `idempotencyKey` so repeated intake does not create a second Incident |
+| Incident | its `primaryScope` Environment | intake carries `idempotencyKey` (AIC-96 defines the schema, AIC-99 is the CLI that writes it) so repeated intake does not create a second Incident |
 | Evidence | the run that collected it | carries its provenance as a snapshot taken at fetch time (see Trust boundary), not as a live pointer |
 
 The consumer's service, repository and infrastructure remain owned by the
@@ -129,9 +129,11 @@ storage is the one place its state and evidence live.
 
 ## Terminology
 
-No code defines these yet. The domain contracts (AIC-96), the source-adapter
-contract (AIC-100), the onboarding CLI (AIC-99) and the domain API (AIC-43)
-must use them exactly as written here:
+`packages/domain` defines the registry types as of AIC-96 — `Service`,
+`Environment`, `SourceBinding`, `CredentialRef`, `ActionPolicy`,
+`primaryScope`, the intake and `idempotencyKey`. The source-adapter contract
+(AIC-100), the onboarding CLI (AIC-99) and the domain API (AIC-43) must use
+the same names, exactly as written here:
 
 | Term | Meaning |
 | --- | --- |
@@ -146,8 +148,9 @@ must use them exactly as written here:
 The planned onboarding commands (AIC-99) use the same nouns:
 `aic service add`, `aic env add`, `aic source add`, `aic source check`,
 `aic policy set`, `aic incident start`, plus `aic doctor` and `aic apply -f`.
-The existing `aic start` persistence spike is not one of them; AIC-99's scope
-moves it behind an explicit development-only command.
+The existing `aic start` persistence spike, and `aic resume` beside it, are not
+among them; AIC-99's scope moves both behind an explicit development-only
+command.
 
 ## Consequences
 

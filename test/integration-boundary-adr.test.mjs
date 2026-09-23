@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
+import * as domain from '@aic/domain';
+
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const adrPath = join(projectRoot, 'docs', 'decisions', 'integration-boundary.md');
 const readAdr = () => readFileSync(adrPath, 'utf8');
@@ -111,4 +113,55 @@ test('is reachable from the architecture document it amends', () => {
     /decisions\/integration-boundary\.md/,
     'a reader of the canonical architecture must be pointed at the decision that bounds v0.3 integration',
   );
+});
+
+/**
+ * AIC-96, slice A: the ADR is what the scoped domain types (this PR) and the
+ * onboarding CLI (AIC-99) are built against, so the sentences that name their
+ * shared vocabulary are pinned here too - the doc edits these four checks
+ * require land with the implementation, not with this test file.
+ */
+test("cites the Incident row's idempotencyKey sentence to AIC-96 and AIC-99", () => {
+  const ownership = section(readAdr(), 'Ownership');
+  assert.match(
+    ownership,
+    /\|\s*Incident\s*\|[^\n]*idempotencyKey[^\n]*AIC-96[^\n]*AIC-99/,
+    'the Incident row must cite both AIC-96 (the schema) and AIC-99 (the CLI that writes it) beside idempotencyKey',
+  );
+});
+
+test('names aic resume beside aic start as the development-only spike', () => {
+  const terminology = section(readAdr(), 'Terminology');
+  assert.match(
+    terminology,
+    /`aic resume`/,
+    'the Terminology section must name `aic resume` beside `aic start` as part of the development-only spike AIC-99 moves behind an explicit command',
+  );
+});
+
+test("leaves revoking a removed CredentialRef's secret to AIC-46, undecided here", () => {
+  const removal = section(readAdr(), 'Removal semantics').replace(/\s+/g, ' ').trim();
+  assert.match(
+    removal,
+    /revoking it in the secret backend[^.]*AIC-46 owns, and this record does not decide it\./,
+    'Removal semantics must leave revoking the secret to AIC-46 without deciding it here',
+  );
+});
+
+test('every Terminology type the registry declares is exported by @aic/domain as its Schema', () => {
+  for (const schemaName of [
+    'ServiceSchema',
+    'EnvironmentSchema',
+    'SourceBindingSchema',
+    'CredentialRefSchema',
+    'ActionPolicySchema',
+    'PrimaryScopeSchema',
+    'IdempotencyKeySchema',
+  ]) {
+    assert.equal(
+      typeof domain[schemaName]?.safeParse,
+      'function',
+      `@aic/domain must export ${schemaName}, a zod schema, to match the ADR's Terminology table`,
+    );
+  }
 });
