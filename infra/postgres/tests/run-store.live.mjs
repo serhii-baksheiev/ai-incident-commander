@@ -326,7 +326,7 @@ test('renewLease returns true for the current owner, false for a mismatched work
 });
 
 /* -------------------------------------------------------------------------- */
-/* Row 13 — bounded attempts: exhaustion moves the run to failed              */
+/* Lease expiry and heartbeats                                                 */
 /* -------------------------------------------------------------------------- */
 
 test('renewLease refuses a lease that has already expired, even before any sweep has requeued the run', async (t) => {
@@ -365,7 +365,16 @@ test('a claim records a heartbeat, and each renewal moves it forward', async (t)
   assert.equal(await store.renewLease(claim), true);
   const renewed = await heartbeatOf();
   assert.ok(renewed > aged, 'a renewal must move heartbeat_at forward');
+  assert.deepEqual(
+    (await store.getRun(runId)).heartbeatAt,
+    renewed,
+    'getRun must report the heartbeat the store maintains',
+  );
 });
+
+/* -------------------------------------------------------------------------- */
+/* Row 13 — bounded attempts: exhaustion moves the run to failed              */
+/* -------------------------------------------------------------------------- */
 
 test('bounded attempts: once the next attempt would exceed maxExecutionAttempts, the run becomes failed with terminal_reason recovery_exhausted', async (t) => {
   const store = await freshStore(t, { leaseMs: 30_000, maxExecutionAttempts: 2 });
@@ -406,6 +415,36 @@ test('bounded attempts: once the next attempt would exceed maxExecutionAttempts,
 /* Row 14 — the database's own CHECK enforces decision 4, independent of the  */
 /* store's TypeScript                                                        */
 /* -------------------------------------------------------------------------- */
+
+test('exhausted runs at the head of the queue do not hide claimable work behind a null', async (t) => {
+  const store = await freshStore(t, { leaseMs: 30_000, maxExecutionAttempts: 2 });
+  const exhaustedA = `run-exhausted-a-${randomUUID()}`;
+  const exhaustedB = `run-exhausted-b-${randomUUID()}`;
+  const fresh = `run-fresh-${randomUUID()}`;
+  for (const runId of [exhaustedA, exhaustedB, fresh]) await store.createRun({ runId, input: {} });
+  await store.pool.query(
+    `update aic_app.runs set execution_attempt = 2, created_at = created_at - interval '1 hour' where run_id = any($1)`,
+    [[exhaustedA, exhaustedB]],
+  );
+
+  const claim = await store.claimNext('worker-behind-exhausted');
+  assert.equal(
+    claim?.runId,
+    fresh,
+    'a null from claimNext must mean nothing is claimable; failing an exhausted run is not a reason to hand back null while a fresh run waits',
+  );
+  const { rows } = await store.pool.query(
+    'select run_id, status, terminal_reason from aic_app.runs where run_id = any($1) order by run_id',
+    [[exhaustedA, exhaustedB]],
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.status, row.terminal_reason]),
+    [
+      ['failed', 'recovery_exhausted'],
+      ['failed', 'recovery_exhausted'],
+    ],
+  );
+});
 
 test('the database rejects a waiting_human row with an owner or lease, and a running row without them', async (t) => {
   const store = await freshStore(t);

@@ -304,6 +304,11 @@ test('bounds what a refusal echoes even when the caller-supplied op\'s toString(
   }
   assert.equal(threw, true, 'buildExecKey must refuse a hostile-toString op rather than let the exception escape uncaught from somewhere other than a deliberate refusal');
   assert.equal(typeof message, 'string', 'the refusal must carry a string message');
+  assert.match(
+    message,
+    /unknown execution operation/,
+    'the error must be the refusal itself, not the caller\'s own exception escaping from the refusal\'s message construction',
+  );
   assert.equal(message.includes('\n'), false, 'a refusal must not carry a raw newline from the input');
   assert.ok(message.length < 300, `a refusal must not echo the input unbounded (got ${message.length} chars)`);
 });

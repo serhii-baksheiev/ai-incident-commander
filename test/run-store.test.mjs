@@ -9,8 +9,8 @@
  * `FOR UPDATE SKIP LOCKED` actually excluding a locked row, the sweeper, bounded
  * attempts — cannot be decided here and lives on its own line,
  * `infra/postgres/tests/run-store.live.mjs`, run through `npm run
- * test:live-postgres`; row 7 below is what keeps that line out of `npm test`
- * and `npm run check` (the existing assertion in
+ * test:live-postgres`, and kept out of `npm test` and `npm run check` by the
+ * existing assertion in
  * test/postgres-checkpointer.test.mjs › "keeps the database-backed lane out of
  * npm test and npm run check" already covers every file under
  * `infra/postgres/tests/*.live.mjs`, this one included, so it is not repeated
@@ -319,5 +319,19 @@ test('packages/persistence/package.json declares pg at exactly the version packa
     dependencies['@aic/domain'],
     '0.0.0',
     'packages/persistence/package.json must declare @aic/domain: the run store checks its own statements against domain.RUN_STATUSES and domain.assertRunTransition (rows 3 and 4 above), and a package that imports @aic/domain without declaring it relies on hoisting rather than its own manifest — packages/graph/package.json and packages/tools/package.json both declare it the same way',
+  );
+});
+
+test('the migration indexes the claim scan over queued runs and the sweep scan over running leases', () => {
+  const sql = persistence.APPLICATION_MIGRATIONS.map((migration) => migration.sql).join('\n');
+  assert.match(
+    sql,
+    /CREATE INDEX[^;]*ON "aic_app"\.runs\s*\(\s*created_at\s*\)\s*WHERE status = 'queued'/i,
+    'claimNext orders queued runs by created_at; without a partial index every claim sorts the whole queue',
+  );
+  assert.match(
+    sql,
+    /CREATE INDEX[^;]*ON "aic_app"\.runs\s*\(\s*lease_expires_at\s*\)\s*WHERE status = 'running'/i,
+    'sweepExpired scans running runs by lease_expires_at; without a partial index every sweep is a sequential scan',
   );
 });
