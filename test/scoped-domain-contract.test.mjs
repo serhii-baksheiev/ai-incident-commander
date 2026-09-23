@@ -241,7 +241,7 @@ const referenceFieldTable = [
     mutate: (candidate) => {
       candidate.actionPolicies[0].writeCredentialRefIds = [credentialWriteB];
     },
-    path: ['actionPolicies', 0, 'writeCredentialRefIds'],
+    path: ['actionPolicies', 0, 'writeCredentialRefIds', 0],
   },
 ];
 

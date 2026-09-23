@@ -128,14 +128,12 @@ export const RegistrySnapshotSchema = z
     registry.services.forEach((service, index) => {
       if (serviceNames.has(service.name)) issue(ctx, 'duplicate Service name', ['services', index, 'name']);
       serviceNames.add(service.name);
+      const ownAliases = new Set<string>();
       service.repositoryAliases.forEach((alias, aliasIndex) => {
-        if (repositoryAliases.has(alias))
-          issue(ctx, 'repository alias already used by another Service', [
-            'services',
-            index,
-            'repositoryAliases',
-            aliasIndex,
-          ]);
+        const path = ['services', index, 'repositoryAliases', aliasIndex];
+        if (ownAliases.has(alias)) issue(ctx, 'repository alias listed twice by one Service', path);
+        else if (repositoryAliases.has(alias)) issue(ctx, 'repository alias already used by another Service', path);
+        ownAliases.add(alias);
         repositoryAliases.add(alias);
       });
     });
@@ -166,6 +164,10 @@ export const RegistrySnapshotSchema = z
           index,
           'environmentId',
         ]);
+      // Scoped to one Environment on purpose: a read reference in `staging` and
+      // a write reference in `production` may name the same backend secret,
+      // because each Environment's credentials are separate records. See
+      // scoped-domain-contract.test.mjs › "states its limit: a read and a write CredentialRef in different Environments may name one secret".
       if (ref.access !== 'write') return;
       const siblings = refsByEnvironment.get(ref.environmentId) ?? [];
       const collides = siblings.some((sibling) => sibling.access === 'read' && sibling.secretName === ref.secretName);
@@ -218,16 +220,15 @@ export const RegistrySnapshotSchema = z
         issue(ctx, 'at most one ActionPolicy may exist per Environment', ['actionPolicies', index, 'environmentId']);
       policyEnvironments.add(policy.environmentId);
 
-      const invalidWriteRef = policy.writeCredentialRefIds.some((refId) => {
+      policy.writeCredentialRefIds.forEach((refId, refIndex) => {
+        const path = ['actionPolicies', index, 'writeCredentialRefIds', refIndex];
         const credential = credentialRefById.get(refId);
-        return !credential || credential.environmentId !== policy.environmentId || credential.access !== 'write';
+        if (!credential) issue(ctx, 'ActionPolicy.writeCredentialRefIds entry does not name a known CredentialRef', path);
+        else if (credential.environmentId !== policy.environmentId)
+          issue(ctx, 'ActionPolicy.writeCredentialRefIds entry must name a CredentialRef in the same Environment', path);
+        else if (credential.access !== 'write')
+          issue(ctx, 'ActionPolicy.writeCredentialRefIds entry names a read CredentialRef; only write ones belong here', path);
       });
-      if (invalidWriteRef)
-        issue(
-          ctx,
-          'ActionPolicy.writeCredentialRefIds must each name a write CredentialRef in the same Environment',
-          ['actionPolicies', index, 'writeCredentialRefIds'],
-        );
     });
   });
 

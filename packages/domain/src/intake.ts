@@ -52,16 +52,20 @@ export const INCIDENT_INTAKE_WINDOW_MS = 15 * 60_000;
 export function deriveIdempotencyKey(intake: IncidentIntake): string {
   const { serviceId, environmentId } = intake.primaryScope;
 
+  const windowBasis = (): unknown[] => {
+    const startedAt = Date.parse(intake.startedAt);
+    // NaN would serialise as null and put every such intake in one scope on
+    // one key. See incident-intake-idempotency.test.mjs › "refuses to derive a
+    // window key from a startedAt it cannot parse".
+    if (Number.isNaN(startedAt)) throw new Error('cannot derive an idempotency key: intake.startedAt is not a parseable timestamp');
+    return ['window', INCIDENT_INTAKE_WINDOW_MS, Math.floor(startedAt / INCIDENT_INTAKE_WINDOW_MS)];
+  };
   const basis: unknown[] =
     intake.idempotencyKey !== undefined
       ? ['key', intake.idempotencyKey]
       : intake.externalRef !== undefined
         ? ['externalRef', intake.externalRef]
-        : [
-            'window',
-            INCIDENT_INTAKE_WINDOW_MS,
-            Math.floor(Date.parse(intake.startedAt) / INCIDENT_INTAKE_WINDOW_MS),
-          ];
+        : windowBasis();
 
   const tuple = ['aic.incident-intake', 1, serviceId, environmentId, ...basis];
   const digest = createHash('sha256').update(JSON.stringify(tuple)).digest('hex');
@@ -74,7 +78,7 @@ export function deriveIdempotencyKey(intake: IncidentIntake): string {
  * reconciled when `IncidentSchema` itself requires a scope — the persisted
  * state cutover AIC-96 still owes.
  */
-interface IntakeDerivedIncident {
+export interface IntakeDerivedIncident {
   id: string;
   primaryScope: IncidentIntake['primaryScope'];
   title: string;
