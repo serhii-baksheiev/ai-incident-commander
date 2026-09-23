@@ -416,6 +416,38 @@ test('bounded attempts: once the next attempt would exceed maxExecutionAttempts,
 /* store's TypeScript                                                        */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Row 13 (AIC-56 slice C carry-over) — N exhausted runs and nothing          */
+/* claimable: claimNext returns null and leaves all N failed/recovery_exhausted */
+/* -------------------------------------------------------------------------- */
+
+test('claimNext with N exhausted runs and nothing claimable returns null and leaves all N failed with recovery_exhausted', async (t) => {
+  const store = await freshStore(t, { leaseMs: 30_000, maxExecutionAttempts: 2 });
+  const runIds = Array.from({ length: 5 }, () => `run-all-exhausted-${randomUUID()}`);
+  for (const runId of runIds) await store.createRun({ runId, input: {} });
+  await store.pool.query(`update aic_app.runs set execution_attempt = 2 where run_id = any($1::text[])`, [runIds]);
+
+  const claimed = await store.claimNext('worker-all-exhausted');
+  assert.equal(
+    claimed,
+    null,
+    'with N queued runs all already at maxExecutionAttempts and nothing else queued, claimNext must fail every one of them (its own loop-termination comment) and return null rather than looping forever or claiming one',
+  );
+
+  const { rows } = await store.pool.query(
+    `select run_id, status, terminal_reason from aic_app.runs where run_id = any($1::text[]) order by run_id`,
+    [runIds],
+  );
+  assert.equal(rows.length, runIds.length);
+  for (const row of rows) {
+    assert.deepEqual(
+      { status: row.status, terminalReason: row.terminal_reason },
+      { status: 'failed', terminalReason: 'recovery_exhausted' },
+      `${row.run_id} must have been failed with recovery_exhausted by the single claimNext call that found nothing claimable`,
+    );
+  }
+});
+
 test('exhausted runs at the head of the queue do not hide claimable work behind a null', async (t) => {
   const store = await freshStore(t, { leaseMs: 30_000, maxExecutionAttempts: 2 });
   const exhaustedA = `run-exhausted-a-${randomUUID()}`;
