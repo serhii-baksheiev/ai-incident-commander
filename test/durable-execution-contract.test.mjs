@@ -169,6 +169,37 @@ test('no operation name in the registry starts with action.', () => {
   }
 });
 
+/**
+ * AIC-56 slice A review: a correspondence check between `order` (what
+ * `buildExecKey` hashes into the tuple) and the operation's own zod strict
+ * object shape (what `.safeParse` actually validates). Without this, `order`
+ * and `schema` are two independent spellings of the same field list, and only
+ * one of the two directions of drift is caught by the existing "missing part" /
+ * "extra part" rows: a field the schema declares but `order` omits would parse
+ * successfully and then silently vanish from the hashed tuple, with every
+ * existing row still green because none of them separately reads
+ * `schema.shape`. zod v4 strict objects expose `.shape` as a plain object of
+ * the field schemas (measured on the installed zod 4.4.3).
+ */
+test('for each registered operation, definition.order lists exactly the keys of its own schema.shape', () => {
+  for (const [op, definition] of Object.entries(domain.EXECUTION_OPERATIONS)) {
+    const shapeKeys = new Set(Object.keys(definition.schema.shape));
+    const orderKeys = new Set(definition.order);
+    for (const key of shapeKeys) {
+      assert.ok(
+        orderKeys.has(key),
+        `${op}'s schema declares ${key}; order does not list it, so buildExecKey would validate it but never hash it into the exec_key tuple`,
+      );
+    }
+    for (const key of orderKeys) {
+      assert.ok(
+        shapeKeys.has(key),
+        `${op}'s order lists ${key}; its schema does not declare it, so a caller-supplied value for it is never validated before being hashed`,
+      );
+    }
+  }
+});
+
 // --- 3. buildExecKey ------------------------------------------------------
 
 test('buildExecKey returns <op>/sha256:<64 hex> for a valid tool.trial and model.role input', () => {
@@ -227,6 +258,54 @@ test('buildExecKey refuses an operation name the registry only inherits from Obj
   for (const inherited of ['toString', 'valueOf', 'constructor', 'hasOwnProperty', '__proto__', 'isPrototypeOf']) {
     refuses(() => domain.buildExecKey(inherited, { runId: 'run-1' }), `${inherited} is not a registered operation`);
   }
+});
+
+/**
+ * AIC-56 slice A review: `op` is specified and typed as a string, but nothing
+ * in `buildExecKey` checks `typeof op === 'string'` before using it as a
+ * property key. `Object.hasOwn(EXECUTION_OPERATIONS, op)` coerces a non-string
+ * key through `ToPropertyKey`, which calls the value's own `toString()` — so an
+ * object whose `toString` returns a registered operation name is read as that
+ * operation, not refused as a non-string `op`. A caller that meant to pass the
+ * literal string `'tool.trial'` and instead passed something merely
+ * string-*like* should not silently succeed.
+ */
+test('buildExecKey refuses a non-string op, without coercing it through ToPropertyKey into a registered operation name', () => {
+  const objectOp = { toString: () => 'tool.trial' };
+  refuses(
+    () => domain.buildExecKey(objectOp, validTrialParts()),
+    'an object whose toString() returns a registered operation name must still be refused: op must be the string itself, not anything merely coercible to one',
+  );
+  refuses(() => domain.buildExecKey(42, validTrialParts()), 'a number must be refused as an operation name');
+});
+
+/**
+ * The companion to "bounds what a refusal echoes …" above, for the one input
+ * shape that row does not cover: an `op` whose own `toString()` throws. The
+ * refusal path calls `echoed(op)`, which calls `String(value)`, which for an
+ * object invokes `toString()` — so a hostile `toString` runs INSIDE the
+ * refusal's own error-message construction, not only inside `buildExecKey`'s
+ * ordinary logic. This must still end in one bounded refusal, not an uncaught
+ * exception from the guard's own reporting path.
+ */
+test('bounds what a refusal echoes even when the caller-supplied op\'s toString() itself throws', () => {
+  const hostileOp = {
+    toString() {
+      throw new Error('nope');
+    },
+  };
+  let message;
+  let threw = false;
+  try {
+    domain.buildExecKey(hostileOp, validTrialParts());
+  } catch (error) {
+    threw = true;
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assert.equal(threw, true, 'buildExecKey must refuse a hostile-toString op rather than let the exception escape uncaught from somewhere other than a deliberate refusal');
+  assert.equal(typeof message, 'string', 'the refusal must carry a string message');
+  assert.equal(message.includes('\n'), false, 'a refusal must not carry a raw newline from the input');
+  assert.ok(message.length < 300, `a refusal must not echo the input unbounded (got ${message.length} chars)`);
 });
 
 test('buildExecKey refuses a part that only a polluted Object.prototype supplies', () => {
