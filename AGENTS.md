@@ -145,9 +145,9 @@ asks a different question". ⚠ **Only the id's shape is checked.** Any
 well-formed id excludes the record it names (› "accepts the id shapes every
 adapter in this rulebook emits"), so an id that is well-formed but not this
 item's excludes that other record, and nothing reports it — the caller owns
-which item it is closing. An id the module cannot recognise excludes nothing and
-is named back as `ticketIgnored` — › "applies no exclusion for an unrecognised
-id even when nothing else is elevated".
+which item it is closing. An id the module cannot recognise is named back as
+`ticketIgnored` — › "records a conservative tier for an id it cannot recognise,
+and never leaves the ration unwritten".
 
 ⚠ **`npx create-agent-rig doctor` reports `workflow: fail` in this repository,
 and that is expected.** That check compares every `.claude/scripts/` file the
