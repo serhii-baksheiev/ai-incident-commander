@@ -8,10 +8,14 @@ export const APPLICATION_SCHEMA = 'aic_app' as const;
 
 /**
  * The migration version this build's `APPLICATION_MIGRATIONS` reach — one
- * version per entry below, applied in order. AIC-56 slice B ships exactly one:
- * the `runs` table and the ledger that records it.
+ * version per entry below, applied in order. AIC-56 slice B shipped the first:
+ * the `runs` table and the ledger that records it. Slice C adds the second:
+ * the fenced write context's own tables (`node_results`, `run_events`,
+ * `run_event_counters`, `run_trials`, `run_evidence`, `fence_rejections`) and
+ * `runs.interaction_id` (decision 4: a run waiting for a human still carries
+ * the interaction it is waiting on).
  */
-export const APP_SCHEMA_VERSION = 1 as const;
+export const APP_SCHEMA_VERSION = 2 as const;
 
 interface ApplicationMigration {
   readonly version: number;
@@ -65,6 +69,93 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
         ON "aic_app".runs (created_at) WHERE status = 'queued';
       CREATE INDEX IF NOT EXISTS runs_running_lease_idx
         ON "aic_app".runs (lease_expires_at) WHERE status = 'running';
+    `,
+  }),
+  /**
+   * AIC-56 slice C: the fenced write context's own tables, and
+   * `runs.interaction_id` (decision 4). Migration 1 above stays
+   * byte-identical — see run-write-context.test.mjs › "APP_SCHEMA_VERSION is
+   * 2, migration 1's SQL is byte-identical to what shipped in #97, and
+   * migration 2 exists".
+   *
+   * - `node_results` is the committed-result ledger decision 6 asks for: one
+   *   row per `(run_id, exec_key)`, never updated after insert (`run-write-context.ts`
+   *   never issues an UPDATE against it — only INSERT ... ON CONFLICT DO
+   *   NOTHING). `input_sha` is nullable: a caller that never passed an
+   *   `inputFingerprint` stores none.
+   * - `run_events` is the append-only evidence decision 10 and decision 12
+   *   ask for, keyed by `(run_id, seq)`; `seq` comes from
+   *   `run_event_counters`, upserted-and-incremented inside the same fenced
+   *   transaction that appends the event, so it is strictly increasing per
+   *   run — see run-write-context.live.mjs › "each fenced write appends an
+   *   event with a strictly increasing seq per run".
+   * - `run_trials` / `run_evidence` are the domain `Trial` / `Evidence`
+   *   projection, keyed by their own `id`s; `body` is `canonicalJson`'s text
+   *   (`@aic/domain`), the one place canonical JSON lives in this codebase.
+   * - `fence_rejections` is decision 12's durable evidence of a stale or
+   *   fenced commit: one row per refused run-scoped write attempt, recorded
+   *   in its own statement after the refusing transaction has already rolled
+   *   back — see run-write-context.live.mjs › "a zombie worker after lease
+   *   loss cannot write domain records or events, and fence_rejections
+   *   records the attempts".
+   */
+  Object.freeze({
+    version: 2,
+    sql: `
+      ALTER TABLE "aic_app".runs ADD COLUMN IF NOT EXISTS interaction_id text;
+
+      CREATE TABLE IF NOT EXISTS "aic_app".node_results (
+        run_id text NOT NULL,
+        exec_key text NOT NULL,
+        op text NOT NULL,
+        input_sha text,
+        result_json text NOT NULL,
+        result_sha text NOT NULL,
+        produced_by_attempt integer NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        PRIMARY KEY (run_id, exec_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app".run_event_counters (
+        run_id text PRIMARY KEY,
+        next_seq integer NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app".run_events (
+        run_id text NOT NULL,
+        seq integer NOT NULL,
+        type text NOT NULL,
+        execution_attempt integer NOT NULL,
+        payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        PRIMARY KEY (run_id, seq)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app".run_trials (
+        run_id text NOT NULL,
+        trial_id text NOT NULL,
+        body text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        PRIMARY KEY (run_id, trial_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app".run_evidence (
+        run_id text NOT NULL,
+        evidence_id text NOT NULL,
+        trial_id text NOT NULL,
+        body text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        PRIMARY KEY (run_id, evidence_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app".fence_rejections (
+        id bigserial PRIMARY KEY,
+        run_id text NOT NULL,
+        owner_worker_id text NOT NULL,
+        execution_attempt integer NOT NULL,
+        kind text NOT NULL,
+        at timestamptz NOT NULL DEFAULT clock_timestamp()
+      );
     `,
   }),
 ]);

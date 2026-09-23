@@ -188,6 +188,15 @@ export function createRunStore(connectionString: string, options: RunStoreOption
   const maxExecutionAttempts = assertPositiveInteger(options?.maxExecutionAttempts, 'maxExecutionAttempts');
 
   const pool = new Pool({ connectionString });
+  // An idle client can emit its own 'error' (e.g. the backend closing a
+  // connection this pool is not currently using) — with no listener, `pg`
+  // rethrows it as an uncaught exception on the process rather than a
+  // rejected promise a caller could catch. See app-schema.ts's own
+  // `setupApplicationSchema` for the security advisory this mirrors.
+  pool.on('error', () => {
+    // Nothing to reconcile here: no query is in flight against this idle
+    // client, and the pool discards it and opens a fresh one on next use.
+  });
   const SQL_STATEMENTS = buildSqlStatements();
 
   return {
@@ -195,6 +204,9 @@ export function createRunStore(connectionString: string, options: RunStoreOption
     SQL_STATEMENTS,
 
     async createRun({ runId, input }) {
+      if (typeof runId !== 'string' || runId.length === 0) {
+        throw new Error(`createRun requires a non-empty runId, got ${JSON.stringify(runId)}`);
+      }
       await pool.query(`INSERT INTO "${APPLICATION_SCHEMA}".runs (run_id, status, input) VALUES ($1, 'queued', $2::jsonb)`, [
         runId,
         JSON.stringify(input),
