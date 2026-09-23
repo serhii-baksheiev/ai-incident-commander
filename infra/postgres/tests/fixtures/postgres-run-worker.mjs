@@ -73,8 +73,8 @@ function reviewNodes() {
 }
 
 /**
- * The fixed `primaryScope` `test/fixtures/scoped-incident.mjs` exports,
- * copied rather than imported — like the lifecycle node list above, the point
+ * A fixed synthetic `primaryScope`; the values need not match any other
+ * fixture. Written here rather than imported — like the lifecycle node list above, the point
  * of this lane is to change the SUBSTRATE and nothing else, and this file does
  * nothing on import by design (see the header comment), which a relative
  * import four directories up would put at risk for no benefit this fixture
