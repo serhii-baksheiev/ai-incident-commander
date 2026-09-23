@@ -1,3 +1,4 @@
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite';
 
 import { withDeclaredOwnValues } from './own-value-serde.js';
@@ -26,4 +27,107 @@ export function createSqliteCheckpointer(checkpointPath: string): SqliteSaver {
   const saver = SqliteSaver.fromConnString(checkpointPath);
   saver.serde = withDeclaredOwnValues(saver.serde);
   return saver;
+}
+
+/**
+ * The application's own schema, and the checkpointer's — two names, never one.
+ *
+ * AIC-55 acceptance row 4 asks that checkpointer storage live separately from
+ * `aic_app`. Separate schemas are what makes the rest of that row's intent
+ * mechanical rather than habitual: a domain query cannot reach a checkpoint
+ * table by accident, a grant can be written against one and not the other, and
+ * AIC-41's future backup/restore procedure can name each independently.
+ *
+ * They are exported so the boundary rows and the database-backed lane read the
+ * same two strings this module builds with, rather than each spelling them
+ * again — one source, the convention `.claude/rules/invariants.md` states.
+ * see postgres-checkpointer.test.mjs › "declares a checkpointer schema that is neither public nor the application schema"
+ */
+export const APPLICATION_SCHEMA = 'aic_app' as const;
+export const CHECKPOINTER_SCHEMA = 'langgraph' as const;
+
+/**
+ * The one place this repository builds a PostgreSQL checkpointer.
+ *
+ * Two things this does that the library does not do for you, both load-bearing:
+ *
+ * 1. **The serde is injected.** `PostgresSaver.fromConnString` passes `void 0`
+ *    as the serde, so the saver arrives with the default `JsonPlusSerializer` —
+ *    the same gap `createSqliteCheckpointer` works around above. A checkpointer
+ *    that skips `withDeclaredOwnValues` silently drops the own-value protection
+ *    AIC-93 added, and nothing in a passing graph run would show it.
+ *    see postgres-checkpointer.test.mjs › "builds the PostgreSQL checkpointer with the own-value serde, not the library default"
+ * 2. **The schema is declared.** The library defaults to `public`; every
+ *    checkpointer table is then unqualified at runtime through `search_path`.
+ *    see postgres-checkpointer.test.mjs › "qualifies every checkpointer table with the checkpointer schema"
+ *
+ * ⚠ **This does not provision anything.** `setup()` is the caller's explicit
+ * step, which is AIC-55 acceptance row 5. The library reads `isSetup` nowhere,
+ * so it performs no lazy migration of its own — but that is the library's
+ * current behaviour, not a guarantee this repository can offer, so the row
+ * below watches the pool rather than trusting it.
+ * see postgres-checkpointer.test.mjs › "opens no connection and issues no statement while the checkpointer is being built"
+ */
+export function createPostgresCheckpointer(connectionString: string): PostgresSaver {
+  const saver = PostgresSaver.fromConnString(connectionString, {
+    schema: CHECKPOINTER_SCHEMA,
+  });
+  saver.serde = withDeclaredOwnValues(saver.serde);
+  return saver;
+}
+
+/**
+ * The migration version this repository has been built and tested against.
+ *
+ * Measured, not read off a changelog: `setup()` against an empty PostgreSQL 17
+ * leaves `max(v) = 4` in `<schema>.checkpoint_migrations`, which is the library's
+ * own version ledger.
+ * see infra/postgres/tests/postgres-checkpointer.live.mjs › "agrees with the migration version a real setup() writes, and refuses any other"
+ */
+export const CHECKPOINTER_MIGRATION_VERSION = 4 as const;
+
+/**
+ * What the seam reads from: anything that can answer one query.
+ *
+ * Structural rather than `pg.Pool`, for two reasons. The library declares
+ * `pool` private, so a typed caller cannot hand over the saver's own pool; and
+ * a narrow port keeps `pg` out of this module's type surface, which is the
+ * bounded-adapter convention the rest of this repository follows.
+ */
+export interface CheckpointerVersionSource {
+  query(sql: string): Promise<{ rows: Array<{ v: number | null }> }>;
+}
+
+/**
+ * The `schemaVersion` validation seam AIC-55 owns — and only the seam.
+ *
+ * AIC-55's scope asks for a validation seam while leaving the historical
+ * migration, corruption and DR policy to AIC-41. So this refuses loudly on a
+ * version it was not built against and does nothing else: it does not migrate,
+ * does not repair, and does not decide which older versions are acceptable.
+ * That decision is the policy AIC-41 plugs in here.
+ *
+ * 🔴 **Refusing is the point.** The failure this prevents is a process that
+ * opens a checkpoint store written by a different version of the checkpointer,
+ * reads what it expects to be there, and continues — which surfaces later, as
+ * corrupt-looking state, far from the cause. `.claude/rules/autonomy.md` asks a
+ * mismatch to refuse before execution rather than during it.
+ *
+ * ⚠ It reads the LIBRARY's migration ledger, not a domain state version. The
+ * graph layer validates its own persisted state separately, and neither check
+ * substitutes for the other.
+ */
+export async function assertCheckpointerSchemaVersion(
+  source: CheckpointerVersionSource,
+): Promise<void> {
+  const { rows } = await source.query(
+    `select max(v) as v from "${CHECKPOINTER_SCHEMA}".checkpoint_migrations`,
+  );
+  const applied = rows[0]?.v ?? null;
+
+  if (applied !== CHECKPOINTER_MIGRATION_VERSION) {
+    throw new Error(
+      `the checkpointer schema "${CHECKPOINTER_SCHEMA}" is at migration version ${applied}, and this build expects ${CHECKPOINTER_MIGRATION_VERSION}: refusing before execution rather than reading a store written by a different checkpointer — migrating it is AIC-41's policy, not this seam's`,
+    );
+  }
 }

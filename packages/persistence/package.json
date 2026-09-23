@@ -10,6 +10,7 @@
     }
   },
   "dependencies": {
+    "@langchain/langgraph-checkpoint-postgres": "1.0.5",
     "@langchain/langgraph-checkpoint-sqlite": "1.0.4"
   }
 }
