@@ -38,12 +38,12 @@ export function createSqliteCheckpointer(checkpointPath: string): SqliteSaver {
  * table by accident, a grant can be written against one and not the other, and
  * AIC-41's future backup/restore procedure can name each independently.
  *
- * They are exported so the boundary rows and the database-backed lane read the
- * same two strings this module builds with, rather than each spelling them
- * again — one source, the convention `.claude/rules/invariants.md` states.
+ * `APPLICATION_SCHEMA` is declared in `app-schema.ts`, which also owns the
+ * migrations and the run store built on it, and re-exported here so both
+ * schema names are exported from the same place.
  * see postgres-checkpointer.test.mjs › "declares a checkpointer schema that is neither public nor the application schema"
  */
-export const APPLICATION_SCHEMA = 'aic_app' as const;
+export { APPLICATION_SCHEMA } from './app-schema.js';
 export const CHECKPOINTER_SCHEMA = 'langgraph' as const;
 
 /**
@@ -131,3 +131,25 @@ export async function assertCheckpointerSchemaVersion(
     );
   }
 }
+
+/**
+ * AIC-56 slice B: the `aic_app` application schema — its migrations, its
+ * `schemaVersion` seam, and the run store built on it — beside the
+ * checkpointer schema this module already owns above.
+ */
+export {
+  APP_SCHEMA_VERSION,
+  APPLICATION_MIGRATIONS,
+  assertApplicationSchemaVersion,
+  setupApplicationSchema,
+  type ApplicationSchemaVersionSource,
+} from './app-schema.js';
+
+export {
+  createRunStore,
+  RUN_STORE_TRANSITIONS,
+  type RunClaim,
+  type RunRecord,
+  type RunStore,
+  type RunStoreOptions,
+} from './run-store.js';

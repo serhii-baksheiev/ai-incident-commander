@@ -252,6 +252,7 @@ AGENTS.md
 CLAUDE.md
 .github/workflows/
 infra/
+packages/persistence/src/app-schema.ts
 ```
 
 They are there because they are what *disarms* the rest: a merge that rewrites
@@ -275,6 +276,10 @@ record, so declaring `.rig/` escalates even a documentation-only PR to the
 `.claude/rules/autonomy.md`, so a merge that changes it is a merge the sweep
 asks a `human-review` label of — `test/elevated-paths-declaration.test.mjs` ›
 "declares the infrastructure configuration under infra/ as an elevated path".
+
+`packages/persistence/src/app-schema.ts` holds the `aic_app` migrations, a
+storage schema and so a Tier-2 kind — `test/elevated-paths-declaration.test.mjs` ›
+"declares the application-schema migrations as an elevated path".
 
 **Extend this list the same day you write the code it covers** — a real project
 accumulates more (auth handlers, billing, a credentials module, a migration

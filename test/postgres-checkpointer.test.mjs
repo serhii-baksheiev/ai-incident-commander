@@ -428,7 +428,27 @@ function sourceFiles(directory) {
   return found;
 }
 
-test('keeps checkpointer storage and the PostgreSQL driver out of every layer but persistence', () => {
+/**
+ * AIC-56 slice B: the `aic_app` application schema (`runs`,
+ * `schema_migrations`) gets the same boundary the checkpointer schema already
+ * has, folded into this row rather than duplicated into a second walk of the
+ * same tree.
+ *
+ * `runs` itself is deliberately NOT added as a bare `\bruns\b` pattern the way
+ * `CHECKPOINTER_TABLES` are: measured against this repository's own `src`
+ * trees, "runs" appears constantly as an ordinary English verb ("the run
+ * store's own SQL", "before anything runs", "runs already recorded" — none of
+ * it a reference to the table) — the same table-name pattern that finds zero
+ * matches for `checkpoint_blobs` finds dozens for `runs`, which would make this
+ * row fail on prose that has nothing to do with the database. `aic_app.runs`,
+ * the schema-qualified form any real reference to the table would use, is
+ * measured to have zero such false positives and is what this row scans for
+ * instead; `schema_migrations` is distinctive enough on its own (also measured
+ * at zero false positives) to stay a bare word like the checkpointer tables.
+ */
+const APPLICATION_SCHEMA_SURFACE_PATTERNS = Object.freeze(['aic_app\\.runs', 'schema_migrations']);
+
+test('keeps checkpointer storage, the application schema\'s tables, and the PostgreSQL driver out of every layer but persistence', () => {
   // `dependency-cruiser` cannot answer this one: `npm run lint:graph` runs over
   // `packages` only (so `apps/` is outside it), and a table name in a SQL
   // string is not an import edge at all. Hence a text scan, in the shape
@@ -444,6 +464,7 @@ test('keeps checkpointer storage and the PostgreSQL driver out of every layer bu
       String.raw`require\(['"]pg['"]\)`,
       String.raw`langgraph-checkpoint-postgres`,
       ...CHECKPOINTER_TABLES.map((table) => String.raw`\b${table}\b`),
+      ...APPLICATION_SCHEMA_SURFACE_PATTERNS,
     ].join('|'),
   );
 
@@ -463,7 +484,7 @@ test('keeps checkpointer storage and the PostgreSQL driver out of every layer bu
   assert.deepEqual(
     naming,
     [],
-    'a layer outside packages/persistence named a checkpointer table or the PostgreSQL driver: acceptance row 3 says no API or domain code reads checkpointer tables directly, and the moment one does, the substrate stops being replaceable and every schema decision becomes a cross-layer change',
+    'a layer outside packages/persistence named a checkpointer table, an aic_app table, or the PostgreSQL driver: acceptance row 3 says no API or domain code reads storage tables directly, and the moment one does, the substrate stops being replaceable and every schema decision becomes a cross-layer change',
   );
 });
 

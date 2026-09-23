@@ -39,3 +39,25 @@ test('still treats a test path under infra/ as inert, so the declaration does no
     'test paths and markdown under an elevated directory provision nothing; the sweep\'s inert carve-out must keep holding for infra/',
   );
 });
+
+/**
+ * AIC-56 added the first application-schema migration: the `aic_app` tables the
+ * durable run substrate coordinates on. A migration is a storage-schema change —
+ * a Tier-2 kind — so the file that carries the migrations is declared the day
+ * it is written, as AGENTS.md asks ("Extend this list the same day you write the
+ * code it covers").
+ */
+test('declares the application-schema migrations as an elevated path', () => {
+  const declared = readDeclaredPaths(projectRoot);
+
+  assert.deepEqual(
+    elevatedPathsIn(['packages/persistence/src/app-schema.ts'], declared),
+    ['packages/persistence/src/app-schema.ts'],
+    'the aic_app migrations are a storage schema — a Tier-2 kind — and the sweep must see a merge that changes them',
+  );
+  assert.deepEqual(
+    elevatedPathsIn(['packages/persistence/src/run-store.ts'], declared),
+    [],
+    'the declaration names the migrations file, not the whole package',
+  );
+});
