@@ -8,6 +8,7 @@ import {
   type IncidentConclusion,
   type IncidentState,
   type InvestigationStop,
+  type PrimaryScope,
 } from '@aic/domain';
 import {
   createInvestigationGraph,
@@ -642,6 +643,19 @@ export async function runBenchmarkExperiment(
   };
 }
 
+/**
+ * A synthetic `primaryScope` for benchmark scenario runs: the benchmark has no
+ * registry (`RegistrySnapshot`) to resolve a real Service and Environment
+ * against, so this fixed pair of UUIDs stands in rather than routing every
+ * scenario through `incidentFromIntake`, which would also put `title`,
+ * `startedAt`, `signals` and `idempotencyKey` into the incident the model is
+ * shown.
+ */
+export const BENCHMARK_PRIMARY_SCOPE: PrimaryScope = Object.freeze({
+  serviceId: '99999999-9999-4999-8999-999999999999',
+  environmentId: '88888888-8888-4888-8888-888888888888',
+});
+
 function initialBenchmarkState(
   input: BenchmarkExecutionInput,
   budgetPolicy: BenchmarkBudgetPolicy,
@@ -651,7 +665,7 @@ function initialBenchmarkState(
   }
 
   return {
-    incident: { id: input.scenarioId },
+    incident: { id: input.scenarioId, primaryScope: BENCHMARK_PRIMARY_SCOPE },
     hypotheses: [],
     predictions: [],
     tests: [],

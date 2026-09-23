@@ -355,11 +355,17 @@ function parseWith<T>(
  * budgets and a run id the model has no business deciding from, and a prompt
  * that grows with every field added to `IncidentState` is a prompt whose version
  * silently changes meaning.
+ *
+ * `incident.primaryScope` (AIC-96) is one such field, and it is deliberately
+ * omitted rather than shown: the scope routes the run to a registry Service and
+ * Environment and is not investigation evidence. see roles-model-nodes.test.mjs
+ * › "does not show the model the incident primaryScope, only its id"
  */
 function describeState(state: IncidentState): string {
+  const { primaryScope: _primaryScope, ...incident } = state.incident;
   return JSON.stringify(
     {
-      incident: state.incident,
+      incident,
       hypotheses: state.hypotheses,
       predictions: state.predictions,
       evidence: state.evidence,

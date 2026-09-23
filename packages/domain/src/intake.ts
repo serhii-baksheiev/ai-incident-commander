@@ -48,6 +48,10 @@ export const INCIDENT_INTAKE_WINDOW_MS = 15 * 60_000;
  * scope-qualified intake window - each basis is scope-qualified by
  * `serviceId` and `environmentId` so the same key, ref or window never
  * collides across two Environments.
+ *
+ * @throws {Error} when neither `idempotencyKey` nor `externalRef` is supplied
+ * and `startedAt` is not a parseable timestamp - see incident-intake-idempotency.test.mjs
+ * › "refuses to derive a window key from a startedAt it cannot parse".
  */
 export function deriveIdempotencyKey(intake: IncidentIntake): string {
   const { serviceId, environmentId } = intake.primaryScope;
@@ -73,10 +77,12 @@ export function deriveIdempotencyKey(intake: IncidentIntake): string {
 }
 
 /**
- * Not named `Incident`: `contracts.ts` already owns that name for the
- * incident state carries today, which has no `primaryScope` yet. The two are
- * reconciled when `IncidentSchema` itself requires a scope — the persisted
- * state cutover AIC-96 still owes.
+ * Not named `Incident`: `contracts.ts` already owns that name for the incident
+ * state carries. Both now require `primaryScope` (`IncidentSchema` since
+ * AIC-96), so the two are reconciled on that field; `IntakeDerivedIncident` is
+ * the intake-built shape — with `title`, `startedAt`, `signals` and
+ * `idempotencyKey` besides — that `IncidentSchema` accepts because it is a
+ * `looseObject` rather than restating a stricter one.
  */
 export interface IntakeDerivedIncident {
   id: string;
