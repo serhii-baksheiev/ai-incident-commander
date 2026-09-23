@@ -22,6 +22,7 @@ export interface RunRecord {
   readonly input: unknown;
   readonly ownerWorkerId: string | null;
   readonly leaseExpiresAt: Date | null;
+  readonly heartbeatAt: Date | null;
   readonly executionAttempt: number;
   readonly recoveryCount: number;
   readonly terminalReason: string | null;
@@ -72,7 +73,7 @@ const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
  * The three SQL statements this store runs, built once per store against its
  * own connection string's schema constant.
  *
- * `claimNext` is ONE statement: a `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`
+ * Each pass of `claimNext` is ONE statement: a `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`
  * candidate, materialized so two later CTEs can each read it exactly once,
  * feeding either an `exhausted` branch (decision 13: the next attempt would
  * exceed `maxExecutionAttempts`, so the run moves straight to `failed` with
@@ -134,7 +135,9 @@ function buildSqlStatements(): RunStore['SQL_STATEMENTS'] {
           AND r.execution_attempt < $2
         RETURNING r.run_id AS run_id, r.owner_worker_id AS owner_worker_id, r.execution_attempt AS execution_attempt
       )
-      SELECT run_id, owner_worker_id, execution_attempt FROM claimed
+      SELECT run_id, owner_worker_id, execution_attempt, false AS exhausted FROM claimed
+      UNION ALL
+      SELECT run_id, NULL, NULL, true AS exhausted FROM exhausted
     `,
     sweepExpired: `
       UPDATE "${APPLICATION_SCHEMA}".runs
@@ -199,17 +202,28 @@ export function createRunStore(connectionString: string, options: RunStoreOption
     },
 
     async claimNext(workerId) {
-      const { rows } = await pool.query<{ run_id: string; owner_worker_id: string; execution_attempt: number }>(
-        SQL_STATEMENTS.claimNext,
-        [workerId, maxExecutionAttempts, leaseMs],
-      );
-      const row = rows[0];
-      if (!row) return null;
-      return {
-        runId: row.run_id,
-        ownerWorkerId: row.owner_worker_id,
-        executionAttempt: Number(row.execution_attempt),
-      };
+      // Each statement either claims one run, fails one exhausted run, or finds
+      // nothing queued; only the last is a null. Failing a run does not end the
+      // call, so an exhausted run ahead of claimable work is never read as an
+      // empty queue — see run-store.live.mjs › "exhausted runs at the head of the
+      // queue do not hide claimable work behind a null". Each pass removes a
+      // queued run, so the loop ends.
+      for (;;) {
+        const { rows } = await pool.query<{
+          run_id: string;
+          owner_worker_id: string | null;
+          execution_attempt: number | null;
+          exhausted: boolean;
+        }>(SQL_STATEMENTS.claimNext, [workerId, maxExecutionAttempts, leaseMs]);
+        const row = rows[0];
+        if (!row) return null;
+        if (row.exhausted) continue;
+        return {
+          runId: row.run_id,
+          ownerWorkerId: row.owner_worker_id as string,
+          executionAttempt: Number(row.execution_attempt),
+        };
+      }
     },
 
     async renewLease(claim) {
@@ -234,11 +248,12 @@ export function createRunStore(connectionString: string, options: RunStoreOption
         input: unknown;
         owner_worker_id: string | null;
         lease_expires_at: Date | null;
+        heartbeat_at: Date | null;
         execution_attempt: number;
         recovery_count: number;
         terminal_reason: string | null;
       }>(
-        `SELECT run_id, status, input, owner_worker_id, lease_expires_at, execution_attempt, recovery_count, terminal_reason
+        `SELECT run_id, status, input, owner_worker_id, lease_expires_at, heartbeat_at, execution_attempt, recovery_count, terminal_reason
          FROM "${APPLICATION_SCHEMA}".runs WHERE run_id = $1`,
         [runId],
       );
@@ -250,6 +265,7 @@ export function createRunStore(connectionString: string, options: RunStoreOption
         input: row.input,
         ownerWorkerId: row.owner_worker_id,
         leaseExpiresAt: row.lease_expires_at,
+        heartbeatAt: row.heartbeat_at,
         executionAttempt: Number(row.execution_attempt),
         recoveryCount: Number(row.recovery_count),
         terminalReason: row.terminal_reason,

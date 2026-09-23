@@ -113,7 +113,15 @@ export function canonicalJson(value: unknown): CanonicalJson {
  * echoes of the caller-supplied operation name and statuses".
  */
 function echoed(value: unknown): string {
-  const text = String(value);
+  let text: string;
+  try {
+    text = String(value);
+  } catch {
+    // A value whose own conversion throws must not replace the refusal with
+    // its exception; see durable-execution-contract.test.mjs › "bounds what a
+    // refusal echoes even when the caller-supplied op's toString() itself throws".
+    text = `<unprintable ${typeof value}>`;
+  }
   return JSON.stringify(text.length > 64 ? `${text.slice(0, 64)}…` : text);
 }
 

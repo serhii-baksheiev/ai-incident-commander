@@ -294,12 +294,12 @@ packages/domain           framework-free domain contracts
 packages/graph            LangGraph state, nodes, edges, and routing
 packages/roles            semantic roles, prompts, and the reference model port
 packages/tools            live and replay tool adapters
-packages/persistence      checkpointing and recovery
+packages/persistence      checkpointing, the aic_app schema and the durable run store
 packages/evals            deterministic and LangSmith evaluation gates
 packages/observability    trace and run metadata
 datasets/scenarios        versioned replay fixtures
 incident-lab              isolated live incident environment
-infra/postgres            local PostgreSQL for the checkpointer live lane
+infra/postgres            local PostgreSQL for the checkpointer and run-store live lanes
 ```
 
 The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph and tools depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.

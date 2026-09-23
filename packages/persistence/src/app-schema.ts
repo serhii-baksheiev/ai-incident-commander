@@ -60,6 +60,11 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
           AND (status <> 'running' OR (owner_worker_id IS NOT NULL AND lease_expires_at IS NOT NULL))
         )
       );
+
+      CREATE INDEX IF NOT EXISTS runs_queued_created_at_idx
+        ON "aic_app".runs (created_at) WHERE status = 'queued';
+      CREATE INDEX IF NOT EXISTS runs_running_lease_idx
+        ON "aic_app".runs (lease_expires_at) WHERE status = 'running';
     `,
   }),
 ]);
@@ -93,6 +98,7 @@ export async function setupApplicationSchema(connectionString: string): Promise<
   const pool = new Pool({ connectionString });
   try {
     const client = await pool.connect();
+    let failure: unknown;
     try {
       await client.query('BEGIN');
       try {
@@ -118,11 +124,17 @@ export async function setupApplicationSchema(connectionString: string): Promise<
         }
         await client.query('COMMIT');
       } catch (error) {
-        await client.query('ROLLBACK');
+        failure = error;
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // The migration's own error is the one to report; a connection that
+          // cannot even roll back is released as broken below.
+        }
         throw error;
       }
     } finally {
-      client.release();
+      client.release(failure);
     }
   } finally {
     await pool.end();
