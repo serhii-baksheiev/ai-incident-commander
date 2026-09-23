@@ -5,7 +5,7 @@
  * spacing: never two elevated items back to back. The tier is computed from the
  * change a close actually made — `recordCompletedTier` — and every task this
  * repository closes writes `.rig/claims/<ticket>.json`, because the `loop`
- * skill requires that record and `CLAUDE.md` declares the whole of `.rig/`
+ * skill requires that record and `AGENTS.md` declares the whole of `.rig/`
  * elevated. So the elevated path was not a property of the WORK. It was present
  * on every task that followed the documented procedure, and the ration fired on
  * all of them equally — which is the same as not firing at all, because a

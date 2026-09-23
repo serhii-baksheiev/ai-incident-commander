@@ -37,12 +37,14 @@ adapter excludes from selection.
 <!-- Parsed only when queue.json names plan-md. State what is needed, e.g.:
 - decide: retention policy before real data (RemovalPolicy flip)
 -->
-## Where the journal is
+## Where the journal is (workflow layer only)
 
-`journal/YYYY-MM.md` — one file per month, newest-on-top inside each. The
-convention and the field list are in `journal/README.md`.
+`journal/README.md` and the `journal/YYYY-MM.md` files it describes ship with
+the opt-in workflow layer (`init --layer workflow`) — a Core-only rig has
+neither. Where they exist: one journal file per month, newest-on-top inside
+each; the convention and the field list are in `journal/README.md`.
 
 The heading here is deliberately **not** `## Journal`: a pointer under that name
 still sends a session into this file to look, and keeping this file small is the
-point. `plan-md.mjs` resolves the two queue headings above by name and is not
-affected either way.
+point. `plan-md.mjs` (workflow layer) resolves the two queue headings above by
+name and is not affected either way.

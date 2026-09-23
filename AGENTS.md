@@ -5,16 +5,22 @@
 
 ## One operating system, two harnesses
 
-This rulebook serves both Claude Code and Codex. The generator authors it as
-`CLAUDE.md` and publishes the same text as `AGENTS.md`, so neither harness gets
-a weaker policy. The `.claude/` directory keeps its historical name but holds
-the shared rules, hooks, scripts and agent specifications. Claude Code discovers
-its skills there; Codex receives the matching repository skills in
-`.agents/skills/` and its native agent and hook configuration in `.codex/`.
+This rulebook serves both Claude Code and Codex. `AGENTS.md` — this file — is
+the canonical, provider-neutral source: the generator authors the rulebook
+once, here. `CLAUDE.md` next to it is a short compatibility shim: an
+`@AGENTS.md` import plus anything genuinely specific to Claude Code. The shim
+exists because Claude Code's own native `AGENTS.md` reading is not always
+active — it depends on the Claude Code version and configuration in use, and
+is off in some sessions entirely — never because this file stopped being the
+source of truth (`docs/decisions/agents-md-canonical.md`). The `.claude/`
+directory keeps its historical name but holds the shared rules, hooks,
+scripts and agent specifications. Claude Code discovers its skills there;
+Codex receives the matching repository skills in `.agents/skills/` and its
+native agent and hook configuration in `.codex/`.
 
-This repository runs under an agent operating system. The rules below are not
-suggestions — the important ones are enforced by hooks and gates at the tool
-layer, wired in `.claude/settings.json`.
+This repository runs under an agent operating system. The important enforceable
+rules are handled by hooks at the tool layer; review gates are session-run checks
+required by the workflow. The hooks are wired in `.claude/settings.json`.
 
 ## What was installed here, and what was not
 
@@ -29,12 +35,20 @@ wrong.
 .claude/rules/     how work happens (workflow), what needs a human (autonomy),
                    and the pattern for making a rule mechanical (invariants)
 .claude/hooks/     the checks that refuse a violation at the tool layer
-.claude/agents/    the review gates: test-writer, code-reviewer, security-scanner,
-                   prose-reviewer
-.claude/skills/    the drivers: loop, pr-ship, worktree-task, new-invariant,
-                   check-premises
-.claude/scripts/   the queue adapter, the preflight, the out-of-band sweeps
+.claude/agents/    the TDD roles test-writer and implementation-agent, the
+                   diagnostic role failure-diagnostician, and the review gates
+                   code-reviewer, security-scanner, prose-reviewer
+.claude/skills/    the drivers: worktree-task, new-invariant, check-premises,
+                   skill-authoring, diagnose — loop, pr-ship, plan-slices and
+                   release-propose ship only with the opt-in workflow layer
+.claude/scripts/   git-env, doctor, the verdict/gate-coverage checker, the
+                   kill switch and the unattended-flag guard
 ```
+
+This is Lean Core, installed by every `init`/`create` — never conditioned on an
+autonomous session existing. A second, **experimental and opt-in** layer adds
+autonomous, cooperative multi-session workflow governance on top of it; see
+"The opt-in workflow layer" below.
 
 **The architecture rules of this project are yours to write.** When this repo
 has a boundary worth stating — a layer that must not import another, a module
@@ -86,8 +100,7 @@ it a hook via the `new-invariant` skill.
   production deploy, a filesystem wipe — and carries the kill switch;
   `gate-stop-dod` refuses to end the session while a Definition-of-Done check
   fails; `inject-rules` puts the autonomy rules back in front of the agent at
-  the start of every session, minus the parts that file marks as reference. If a hook blocks you, fix the cause; never route
-  around a hook.
+  the start of every session, minus the parts that file marks as reference. If a hook blocks you, fix the cause; never route around a hook.
 - **Enforcement is a pattern you can apply again.** Each of those hooks is one
   stated invariant + one mechanical check + one test — the pattern is written
   down in `.claude/rules/invariants.md`, and the `new-invariant` skill walks you
@@ -107,6 +120,57 @@ it a hook via the `new-invariant` skill.
   the third. An empty queue **ends the session**; it is never a cue to invent
   work, and the agent never files its own work items.
 
+## The opt-in workflow layer — installed here
+
+Rig 0.10.0 split the install in two: Lean Core (rules, gates, stop rules, the
+review-gate agents and their hooks) and an experimental, opt-in workflow layer
+(`init --layer workflow`). This repository was installed before the split; `upgrade`
+read its manifest's missing `layers` key as "every layer" and now records
+`"layers": ["process", "workflow"]` in `.claude/.rig-manifest.json` — so it
+has, and keeps, the workflow layer: the queue adapter and `loop`, the
+`pr-ship` skill, `decision-router.mjs`, `detect-missed-gate.mjs`,
+`reconcile-external-prs.mjs`, `run-state.mjs`, the run journal, revalidation
+and claim-records. Where a rig file says "workflow layer only", it applies here.
+
+**One project overlay on the `loop` skill: the close step passes `ticket`
+(AIC-70).** Both `loop/SKILL.md` copies are the release's bytes, so `upgrade`
+keeps refreshing them; this repository's addition to them lives here instead.
+When the close step runs `recordCompletedTier({ … })` from
+`.claude/scripts/queue/state.mjs`, **add `ticket: "<item-id>"` to that call.**
+The item's own `.rig/claims/<item-id>.json` then stops spacing the next item and
+is still named in `elevatedPaths` — `test/queue-tier-spacing.test.mjs` › "does
+not space the next item when the only elevated path is the task's own claim
+record" and › "still names the claim record in elevatedPaths, because the gate
+asks a different question". ⚠ **Only the id's shape is checked.** Any
+well-formed id excludes the record it names (› "accepts the id shapes every
+adapter in this rulebook emits"), so an id that is well-formed but not this
+item's excludes that other record, and nothing reports it — the caller owns
+which item it is closing. An id the module cannot recognise is named back as
+`ticketIgnored` — › "records a conservative tier for an id it cannot recognise,
+and never leaves the ration unwritten".
+
+⚠ **`npx create-agent-rig doctor` reports `workflow: fail` in this repository,
+and that is expected.** That check compares every `.claude/scripts/` file the
+release installs with the release's bytes, and one of them is ours: `.claude/scripts/queue/state.mjs`
+carries AIC-70's claim-record exclusion (`test/queue-tier-spacing.test.mjs` ›
+"does not space the next item when the only elevated path is the task's own
+claim record"). Reverting the file to the release bytes would make the doctor
+pass and that test fail. The local `node .claude/scripts/doctor.mjs` audits
+hooks, not scripts, and reports GO.
+
+**A queue claim is advisory, not a lock.** Selecting an item through the
+adapter records that a session took it up; nothing about the mechanism is
+transactional, and nothing prevents two sessions from claiming the same item
+— that is exactly why distributed multi-controller execution stays
+experimental. Board status remains task authority the same way it always
+was: this layer reads and writes it, it does not arbitrate it. Git/worktree/PR
+remains code authority regardless of whether this layer is installed.
+
+Revalidation and claim-records carry their own freeze, independent of this
+layer's experimental status: their behavior does not change before the date
+`docs/decisions/workflow-layer-split.md` records, and an install of this layer
+may only relocate them, never alter what they do.
+
 ## What this install left for you to finish — and what is now done
 
 `init` ships this section as four open items. Two of them are closed in this
@@ -122,10 +186,18 @@ finished entries cannot be checked against the repo.
    one now installed.
 2. ⬜ **The elevated-path list below is a seed, not a survey.** It names only what
    every repo has. Everything else is yours to add — this one never closes.
-3. ✅ **Five runtime paths need a `.gitignore` line each**, and `init` cannot add
-   them — it installs into your repository and does not edit files it did not
-   bring. All five are present here. If you are reading this in a fresh rig, add
-   the missing entries:
+3. ✅ **Five runtime paths need a `.gitignore` line each** — one always, four
+   because the workflow layer is installed — and `init` cannot add them: it
+   installs into your repository and does not edit files it did not bring. All
+   five are present here. If you are reading this in a fresh rig, add the
+   missing entries:
+
+   ```
+   # task worktrees (Core — the worktree-task skill)
+   .claude/worktrees/
+   ```
+
+   With the workflow layer, also add:
 
    ```
    # the tier the last close recorded
@@ -134,8 +206,6 @@ finished entries cannot be checked against the repo.
    .claude/queue.board
    # gate rounds, one count per branch
    .claude/gate-rounds.json
-   # task worktrees
-   .claude/worktrees/
    # the run journal's per-run trace
    .claude/runs/
    ```
@@ -144,14 +214,15 @@ finished entries cannot be checked against the repo.
    pattern and the line then ignores nothing. It fails silently — you find out
    when the file lands in a commit.
 
-   The first one matters more than it looks. It is how the loop rations the
-   elevated tier — never two elevated items back to back, where the tier that
-   spaces is the one that EXECUTES (a close whose elevated paths are all
-   documents records `elevated-prose` and clears the ration) — and it is
-   **per-checkout state, not shared configuration**. Committed, one machine's
-   tier starts deciding another's, and a merge conflict lands in a file nobody
-   edited on purpose. `.claude/queue.json` is the opposite: that one is
-   configuration and belongs in the repository.
+   **`.claude/queue.state.json` (workflow layer only) matters more than it
+   looks.** It is how the `loop` skill rations the elevated tier — never two
+   elevated items back to back, where the tier that spaces is the one that
+   EXECUTES (a close whose elevated paths are all documents records
+   `elevated-prose` and clears the ration) — and it is **per-checkout state,
+   not shared configuration**. Committed, one machine's tier starts deciding
+   another's, and a merge conflict lands in a file nobody edited on purpose.
+   `.claude/queue.json` is the opposite: that one is configuration, ships only
+   with the workflow layer too, and belongs in the repository.
 
 4. ⬜ **`doctor` reads two files `init` does not ship.**
    `node .claude/scripts/doctor.mjs` decides who owns each hook from
@@ -165,9 +236,12 @@ finished entries cannot be checked against the repo.
 ## The elevated paths of this project
 
 Tier 2 in `.claude/rules/autonomy.md` names *kinds* of change. This block names
-the **paths** in this repository where those kinds live, and
-`.claude/scripts/detect-missed-gate.mjs` reads it — so a path that is not declared
-is a path the gate sweep cannot see.
+the **paths** in this repository where those kinds live. **Where the opt-in
+workflow layer is installed** (`init --layer workflow`),
+`.claude/scripts/detect-missed-gate.mjs` reads it — so a path that is not
+declared is a path the gate sweep cannot see; without that layer, this list
+is what a human (or a session asked to check) applies by hand instead — the
+rule does not change with or without the script.
 
 ```elevated-paths
 .claude/
@@ -175,6 +249,7 @@ is a path the gate sweep cannot see.
 .codex/
 .rig/
 AGENTS.md
+CLAUDE.md
 .github/workflows/
 ```
 

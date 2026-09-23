@@ -63,7 +63,7 @@ const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * because of what the work touched.
  *
  * Every task writes `.rig/claims/<ticket>.json` — the `loop` skill requires the
- * record, and `CLAUDE.md` declares the whole of `.rig/` elevated. So before
+ * record, and `AGENTS.md` declares the whole of `.rig/` elevated. So before
  * AIC-70 every close recorded `elevated-mechanism`, and a ration that fires on
  * every item spaces nothing: it is indistinguishable from a ration that is off
  * (`see test/queue-tier-spacing.test.mjs › "spaces the next item when no ticket
@@ -214,7 +214,7 @@ export const recordCompletedTier = ({
   if (!declared || declared.length === 0) {
     throw new Error(
       'nothing in this project declares an elevated path, so no tier can be ' +
-        'computed: add an `elevated-paths` block to CLAUDE.md or a rule file. ' +
+        'computed: add an `elevated-paths` block to AGENTS.md or a rule file. ' +
         'Treating the absence as `normal` would ration on a declaration that ' +
         'does not exist.',
     );
@@ -236,7 +236,7 @@ export const recordCompletedTier = ({
   // and silently relocating it would make it useless.
   //
   // Note the asymmetry, which is deliberate: the DECLARATION is read from the
-  // given `projectRoot` (the worktree's own `CLAUDE.md` is the rulebook the
+  // given `projectRoot` (the worktree's own `AGENTS.md` is the rulebook the
   // change was written against), while the STATE goes to the checkout that
   // outlives the task.
   const file = statePath ?? join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json');

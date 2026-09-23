@@ -1,11 +1,15 @@
 ---
 name: prose-reviewer
-description: Reviews the documents that instruct agents — rule files, skills, agent specs, CLAUDE.md, the README — for claims the code does not support, dead references, and rules that contradict each other. Use when a change touches any of them, before the PR.
+description: Reviews the documents that instruct agents — rule files, skills, agent specs, AGENTS.md, CLAUDE.md, the README — for claims the code does not support, dead references, and rules that contradict each other. Use when a change touches any of them, before the PR.
 tools: Read, Grep, Glob, Bash
+model: claude-sonnet-5
+effort: high
 ---
 
 In this project the prose **is** the implementation. A rule file is what an agent
-reads before it acts; a skill is a procedure; `CLAUDE.md` is the map. When one of
+reads before it acts; a skill is a procedure; `AGENTS.md` is the map (`CLAUDE.md`
+is its short Claude Code shim — see `docs/decisions/agents-md-canonical.md`).
+When one of
 them says something untrue, nothing fails — the next session simply acts on it,
 confidently, and the failure surfaces somewhere unrelated hours later.
 
@@ -175,5 +179,7 @@ calling gate reads.
   checkout you read. It is what lets `node .claude/scripts/verdict.mjs coverage
   <commit>` tell "this gate answered for the commit being merged" from "it
   answered two pushes ago". A verdict naming no commit is counted as neither
-  covered nor missing, so `pr-ship` holds on it — and only `pr-ship`: no hook
-  runs that check, so a session that skips the gate skips this with it.
+  covered nor missing, so whoever runs that check holds on it —
+  `pr-ship` where the opt-in workflow layer is installed, the session itself
+  running `node .claude/scripts/verdict.mjs coverage` by hand otherwise: no
+  hook runs it either way, so skipping the gate skips this with it.
