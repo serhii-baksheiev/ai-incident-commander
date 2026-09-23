@@ -803,6 +803,9 @@ Live scenarios use isolated ephemeral compose projects or equivalent reset-safe 
 - SAFE_WRITE;
 - action outcome becomes new Evidence.
 
+v0.3 connects AIC to the systems it investigates as a standalone service, scoped
+by Service × Environment: [ADR 0001](adr/0001-standalone-integration-boundary.md).
+
 ### v0.4 — Knowledge
 
 RAG over runbooks, ADRs and postmortems as a controlled variable using `docsAvailable` and `knowledgeSetVersion`.
