@@ -1,0 +1,159 @@
+import { Pool } from 'pg';
+
+/**
+ * The application's own schema — see `index.ts`'s module doc for why it is
+ * named separately from the checkpointer's (`CHECKPOINTER_SCHEMA`).
+ */
+export const APPLICATION_SCHEMA = 'aic_app' as const;
+
+/**
+ * The migration version this build's `APPLICATION_MIGRATIONS` reach — one
+ * version per entry below, applied in order. AIC-56 slice B ships exactly one:
+ * the `runs` table and the ledger that records it.
+ */
+export const APP_SCHEMA_VERSION = 1 as const;
+
+interface ApplicationMigration {
+  readonly version: number;
+  readonly sql: string;
+}
+
+/**
+ * The ordered migrations `setupApplicationSchema` applies, each exactly once,
+ * inside one transaction (see that function below).
+ *
+ * The `status` CHECK constraint lists the domain's `RUN_STATUSES` as literal
+ * SQL text rather than generating it: a migration never changes after it
+ * ships, so it cannot read a constant that might change under it. The two are
+ * kept equal instead by a correspondence test in both directions
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
+ * run-store.test.mjs › "the migration's status CHECK constraint lists exactly
+ * RUN_STATUSES".
+ *
+ * The second CHECK constraint is decision 4 of
+ * `docs/decisions/durable-run-execution.md` ("waiting for a human owns no
+ * worker") and its `running` counterpart ("running always holds a lease"),
+ * enforced by the database itself rather than only by this package's
+ * TypeScript — see infra/postgres/tests/run-store.live.mjs › "the database
+ * rejects a waiting_human row with an owner or lease, and a running row
+ * without them".
+ */
+export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.freeze([
+  Object.freeze({
+    version: 1,
+    sql: `
+      CREATE SCHEMA IF NOT EXISTS "aic_app";
+
+      CREATE TABLE IF NOT EXISTS "aic_app".runs (
+        run_id text PRIMARY KEY,
+        status text NOT NULL CHECK (status IN ('queued', 'running', 'waiting_human', 'completed', 'failed')),
+        input jsonb NOT NULL,
+        owner_worker_id text,
+        lease_expires_at timestamptz,
+        heartbeat_at timestamptz,
+        execution_attempt integer NOT NULL DEFAULT 0,
+        recovery_count integer NOT NULL DEFAULT 0,
+        terminal_reason text,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        CONSTRAINT runs_lease_ownership_check CHECK (
+          (status <> 'waiting_human' OR (owner_worker_id IS NULL AND lease_expires_at IS NULL))
+          AND (status <> 'running' OR (owner_worker_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+        )
+      );
+    `,
+  }),
+]);
+
+/**
+ * A transaction-scoped advisory lock key, held only for the duration of
+ * `setupApplicationSchema`'s own transaction (`pg_advisory_xact_lock` releases
+ * automatically at COMMIT or ROLLBACK — no unlock call is needed or correct
+ * here). It is what makes two concurrent `setupApplicationSchema` calls safe:
+ * without it, two sessions racing `CREATE SCHEMA IF NOT EXISTS` /
+ * `CREATE TABLE IF NOT EXISTS` can both pass the "if not exists" check before
+ * either commits and then collide on PostgreSQL's own catalog uniqueness — a
+ * well-known race with the "if not exists" forms, not a hypothetical one.
+ * Nothing else in this package takes a lock by this key.
+ */
+const SCHEMA_SETUP_LOCK_KEY = 847_361_209;
+
+/**
+ * Provisions the `aic_app` schema: creates it if absent, creates the
+ * migration ledger if absent, and applies every entry of
+ * `APPLICATION_MIGRATIONS` not yet recorded in it — all inside one
+ * transaction, so a failure partway through leaves nothing half-applied.
+ * Idempotent: calling it again applies nothing new and still succeeds. See
+ * infra/postgres/tests/run-store.live.mjs › "setupApplicationSchema is
+ * idempotent, and assertApplicationSchemaVersion then matches".
+ *
+ * Opens and closes its own pool: unlike `createRunStore`, this is a one-shot
+ * provisioning step with no lifecycle for a caller to hold onto.
+ */
+export async function setupApplicationSchema(connectionString: string): Promise<void> {
+  const pool = new Pool({ connectionString });
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      try {
+        await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_SETUP_LOCK_KEY]);
+        await client.query(`CREATE SCHEMA IF NOT EXISTS "${APPLICATION_SCHEMA}"`);
+        await client.query(
+          `CREATE TABLE IF NOT EXISTS "${APPLICATION_SCHEMA}".schema_migrations (
+             version integer PRIMARY KEY,
+             applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
+           )`,
+        );
+        for (const migration of APPLICATION_MIGRATIONS) {
+          const { rows } = await client.query(
+            `SELECT 1 FROM "${APPLICATION_SCHEMA}".schema_migrations WHERE version = $1`,
+            [migration.version],
+          );
+          if (rows.length === 0) {
+            await client.query(migration.sql);
+            await client.query(`INSERT INTO "${APPLICATION_SCHEMA}".schema_migrations (version) VALUES ($1)`, [
+              migration.version,
+            ]);
+          }
+        }
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
+/**
+ * What the seam reads from: anything that can answer one query — the same
+ * structural-port convention `CheckpointerVersionSource` follows in
+ * `index.ts`, for the same reason (the library, here `pg.Pool`, is not
+ * imported into this module's public type surface).
+ */
+export interface ApplicationSchemaVersionSource {
+  query(sql: string): Promise<{ rows: Array<{ v: number | null }> }>;
+}
+
+/**
+ * The `schemaVersion` validation seam for the application schema, mirroring
+ * `assertCheckpointerSchemaVersion` in `index.ts`: it refuses loudly on a
+ * version this build was not written against and does nothing else — no
+ * migration, no repair. See run-store.test.mjs › "assertApplicationSchemaVersion
+ * refuses a mismatched and a missing version on a fake source, and accepts the
+ * current one".
+ */
+export async function assertApplicationSchemaVersion(source: ApplicationSchemaVersionSource): Promise<void> {
+  const { rows } = await source.query(`select max(version) as v from "${APPLICATION_SCHEMA}".schema_migrations`);
+  const applied = rows[0]?.v ?? null;
+
+  if (applied !== APP_SCHEMA_VERSION) {
+    throw new Error(
+      `the application schema "${APPLICATION_SCHEMA}" is at migration version ${applied}, and this build expects ${APP_SCHEMA_VERSION}: refusing before execution rather than reading a store written by a different application schema`,
+    );
+  }
+}

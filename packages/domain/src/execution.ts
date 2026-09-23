@@ -174,9 +174,8 @@ interface ExecutionOperationDefinition {
 }
 
 const TOOL_TRIAL_PARTS_ORDER = Object.freeze(['runId', 'testId', 'trialAttempt'] as const);
-// A Trial attempt counts from 1, as every producer of `attempt` writes it; see
-// durable-execution-contract.test.mjs › "buildExecKey refuses trialAttempt 0:
-// a Trial attempt counts from 1".
+// A Trial attempt counts from 1; see durable-execution-contract.test.mjs ›
+// "buildExecKey refuses trialAttempt 0: a Trial attempt counts from 1".
 const TOOL_TRIAL_PARTS_SCHEMA = z.strictObject({
   runId: z.string().min(1),
   testId: z.string().min(1),
@@ -254,7 +253,14 @@ const EXEC_KEY_TUPLE_VERSION = 1 as const;
  * fails that operation's schema.
  */
 export function buildExecKey(op: string, parts: unknown): string {
-  if (!Object.hasOwn(EXECUTION_OPERATIONS, op)) {
+  // `Object.hasOwn` coerces its key argument through `ToPropertyKey`, which
+  // calls a non-string value's own `toString()` - so this must run BEFORE
+  // that call, or an object whose `toString()` returns a registered
+  // operation name would be read as that operation instead of refused. See
+  // durable-execution-contract.test.mjs › "buildExecKey refuses a non-string
+  // op, without coercing it through ToPropertyKey into a registered
+  // operation name".
+  if (typeof op !== 'string' || !Object.hasOwn(EXECUTION_OPERATIONS, op)) {
     throw new Error(`unknown execution operation: ${echoed(op)}`);
   }
   const definition = (EXECUTION_OPERATIONS as Record<string, ExecutionOperationDefinition>)[op]!;
