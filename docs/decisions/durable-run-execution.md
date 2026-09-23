@@ -93,6 +93,26 @@ carry?**
     mechanism; AIC-42 productionizes the policy, unless correctness needs a
     minimal primitive now.
 
+## Run lifecycle
+
+A run has five statuses — `queued`, `running`, `waiting_human`, `completed`,
+`failed` — the ones AIC-56's scope names. These are the only transitions
+between them; `completed` and `failed` are terminal.
+
+| From | To | When |
+| --- | --- | --- |
+| `queued` | `running` | a worker claims the run and takes its lease (decision 3) |
+| `queued` | `failed` | the run has used its bounded execution attempts (decision 13) |
+| `running` | `waiting_human` | the run pauses for a human and releases its lease (decision 4) |
+| `running` | `completed` | the run reaches its terminal result |
+| `running` | `failed` | the run ends in a terminal failure |
+| `running` | `queued` | the lease expired and the sweeper returns the run for another worker (decisions 2 and 3) |
+| `waiting_human` | `queued` | the human answers and the run waits for a worker again (decision 4) |
+
+The domain enforces the same table (`assertRunTransition` in
+`packages/domain/src/execution.ts`), and the two are kept equal by
+durable-run-execution-adr.test.mjs › "states the run lifecycle as a table that matches the domain transitions in both directions"
+
 ## Consequences
 
 - AIC-56 builds the smallest substrate that proves these semantics on local

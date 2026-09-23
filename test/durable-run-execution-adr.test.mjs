@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
+import * as domain from '@aic/domain';
+
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const adrPath = join(projectRoot, 'docs', 'decisions', 'durable-run-execution.md');
 const readAdr = () => readFileSync(adrPath, 'utf8');
@@ -84,5 +86,49 @@ test('keeps production policy and deferred infrastructure out of scope', () => {
     ['a production UI', /production UI/],
   ]) {
     assert.match(consequences, pattern, `the Consequences section must keep out of scope: ${item}`);
+  }
+});
+
+/**
+ * The run lifecycle has two spellings — the record's "Run lifecycle" table,
+ * which a reader checks the design against, and the domain's
+ * `assertRunTransition`, which the substrate enforces — so this row is the
+ * correspondence check between them, red in either direction: a transition the
+ * table lists that the domain refuses, and one the domain allows that the table
+ * does not list (`.claude/rules/invariants.md`, "One mechanism, one
+ * implementation").
+ */
+test('states the run lifecycle as a table that matches the domain transitions in both directions', () => {
+  const adr = readAdr();
+  const start = adr.indexOf('\n## Run lifecycle\n');
+  assert.notEqual(start, -1, 'the record must carry a "## Run lifecycle" section');
+  const body = adr.slice(start + 1).split(/\n## /)[0];
+  const rows = body
+    .split('\n')
+    .filter((line) => /^\|\s*`/.test(line))
+    .map((line) => line.split('|').map((cell) => cell.trim()));
+  const documented = new Set(
+    rows.map((cells) => `${cells[1].replaceAll('`', '')}->${cells[2].replaceAll('`', '')}`),
+  );
+  assert.ok(documented.size > 0, 'the Run lifecycle table must list transitions as `from` | `to` rows');
+
+  const statuses = [...domain.RUN_STATUSES];
+  for (const pair of documented) {
+    const [from, to] = pair.split('->');
+    assert.ok(statuses.includes(from) && statuses.includes(to), `${pair} names a status the domain does not have`);
+    assert.doesNotThrow(() => domain.assertRunTransition(from, to), `the record lists ${pair}; the domain refuses it`);
+  }
+  for (const from of statuses) {
+    for (const to of statuses) {
+      let allowed = true;
+      try {
+        domain.assertRunTransition(from, to);
+      } catch {
+        allowed = false;
+      }
+      if (allowed) {
+        assert.ok(documented.has(`${from}->${to}`), `the domain allows ${from}->${to}; the record does not list it`);
+      }
+    }
   }
 });
