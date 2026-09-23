@@ -96,9 +96,10 @@ consumer; AIC owns only its own records about them.
 
 Removing an Environment, or a Service with all its Environments, deletes what
 lets AIC act on it — its SourceBindings, its ActionPolicy and its
-CredentialRefs — from the active registry, and releases the secret each
-CredentialRef pointed to (AIC-99, acceptance 5). Nothing can then select, check
-or use them.
+CredentialRefs — from the active registry (AIC-99, acceptance 5). Nothing can
+then select, check or use them. What becomes of the secret a removed
+CredentialRef named — revoking it in the secret backend — is part of the
+credential lifecycle AIC-46 owns, and this record does not decide it.
 
 What audits the past is kept: incidents, runs, Evidence and action history,
 under the audit rules AIC-99 preserves and AIC-46 hardens. Deleting them would
@@ -145,6 +146,8 @@ must use them exactly as written here:
 The planned onboarding commands (AIC-99) use the same nouns:
 `aic service add`, `aic env add`, `aic source add`, `aic source check`,
 `aic policy set`, `aic incident start`, plus `aic doctor` and `aic apply -f`.
+The existing `aic start` persistence spike is not one of them; AIC-99's scope
+moves it behind an explicit development-only command.
 
 ## Consequences
 

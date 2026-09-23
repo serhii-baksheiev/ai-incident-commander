@@ -66,6 +66,7 @@ test('makes ownership, the trust boundary, removal semantics and the connector t
 
   const removal = section(adr, 'Removal semantics');
   assert.match(removal, /SourceBindings[\s\S]*?ActionPolicy[\s\S]*?CredentialRefs/, 'removal must name the bindings, the policy and the credential references it removes');
+  assert.match(removal, /deletes[\s\S]*?from the active registry/i, 'removal must say the bindings, policy and credential references leave the active registry, not merely change state');
   assert.match(removal, /audit/i, 'removal must say what audits the past is kept');
 
   const triggers = section(adr, 'Connector triggers');
