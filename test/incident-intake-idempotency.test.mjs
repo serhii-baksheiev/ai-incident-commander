@@ -188,3 +188,23 @@ test('refuses a startedAt without an offset', () => {
   const intake = intakeFixture({ startedAt: '2026-09-23T10:00:00' });
   assert.equal(domain.IncidentIntakeSchema.safeParse(intake).success, false);
 });
+
+test('refuses to derive a window key from a startedAt it cannot parse', () => {
+  const intake = { ...intakeFixture(), startedAt: 'not-a-date' };
+  delete intake.externalRef;
+  delete intake.idempotencyKey;
+  assert.throws(
+    () => domain.deriveIdempotencyKey(intake),
+    /startedAt/,
+    'an unparseable startedAt would put every such intake in one scope on one key; it must be refused instead',
+  );
+});
+
+test('never stores a caller idempotencyKey raw', () => {
+  const raw = 'caller-raw-key-0042';
+  const intake = { ...intakeFixture(), idempotencyKey: raw };
+  const incident = domain.incidentFromIntake(intake, { id: randomUUID() });
+  assert.match(incident.idempotencyKey, /^sha256:[0-9a-f]{64}$/);
+  assert.notEqual(incident.idempotencyKey, raw);
+  assert.equal(JSON.stringify(incident).includes(raw), false, 'the raw caller key appears nowhere in the stored incident');
+});

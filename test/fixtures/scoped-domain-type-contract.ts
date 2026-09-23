@@ -31,6 +31,7 @@ import type {
   CredentialRef,
   Environment,
   IncidentIntake,
+  IntakeDerivedIncident,
   PrimaryScope,
   RegistrySnapshot,
   Service,
@@ -130,3 +131,17 @@ void credentialRefWithValue;
 void registry;
 void intake;
 void intakeWithoutScope;
+
+// The return type of incidentFromIntake is nameable by its consumers.
+const derived: IntakeDerivedIncident = {
+  id: '4f1d3b52-5b8e-4a55-9f0e-1c2d3e4f5a6b',
+  primaryScope: {
+    serviceId: '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d',
+    environmentId: '0d9c8b7a-6f5e-4d3c-8b2a-1f0e9d8c7b6a',
+  },
+  title: 'Checkout failures',
+  startedAt: '2026-09-23T10:00:00Z',
+  signals: [],
+  idempotencyKey: 'sha256:46aa26c9d8e0ce395d20830fe78153816d986250019ce85e843d5dcfd9bf0cf9',
+};
+void derived;

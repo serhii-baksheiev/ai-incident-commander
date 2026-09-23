@@ -484,3 +484,57 @@ test('the domain package imports only zod, node:crypto and its own modules', () 
     `packages/domain/src must import only zod, node:crypto or its own modules:\n${offenders.join('\n')}`,
   );
 });
+
+test('states its limit: a read and a write CredentialRef in different Environments may name one secret', () => {
+  const base = twoEnvironmentRegistry();
+  const candidate = structuredClone(base);
+  const readA = candidate.credentialRefs.find((ref) => ref.id === credentialReadA);
+  const writeB = candidate.credentialRefs.find((ref) => ref.id === credentialWriteB);
+  writeB.secretName = readA.secretName;
+
+  assert.equal(
+    domain.RegistrySnapshotSchema.safeParse(candidate).success,
+    true,
+    'the read/write secret-collision refusal is scoped to one Environment; across Environments it is accepted',
+  );
+  const source = readFileSync(resolve(projectRoot, 'packages/domain/src/scope.ts'), 'utf8');
+  assert.match(
+    source,
+    /scoped-domain-contract\.test\.mjs › "states its limit: a read and a write CredentialRef in different Environments may name one secret"/,
+    'scope.ts must state the Environment scoping of that refusal and point at this row',
+  );
+});
+
+test('names the offending writeCredentialRefIds element and why it is refused', () => {
+  const base = twoEnvironmentRegistry();
+  const candidate = structuredClone(base);
+  const policy = candidate.actionPolicies.find((entry) => entry.environmentId === environmentA);
+  const policyIndex = candidate.actionPolicies.indexOf(policy);
+  policy.writeCredentialRefIds = [credentialWriteA, credentialReadA, credentialWriteB, randomUUID()];
+
+  const result = domain.RegistrySnapshotSchema.safeParse(candidate);
+  assert.equal(result.success, false);
+  const byIndex = new Map(
+    result.error.issues
+      .filter((issue) => issue.path[0] === 'actionPolicies' && issue.path[2] === 'writeCredentialRefIds')
+      .map((issue) => [issue.path[3], issue.message]),
+  );
+  assert.deepEqual([...byIndex.keys()].sort(), [1, 2, 3], 'each refused element is named by its own index');
+  assert.match(byIndex.get(1), /read/i, 'element 1 is refused for being a read credential');
+  assert.match(byIndex.get(2), /Environment/, 'element 2 is refused for belonging to another Environment');
+  assert.match(byIndex.get(3), /known/i, 'element 3 is refused for naming no CredentialRef at all');
+  assert.equal(result.error.issues.every((issue) => issue.path[1] === policyIndex || issue.path[0] !== 'actionPolicies'), true);
+});
+
+test('refuses one Service listing the same repository alias twice, and says so', () => {
+  const base = twoEnvironmentRegistry();
+  const candidate = structuredClone(base);
+  const first = candidate.services[0];
+  first.repositoryAliases = [...first.repositoryAliases, first.repositoryAliases[0]];
+
+  const result = domain.RegistrySnapshotSchema.safeParse(candidate);
+  assert.equal(result.success, false);
+  const aliasIssue = result.error.issues.find((issue) => issue.path[2] === 'repositoryAliases');
+  assert.ok(aliasIssue, 'the duplicate alias is refused at its own path');
+  assert.doesNotMatch(aliasIssue.message, /another Service/, 'a duplicate inside one Service must not be reported as another Service using it');
+});
