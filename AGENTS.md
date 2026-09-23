@@ -137,19 +137,17 @@ and claim-records. Where a rig file says "workflow layer only", it applies here.
 keeps refreshing them; this repository's addition to them lives here instead.
 When the close step runs `recordCompletedTier({ … })` from
 `.claude/scripts/queue/state.mjs`, **add `ticket: "<item-id>"` to that call.**
-Every task writes its own `.rig/claims/<item-id>.json` because the procedure
-requires it, and `.rig/` is elevated here; with `ticket`, that one record stops
-spacing the next item and is still named in `elevatedPaths` —
-`test/queue-tier-spacing.test.mjs` › "does not space the next item when the only
-elevated path is the task's own claim record" and › "still names the claim
-record in elevatedPaths, because the gate asks a different question". Without
-it, the ration fires on every close — › "spaces the next item when no ticket is
-given, rather than guessing". Only the item's own record is excluded — ›
-"spaces the next item for a claim record that is not this task's". An id the
-module cannot recognise applies no exclusion and comes back as `ticketIgnored`
-(› "records a conservative tier for an id it cannot recognise, and never leaves
-the ration unwritten"); an empty string is one of those ids, so read the field
-with `'ticketIgnored' in result`.
+The item's own `.rig/claims/<item-id>.json` then stops spacing the next item and
+is still named in `elevatedPaths` — `test/queue-tier-spacing.test.mjs` › "does
+not space the next item when the only elevated path is the task's own claim
+record" and › "still names the claim record in elevatedPaths, because the gate
+asks a different question". ⚠ **Only the id's shape is checked.** Any
+well-formed id excludes the record it names (› "accepts the id shapes every
+adapter in this rulebook emits"), so an id that is well-formed but not this
+item's excludes that other record, and nothing reports it — the caller owns
+which item it is closing. An id the module cannot recognise excludes nothing and
+is named back as `ticketIgnored` — › "applies no exclusion for an unrecognised
+id even when nothing else is elevated".
 
 ⚠ **`npx create-agent-rig doctor` reports `workflow: fail` in this repository,
 and that is expected.** That check compares every `.claude/scripts/` file the

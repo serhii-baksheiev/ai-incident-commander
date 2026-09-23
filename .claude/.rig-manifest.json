@@ -94,6 +94,7 @@
     ".rig/revalidation.json": "312b59f80fcbcf2897ef80fb54be236fb6b2b1745f705dae8e66c58f0bbd3099",
     "CLAUDE.md": "0fcaa12649bec7586fa0d38e1f8c213bf1fb2326f8debc8923f5085dcb4b9284",
     "docs/decisions/agents-md-canonical.md": "cc5fd1853cb4519767d0fd8915cbcedafff827dccef00d3535b094ce35e67f26",
+    "docs/decisions/closing-a-task.md": "650b379d2fc9e16dbb4113395ff08b8f96625069e21721133364191293fe3eea",
     "docs/decisions/codex-adapter.md": "5f6bd89f1ad57a080bb717595e0c31eb7fdbec593ea21aceaa4d69daa6647c37",
     "docs/decisions/content-blind-revalidation.md": "d640a152428ea4cc6a5f0a19be58e0d23f3a99c44b0ad0b72152ec7b48fe5bfd",
     "docs/decisions/fail-open-guards.md": "9408b59fdb7a0e93d8e6762bf5d76f1afd6d4b0942d9395155dab4cb42c1bf80",

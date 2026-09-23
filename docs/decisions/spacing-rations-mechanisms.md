@@ -84,8 +84,8 @@ did not before.
 drops inert paths *before* this classification runs, and a non-rulebook `.md` is
 inert — so `scripts/notes.md` under a declared directory records `normal`, not
 `elevated-prose`. In practice the only markdown that ever reaches the split is
-**rulebook** markdown: `CLAUDE.md` or `AGENTS.md` anywhere, everything under `.claude/`, and the
-decision records. That is pre-existing sweep behaviour, restated here because the
+**rulebook** markdown — the paths `isRulebook` in
+`.claude/scripts/detect-missed-gate.mjs` names. That is pre-existing sweep behaviour, restated here because the
 table above reads more broadly than the code behaves.
 
 The predicate is `executesNothing` — **`.md` only** — and it lives in
