@@ -15,10 +15,11 @@
  * like a different operation, which defeats the replay this registry exists
  * to make possible.
  *
- * No `action.*` operation is registered here: an operational action mutates
- * an external system and belongs to Safe Operations (AIC-20), not to this
- * registry of committed-result identities (docs/decisions/durable-run-execution.md,
- * "Consequences").
+ * No `action.*` operation is registered here: AIC-56 keeps external mutations
+ * outside ordinary nodes, owned by the Safe Operations action ledger (AIC-20),
+ * not by this registry of committed-result identities. See
+ * durable-execution-contract.test.mjs › "no operation name in the registry
+ * starts with action.".
  *
  * PostgreSQL, leases, heartbeats and workers do not belong in `packages/domain`
  * (the domain package imports only `zod`, `node:crypto` and its own modules).
@@ -84,7 +85,7 @@ function canonicalizeValue(value: unknown, ancestors: Set<object>): CanonicalJso
 
 /**
  * Canonicalizes a JSON-like value: object keys are sorted recursively and
- * array order is kept, so two values that differ only in key order canonicalize
+ * array order is kept, and every object in the result has a null prototype, so two values that differ only in key order canonicalize
  * identically. Refuses a value with no JSON representation - `undefined`
  * inside an object, a function, a bigint, a non-finite number, a circular
  * reference, a sparse array hole, or a non-plain-object prototype.
@@ -106,8 +107,19 @@ export function canonicalJson(value: unknown): CanonicalJson {
 // ---- Run status machine -----------------------------------------------------
 
 /**
- * The durable run's status machine (decision 2: a run is a first-class
- * durable record, independent of worker or process identity). Frozen - see
+ * A caller-supplied value as a refusal may echo it: quoted, escaped and cut to
+ * a bound, so a refusal never carries a raw newline or an unbounded string
+ * into a log. See durable-execution-contract.test.mjs › "bounds what a refusal
+ * echoes of the caller-supplied operation name and statuses".
+ */
+function echoed(value: unknown): string {
+  const text = String(value);
+  return JSON.stringify(text.length > 64 ? `${text.slice(0, 64)}…` : text);
+}
+
+/**
+ * The durable run's statuses, as the "Run lifecycle" table of
+ * docs/decisions/durable-run-execution.md states them. Frozen - see
  * durable-execution-contract.test.mjs › "RUN_STATUSES is exactly the five
  * documented statuses, frozen".
  */
@@ -116,13 +128,15 @@ export const RUN_STATUSES = Object.freeze(['queued', 'running', 'waiting_human',
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /**
- * The six transitions docs/decisions/durable-run-execution.md's decisions 2-4
- * allow: a claim, the three ways `running` ends or pauses, the sweeper's
- * lease-expiry requeue, and a resume request re-enqueuing a waiting run.
- * `completed` and `failed` are absorbing - no pair starting there is listed.
+ * The transitions of the "Run lifecycle" table in
+ * docs/decisions/durable-run-execution.md. `completed` and `failed` are
+ * absorbing - no pair starting there is listed. The record and this set are
+ * kept equal by durable-run-execution-adr.test.mjs › "states the run lifecycle
+ * as a table that matches the domain transitions in both directions".
  */
 const ALLOWED_RUN_TRANSITIONS: ReadonlySet<string> = new Set([
   'queued->running',
+  'queued->failed',
   'running->waiting_human',
   'running->completed',
   'running->failed',
@@ -131,22 +145,21 @@ const ALLOWED_RUN_TRANSITIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Refuses any run-status transition outside the six
- * `ALLOWED_RUN_TRANSITIONS` names. See durable-execution-contract.test.mjs ›
- * "assertRunTransition allows exactly the six documented transitions, against
- * a literal 5x5 table", › "completed and failed are absorbing: every
+ * Refuses any run-status transition outside `ALLOWED_RUN_TRANSITIONS`. See
+ * durable-execution-contract.test.mjs › "assertRunTransition allows exactly
+ * the seven documented transitions, against a literal 5x5 table", › "completed and failed are absorbing: every
  * transition out of them is refused" and › "assertRunTransition throws on an
  * unknown status on either side".
  *
  * @throws {Error} when `from` or `to` is not one of `RUN_STATUSES`, or the
- * pair is not one of the six allowed transitions.
+ * pair is not one of the allowed transitions.
  */
 export function assertRunTransition(from: string, to: string): void {
   if (!(RUN_STATUSES as readonly string[]).includes(from)) {
-    throw new Error(`unknown run status: ${from}`);
+    throw new Error(`unknown run status: ${echoed(from)}`);
   }
   if (!(RUN_STATUSES as readonly string[]).includes(to)) {
-    throw new Error(`unknown run status: ${to}`);
+    throw new Error(`unknown run status: ${echoed(to)}`);
   }
   if (!ALLOWED_RUN_TRANSITIONS.has(`${from}->${to}`)) {
     throw new Error(`run transition not allowed: ${from} -> ${to}`);
@@ -160,21 +173,24 @@ interface ExecutionOperationDefinition {
   readonly order: readonly string[];
 }
 
-const TOOL_TRIAL_PARTS_ORDER = ['runId', 'testId', 'trialAttempt'] as const;
+const TOOL_TRIAL_PARTS_ORDER = Object.freeze(['runId', 'testId', 'trialAttempt'] as const);
+// A Trial attempt counts from 1, as every producer of `attempt` writes it; see
+// durable-execution-contract.test.mjs › "buildExecKey refuses trialAttempt 0:
+// a Trial attempt counts from 1".
 const TOOL_TRIAL_PARTS_SCHEMA = z.strictObject({
   runId: z.string().min(1),
   testId: z.string().min(1),
-  trialAttempt: z.number().int().nonnegative(),
+  trialAttempt: z.number().int().positive(),
 });
 
-const MODEL_ROLE_PARTS_ORDER = [
+const MODEL_ROLE_PARTS_ORDER = Object.freeze([
   'runId',
   'role',
   'promptVersion',
   'iterationsUsed',
   'challengeRounds',
   'resumeCount',
-] as const;
+] as const);
 const MODEL_ROLE_PARTS_SCHEMA = z.strictObject({
   runId: z.string().min(1),
   role: z.string().min(1),
@@ -214,10 +230,12 @@ const EXEC_KEY_TUPLE_VERSION = 1 as const;
  * declared order])` with `node:crypto`'s `sha256`. Stable across the input
  * `parts` object's own key order, because the hashed tuple is built from the
  * registry's declared order, not from the input's insertion order. Refuses an
- * operation name outside `EXECUTION_OPERATIONS`, and refuses `parts` that are
- * missing a field, carry an extra field (including a worker-ownership field
- * such as `workerId`), or carry a field of the wrong type - each part schema
- * is a zod strict object, so any of those fails `safeParse`.
+ * operation name that is not an own key of `EXECUTION_OPERATIONS`, and
+ * refuses `parts` that are missing a field, carry an extra field (including a
+ * worker-ownership field such as `workerId`, and an own `__proto__` key), or
+ * carry a field of the wrong type. `parts` are read through `canonicalJson`
+ * first, so only the caller's own fields count - never one a prototype
+ * supplies - and then through the operation's zod strict object.
  *
  * See durable-execution-contract.test.mjs › "buildExecKey returns
  * <op>/sha256:<64 hex> for a valid tool.trial and model.role input", › "pins
@@ -227,20 +245,33 @@ const EXEC_KEY_TUPLE_VERSION = 1 as const;
  * collides between tool.trial and model.role", › "refuses an operation name
  * outside the registry", › "refuses a missing part", › "refuses an extra
  * part, including a worker-ownership field" and › "refuses a part of the
- * wrong type".
+ * wrong type", › "refuses an operation name the registry only inherits from
+ * Object.prototype", › "refuses a part that only a polluted Object.prototype
+ * supplies" and › "refuses an extra own __proto__ part rather than silently
+ * dropping it".
  *
  * @throws {Error} when `op` is not a key of `EXECUTION_OPERATIONS`, or `parts`
  * fails that operation's schema.
  */
 export function buildExecKey(op: string, parts: unknown): string {
-  const definition = (EXECUTION_OPERATIONS as Record<string, ExecutionOperationDefinition>)[op];
-  if (definition === undefined) {
-    throw new Error(`unknown execution operation: ${op}`);
+  if (!Object.hasOwn(EXECUTION_OPERATIONS, op)) {
+    throw new Error(`unknown execution operation: ${echoed(op)}`);
   }
+  const definition = (EXECUTION_OPERATIONS as Record<string, ExecutionOperationDefinition>)[op]!;
 
-  const parsed = definition.schema.safeParse(parts);
+  const canonicalParts = canonicalJson(parts);
+  // zod's strict object drops an own `__proto__` key instead of reporting it,
+  // so extra keys are checked against the registry's own list first.
+  if (canonicalParts !== null && typeof canonicalParts === 'object' && !Array.isArray(canonicalParts)) {
+    const extra = Object.keys(canonicalParts).filter((key) => !definition.order.includes(key));
+    if (extra.length > 0) {
+      throw new Error(`invalid parts for execution operation ${op}: unrecognized_keys`);
+    }
+  }
+  const parsed = definition.schema.safeParse(canonicalParts);
   if (!parsed.success) {
-    throw new Error(`invalid parts for execution operation ${op}: ${parsed.error.message}`);
+    const codes = parsed.error.issues.map((issue) => issue.code).join(', ');
+    throw new Error(`invalid parts for execution operation ${op}: ${codes}`);
   }
 
   const parsedParts = parsed.data as Record<string, unknown>;
