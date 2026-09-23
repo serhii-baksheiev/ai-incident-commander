@@ -11,6 +11,7 @@ import {
 import * as graphPackage from '@aic/graph';
 
 import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
 import { createSqliteCheckpointer } from '@aic/persistence';
 import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
 
@@ -155,7 +156,7 @@ const addedHypothesis = {
 
 function initialState(runId, humanReview) {
   return {
-    incident: { id: 'incident-hitl-review' },
+    incident: scopedIncident('incident-hitl-review'),
     hypotheses: [],
     predictions: [],
     tests: [],

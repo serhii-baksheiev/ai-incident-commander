@@ -14,6 +14,7 @@ import {
 import * as graphPackage from '@aic/graph';
 
 import { conclusionReviewDecisions } from './fixtures/conclusion-review-decisions.mjs';
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
 import {
   UnverifiableContainerError,
   createSqliteCheckpointer,
@@ -68,7 +69,7 @@ function reviewedRunNodes(trace, terminationCheck) {
 
 function initialState(runId, control = {}) {
   return {
-    incident: { id: 'incident-hitl-resume-contract' },
+    incident: scopedIncident('incident-hitl-resume-contract'),
     hypotheses: [],
     predictions: [],
     tests: [],

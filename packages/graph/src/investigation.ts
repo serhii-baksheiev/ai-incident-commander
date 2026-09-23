@@ -1258,9 +1258,22 @@ function assertLogicalBudgetCounters(control: IncidentStateControl): void {
  */
 function assertPersistedStateVersion(control: IncidentStateControl): void {
   if (control.schemaVersion !== INCIDENT_STATE_SCHEMA_VERSION) {
+    // A persisted version BELOW the current one is not merely stale: AIC-96
+    // made `incident.primaryScope` required, and no state written before that
+    // carries one — there is no value to invent that would not be a guess. So
+    // the message adds an actionable clause distinct from the generic mismatch
+    // above it, rather than leaving the caller to rediscover this by reading
+    // the schema history. see state-cutover.test.mjs › "refuses to resume a
+    // schema-version-3 checkpoint paused at the HITL interrupt, because it
+    // predates primaryScope"
+    const migrationClause =
+      control.schemaVersion < INCIDENT_STATE_SCHEMA_VERSION
+        ? ' State written before this version has no incident primaryScope and cannot be migrated without inventing one; start a new investigation from an intake that names its primaryScope.'
+        : '';
     throw new Error(
       `incompatible persisted state: schema version ${String(control.schemaVersion)}, ` +
-        `this graph reads schema version ${String(INCIDENT_STATE_SCHEMA_VERSION)}`,
+        `this graph reads schema version ${String(INCIDENT_STATE_SCHEMA_VERSION)}.` +
+        migrationClause,
     );
   }
 
@@ -1834,6 +1847,19 @@ export function createInvestigationGraph({
           // see hitl-resume-contract.test.mjs › "refuses pollution that is gone
           // by the second checkpoint read"
           assertOwnControlFields(restored);
+
+          // Refuses a resume on a persisted version this graph cannot read,
+          // BEFORE the interrupt-matching and FINISHED-run no-op paths below
+          // can return it silently. Without this, a FINISHED run whose
+          // checkpoint predates `primaryScope` (AIC-96) has no pending
+          // interrupt at all, so it never reached `assertPersistedStateVersion`
+          // and resolved as if the resume had succeeded. After
+          // `assertOwnControlFields`, so the version read here is the restored
+          // control's own field and not one the prototype supplies.
+          // see state-cutover.test.mjs › "refuses a
+          // resume of a FINISHED v3 checkpoint that predates primaryScope,
+          // rather than treating it as a no-op"
+          assertPersistedStateVersion(restored as IncidentStateControl);
 
           // A resume names the interrupt it answers, and this refuses the one
           // case where that name is WRONG rather than merely stale: the thread

@@ -299,12 +299,20 @@ the test tree returns. The per-budget calibration statements are published by
 `summarizeBudgetPolicyEvidence`.
 see budget-policy.test.mjs › "states in the report that llmCallBudget is not empirically calibrated, and why"
 
-`schemaVersion` is `3`: it moves whenever the strict control object gains a
-required field — `2` for the logical budget counters, `3` for `resumeCount`. The counters are required fields, so
-state persisted under version 1 is refused rather than coerced to an invented
-usage of zero — on the `kind: 'start'` path by the schema's version literal, and
-on the resume path by the graph's own version guard, because a restored
-checkpoint is never parsed by the schema.
+`schemaVersion` is `4`: it moves whenever a required field is added to the
+strict control object or to the persisted incident — `2` for the logical budget
+counters, `3` for `resumeCount`, `4` for `incident.primaryScope` (AIC-96, the
+v0.2 → v0.3 cutover). State persisted under an older version is refused rather
+than coerced to an invented usage of zero or an invented scope — on the
+`kind: 'start'` path by the schema's version literal, and on the resume path by
+the graph's own version guard, because a restored checkpoint is never parsed by
+the schema. The resume guard also runs at the resume entry, so a finished
+pre-v4 run is refused rather than returned, and its message tells the caller to
+start a new investigation from an intake that names its `primaryScope`:
+see state-cutover.test.mjs › "refuses a resume of a FINISHED v3 checkpoint that predates primaryScope, rather than treating it as a no-op"
+The `aic start` / `aic resume` spike runner's checkpoints carry no incident and
+are read unchanged:
+see state-cutover.test.mjs › "resumes a spike-runner checkpoint stamped at schema version 3 and returns its trials/evidence unchanged (pin: this state carries no incident)"
 
 ⚠ The two refusals are not equally legible. The resume guard names the version
 it refused on; the start path does not, because `parseInvestigationExecutionInput`

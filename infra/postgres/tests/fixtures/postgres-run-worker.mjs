@@ -72,9 +72,22 @@ function reviewNodes() {
   );
 }
 
+/**
+ * A fixed synthetic `primaryScope`; the values need not match any other
+ * fixture. Written here rather than imported — like the lifecycle node list above, the point
+ * of this lane is to change the SUBSTRATE and nothing else, and this file does
+ * nothing on import by design (see the header comment), which a relative
+ * import four directories up would put at risk for no benefit this fixture
+ * needs.
+ */
+const PRIMARY_SCOPE = {
+  serviceId: '11111111-1111-4111-8111-111111111111',
+  environmentId: '22222222-2222-4222-8222-222222222222',
+};
+
 function initialState(INCIDENT_STATE_SCHEMA_VERSION, STATUS_RULES_VERSION) {
   return {
-    incident: { id: 'incident-postgres-substrate' },
+    incident: { id: 'incident-postgres-substrate', primaryScope: PRIMARY_SCOPE },
     hypotheses: [],
     predictions: [],
     tests: [],

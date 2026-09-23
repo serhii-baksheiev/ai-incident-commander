@@ -4,8 +4,10 @@ import test from 'node:test';
 import * as domain from '@aic/domain';
 import * as graph from '@aic/graph';
 
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
+
 const state = {
-  incident: { id: 'incident-1', title: 'Checkout failures' },
+  incident: scopedIncident('incident-1', { title: 'Checkout failures' }),
   hypotheses: [
     { id: 'hypothesis-1', statement: 'The deployment caused failures', createdBy: 'initial' },
   ],
@@ -83,7 +85,7 @@ const state = {
   },
   control: {
     runId: 'run-1',
-    schemaVersion: 3,
+    schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
     statusRulesVersion: 'v0.1',
     phase: 'concluding',
     maxIterations: 8,
@@ -115,6 +117,40 @@ test('round-trips every canonical contract through public schemas', () => {
   for (const [name, fixture] of fixtures) {
     assert.deepEqual(domain[name].parse(fixture), fixture, `${name} must round-trip`);
   }
+});
+
+/**
+ * AIC-96 slice 2: `IncidentSchema` moves from a bare `{ id }` to requiring the
+ * `primaryScope` every incident carries from intake onward
+ * (`packages/domain/src/scope.ts`, `packages/domain/src/intake.ts`). An
+ * incident with no scope, or a scope that names something other than a
+ * registry UUID, is not a persistable incident.
+ */
+test('rejects an incident with no primaryScope', () => {
+  assert.equal(
+    domain.IncidentSchema.safeParse({ id: 'incident-1' }).success,
+    false,
+    'an incident carrying no primaryScope must be refused, not accepted as scope-less',
+  );
+});
+
+test('rejects a primaryScope whose ids are not UUIDs', () => {
+  assert.equal(
+    domain.IncidentSchema.safeParse({
+      id: 'incident-1',
+      primaryScope: { serviceId: 'checkout', environmentId: 'production' },
+    }).success,
+    false,
+    'a primaryScope naming a slug rather than a registry UUID must be refused',
+  );
+});
+
+test('accepts a scoped incident built by the shared scopedIncident fixture', () => {
+  assert.equal(
+    domain.IncidentSchema.safeParse(scopedIncident('incident-1')).success,
+    true,
+    'the fixture every other file migrated to must itself parse as a valid incident',
+  );
 });
 
 test('preserves frozen string fields without relaxing assumed non-empty names', () => {
@@ -191,7 +227,7 @@ test('upserts collection members by replacing in place and appending new ids', (
 });
 
 test('publishes explicit state and baseline status-rule versions', () => {
-  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 3);
+  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 4);
   assert.equal(domain.STATUS_RULES_VERSION, state.control.statusRulesVersion);
   assert.deepEqual(domain.BASELINE_STATUS_RULES, {
     version: domain.STATUS_RULES_VERSION,
@@ -231,7 +267,11 @@ test('rejects control state persisted under the previous schema version', () => 
   );
 
   const candidate = structuredClone(state);
-  candidate.control.schemaVersion = 1;
+  // Not a literal: the schema bumps to 4 for `primaryScope` (AIC-96), and this
+  // row is about "the version before whatever current is", not about the
+  // number 3 specifically — see `.claude/rules/invariants.md`, "one mechanism,
+  // one implementation".
+  candidate.control.schemaVersion = domain.INCIDENT_STATE_SCHEMA_VERSION - 1;
 
   assert.equal(
     domain.IncidentStateSchema.safeParse(candidate).success,

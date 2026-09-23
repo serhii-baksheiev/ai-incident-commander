@@ -1,9 +1,10 @@
 /**
- * The persisted shape of `IncidentState`. It moves whenever
- * `IncidentStateControlSchema` — a strict object — gains a required field, so
- * state persisted under an older version is missing something the current one
- * requires: 1 -> 2 for the graph-owned logical budget counters
- * (`iterationsUsed`, `llmCallsUsed`), and 2 -> 3 for `resumeCount`. Nothing
+ * The persisted shape of `IncidentState`. It moves whenever a required field is
+ * added to `IncidentStateControlSchema` — a strict object — or to the persisted
+ * `incident` itself, so state persisted under an older version is missing
+ * something the current one requires: 1 -> 2 for the graph-owned logical budget
+ * counters (`iterationsUsed`, `llmCallsUsed`), 2 -> 3 for `resumeCount`, and
+ * 3 -> 4 for the now-required `incident.primaryScope` (AIC-96). Nothing
  * coerces a missing counter to a default — a run that resumed with an invented
  * usage count would under-report what it had spent.
  *
@@ -29,7 +30,7 @@
  * facts are independent: this one describes the persisted state shape, that one
  * describes the status derivation rules, which AIC-62 does not touch.
  */
-export const INCIDENT_STATE_SCHEMA_VERSION = 3 as const;
+export const INCIDENT_STATE_SCHEMA_VERSION = 4 as const;
 export const STATUS_RULES_VERSION = 'v0.1' as const;
 
 export const BASELINE_STATUS_RULES = {

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { PrimaryScopeSchema } from './scope.js';
 import { INCIDENT_STATE_SCHEMA_VERSION, STATUS_RULES_VERSION } from './status-rules.js';
 
 const IdentifierSchema = z.string();
@@ -13,6 +14,7 @@ export const InvestigationPhaseSchema = NonEmptyStringSchema;
 
 export const IncidentSchema = z.looseObject({
   id: IdentifierSchema,
+  primaryScope: PrimaryScopeSchema,
 });
 
 export const HypothesisStatusSchema = z.enum([

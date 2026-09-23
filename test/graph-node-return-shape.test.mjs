@@ -19,6 +19,8 @@ import {
   isInterrupted,
 } from '@langchain/langgraph';
 
+import { scopedIncident } from './fixtures/scoped-incident.mjs';
+
 const lifecycleNodes = [
   'normalize_incident',
   'collect_baseline',
@@ -88,7 +90,7 @@ const HIJACKED_CONTROL = {
 };
 
 const initialState = (overrides = {}) => ({
-  incident: { id: 'incident-graph-node-return-shape' },
+  incident: scopedIncident('incident-graph-node-return-shape'),
   hypotheses: [],
   predictions: [],
   tests: [],

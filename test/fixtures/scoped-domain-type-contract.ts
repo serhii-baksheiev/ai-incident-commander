@@ -30,6 +30,7 @@ import type {
   ActionPolicy,
   CredentialRef,
   Environment,
+  Incident,
   IncidentIntake,
   IntakeDerivedIncident,
   PrimaryScope,
@@ -131,6 +132,14 @@ void credentialRefWithValue;
 void registry;
 void intake;
 void intakeWithoutScope;
+
+// `IncidentSchema` requires the same `primaryScope` `IncidentIntake` carries
+// above (AIC-96), so an `Incident` without one is a type error.
+// @ts-expect-error every Incident carries a primaryScope
+const incidentWithoutScope: Incident = {
+  id: 'incident-without-scope',
+};
+void incidentWithoutScope;
 
 // The return type of incidentFromIntake is nameable by its consumers.
 const derived: IntakeDerivedIncident = {
