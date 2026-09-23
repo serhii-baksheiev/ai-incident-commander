@@ -8,13 +8,17 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const adrPath = join(projectRoot, 'docs', 'decisions', 'durable-run-execution.md');
 const readAdr = () => readFileSync(adrPath, 'utf8');
 
-/** The text under one `## ` heading, up to the next `## ` heading. */
+/**
+ * The text under one `## ` heading, up to the next `## ` heading, with every
+ * run of whitespace collapsed to one space so a pattern does not depend on
+ * where the markdown happens to wrap.
+ */
 const section = (markdown, heading) => {
   const start = markdown.indexOf(`\n## ${heading}\n`);
   assert.notEqual(start, -1, `the record must carry a "## ${heading}" section`);
   const rest = markdown.slice(start + heading.length + 5);
   const end = rest.search(/\n## /);
-  return end === -1 ? rest : rest.slice(0, end);
+  return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ');
 };
 
 /**
@@ -39,7 +43,7 @@ test('records every decision of the owner ruling, each under the Decisions secti
     ['PostgreSQL is the single coordination substrate', /PostgreSQL is the single coordination substrate/],
     ['no second coordinator without measured need', /Redis[\s\S]*?SQS[\s\S]*?Kafka[\s\S]*?measured need/],
     ['runs are durable records, worker identity is not run identity', /Worker or process identity is not\s+run identity/],
-    ['ownership is lease-based and fenced, a lease alone is not enough', /lease-based and fenced[\s\S]*?a lease alone is not sufficient/],
+    ['ownership is lease-based and fenced, a lease alone is not enough', /lease-based and fenced[\s\S]*?a\s+lease alone is not sufficient/],
     ['a stale worker must not commit after losing fencing authority', /stale worker[\s\S]*?must\s+not commit run-scoped product state/],
     ['waiting for a human holds no lease', /`waiting_human` holds no lease/],
     ['exactly-once external execution is not claimed', /Exactly-once external execution is not claimed/],
