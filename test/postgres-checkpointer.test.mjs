@@ -531,9 +531,8 @@ test('keeps the database-backed lane out of npm test and npm run check', () => {
  *
  * ⚠ Written AFTER the implementation, which inverts this repository's order.
  * `code-reviewer` found the scope line dropped at the AIC-55 gate; the seam was
- * built to close it and these rows were added behind it. They are therefore
- * verified the only way that is still honest — by mutation, below in the same
- * pass — rather than by having been watched to fail first.
+ * built to close it and these rows were added behind it, so none of them was
+ * watched to fail before the code it checks existed.
  *
  * The source is structural on purpose: the library declares its pool private,
  * so a typed caller cannot pass the saver's own, and a narrow port keeps `pg`

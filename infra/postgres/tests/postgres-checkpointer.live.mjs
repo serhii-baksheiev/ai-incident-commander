@@ -438,14 +438,26 @@ test('agrees with the migration version a real setup() writes, and refuses any o
     'the constant this build refuses against must be the version setup() really reaches: a constant nobody measured is a check that passes for the wrong reason',
   );
 
-  // A version the store could plausibly drift to, rather than an absurd one.
-  await checkpointer.pool.query(
-    `insert into "${CHECKPOINTER_SCHEMA}".checkpoint_migrations (v) values ($1)`,
-    [CHECKPOINTER_MIGRATION_VERSION + 1],
-  );
-  await assert.rejects(
-    () => assertCheckpointerSchemaVersion(checkpointer.pool),
-    /migration version/,
-    'a store one migration ahead of this build must refuse before execution rather than be read as if it were this version',
-  );
+  // A version the store could plausibly drift to, rather than an absurd one —
+  // written inside a transaction that is always rolled back, on the one client
+  // the seam then reads through. `setup()` only applies migrations ABOVE the
+  // highest recorded one, so a committed drift row would be accepted as
+  // provisioned by every later run against the same container and turn this
+  // row red with a message blaming the constant instead of the residue.
+  const client = await checkpointer.pool.connect();
+  try {
+    await client.query('begin');
+    await client.query(
+      `insert into "${CHECKPOINTER_SCHEMA}".checkpoint_migrations (v) values ($1)`,
+      [CHECKPOINTER_MIGRATION_VERSION + 1],
+    );
+    await assert.rejects(
+      () => assertCheckpointerSchemaVersion(client),
+      /migration version/,
+      'a store one migration ahead of this build must refuse before execution rather than be read as if it were this version',
+    );
+  } finally {
+    await client.query('rollback');
+    client.release();
+  }
 });

@@ -162,12 +162,12 @@ function testSources() {
   // oversight.** It spawns too, but through `promisify(execFile)` bound to
   // `execFileAsync`, passing an `environment` VARIABLE rather than a literal
   // `childEnv(...)` call. Measured at the AIC-55 gate: adding the tree plus an
-  // `Async` suffix to the pattern reported all eight of its call sites as
-  // unguarded, when every one of them is in fact guarded — the scan reads the
-  // call's argument text, not what a name was assigned. Covering it needs
-  // data-flow analysis, and `.claude/rules/invariants.md` asks a rule's
-  // precision to match the cost of a false positive: eight false blocks on
-  // correct code is worse than the gap. So the audit's reach is `test/`,
+  // `Async` suffix to the pattern found nine call sites there and reported
+  // eight of them as unguarded, when every one of the eight is in fact guarded
+  // — the scan reads the call's argument text, not what a name was assigned.
+  // Covering it needs data-flow analysis, and `.claude/rules/invariants.md`
+  // asks a rule's precision to match the cost of a false positive: eight false
+  // blocks on correct code is worse than the gap. So the audit's reach is `test/`,
   // `scripts/` and `infra/` — and this row's name should be read against that.
   return sources;
 }
