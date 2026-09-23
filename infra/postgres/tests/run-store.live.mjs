@@ -329,6 +329,44 @@ test('renewLease returns true for the current owner, false for a mismatched work
 /* Row 13 — bounded attempts: exhaustion moves the run to failed              */
 /* -------------------------------------------------------------------------- */
 
+test('renewLease refuses a lease that has already expired, even before any sweep has requeued the run', async (t) => {
+  const store = await freshStore(t);
+  const runId = `run-renew-expired-${randomUUID()}`;
+  await store.createRun({ runId, input: {} });
+  const claim = await store.claimNext('worker-expired');
+  assert.equal(claim?.runId, runId);
+
+  await store.pool.query(
+    `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+    [runId],
+  );
+  assert.equal(
+    await store.renewLease(claim),
+    false,
+    'an expired lease is lost authority (decision 3): renewing it would let a worker revive itself after another could have taken over',
+  );
+});
+
+test('a claim records a heartbeat, and each renewal moves it forward', async (t) => {
+  const store = await freshStore(t);
+  const runId = `run-heartbeat-${randomUUID()}`;
+  await store.createRun({ runId, input: {} });
+  const claim = await store.claimNext('worker-heartbeat');
+  const heartbeatOf = async () =>
+    (await store.pool.query('select heartbeat_at from aic_app.runs where run_id = $1', [runId])).rows[0].heartbeat_at;
+
+  const first = await heartbeatOf();
+  assert.ok(first instanceof Date, 'the claim must set heartbeat_at');
+  await store.pool.query(
+    `update aic_app.runs set heartbeat_at = heartbeat_at - interval '1 minute' where run_id = $1`,
+    [runId],
+  );
+  const aged = await heartbeatOf();
+  assert.equal(await store.renewLease(claim), true);
+  const renewed = await heartbeatOf();
+  assert.ok(renewed > aged, 'a renewal must move heartbeat_at forward');
+});
+
 test('bounded attempts: once the next attempt would exceed maxExecutionAttempts, the run becomes failed with terminal_reason recovery_exhausted', async (t) => {
   const store = await freshStore(t, { leaseMs: 30_000, maxExecutionAttempts: 2 });
   const runId = `run-exhaust-${randomUUID()}`;
