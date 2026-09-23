@@ -173,6 +173,18 @@ test('setupApplicationSchema brings the database to version 2 with every new tab
 
   const { rows: indexRows } = await store.pool.query(`select indexname from pg_indexes where schemaname = 'aic_app'`);
   const indexNames = new Set(indexRows.map((row) => row.indexname));
+  const { rows: indexDefs } = await store.pool.query(
+    `select indexdef from pg_indexes where schemaname = 'aic_app'`,
+  );
+  const defs = indexDefs.map((row) => row.indexdef);
+  assert.ok(
+    defs.some((def) => /UNIQUE INDEX .* ON aic_app\.runs .*\(interaction_id\) WHERE \(interaction_id IS NOT NULL\)/.test(def)),
+    'an interaction id must name at most one run, so a human reply is never ambiguous between two runs',
+  );
+  assert.ok(
+    defs.some((def) => /ON aic_app\.fence_rejections .*\(run_id, at\)/.test(def)),
+    'fence_rejections is read per run; without an index every read of that evidence is a sequential scan',
+  );
   assert.ok(
     indexNames.has('runs_queued_created_at_idx'),
     'migration 1\'s partial index over queued runs (slice B) must still exist at schema version 2',
@@ -702,4 +714,92 @@ test('each fenced write appends an event with a strictly increasing seq per run'
   for (let i = 1; i < seqs.length; i += 1) {
     assert.ok(seqs[i] > seqs[i - 1], `seq must strictly increase per run: ${seqs[i - 1]} then ${seqs[i]}`);
   }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Round-1 review rows                                                         */
+/* -------------------------------------------------------------------------- */
+
+test('more concurrent fence refusals than the pool has connections all end in StaleOwnerError instead of wedging the pool', async (t) => {
+  const store = await freshStore(t);
+  const { runId, claim: claimA } = await createAndClaim(store, 'worker-storm-a');
+  const contextA = await persistence.openRunWriteContext(store, claimA);
+  await store.pool.query(
+    `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+    [runId],
+  );
+  await store.sweepExpired();
+  await store.claimNext('worker-storm-b');
+
+  const refusals = 25; // pg's default pool max is 10
+  const outcome = await Promise.race([
+    Promise.allSettled(
+      Array.from({ length: refusals }, (_, i) =>
+        contextA.committed(
+          domain.buildExecKey('tool.trial', { runId, testId: `storm-${i}`, trialAttempt: 1 }),
+          async () => ({ i }),
+          { project: noProjection },
+        ),
+      ),
+    ),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 15_000)),
+  ]);
+  if (outcome === 'timeout') {
+    // A wedged pool never hands its clients back, so the store's own close in
+    // t.after would wait forever and hang the lane instead of failing it.
+    // Destroy the held clients (pg-pool's internal list) so the row fails.
+    for (const client of [...(store.pool._clients ?? [])]) client.release(new Error('wedged pool torn down by the test'));
+  }
+  assert.notEqual(outcome, 'timeout', 'concurrent fence refusals must not wedge the pool');
+  assert.equal(
+    outcome.every((result) => result.status === 'rejected' && result.reason instanceof domain.StaleOwnerError),
+    true,
+    'every refused commit must surface as StaleOwnerError',
+  );
+  const { rows } = await store.pool.query('select count(*)::int as n from aic_app.fence_rejections where run_id = $1', [runId]);
+  assert.equal(rows[0].n, refusals, 'each refusal is still recorded as evidence');
+});
+
+test('complete and fail release the run: a terminal run has no owner and no lease', async (t) => {
+  const store = await freshStore(t);
+  for (const [finish, status] of [
+    [(context) => context.complete('done'), 'completed'],
+    [(context) => context.fail('broken'), 'failed'],
+  ]) {
+    const { runId, claim } = await createAndClaim(store, `worker-release-${status}`);
+    const context = await persistence.openRunWriteContext(store, claim);
+    await finish(context);
+    const { rows } = await store.pool.query(
+      'select status, owner_worker_id, lease_expires_at from aic_app.runs where run_id = $1',
+      [runId],
+    );
+    assert.deepEqual(rows[0], { status, owner_worker_id: null, lease_expires_at: null });
+  }
+});
+
+test('replay refuses a stored result whose text no longer matches its result_sha', async (t) => {
+  const store = await freshStore(t);
+  const { runId, claim } = await createAndClaim(store, 'worker-tamper');
+  const context = await persistence.openRunWriteContext(store, claim);
+  const execKey = domain.buildExecKey('tool.trial', { runId, testId: 'tamper', trialAttempt: 1 });
+  await context.committed(execKey, async () => ({ verdict: 'original' }), { project: noProjection });
+  await store.pool.query(
+    `update aic_app.node_results set result_json = '{"verdict":"altered"}' where run_id = $1 and exec_key = $2`,
+    [runId, execKey],
+  );
+  let computeCalls = 0;
+  await assert.rejects(
+    () =>
+      context.committed(
+        execKey,
+        async () => {
+          computeCalls += 1;
+          return { verdict: 'recomputed' };
+        },
+        { project: noProjection },
+      ),
+    (error) => error instanceof domain.ExecutionIntegrityViolation && error.execKey === execKey,
+    'a stored result that no longer hashes to its result_sha must not be replayed as authoritative',
+  );
+  assert.equal(computeCalls, 0, 'a corrupted committed result is refused, never silently recomputed');
 });

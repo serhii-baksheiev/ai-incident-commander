@@ -369,3 +369,18 @@ test('the migration indexes the claim scan over queued runs and the sweep scan o
     'sweepExpired scans running runs by lease_expires_at; without a partial index every sweep is a sequential scan',
   );
 });
+
+test('an idle-client error on the store pool does not escape as an uncaught exception', async () => {
+  const store = persistence.createRunStore('postgresql://aic@127.0.0.1:1/unreachable', {
+    leaseMs: 30_000,
+    maxExecutionAttempts: 5,
+  });
+  try {
+    // An EventEmitter with no 'error' listener throws the emitted error; pg emits
+    // one on the pool when an idle client's connection dies (a database restart
+    // or failover), which would otherwise kill the process that owns the runs.
+    assert.doesNotThrow(() => store.pool.emit('error', new Error('idle client lost its connection')));
+  } finally {
+    await store.close();
+  }
+});
