@@ -251,6 +251,7 @@ rule does not change with or without the script.
 AGENTS.md
 CLAUDE.md
 .github/workflows/
+infra/
 ```
 
 They are there because they are what *disarms* the rest: a merge that rewrites
@@ -269,6 +270,11 @@ is exactly the one with no mechanical check, and it is the one this declaration
 covers. The cost is real and accepted: a ticketed change carries its claim
 record, so declaring `.rig/` escalates even a documentation-only PR to the
 `model` lane. One extra cold reader is the cheaper side of that trade.
+
+`infra/` holds infrastructure configuration, a Tier-2 kind in
+`.claude/rules/autonomy.md`, so a merge that changes it is a merge the sweep
+asks a `human-review` label of — `test/elevated-paths-declaration.test.mjs` ›
+"declares the infrastructure configuration under infra/ as an elevated path".
 
 **Extend this list the same day you write the code it covers** — a real project
 accumulates more (auth handlers, billing, a credentials module, a migration
