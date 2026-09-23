@@ -199,8 +199,11 @@ test('claimNext skips a row a concurrent transaction already holds with FOR UPDA
   ]);
   await store.createRun({ runId: newer, input: {} });
 
+  // Released inside this test's own finally, not through `t.after`: the hooks
+  // run in registration order, so a release queued after `freshStore`'s
+  // `store.close()` would wait behind `pool.end()`, which waits for this very
+  // client — the lane hangs rather than fails.
   const lockClient = await store.pool.connect();
-  t.after(() => lockClient.release());
   await lockClient.query('begin');
   const { rows: lockedRows } = await lockClient.query('select run_id from aic_app.runs where run_id = $1 for update', [
     older,
@@ -217,6 +220,7 @@ test('claimNext skips a row a concurrent transaction already holds with FOR UPDA
     );
   } finally {
     await lockClient.query('rollback');
+    lockClient.release();
   }
 });
 
