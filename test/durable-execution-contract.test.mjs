@@ -99,12 +99,14 @@ test('RUN_STATUSES is exactly the five documented statuses, frozen', () => {
   assert.equal(Object.isFrozen(domain.RUN_STATUSES), true);
 });
 
-test('assertRunTransition allows exactly the six documented transitions, against a literal 5x5 table', () => {
-  // Independent oracle: this table is written by hand from
-  // docs/decisions/durable-run-execution.md's decisions 2-4, never derived
-  // from assertRunTransition itself.
+test('assertRunTransition allows exactly the seven documented transitions, against a literal 5x5 table', () => {
+  // Independent oracle: this table is written by hand from the "Run lifecycle"
+  // table of docs/decisions/durable-run-execution.md, never derived from
+  // assertRunTransition itself. durable-run-execution-adr.test.mjs checks that
+  // the record's table and the domain agree in both directions.
   const ALLOWED = new Set([
     'queued->running', // claim
+    'queued->failed', // bounded exhaustion: no further attempt is allowed
     'running->waiting_human',
     'running->completed',
     'running->failed',
@@ -152,6 +154,13 @@ test('assertRunTransition throws on an unknown status on either side', () => {
 test('EXECUTION_OPERATIONS is frozen and names exactly tool.trial and model.role', () => {
   assert.equal(Object.isFrozen(domain.EXECUTION_OPERATIONS), true);
   assert.deepEqual(Object.keys(domain.EXECUTION_OPERATIONS).sort(), ['model.role', 'tool.trial']);
+});
+
+test('EXECUTION_OPERATIONS is frozen all the way down, including the part order a key is built from', () => {
+  for (const [op, definition] of Object.entries(domain.EXECUTION_OPERATIONS)) {
+    assert.equal(Object.isFrozen(definition), true, `${op} must be frozen`);
+    assert.equal(Object.isFrozen(definition.order), true, `${op}.order must be frozen`);
+  }
 });
 
 test('no operation name in the registry starts with action.', () => {
@@ -212,6 +221,53 @@ test('buildExecKey refuses an operation name outside the registry', () => {
   refuses(() => domain.buildExecKey('action.restart-service', { runId: 'run-1' }));
   refuses(() => domain.buildExecKey('tool.other', validTrialParts()));
   refuses(() => domain.buildExecKey('', validTrialParts()));
+});
+
+test('buildExecKey refuses an operation name the registry only inherits from Object.prototype', () => {
+  for (const inherited of ['toString', 'valueOf', 'constructor', 'hasOwnProperty', '__proto__', 'isPrototypeOf']) {
+    refuses(() => domain.buildExecKey(inherited, { runId: 'run-1' }), `${inherited} is not a registered operation`);
+  }
+});
+
+test('buildExecKey refuses a part that only a polluted Object.prototype supplies', () => {
+  const { trialAttempt, ...missingAttempt } = validTrialParts();
+  void trialAttempt;
+  Object.prototype.trialAttempt = 9;
+  try {
+    refuses(() => domain.buildExecKey('tool.trial', missingAttempt), 'an inherited trialAttempt is not a supplied part');
+  } finally {
+    delete Object.prototype.trialAttempt;
+  }
+});
+
+test('buildExecKey refuses an extra own __proto__ part rather than silently dropping it', () => {
+  const parts = JSON.parse('{"runId":"run-1","testId":"test-1","trialAttempt":1,"__proto__":{"x":1}}');
+  assert.equal(Object.hasOwn(parts, '__proto__'), true, 'the fixture must carry __proto__ as an own key');
+  refuses(() => domain.buildExecKey('tool.trial', parts));
+});
+
+test('buildExecKey refuses trialAttempt 0: a Trial attempt counts from 1', () => {
+  refuses(() => domain.buildExecKey('tool.trial', { ...validTrialParts(), trialAttempt: 0 }));
+  assert.match(domain.buildExecKey('tool.trial', { ...validTrialParts(), trialAttempt: 1 }), /^tool\.trial\/sha256:/);
+});
+
+test('bounds what a refusal echoes of the caller-supplied operation name and statuses', () => {
+  const hostile = `x${'y'.repeat(500)}\n[CRITICAL] forged log line`;
+  for (const call of [
+    () => domain.buildExecKey(hostile, { runId: 'run-1' }),
+    () => domain.assertRunTransition(hostile, 'running'),
+    () => domain.assertRunTransition('running', hostile),
+  ]) {
+    let message;
+    try {
+      call();
+    } catch (error) {
+      message = error.message;
+    }
+    assert.equal(typeof message, 'string', 'the call must refuse');
+    assert.equal(message.includes('\n'), false, 'a refusal must not carry a raw newline from the input');
+    assert.ok(message.length < 300, `a refusal must not echo the input unbounded (got ${message.length} chars)`);
+  }
 });
 
 test('buildExecKey refuses a missing part', () => {
