@@ -90,6 +90,7 @@
     ".codex/config.toml": "c41e34ef5c3bb606852269adeaf5678ce172dc7a7937514ac879152bbddea7f2",
     ".codex/hooks.json": "f3eaf4a9a2c0af418a6ecf54b6d7d32065033909907ea237d51423c9129f44a7",
     ".rig/revalidation.json": "312b59f80fcbcf2897ef80fb54be236fb6b2b1745f705dae8e66c58f0bbd3099",
+    "CLAUDE.md": "0fcaa12649bec7586fa0d38e1f8c213bf1fb2326f8debc8923f5085dcb4b9284",
     "docs/decisions/agents-md-canonical.md": "cc5fd1853cb4519767d0fd8915cbcedafff827dccef00d3535b094ce35e67f26",
     "docs/decisions/codex-adapter.md": "5f6bd89f1ad57a080bb717595e0c31eb7fdbec593ea21aceaa4d69daa6647c37",
     "docs/decisions/content-blind-revalidation.md": "d640a152428ea4cc6a5f0a19be58e0d23f3a99c44b0ad0b72152ec7b48fe5bfd",

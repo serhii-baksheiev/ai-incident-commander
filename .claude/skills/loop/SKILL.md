@@ -12,7 +12,7 @@ decisions. This skill is the driver in between: what gets picked,
 what keeps the loop going, what stops it, and where the report goes.
 
 Per-task procedure: (worktree if another session may run) → `check-premises` on the
-item → failing test first → implement → **`check-premises` again, on your own prose**
+item → failing test first (`test-writer`) → implement (`implementation-agent`) → **`check-premises` again, on your own prose**
 → `pr-ship` → merge on the named criterion → verify the deployed surface if one
 changed.
 
@@ -79,15 +79,22 @@ state-vs-queue split exists to prevent.
 node .claude/scripts/preflight.mjs
 ```
 
-Five items are scripted (kill switch absent · `RIG_RUN_DIR` not already
-exported · the versioned revalidation detection contract is supported · local
-default branch matches the remote · the last deploy concluded successfully)
+Scripted checks cover the kill switch, inherited `RIG_RUN_DIR`, the versioned
+revalidation detection contract, queue readability through its configured adapter,
+default-branch freshness, and the last deploy result,
 and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
 leaves no record cannot tell you it was skipped.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted five are clean; the rest are
+knowing which ground is soft. **GO** → the scripted checks are clean; the rest are
 still yours.
+
+The queue probe reads one adapter listing without selecting or claiming an item.
+A readable empty queue passes this probe; a configuration, adapter, or queue-read
+failure produces **STOP**. See the generator's `test/template/preflight-queue.test.ts`
+(absent in a generated rig) › "reads exactly one adapter listing without selecting, claiming, or writing queue and run files",
+› "passes a readable empty queue without changing the other preflight verdict or queue state",
+and › "stops when %s cannot be read".
 
 **An `unknown` never becomes a `pass`.** A probe that could not run tells you
 nothing.
@@ -149,7 +156,37 @@ What a hook CAN see is a file, so the unattended signal is one:
 # at claim time, from the paths the item names (repo-relative prefixes, with
 # their trailing slash); the guard refuses every other rulebook edit while it is on
 node .claude/scripts/unattended-flag.mjs on --root "$PWD" --item <item-id> --run-dir "$RIG_RUN_DIR" --allow <prefix> [<prefix>…]
+
+# 🔴 THEN READ IT BACK, and stop the run if it is not armed. Not optional.
+node .claude/scripts/unattended-flag.mjs verify --root "$PWD" --item <item-id>
 ```
+
+🔴 **The second command is the one that makes the first one's failure
+visible, and skipping it inverts the whole mechanism.** `on` refuses an allow
+entry that *widens* the rulebook — and the refusal leaves **no flag on disk**
+(pinned in the generator's `test/template/unattended-flag.test.ts`, absent in a
+generated rig, › "does not change `on`: a widening --allow still exits 1 and
+still writes no flag"), while `guard-rulebook` reads an absent flag as an
+attended session and refuses nothing. So a run that armed with a widening entry and did not check is the
+**least** constrained run this project can produce: every rule, hook, skill and
+settings path editable, with nothing downstream saying so. The failure is loud
+for one line at claim time and silent for the rest of the session.
+
+`verify` exits non-zero when no usable flag is armed for this item — absent,
+unreadable, or naming a different item — and its message says the run is
+unguarded rather than merely that a file is missing. **A non-zero exit here ends
+the run**; it does not get retried with a wider allow-list. The natural way to
+hit this is not exotic: an item touching the queue adapter invites `--allow
+.claude/scripts/`, and that entry is refused outright. Pinned in the
+generator's `test/template/unattended-flag.test.ts` (absent in a generated rig)
+› "refuses when no flag is armed, naming the item and the unguarded rulebook"
+and › "refuses when the armed flag names a different item, naming both".
+
+⚠ **What this does not close.** `verify` is mechanical where it runs; that it
+runs is this sentence. It removes the silence, not the possibility that a run
+ignores an exit status — and the hook-enforced version is not available, because
+`guard-rulebook` cannot tell "attended" from "unattended but unarmed": absence of
+a flag is all it sees.
 
 `guard-rulebook` reads it (`.claude/rules/autonomy.md`, "Never"): with the flag
 on, a Write/Edit/MultiEdit/NotebookEdit/`apply_patch` under the generated
@@ -307,7 +344,7 @@ it only here. A tier outside that vocabulary **holds**, never releases
 (`docs/decisions/spacing-rations-mechanisms.md`).
 
 **The tier marker is a pre-filter, not the authority.** If an item passed as normal
-and the work turns out to touch an elevated path (`CLAUDE.md` →
+and the work turns out to touch an elevated path (`AGENTS.md` →
 `elevated-paths`), run the gate anyway, record the verdict on the PR, and treat it
 as this run's elevated item for spacing.
 
@@ -383,7 +420,11 @@ who was not reading the code at the time, and everything downstream — the fail
 test, the implementation, the reviewer comparing diff to item — inherits its
 claims rather than checking them. On `PREMISE FALSE` the item is escalated (§6),
 not repaired in place: a run that silently re-aims its own task has authored work
-for itself, which is the one thing this loop does not do (§8).
+for itself, which is the one thing this loop does not do (§8). A claim
+`check-premises` cannot settle by reading — a claimed defect or a historical
+finding that needs reproducing on the current default branch, not just re-reading — goes to
+`failure-diagnostician` in claim mode instead, never to an unnamed built-in
+subagent.
 
 🔴 **And again at the other end, before `pr-ship`: `check-premises` on the prose the
 task itself wrote** — the rulebook prose the diff touches (the skill defines that set,
@@ -666,7 +707,23 @@ Both then follow the same three steps:
    its clauses: what was *observed* (verbatim errors, not summaries), and the
    single question whose answer unblocks the work. So: what fails, what was tried, the
    current hypothesis, and links to the PR and the failing run where they exist
-   — a premise stop has neither, and its citation stands in for both. **Name the outcome
+   — a premise stop has neither, and its citation stands in for both.
+   **For a red check or an unexplained failure, the current hypothesis is the
+   diagnostician's parsed verdict**: dispatch `failure-diagnostician` with the
+   verbatim failure, save its answer to a file under the run directory, and
+   check it —
+
+   ```sh
+   node .claude/scripts/verdict.mjs check <report> failure-diagnostician
+   ```
+
+   — then carry the parsed verdict (word, `classification`, blockers,
+   evidence) as the hypothesis instead of writing the diagnosis from scratch,
+   with the verbatim failure output still in the comment beside it, covering
+   the "observed" clause the list above already names. A `PREMISE FALSE` or
+   exhausted-cap stop keeps the diagnosis the paragraph above already
+   describes (what the item claimed, or the round count).
+   **Name the outcome
    state in the same comment** — `incomplete` if the diagnosis cannot say **where** it
    stopped (§5: a thin diagnosis that still locates the wall is a `documented-stall`).
    Writing `incomplete` on your own task is uncomfortable and
@@ -805,33 +862,56 @@ unbounded improvement list is another diary, and three forces a choice. Each nam
 four things, and a proposal missing any of them is not ready to file:
 
 1. the finding it came from, cited as the journal line it appears on;
-2. the part to change — a skill, an agent spec, a hook, a rule file, `CLAUDE.md`,
-   the CI workflow;
+2. the part to change — a skill, an agent spec, a hook, a rule file, `AGENTS.md`,
+   `CLAUDE.md`, the CI workflow;
 3. the change, concretely enough to diff;
 4. how the next run would prove it worked — the observation that would differ.
 
-Filing is the adapter's `proposeTriage`, which the CLI deliberately does **not**
-expose — `index.mjs` never writes to the QUEUE (`next`, `list`, `hygiene` only), so
-that no accidental invocation can change what the next run is handed. Its one
-write is to the run journal above, and only into a directory the run declared —
-a trace of the selection, never a change to it. Call `proposeTriage` directly:
+Filing is the adapter's `proposeTriage`, reached through the one root-safe entry
+point `.claude/scripts/queue/propose.mjs` — never a relative `import()` typed by
+hand, which breaks the moment the session is standing in a subdirectory
+(`ERR_MODULE_NOT_FOUND` from the import, then an `ENOENT` from a cwd-relative
+`PLAN.md` that is not there). The CLI (`index.mjs`) still deliberately does
+**not** expose this — it never writes to the QUEUE (`next`, `list`, `hygiene`
+only), so that no accidental invocation can change what the next run is
+handed. `propose.mjs` resolves its config from its own location, exactly as
+`index.mjs` does, so the proposal lands in the project's real PLAN.md (or
+tracker) and the active board's own options travel with it rather than being
+typed by hand. Write the proposal to a file under the run directory, then run
+the script:
 
 ```bash
 node --input-type=module -e '
-  const a = await import("./.claude/scripts/queue/plan-md.mjs");   // or github-issues / jira
-  console.log(await a.proposeTriage({
-    finding: "<the journal line it came from>",
-    part:    "<skill | agent | hook | rule | CLAUDE.md | workflow>",
-    change:  "<concretely enough to diff>",
-    proof:   "<the observation that would differ next run>",
-    // a pair: what the probe touched, and what is concluded from it. The
-    // mechanism accepts a proposal without them; this procedure does not.
-    measured: "<the paths the probe actually exercised>",
-    inferred: "<the conclusion, citing only surfaces named in measured>",
-  }, { project: "<KEY>" }));   // jira only — the ACTIVE board's key: `queue/index.mjs board --json` → options.project;
-                               // plan-md and github-issues take no second argument
+  const fs = await import("node:fs/promises");
+  await fs.writeFile(
+    `${process.env.RIG_RUN_DIR}/proposal.json`,
+    JSON.stringify({
+      finding: "<the journal line it came from>",
+      part:    "<skill | agent | hook | rule | AGENTS.md | CLAUDE.md | workflow>",
+      change:  "<concretely enough to diff>",
+      proof:   "<the observation that would differ next run>",
+      // a pair: what the probe touched, and what is concluded from it. The
+      // mechanism accepts a proposal without them; this procedure does not.
+      measured: "<the paths the probe actually exercised>",
+      inferred: "<the conclusion, citing only surfaces named in measured>",
+    }),
+  );
 '
+# Root-anchored so the same command works whether the session is standing
+# at the repo root or in a subdirectory. Pinned in the generator's
+# test/template/loop-report-file.test.ts (absent in a generated rig) ›
+# "files when the documented command line runs, unmodified, from a project
+# subdirectory".
+node "$(git rev-parse --show-toplevel)/.claude/scripts/queue/propose.mjs" --file "$RIG_RUN_DIR/proposal.json"
 ```
+
+The result prints as one JSON line on stdout, and — because `RIG_RUN_DIR` is
+declared — the same result is also recorded as a `proposal` event in the run
+journal, so a failed filing is journalled as a failure instead of silently
+going nowhere. Pinned in the generator's `test/template/queue-propose.test.ts`
+(absent in a generated rig) › "files a proposal with a multiline finding from
+a project subdirectory, into the project-root PLAN.md" and › "journals a
+proposal event with ok: true on a successful filing under RIG_RUN_DIR".
 
 A proposal missing any of the four parts is refused rather than filed half-formed.
 
@@ -883,9 +963,9 @@ rather than a step in the procedure: `plan-md` returns it when the plan file has
 no `## Operator queue` heading, because a proposal then has nowhere to land that
 the selection query cannot reach. Add the heading — never the Agent queue.
 
-One adapter needs the second argument the snippet above carries: `jira` requires
-`options.project` and throws rather than filing without it — loudly, so nothing
-is lost, but a call that drops it files nothing.
+`jira` still requires `options.project`, and still throws rather than filing
+without it — loudly, so nothing is lost — and there is no
+second argument left to hand-copy.
 
 🔴 **The loop proposes; the owner patches.** Self-applying a change to its own
 rulebook is how an unattended run drifts irreversibly, and it collides head-on
@@ -924,8 +1004,33 @@ three poisons the only channel by which this project learns.
   underneath it:
 
   ```bash
-  node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id>
+  node .claude/scripts/revalidate.mjs --point BEFORE_CLOSE --ticket <item-id> \
+    --merge-commit "$(gh pr view <pr> --json mergeCommit -q .mergeCommit.oid)"
   ```
+
+  `--merge-commit` names the exact SHA the tracker's own PR metadata records as
+  THIS item's merge commit — one piece of evidence among several that let a
+  `targetSha` move which is nothing but that merge read as `CURRENT` instead
+  of `claim:scope` drift. Resolve it from the PR just merged, by name, never by
+  reading `git log` text, and only after the merge has landed and been
+  fetched. Omitting it (the item has not merged yet, or an older loop that
+  predates this flag) leaves any target movement holding exactly as it did
+  before this flag existed — it is purely additive to that default. Naming the
+  SHA is necessary but never sufficient: the exemption also requires the
+  target to have advanced by EXACTLY ONE commit — a genuine squash merge; a
+  merge commit or any multi-commit range still holds
+  (`test/template/revalidate.test.ts` (absent in a generated rig) › "a foreign
+  commit plus the real merge in the same range, --merge-commit correctly
+  naming the real one") — and it binds to THIS checkout: the named commit's
+  tree must equal `HEAD`'s tree here, and `HEAD` must still be the pre-merge
+  checkout, not one already fast-forwarded onto the merge
+  (`test/template/revalidate.test.ts` (absent in a generated rig) › "a single
+  FOREIGN commit named as --merge-commit does not exempt it — reproduces the
+  gate-hold attack and proves it now holds" and › "HEAD already at the merge
+  commit is vacuous, and still holds (a fast-forwarded checkout must not
+  self-satisfy the exemption)"). That binding stops a lazy or mistaken flag,
+  not an adversary who controls this run's own checkout — see
+  `isOwnMergeAdvance` in `claim-records.mjs` for the exact limit.
 
   It compares the tracked claim's `scope` and `commentary` fingerprint sets;
   commentary becomes hold-authoritative only here. Marker/take-up movement is
