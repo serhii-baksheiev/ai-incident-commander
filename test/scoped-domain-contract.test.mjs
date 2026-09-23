@@ -157,6 +157,49 @@ test("refuses an id on ServiceInput, and keeps a Service's id when its name and 
   );
 });
 
+/**
+ * ADR decision 4: "A repository is an alias or a source of evidence, not
+ * identity" - renaming or moving a repository never changes which Service an
+ * incident belongs to, which only holds if a repository-style NAME can never
+ * BE a registry id in the first place. `RegistryIdSchema = z.uuid()`
+ * (scope.ts) is the mechanism; this pins it against the two shapes decision 4
+ * exists to keep out, on every place a registry id is checked outside a full
+ * RegistrySnapshot: PrimaryScopeSchema and ServiceSchema's own id.
+ */
+test('refuses a repository-style name or a bare word as a registry id, and accepts a UUID', () => {
+  const repositoryStyleNames = ['payments-api', 'checkout-service'];
+  const bareWords = ['checkout'];
+
+  for (const invalidId of [...repositoryStyleNames, ...bareWords]) {
+    assert.equal(
+      domain.PrimaryScopeSchema.safeParse({ serviceId: invalidId, environmentId: environmentA }).success,
+      false,
+      `PrimaryScopeSchema must refuse "${invalidId}" as serviceId`,
+    );
+    assert.equal(
+      domain.PrimaryScopeSchema.safeParse({ serviceId: serviceA, environmentId: invalidId }).success,
+      false,
+      `PrimaryScopeSchema must refuse "${invalidId}" as environmentId`,
+    );
+    assert.equal(
+      domain.ServiceSchema.safeParse({ id: invalidId, ...serviceInput() }).success,
+      false,
+      `ServiceSchema must refuse "${invalidId}" as a Service id`,
+    );
+  }
+
+  assert.equal(
+    domain.PrimaryScopeSchema.safeParse({ serviceId: randomUUID(), environmentId: randomUUID() }).success,
+    true,
+    'a UUID must still be accepted as a registry id in PrimaryScopeSchema',
+  );
+  assert.equal(
+    domain.ServiceSchema.safeParse({ id: randomUUID(), ...serviceInput() }).success,
+    true,
+    'a UUID must still be accepted as a Service id',
+  );
+});
+
 const referenceFieldTable = [
   {
     field: 'Environment.serviceId',

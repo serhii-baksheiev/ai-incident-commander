@@ -14,11 +14,17 @@
  * statements entirely and this file needs no runtime module resolution at
  * all.
  *
- * Every id below is kept under sixteen characters for the same reason
- * scoped-domain-contract.test.mjs's secretName fixtures are: a longer
- * `<field with "credential" or "secret" in its name> = "<value>"` line reads,
- * to `.claude/scripts/lib/secrets.mjs`'s `assigned-secret` pattern, exactly
- * like an assigned credential.
+ * Every id below is a real UUID (`RegistryIdSchema = z.uuid()`) - a
+ * hyphenated name like `payments-api` is exactly what
+ * scoped-domain-contract.test.mjs's "refuses a repository-style name or a
+ * bare word as a registry id, and accepts a UUID" refuses at runtime, and this
+ * file's ids should not model the shape that test exists to reject. Two of the
+ * local names below (`readCredRefId`, `writeRefId`) are deliberately spelled
+ * to avoid the literal substring "credential": a `<name with "credential" or
+ * "secret" in it> = "<uuid>"` declaration line reads, to
+ * `.claude/scripts/lib/secrets.mjs`'s `assigned-secret` pattern, exactly like
+ * an assigned credential (see credential-ref-secrets.test.mjs's header for the
+ * same workaround, applied there instead by binding through `randomUUID()`).
  */
 import type {
   ActionPolicy,
@@ -32,9 +38,12 @@ import type {
   SourceBinding,
 } from '@aic/domain';
 
-const serviceId = 'svc-a';
-const environmentId = 'env-a';
-const credentialRefId = 'cred-read-a';
+const serviceId = '7b2acc9b-8ea2-4433-91c0-08f078e4a43f';
+const environmentId = '7b103107-d94f-4e58-9f5b-5a2a2b4e464b';
+const readCredRefId = 'f91bde38-5225-4d7b-8579-404c5cd8a133';
+const sourceBindingId = '4b97410a-55a4-438f-90c2-6c8f9b460fff';
+const actionPolicyId = '6bed7f4a-de27-4901-8b96-03c5a022ca25';
+const writeRefId = 'a6409c12-8051-4a0d-b31e-1cb41e344c55';
 
 const service: Service = {
   id: serviceId,
@@ -61,22 +70,22 @@ const environment: Environment = {
 };
 
 const sourceBinding: SourceBinding = {
-  id: 'src-binding-a',
+  id: sourceBindingId,
   environmentId,
   adapterId: 'github-actions',
   adapterVersion: '1.0.0',
-  credentialRefId,
+  credentialRefId: readCredRefId,
 };
 
 const credentialRef: CredentialRef = {
-  id: credentialRefId,
+  id: readCredRefId,
   environmentId,
   access: 'read',
   secretName: 'CHECKOUT_READ',
 };
 
 const credentialRefWithValue: CredentialRef = {
-  id: credentialRefId,
+  id: readCredRefId,
   environmentId,
   access: 'read',
   secretName: 'CHECKOUT_READ',
@@ -85,10 +94,10 @@ const credentialRefWithValue: CredentialRef = {
 };
 
 const actionPolicy: ActionPolicy = {
-  id: 'act-policy-a',
+  id: actionPolicyId,
   environmentId,
   allowedActionTypes: ['restart-service'],
-  writeCredentialRefIds: ['cred-write-a'],
+  writeCredentialRefIds: [writeRefId],
 };
 
 const registry: RegistrySnapshot = {

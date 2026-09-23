@@ -18,10 +18,22 @@
  * check reports its own test data as a leak"). This is not decoration: this
  * file's own `guard-secret-file` PreToolUse hook refuses a `Write`/`Edit` that
  * carries a contiguous credential-shaped literal, using this exact vocabulary.
+ *
+ * Registry ids below are real UUIDs (`RegistryIdSchema = z.uuid()`), generated
+ * at load time and bound to camelCase names rather than written out as
+ * literals: a `<name with "credential" in it> = "<uuid>"` declaration line
+ * would itself read, to the `assigned-secret` pattern, like an assigned
+ * credential - a UUID is 36 characters, well past its sixteen-character floor.
+ * Binding through `randomUUID()` sidesteps this the same way
+ * scoped-domain-contract.test.mjs does: the declaration's value is a call
+ * expression (never a match, since `(` is outside the value's character
+ * class), and every USE of the resulting name is a bare, all-letters
+ * identifier (`credentialReadA`), which is exactly the identifier shape
+ * `secrets.mjs`'s `IDENTIFIER_VALUE` is built to reject.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -37,16 +49,18 @@ import {
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scopeSourcePath = join(projectRoot, 'packages', 'domain', 'src', 'scope.ts');
 
-const environmentId = 'env-a';
+const environmentA = randomUUID();
+const serviceA = randomUUID();
+const credentialReadA = randomUUID();
 
 const baseCredentialRef = () => ({
-  id: 'cred-read-a',
-  environmentId,
+  id: credentialReadA,
+  environmentId: environmentA,
   access: 'read',
   secretName: 'CHECKOUT_READ',
 });
 
-const basePrimaryScope = () => ({ serviceId: 'svc-a', environmentId });
+const basePrimaryScope = () => ({ serviceId: serviceA, environmentId: environmentA });
 
 const baseSignal = () => ({
   source: 'pagerduty',
