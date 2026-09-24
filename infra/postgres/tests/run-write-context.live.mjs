@@ -883,3 +883,39 @@ test('a fence refusal whose rejection cannot be recorded still ends in StaleOwne
     await store.pool.query('alter table aic_app.fence_rejections_unavailable rename to fence_rejections');
   }
 });
+
+/**
+ * AIC-56 slice F carry-over from slice E: `assertOwner()` — the bare fence
+ * the fenced checkpointer calls before every checkpoint write
+ * (`fenced-checkpointer.ts`'s `#guard`) — shares `recordFenceRejection` with
+ * `runFenced`'s own refusal path (both call it, and both attach a recording
+ * failure as `cause` rather than letting it vanish — see the row above for
+ * `committed()`, and `run-write-context.ts`'s `assertOwner` function for the
+ * same shape). This row exercises the SAME "the recording table itself is
+ * unavailable" fault through `assertOwner()` directly, rather than through a
+ * fenced write, so the shared behaviour is checked at both call sites rather
+ * than assumed from one of them.
+ */
+test('assertOwner whose rejection record fails still throws StaleOwnerError, carrying the recording failure as its cause', async (t) => {
+  const store = await freshStore(t);
+  const { runId, claim } = await createAndClaim(store, 'worker-unrecorded-assert-owner');
+  const context = await persistence.openRunWriteContext(store, claim);
+  await store.pool.query(
+    `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+    [runId],
+  );
+
+  await store.pool.query('alter table aic_app.fence_rejections rename to fence_rejections_unavailable');
+  try {
+    await assert.rejects(
+      () => context.assertOwner('checkpoint'),
+      (error) =>
+        error instanceof domain.StaleOwnerError &&
+        error.cause instanceof Error &&
+        /fence_rejections/.test(error.cause.message),
+      'assertOwner must still refuse with StaleOwnerError when its rejection cannot be recorded, carrying the recording failure as cause — the same contract committed() carries above, because both share recordFenceRejection',
+    );
+  } finally {
+    await store.pool.query('alter table aic_app.fence_rejections_unavailable rename to fence_rejections');
+  }
+});

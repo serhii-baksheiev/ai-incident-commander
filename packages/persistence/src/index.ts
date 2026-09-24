@@ -174,3 +174,16 @@ export {
   type CheckpointFence,
   type FencedCheckpointerOptions,
 } from './fenced-checkpointer.js';
+
+/**
+ * AIC-56 slice F: the retention boundary — the product-API read model that
+ * never reads `node_results`, and the guard that prunes a terminal run's
+ * `node_results` and checkpoint thread.
+ */
+export {
+  pruneTerminalRun,
+  readRunProductSnapshot,
+  RunNotTerminalError,
+  type RetentionCheckpointer,
+  type RunProductSnapshot,
+} from './retention.js';

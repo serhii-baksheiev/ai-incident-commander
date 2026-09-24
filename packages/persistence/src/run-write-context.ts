@@ -122,6 +122,31 @@ async function recordFenceRejection(pool: Pool, claim: RunClaim, kind: string): 
 }
 
 /**
+ * The shared refusal tail of `runFenced` and `assertOwner`: record the
+ * rejection (its own statement, against the pool rather than any transaction
+ * — see `recordFenceRejection`), then throw `StaleOwnerError`, carrying the
+ * recording failure as `cause` when the recording itself failed rather than
+ * letting it vanish (decision 12: never silently). See
+ * run-write-context.live.mjs › "a fence refusal whose rejection cannot be
+ * recorded still ends in StaleOwnerError, carrying the recording failure as
+ * its cause" and › "assertOwner whose rejection record fails still throws
+ * StaleOwnerError, carrying the recording failure as its cause" — the same
+ * contract at both call sites, because both share this function.
+ */
+async function recordRejectionAndThrow(pool: Pool, claim: RunClaim, kind: string): Promise<never> {
+  let recordFailure: unknown;
+  try {
+    await recordFenceRejection(pool, claim, kind);
+  } catch (error) {
+    recordFailure = error;
+  }
+  throw new StaleOwnerError(
+    fenceRefusalMessage(claim, kind),
+    recordFailure === undefined ? undefined : { cause: recordFailure },
+  );
+}
+
+/**
  * Runs `work` inside one transaction that has already passed the fence
  * (`RUN_WRITE_CONTEXT_FENCE_SQL`) — the shape every run-scoped write in this
  * module shares. On a fence failure: ROLLBACK, record the rejection (its own
@@ -176,21 +201,7 @@ async function runFenced<T>(
   // how enough simultaneous refusals held every connection at once. see
   // run-write-context.live.mjs › "more concurrent fence refusals than the pool
   // has connections all end in StaleOwnerError instead of wedging the pool"
-  // The refusal stays the answer when the rejection cannot be recorded, and the
-  // lost evidence travels with it as the error's cause rather than vanishing.
-  // see run-write-context.live.mjs › "a fence refusal whose rejection cannot
-  // be recorded still ends in StaleOwnerError, carrying the recording failure
-  // as its cause"
-  let recordFailure: unknown;
-  try {
-    await recordFenceRejection(pool, claim, kind);
-  } catch (error) {
-    recordFailure = error;
-  }
-  throw new StaleOwnerError(
-    fenceRefusalMessage(claim, kind),
-    recordFailure === undefined ? undefined : { cause: recordFailure },
-  );
+  return recordRejectionAndThrow(pool, claim, kind);
 }
 
 /**
@@ -473,16 +484,7 @@ async function assertOwner(pool: Pool, claim: RunClaim, kind: string): Promise<v
     claim.executionAttempt,
   ]);
   if (rows.length === 0) {
-    let recordFailure: unknown;
-    try {
-      await recordFenceRejection(pool, claim, kind);
-    } catch (error) {
-      recordFailure = error;
-    }
-    throw new StaleOwnerError(
-      fenceRefusalMessage(claim, kind),
-      recordFailure === undefined ? undefined : { cause: recordFailure },
-    );
+    await recordRejectionAndThrow(pool, claim, kind);
   }
 }
 

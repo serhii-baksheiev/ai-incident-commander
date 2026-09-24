@@ -445,8 +445,24 @@ function sourceFiles(directory) {
  * measured to have zero such false positives and is what this row scans for
  * instead; `schema_migrations` is distinctive enough on its own (also measured
  * at zero false positives) to stay a bare word like the checkpointer tables.
+ *
+ * AIC-56 slice F extends the same list with slice C's five remaining
+ * `aic_app` tables — `node_results`, `run_events`, `run_event_counters`,
+ * `run_trials`, `run_evidence`, `fence_rejections` — each measured the same
+ * way `schema_migrations` was: zero matches anywhere in `packages/` or
+ * `apps/` outside `packages/persistence` today, so each stays a bare word
+ * rather than needing `aic_app.` qualification the way `runs` does.
  */
-const APPLICATION_SCHEMA_SURFACE_PATTERNS = Object.freeze(['aic_app\\.runs', 'schema_migrations']);
+const APPLICATION_SCHEMA_SURFACE_PATTERNS = Object.freeze([
+  'aic_app\\.runs',
+  'schema_migrations',
+  'node_results',
+  'run_events',
+  'run_event_counters',
+  'run_trials',
+  'run_evidence',
+  'fence_rejections',
+]);
 
 test('keeps checkpointer storage, the application schema\'s tables, and the PostgreSQL driver out of every layer but persistence', () => {
   // `dependency-cruiser` cannot answer this one: `npm run lint:graph` runs over

@@ -41,7 +41,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import { MemorySaver } from '@langchain/langgraph-checkpoint';
+import { BaseCheckpointSaver, MemorySaver } from '@langchain/langgraph-checkpoint';
 
 import { StaleOwnerError } from '@aic/domain';
 import { createPersistentInvestigationRunner } from '@aic/graph';
@@ -292,5 +292,110 @@ test('a graph compiled with the fenced checkpointer runs to completion when the 
   assert.ok(
     context.calls.length > 0,
     "the fence must actually have been exercised by the graph's own checkpoint writes — a passing fence with zero calls would not prove the fenced checkpointer is wired into the write path at all",
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 6 (AIC-56 slice F carry-over) — getDeltaChannelHistory delegates to    */
+/* the inner saver's own override, rather than falling back to the base      */
+/* class's default (which reconstructs history through THIS wrapper's own    */
+/* fenced getTuple instead of the inner saver's storage-aware shortcut)      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `BaseCheckpointSaver.getDeltaChannelHistory` (the base class both
+ * `MemorySaver` and `FencedCheckpointer` extend) ships a DEFAULT
+ * implementation, documented on the class itself as something "savers with
+ * direct storage access (e.g. MemorySaver) override for performance".
+ * Measured today: `MemorySaver.prototype` carries its own
+ * `getDeltaChannelHistory`, and `FencedCheckpointer.prototype` does not — so
+ * calling it on a fenced saver runs the INHERITED base default rather than
+ * delegating to the inner `MemorySaver`'s own override, and the inner
+ * override is never reached at all. Reads are not fenced (this file's own
+ * header), so there is no ownership reason for the fenced wrapper to run a
+ * different implementation than the one the inner saver chose for itself.
+ */
+test('getDeltaChannelHistory delegates to the inner saver, not to the inherited base-class default', async () => {
+  const inner = new MemorySaver();
+  const graph = new StateGraph(ThreadState)
+    .addNode('step', async (state) => ({ value: (state.value ?? 0) + 1 }))
+    .addEdge(START, 'step')
+    .addEdge('step', END)
+    .compile({ checkpointer: inner });
+  const config = { configurable: { thread_id: 'thread-delta-history' } };
+  await graph.invoke({ value: 0 }, config);
+
+  let innerCalls = 0;
+  const realGetDeltaChannelHistory = inner.getDeltaChannelHistory.bind(inner);
+  inner.getDeltaChannelHistory = async (...args) => {
+    innerCalls += 1;
+    return realGetDeltaChannelHistory(...args);
+  };
+
+  const context = createFakeFenceContext();
+  const fenced = fencedCheckpointerFactory()(inner, context);
+
+  const expected = await realGetDeltaChannelHistory({ config, channels: ['value'] });
+  const actual = await fenced.getDeltaChannelHistory({ config, channels: ['value'] });
+
+  assert.deepEqual(
+    actual,
+    expected,
+    'getDeltaChannelHistory on the fenced saver must return exactly what the inner saver returns',
+  );
+  assert.equal(
+    innerCalls,
+    1,
+    "the inner MemorySaver's OWN getDeltaChannelHistory override was never called: the fenced wrapper ran the inherited BaseCheckpointSaver default instead of delegating, which is observable here as a call count of 0 rather than 1",
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 7 (AIC-56 slice F carry-over) — the base-class members the fenced      */
+/* class does NOT override, as a computed, pinned sentinel                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `BaseCheckpointSaver`'s own methods that are NOT abstract — `toJSON`,
+ * `get`, `getDeltaChannelHistory`, `getNextVersion` (measured today via
+ * `Object.getOwnPropertyNames(BaseCheckpointSaver.prototype)`, minus
+ * `constructor`; `getTuple`/`list`/`put`/`putWrites`/`deleteThread` are
+ * `abstract` in the TypeScript source and carry no compiled implementation on
+ * the base prototype at all, so they never appear here regardless of what
+ * `FencedCheckpointer` overrides).
+ *
+ * Of those four, `FencedCheckpointer` overrides `getNextVersion` only
+ * (measured today). The other three — `toJSON`, `get`,
+ * `getDeltaChannelHistory` — are inherited as-is, which is safe for `toJSON`
+ * and `get` (read-only) and, per the row above, a real gap for
+ * `getDeltaChannelHistory`.
+ *
+ * This row is the SENTINEL, not the fix: it pins the exact set the fenced
+ * class leaves un-overridden, so a future base-class method this wrapper
+ * silently inherits — one that turns out to WRITE — changes this list and
+ * goes red here rather than shipping unfenced and unnoticed.
+ */
+test('pins the exact set of BaseCheckpointSaver members the fenced checkpointer does not override', () => {
+  const baseMembers = Object.getOwnPropertyNames(BaseCheckpointSaver.prototype).filter(
+    (name) => name !== 'constructor',
+  );
+  assert.ok(
+    baseMembers.length > 0,
+    'BaseCheckpointSaver.prototype carries no own member beyond constructor: the sentinel below would then pin an empty set and catch nothing',
+  );
+
+  const inner = createInnerWriteStub([]);
+  const context = createFakeFenceContext();
+  const fenced = fencedCheckpointerFactory()(inner, context);
+  const fencedOwnMembers = new Set(
+    Object.getOwnPropertyNames(Object.getPrototypeOf(fenced)).filter((name) => name !== 'constructor'),
+  );
+
+  const notOverridden = baseMembers.filter((name) => !fencedOwnMembers.has(name)).sort();
+
+  assert.deepEqual(
+    notOverridden,
+    ['get', 'toJSON'],
+    `the set of BaseCheckpointSaver members the fenced checkpointer inherits unfenced changed: found [${notOverridden.join(', ')}]. If a NEW member appears here, decide deliberately whether it needs fencing before updating this pin — that is the point of the sentinel`,
   );
 });
