@@ -656,6 +656,25 @@ export const BENCHMARK_PRIMARY_SCOPE: PrimaryScope = Object.freeze({
   environmentId: '88888888-8888-4888-8888-888888888888',
 });
 
+/**
+ * The incident id a benchmark run shows to the model: opaque, derived from the
+ * run rather than from the scenario.
+ *
+ * The scenario id is a ground-truth label (`false-alert`, `bad-deployment`),
+ * and the incident travels into every model-facing prompt, so an incident named
+ * after its scenario hands the model the answer's category. `scenarioId` stays
+ * on the record's metadata, where the evaluator reads it and no model does.
+ * see model-prompt-scenario-leak.test.mjs › "shows no REPLAY_SCENARIOS id in
+ * any model prompt, for every scenario and every model-backed role"
+ */
+export function opaqueIncidentId(runId: string): string {
+  requireNonEmpty(runId, 'runId');
+  const digest = createHash('sha256')
+    .update(`aic-benchmark-incident:${runId}`)
+    .digest('hex');
+  return `incident-${digest.slice(0, 16)}`;
+}
+
 function initialBenchmarkState(
   input: BenchmarkExecutionInput,
   budgetPolicy: BenchmarkBudgetPolicy,
@@ -665,7 +684,10 @@ function initialBenchmarkState(
   }
 
   return {
-    incident: { id: input.scenarioId, primaryScope: BENCHMARK_PRIMARY_SCOPE },
+    incident: {
+      id: opaqueIncidentId(input.runId),
+      primaryScope: BENCHMARK_PRIMARY_SCOPE,
+    },
     hypotheses: [],
     predictions: [],
     tests: [],
