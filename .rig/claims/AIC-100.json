@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "ticket": "AIC-100",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "7c9593b1bcff7e3b7d827b776b9972637d1b760ad615cdaca5171c6c570a5052",
+      "targetSha": "4f3b662d7f813178958c3fac723d8da685d13e38"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "41e6fdfa060f69b5ed79d226c3dbfaa5666edfd0ea0c8484057c68033c35887b",
+      "count": 4
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  }
+}
