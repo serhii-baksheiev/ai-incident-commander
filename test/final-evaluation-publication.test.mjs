@@ -868,7 +868,70 @@ test('freshTempToken returns twelve lowercase hex characters, and returns a diff
   assert.equal(
     seen.size,
     1000,
-    'a constant (or otherwise low-entropy) default token must not pass: 1000 calls must return 1000 distinct values',
+    'freshTempToken must return 1000 distinct values across 1000 calls; this row proves distinctness across calls only — for the claim that the source is a CSPRNG, see the row below, "the source of freshTempToken is exactly one return of randomBytes(6).toString(\'hex\'), imported from node:crypto"',
+  );
+});
+
+/**
+ * AIC-120 gate round 3 (code-reviewer blocker, round 2): the row above proves
+ * DISTINCTNESS across 1000 calls, not UNPREDICTABILITY — those come apart on
+ * exactly the threat the fix exists for. A plain incrementing counter body
+ * ("__counter += 1; return __counter.toString(16).padStart(12, '0')") is
+ * twelve lowercase hex characters, distinct on every call, and every future
+ * value is trivially derivable from the last one it produced — it passed the
+ * row above and the "defaults its token parameter to freshTempToken()" audit
+ * below unchanged, because neither one looks at what freshTempToken is MADE
+ * OF, only at its call site and its output shape. This row does look inside:
+ * it extracts the function's own body from the module's source text and pins
+ * it to exactly one statement, delegating to Node's CSPRNG.
+ *
+ * 🔴 This pins that the token comes from `node:crypto`'s `randomBytes`, a
+ * CSPRNG. It does NOT measure entropy, and it cannot: reading source text
+ * tells you which primitive was called, never how much randomness that
+ * primitive's actual output carries at runtime. For the observed-behaviour
+ * half (fixed width, hex alphabet, no collision across 1000 calls), see the
+ * row above, "freshTempToken returns twelve lowercase hex characters, and
+ * returns a different value on every one of 1000 consecutive calls".
+ */
+test("the source of freshTempToken is exactly one return of randomBytes(6).toString('hex'), imported from node:crypto", () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts', 'final-holdout-publication.mjs'), 'utf8');
+
+  assert.match(
+    source,
+    /import\s*\{[^}]*\brandomBytes\b[^}]*\}\s*from\s*'node:crypto'/,
+    'scripts/final-holdout-publication.mjs must import randomBytes from node:crypto',
+  );
+
+  const marker = 'export function freshTempToken()';
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(
+    markerIndex,
+    -1,
+    'freshTempToken must be declared as "export function freshTempToken()" for this audit to locate its body',
+  );
+
+  const openBraceIndex = source.indexOf('{', markerIndex + marker.length);
+  assert.notEqual(openBraceIndex, -1, 'freshTempToken() must be followed by a "{" opening its body');
+
+  let depth = 0;
+  let closeBraceIndex = -1;
+  for (let i = openBraceIndex; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        closeBraceIndex = i;
+        break;
+      }
+    }
+  }
+  assert.notEqual(closeBraceIndex, -1, 'the body opened at freshTempToken() { must close with a balanced "}"');
+
+  const body = source.slice(openBraceIndex + 1, closeBraceIndex).trim();
+  assert.equal(
+    body,
+    "return randomBytes(6).toString('hex');",
+    `freshTempToken's body must be exactly one return of randomBytes(6).toString('hex'), got: ${body}`,
   );
 });
 
@@ -957,6 +1020,80 @@ test('writeRecordDurably rejects a token that is not lowercase hex of length 1-3
       `no <path>.tmp-* entry (or anything else) may be created in ${dir} for the refused token ${JSON.stringify(token)}: the refusal must happen before any filesystem call`,
     );
   }
+});
+
+/**
+ * AIC-120 gate round 3 (code-reviewer advisory, round 2): `VALID_TOKEN.test(token)`
+ * coerces its argument to a string before matching, so a value that is not a
+ * primitive string at all — a number, a BigInt, a boxed `String`, an object
+ * whose `toString` happens to produce valid hex — can satisfy the regex
+ * without ever being the "1-32 lowercase hex characters" string the header
+ * promises. The new contract adds `typeof token !== 'string'` as a refusal
+ * ahead of the regex, so none of these coerce their way past it.
+ *
+ * 🔴 This row FAILS today for every one of these values: the current guard
+ * (`VALID_TOKEN.test(token)` alone) accepts all four, because `RegExp#test`
+ * stringifies its argument before matching.
+ */
+test('writeRecordDurably refuses a token that is not a primitive string, even when it coerces to valid hex', async (t) => {
+  const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
+  const cases = [
+    ['a number (12345)', 12345],
+    ['a BigInt (10n)', 10n],
+    ["a boxed String (new String('deadbeef'))", new String('deadbeef')],
+    ["an object whose toString() returns 'deadbeef'", { toString: () => 'deadbeef' }],
+  ];
+
+  for (const [label, token] of cases) {
+    await t.test(label, async () => {
+      const dir = tempDir(t, 'aic-120-non-string-token-');
+      const path = join(dir, 'record.json');
+
+      await assert.rejects(
+        () => writeRecordDurably(path, { hello: 'world' }, { token }),
+        `writeRecordDurably must refuse a non-string token (${label}), even though it coerces to a hex-looking string`,
+      );
+
+      assert.deepEqual(
+        readdirSync(dir),
+        [],
+        `no file may land in ${dir} for the refused non-string token (${label}): the refusal must happen before any filesystem call`,
+      );
+    });
+  }
+});
+
+/**
+ * AIC-120 gate round 3 (code-reviewer advisory, round 2): "refused before the
+ * filesystem is touched at all" was not distinguished from "refused after a
+ * no-op mkdirSync", because every existing row's temp directory already
+ * exists by the time writeRecordDurably runs, so a no-op `mkdirSync` there is
+ * invisible to a `readdirSync` assertion. This row uses a path under two
+ * directories that do not exist yet: a refusal ordered after `mkdirSync`
+ * would have created the first of them, and a refusal ordered before it
+ * leaves the tree exactly as it was.
+ *
+ * 🔴 This row may already be green today — the guard in
+ * scripts/final-holdout-publication.mjs already runs before `mkdirSync`. It
+ * is added so the ordering claim in the header has a test that would catch a
+ * regression, not because it is expected to fail now.
+ */
+test('writeRecordDurably rejects a malformed token before creating any missing parent directory', async (t) => {
+  const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
+  const root = tempDir(t, 'aic-120-refuse-before-mkdir-');
+  const missingParent = join(root, 'missing-1');
+  const path = join(missingParent, 'missing-2', 'record.json');
+
+  await assert.rejects(
+    () => writeRecordDurably(path, { hello: 'world' }, { token: '../x' }),
+    'a malformed token must be refused',
+  );
+
+  assert.equal(
+    existsSync(missingParent),
+    false,
+    'the first missing parent directory must not have been created: the refusal must precede any mkdirSync call',
+  );
 });
 
 test('attemptLogPath places the attempt log in a publications/ subdirectory beside the record, named after its basename without .json', async () => {
