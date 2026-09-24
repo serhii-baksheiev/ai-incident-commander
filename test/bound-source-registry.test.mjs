@@ -3658,3 +3658,32 @@ test(
     );
   },
 );
+
+/* -------------------------------------------------------------------------- */
+/* Review round 5 — an RFC 4880 armored secret key label, and a non-private   */
+/* footer between a private header and its real footer                        */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts an RFC 4880 armored secret key (-----BEGIN PGP PRIVATE KEY BLOCK-----) header through its footer (review round 5, security blocker)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const header = ['-----BEGIN ', 'PGP PRIVATE KEY BLOCK-----'].join('');
+  const footer = ['-----END ', 'PGP PRIVATE KEY BLOCK-----'].join('');
+  const body = 'lQOYBGX1' + 'Qk9ESQ'.repeat(10);
+  const input = `config dump:\n${header}\nVersion: GnuPG v2\n\n${body}\n${footer}\ntail survives`;
+  assert.equal(redactEvidenceOutput(input), 'config dump:\n[REDACTED]\ntail survives');
+});
+
+test('redactEvidenceOutput leaves an RFC 4880 PUBLIC key block untouched (review round 5, the PGP label widening stays private-only)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = ['-----BEGIN ', 'PGP PUBLIC KEY BLOCK-----'].join('') + '\nmQENBGX1\n' + ['-----END ', 'PGP PUBLIC KEY BLOCK-----'].join('');
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput skips a non-private -----END line between a private header and its real footer, and redacts through the real footer (review round 5, code-reviewer blocker)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const header = ['-----BEGIN ', 'RSA PRIVATE KEY-----'].join('');
+  const footer = ['-----END ', 'RSA PRIVATE KEY-----'].join('');
+  const certificateFooter = ['-----END ', 'CERTIFICATE-----'].join('');
+  const input = `lead\n${header}\nbodyone\n${certificateFooter}\nbodytwo\n${footer}\nTAIL`;
+  assert.equal(redactEvidenceOutput(input), 'lead\n[REDACTED]\nTAIL');
+});
