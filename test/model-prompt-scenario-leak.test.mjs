@@ -33,6 +33,9 @@ const MODEL_BACKED_ROLES = Object.freeze([
   'generate_hypotheses',
   'interpret_residual_evidence',
   'challenge_hypothesis',
+  // AIC-119 slice E: propose_conclusion is wired into modelNodes beside the
+  // three roles above, so the leak sweep below must reach it too.
+  'propose_conclusion',
 ]);
 
 const ALL_SCENARIO_IDS = evals.REPLAY_SCENARIOS.map(({ id }) => id);
@@ -69,7 +72,7 @@ function scenarioBatchesOfFive() {
   return batches;
 }
 
-/** Tell the three model-backed roles apart by the answer shape they declared. */
+/** Tell the four model-backed roles apart by the answer shape they declared. */
 function roleFromOutputSchema(outputSchema) {
   const keys = new Set(Object.keys(outputSchema?.properties ?? {}));
   if (keys.has('hypotheses')) return 'generate_hypotheses';
@@ -77,6 +80,7 @@ function roleFromOutputSchema(outputSchema) {
   if (keys.has('alternative') && keys.has('discriminatingTests')) {
     return 'challenge_hypothesis';
   }
+  if (keys.has('kind') && keys.has('causes')) return 'propose_conclusion';
   throw new Error(
     `fake port cannot classify a request from its outputSchema keys: ${[...keys].join(', ')}`,
   );
@@ -117,7 +121,7 @@ function createFakeModelPort() {
           };
         } else if (role === 'interpret_residual_evidence') {
           document = { assessments: [] };
-        } else {
+        } else if (role === 'challenge_hypothesis') {
           document = {
             alternative: {
               id: `fake-alternative-${counter}`,
@@ -134,6 +138,11 @@ function createFakeModelPort() {
               },
             ],
           };
+        } else {
+          // propose_conclusion: a valid, minimal conclusion so the graph can
+          // terminate. `inconclusive` needs no cause, so it says nothing about
+          // which hypothesis or evidence ids the run happened to carry.
+          document = { kind: 'inconclusive', causes: [] };
         }
 
         return {

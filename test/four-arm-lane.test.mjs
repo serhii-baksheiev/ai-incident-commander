@@ -1227,6 +1227,12 @@ test('carries no graphVsNaive key when the naive arm did not run', async () => {
  * interpret_residual_evidence`, and both `challenge_hypothesis` and
  * `interpret_residual_evidence` are model-backed roles. So the reserved
  * challenge headroom is spent at 2 model calls per round, not 1.
+ *
+ * AIC-119 slice E: `propose_conclusion` is reached exactly once per run — at
+ * termination, once per terminal, never per iteration or per challenge round
+ * — so the derivation gains a bare `+ 1`, independent of every other term
+ * here. The `+ 1` is an independent literal, not a read of
+ * `LIVE_MODEL_LANE_GRAPH_MODEL_CALLS_PER_RUN` itself.
  */
 test('derives the per-run and total model-call caps from the budget policy and the partition lengths', () => {
   const graphPerRun = requireExport('LIVE_MODEL_LANE_GRAPH_MODEL_CALLS_PER_RUN');
@@ -1236,8 +1242,11 @@ test('derives the per-run and total model-call caps from the budget policy and t
 
   assert.equal(
     graphPerRun,
-    1 + evals.BENCHMARK_BUDGET_POLICY.maxIterations + 2 * evals.BENCHMARK_BUDGET_POLICY.reservedChallengeBudget,
-    'one generate_hypotheses, plus the iteration headroom, plus TWO model-backed roles per reserved challenge round',
+    1 +
+      evals.BENCHMARK_BUDGET_POLICY.maxIterations +
+      2 * evals.BENCHMARK_BUDGET_POLICY.reservedChallengeBudget +
+      1,
+    'one generate_hypotheses, plus the iteration headroom, plus TWO model-backed roles per reserved challenge round, plus ONE propose_conclusion at termination',
   );
   assert.equal(naivePerRun, 1);
   assert.equal(

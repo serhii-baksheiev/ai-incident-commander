@@ -18,13 +18,37 @@ import * as evals from '@aic/evals';
 import { NAIVE_PROMPT_VERSION, REFERENCE_MODEL_ID, REFERENCE_PROMPT_VERSION } from '@aic/roles';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const PREREGISTRATION = join(REPO_ROOT, 'docs', 'evidence', 'preregistration', 'v0.2-four-arm.md');
+const PREREGISTRATION_DIR = join(REPO_ROOT, 'docs', 'evidence', 'preregistration');
+const PREREGISTRATION = join(PREREGISTRATION_DIR, 'v0.2-four-arm.md');
 const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-evaluators-v0.3.json');
 
-// 🔴 Changing this value is changing a preregistration after the fact. The only
-// legitimate edit is to ADD a new dated file that names this one as superseded
-// and says why; this file and this pin stay as they are.
-const PINNED_SHA256 = 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d';
+/**
+ * 🔴 Changing a value already in this map is changing a preregistration after
+ * the fact. The only legitimate edit is to ADD a new dated file — and a new
+ * entry for it here — that names an existing one as superseded and says why;
+ * every value already present stays exactly as it is.
+ *
+ * AIC-119 slice E maps this pin from a single file to every `.md` file the
+ * directory carries, so a stray, unpinned file (an addition with no matching
+ * entry) reddens the row below exactly as an edited one does — the directory
+ * and this map's keys must name the same set.
+ *
+ * `v0.2-four-arm-supplement-1.md` (dated 2026-09-24) is AIC-119 slice E's own
+ * addition, written in the Green step: it names `reference-roles-prompt-v0.3`,
+ * what changed (the conclusion role wired into the graph arm, the interpret
+ * id contract), and that it supersedes only v0.2-four-arm.md's prompt-version
+ * row. The digest below is a PLACEHOLDER — the file does not exist yet, so
+ * this row fails today on the file-name comparison, before the digest is even
+ * read. Once the Green step commits the real file, replace the placeholder
+ * with its actual digest: `sha256:$(shasum -a 256 docs/evidence/preregistration/v0.2-four-arm-supplement-1.md | cut -d' ' -f1)`
+ * (equivalently, `` `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}` ``,
+ * the same computation this file's own digest row below uses) — and never
+ * edit it again after that.
+ */
+const PINNED_SHA256 = Object.freeze({
+  'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
+  'v0.2-four-arm-supplement-1.md': 'sha256:PENDING-GREEN-STEP-REPLACE-WITH-REAL-DIGEST',
+});
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');
 
@@ -40,13 +64,23 @@ function directionRows() {
     });
 }
 
-test('the preregistration is byte-identical to what was committed before any result, so a later edit is visible', () => {
-  const digest = `sha256:${createHash('sha256').update(readFileSync(PREREGISTRATION)).digest('hex')}`;
-  assert.equal(
-    digest,
-    PINNED_SHA256,
-    'the preregistration changed. A correction is a new dated file that supersedes this one, never an edit to it',
+test('every .md file in the preregistration directory is pinned by sha256, with none missing and none extra, so a later edit or an unpinned addition is visible', () => {
+  const namesOnDisk = readdirSync(PREREGISTRATION_DIR).filter((name) => name.endsWith('.md')).sort();
+  const namesPinned = Object.keys(PINNED_SHA256).sort();
+  assert.deepEqual(
+    namesOnDisk,
+    namesPinned,
+    'the directory and the pinned map must name exactly the same .md files: a stray unpinned file, or a pinned file that no longer exists, must both fail here',
   );
+
+  for (const name of namesOnDisk) {
+    const digest = `sha256:${createHash('sha256').update(readFileSync(join(PREREGISTRATION_DIR, name))).digest('hex')}`;
+    assert.equal(
+      digest,
+      PINNED_SHA256[name],
+      `${name} changed. A correction is a new dated file that supersedes it, never an edit to an already-pinned one`,
+    );
+  }
 });
 
 test('registers a direction for exactly the scenarios of the declared partition, calibration and hold-out alike', () => {

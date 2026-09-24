@@ -970,11 +970,16 @@ function calibrationExecutionInput() {
   };
 }
 
-/** The three nodes the model arm is allowed to differ in, and nothing else. */
+/**
+ * The four nodes the model arm is allowed to differ in, and nothing else.
+ * AIC-119 slice E adds `propose_conclusion`, wired into `modelNodes` beside
+ * the three roles the graph arm already swapped.
+ */
 const MODEL_BACKED_ROLES = [
   'challenge_hypothesis',
   'generate_hypotheses',
   'interpret_residual_evidence',
+  'propose_conclusion',
 ];
 
 /**
@@ -991,7 +996,7 @@ function refusingPort(asked) {
   };
 }
 
-test('swaps exactly the three reasoning roles and leaves the rest of the lifecycle shared', () => {
+test('swaps exactly the four reasoning roles and leaves the rest of the lifecycle shared', () => {
   const input = calibrationExecutionInput();
   const asked = [];
   const control = scriptedNodes(input);
@@ -1000,7 +1005,7 @@ test('swaps exactly the three reasoning roles and leaves the rest of the lifecyc
   assert.deepEqual(
     Object.keys(model).sort(),
     Object.keys(control).sort(),
-    'the model arm is the control arm with three roles replaced, so it can neither gain nor lose a node',
+    'the model arm is the control arm with four roles replaced, so it can neither gain nor lose a node',
   );
 
   // Compared by the SOURCE each node came from, not by reference: `scriptedNodes`
@@ -1014,7 +1019,7 @@ test('swaps exactly the three reasoning roles and leaves the rest of the lifecyc
   assert.deepEqual(
     differing,
     MODEL_BACKED_ROLES,
-    'only the three reasoning roles may differ between the arms: a lane whose arms differ anywhere else is comparing the harness, not the model',
+    'only the four reasoning roles may differ between the arms: a lane whose arms differ anywhere else is comparing the harness, not the model',
   );
   assert.deepEqual(asked, [], 'no row in this file may call the model port');
 });
