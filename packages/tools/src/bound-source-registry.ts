@@ -299,7 +299,8 @@ export const REPLAY_IDENTITY_VERSION = 2;
 
 const REPLAY_IDENTITY_PREFIX = `v${REPLAY_IDENTITY_VERSION}:`;
 
-function buildReplayIdentity(parts: {
+/** Exported for `migrateReplayFixtureV1`. */
+export function buildReplayIdentity(parts: {
   readonly sourceBindingId: string;
   readonly adapter: string;
   readonly requestFingerprint: string;
@@ -700,9 +701,14 @@ export function createBoundSourceRegistry(
   };
 }
 
-/** In-process `ReplayStore`: a plain `Map`, nothing persisted. */
-export function createMemoryReplayStore(): ReplayStore {
-  const recordings = new Map<string, EvidenceSourceOutcome<unknown>>();
+/**
+ * In-process `ReplayStore`: a plain `Map`, nothing persisted, optionally
+ * seeded from `initial` (AIC-100 slice d).
+ */
+export function createMemoryReplayStore(
+  initial: Readonly<Record<string, EvidenceSourceOutcome<unknown>>> = {},
+): ReplayStore {
+  const recordings = new Map<string, EvidenceSourceOutcome<unknown>>(Object.entries(initial));
   return {
     async get(identity) {
       return recordings.get(identity);

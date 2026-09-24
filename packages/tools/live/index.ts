@@ -1,18 +1,37 @@
 import { DOMAIN_LAYER, type Evidence } from '@aic/domain';
 
+import type { BoundSourceBinding, BoundSourceRegistry, SourceBudgets } from '../src/bound-source-registry.js';
+import { createBoundSourceRegistry, createMemoryReplayStore } from '../src/bound-source-registry.js';
 import {
   isReadOnlyToolId,
+  isToolResult,
   type IncidentTool,
   type ToolResult,
 } from '../src/contracts.js';
+import { createIncidentToolSource } from '../src/incident-tool-source.js';
 
 export const LIVE_TOOL_DEPENDENCIES = [DOMAIN_LAYER] as const;
 
-export class LiveToolAdapter<Input = unknown, Output = Evidence[]> {
-  readonly #tools: ReadonlyMap<string, IncidentTool<Input, Output>>;
+/**
+ * AIC-100, slice d: a wrapper over `createBoundSourceRegistry`'s `live` mode,
+ * one `createIncidentToolSource` binding per tool. Omitted budgets default to
+ * `DEFAULT_SOURCE_BUDGETS` (test/legacy-adapters-on-registry.test.mjs ›
+ * "LiveToolAdapter constructed with NO second (options) argument is still
+ * bound by DEFAULT_SOURCE_BUDGETS: an ok result whose serialized size exceeds
+ * maxResultBytes is refused budget_exceeded (code-reviewer round 1)").
+ */
+export interface LiveToolAdapterOptions {
+  readonly budgets?: Partial<SourceBudgets>;
+  readonly clock?: () => Date;
+}
 
-  constructor(tools: readonly IncidentTool<Input, Output>[]) {
-    const registered = new Map<string, IncidentTool<Input, Output>>();
+export class LiveToolAdapter<Input = unknown, Output = Evidence[]> {
+  readonly #toolIds: ReadonlySet<string>;
+  readonly #registry: BoundSourceRegistry;
+
+  constructor(tools: readonly IncidentTool<Input, Output>[], options: LiveToolAdapterOptions = {}) {
+    const registered = new Set<string>();
+    const bindings: BoundSourceBinding[] = [];
     for (const tool of tools) {
       if (!isReadOnlyToolId(tool.id)) {
         throw new Error(`v0.1 tool is not registered: ${tool.id}`);
@@ -23,24 +42,41 @@ export class LiveToolAdapter<Input = unknown, Output = Evidence[]> {
       if (tool.risk !== 'read') {
         throw new Error(`v0.1 tool ${tool.id} must be read-only`);
       }
-      registered.set(tool.id, tool);
+      registered.add(tool.id);
+      bindings.push({
+        sourceBindingId: tool.id,
+        source: createIncidentToolSource(tool),
+        credentialRefId: null,
+      });
     }
-    this.#tools = registered;
+    this.#toolIds = registered;
+    this.#registry = createBoundSourceRegistry({
+      mode: 'live',
+      bindings,
+      store: createMemoryReplayStore(),
+      clock: options.clock ?? (() => new Date()),
+      budgets: options.budgets,
+    });
   }
 
   async execute(toolId: string, input: Input): Promise<ToolResult<Output>> {
-    const tool = this.#tools.get(toolId);
-    if (!tool) {
+    if (!this.#toolIds.has(toolId)) {
       return { status: 'unavailable', reason: `tool is not registered: ${toolId}` };
     }
 
-    try {
-      return await tool.execute(input);
-    } catch {
-      return {
-        status: 'error',
-        message: 'tool execution failed',
-      };
+    const outcome = await this.#registry.execute(toolId, toolId, input);
+
+    if (outcome.status === 'ok') {
+      // the wrapped tool's own promise, not the registry, decides this shape
+      return isToolResult<Output>(outcome.output)
+        ? outcome.output
+        : { status: 'error', message: 'tool execution failed' };
     }
+
+    if (outcome.reason === 'adapter_error') {
+      return { status: 'error', message: 'tool execution failed' };
+    }
+
+    return { status: 'unavailable', reason: outcome.reason };
   }
 }

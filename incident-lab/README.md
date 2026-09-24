@@ -66,6 +66,16 @@ the set instead of overwriting it. These properties are exercised by
 `incident-lab/tests/aic16-completion.live.mjs` › "regenerates one byte-stable
 replayable candidate per frozen v0.1 scenario after isolated resets".
 
+A live result is recorded as `LiveToolAdapter` returns it, and since AIC-100
+that adapter runs every call through the evidence-source registry. So a
+credential-shaped value in a result is recorded redacted
+(`test/legacy-adapters-on-registry.test.mjs` › "LiveToolAdapter redacts an
+assembled credential inside a live tool's output, through the registry"), and
+a result larger than the default size budget is refused instead of recorded
+(same file › "LiveToolAdapter constructed with NO second (options) argument is
+still bound by DEFAULT_SOURCE_BUDGETS: an ok result whose serialized size
+exceeds maxResultBytes is refused budget_exceeded (code-reviewer round 1)").
+
 Compare a complete candidate set with the accepted v0.1 replay observations:
 
 ```bash

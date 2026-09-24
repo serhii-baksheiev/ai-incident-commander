@@ -1,13 +1,19 @@
 import { DOMAIN_LAYER, type Evidence } from '@aic/domain';
 
+import type { BoundSourceBinding, BoundSourceRegistry } from '../src/bound-source-registry.js';
+import { createBoundSourceRegistry, createMemoryReplayStore } from '../src/bound-source-registry.js';
 import {
   isReadOnlyToolId,
+  isToolResult,
+  READ_ONLY_TOOL_REGISTRY,
   type ToolResult,
 } from '../src/contracts.js';
+import { createIncidentToolSource } from '../src/incident-tool-source.js';
 import {
   createReplayFixtureKey,
   REPLAY_FIXTURE_VERSION,
 } from '../src/replay-key.js';
+import { migrateReplayFixtureV1 } from '../src/replay-migration.js';
 
 export const REPLAY_TOOL_DEPENDENCIES = [DOMAIN_LAYER] as const;
 export { REPLAY_FIXTURE_VERSION };
@@ -17,14 +23,46 @@ export interface ReplayFixture<Output = Evidence[]> {
   readonly responses: Readonly<Record<string, ToolResult<Output>>>;
 }
 
+const MIGRATION_FETCHED_AT = '1970-01-01T00:00:00.000Z';
+
+/**
+ * AIC-100, slice d: a wrapper over `createBoundSourceRegistry`'s `replay` mode,
+ * over the v1 fixture migrated once by `migrateReplayFixtureV1`. The stub
+ * sources only give each read-only tool id a binding. `createReplayFixtureKey`
+ * runs first to keep the legacy key-failure result
+ * (test/tool-registry-replay.test.mjs › "redacts replay key generation errors
+ * from ToolResult.error").
+ */
 export class ReplayToolAdapter<Output = Evidence[]> {
-  readonly #fixture: ReplayFixture<Output>;
+  readonly #registry: BoundSourceRegistry;
 
   constructor(fixture: ReplayFixture<Output>) {
     if (fixture.version !== REPLAY_FIXTURE_VERSION) {
       throw new Error(`unsupported replay fixture version: ${fixture.version}`);
     }
-    this.#fixture = fixture;
+
+    const { recordings } = migrateReplayFixtureV1(fixture, { fetchedAt: MIGRATION_FETCHED_AT });
+
+    const bindings: BoundSourceBinding[] = READ_ONLY_TOOL_REGISTRY.map(({ id }) => ({
+      sourceBindingId: id,
+      source: createIncidentToolSource({
+        id,
+        risk: 'read' as const,
+        async execute(): Promise<ToolResult<Output>> {
+          throw new Error(
+            `ReplayToolAdapter: source.execute must never be called in replay mode (tool ${id})`,
+          );
+        },
+      }),
+      credentialRefId: null,
+    }));
+
+    this.#registry = createBoundSourceRegistry({
+      mode: 'replay',
+      bindings,
+      store: createMemoryReplayStore(recordings),
+      clock: () => new Date(MIGRATION_FETCHED_AT),
+    });
   }
 
   async execute(toolId: string, input: unknown): Promise<ToolResult<Output>> {
@@ -33,18 +71,23 @@ export class ReplayToolAdapter<Output = Evidence[]> {
     }
 
     try {
-      const key = createReplayFixtureKey(toolId, input);
-      return (
-        this.#fixture.responses[key] ?? {
-          status: 'unavailable',
-          reason: 'replay response is not recorded',
-        }
-      );
+      createReplayFixtureKey(toolId, input);
     } catch {
       return {
         status: 'error',
         message: 'replay key generation failed',
       };
     }
+
+    const outcome = await this.#registry.execute(toolId, toolId, input);
+
+    if (outcome.status === 'ok' && isToolResult<Output>(outcome.output)) {
+      return outcome.output;
+    }
+
+    return {
+      status: 'unavailable',
+      reason: 'replay response is not recorded',
+    };
   }
 }

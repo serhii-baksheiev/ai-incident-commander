@@ -12,6 +12,28 @@ export type ToolResult<Output> =
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; message: string };
 
+/** Guards an unwrapped value against ToolResult's exact variants, not just duck-typed status. */
+export function isToolResult<Output>(value: unknown): value is ToolResult<Output> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.status === 'ok') {
+    return Object.prototype.hasOwnProperty.call(record, 'output');
+  }
+  if (record.status === 'unavailable') {
+    return typeof record.reason === 'string';
+  }
+  if (record.status === 'error') {
+    return typeof record.message === 'string';
+  }
+  return false;
+}
+
 export interface IncidentTool<Input = unknown, Output = Evidence[]> {
   readonly id: ToolId;
   readonly risk: ToolRisk;
