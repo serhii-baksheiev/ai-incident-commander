@@ -372,3 +372,46 @@ test('deriveHypothesisStatus: an assessment naming a predictionId that is not on
     'an assessment predictionId not among this hypothesis’s predictions (evaluation.ts:192)',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* shared refusal helpers and the standing derivation                         */
+/* -------------------------------------------------------------------------- */
+
+test('parseJsonDocument: an answer that is not parseable JSON is refused without the answer text reaching the message raw', async () => {
+  const createModelNaiveInvestigation = requireExport(roles, 'createModelNaiveInvestigation', '@aic/roles');
+  const ModelRoleOutputError = requireExport(roles, 'ModelRoleOutputError', '@aic/roles');
+  // A brace pair whose body JSON.parse rejects, carrying raw newlines inside
+  // the part a JSON.parse error message quotes back.
+  const port = {
+    async complete() {
+      return {
+        text: `PROSE {"a"\n:\n${'x'.repeat(500)}}`,
+        modelId: 'claude-under-test',
+        usage: { inputTokens: 10, outputTokens: 5 },
+      };
+    },
+  };
+  const node = createModelNaiveInvestigation({ port, mechanisms: MECHANISMS });
+  await assert.rejects(
+    () => node({ incidentId: INCIDENT_ID, entries: naiveEntries() }),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, 'a malformed answer is a ModelRoleOutputError');
+      assert.match(error.message, /the answer is not parseable JSON/);
+      assertEscaped(error, 'an unparseable answer (role-output.ts parseJsonDocument)');
+      return true;
+    },
+  );
+});
+
+test('deriveHypothesisStanding: an unknown status-rules version is named escaped, not raw', () => {
+  const deriveHypothesisStanding = requireExport(domain, 'deriveHypothesisStanding', '@aic/domain');
+  assertEscapedDomainRefusal(
+    () =>
+      deriveHypothesisStanding(
+        { hypotheses: [], predictions: [], assessments: [], evidence: [] },
+        { rulesVersion: HOSTILE },
+      ),
+    /deriveHypothesisStanding: unknown status-rules version/,
+    'an unknown status-rules version (hypothesis-standing.ts)',
+  );
+});
