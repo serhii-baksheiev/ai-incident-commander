@@ -32,6 +32,18 @@ import { pid } from 'node:process';
 import * as evals from '@aic/evals';
 
 /**
+ * A fresh 48-bit random temp-name token, hex-encoded (12 lowercase hex
+ * characters). Each call to `writeRecordDurably` gets its own, via this
+ * function's use as the `token` parameter's default.
+ * see final-evaluation-publication.test.mjs › "freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls"
+ */
+export function freshTempToken() {
+  return randomBytes(6).toString('hex');
+}
+
+const VALID_TOKEN = /^[0-9a-f]{1,32}$/;
+
+/**
  * Durably write `body` to `path`: write to a sibling temp file, fsync it,
  * rename it over `path`, then fsync the containing directory — so a crash
  * between the write and the rename leaves the PREVIOUS file intact rather
@@ -48,14 +60,27 @@ import * as evals from '@aic/evals';
  * see final-evaluation-publication.test.mjs › "writeRecordDurably writes pretty-printed JSON with a trailing newline, leaving no leftover temp file"
  * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  *
- * The temp name carries a fresh random token per call, so a file or symlink
- * left — or planted — at any earlier temp name cannot collide with a later
- * write, and the complete-record write after a spent hold-out is not blocked
- * by one. If a collision did happen, `'wx'` refuses it and never follows it.
- * see final-evaluation-publication.test.mjs › "writeRecordDurably ignores a leftover file or symlink at the old predictable temp name, because the temp path now carries a random per-call token"
+ * By default, each call gets a fresh 48-bit random token from
+ * `freshTempToken()`, so a file or symlink left — or planted — at an earlier
+ * temp name is very unlikely to collide with a later write. That is a
+ * probabilistic guarantee, not a "cannot": it is what makes the
+ * complete-record write after a spent hold-out proceed cleanly rather than
+ * fail on a name a killed prior run happened to also pick.
+ * see final-evaluation-publication.test.mjs › "freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls"
+ * see final-evaluation-publication.test.mjs › "the source of writeRecordDurably defaults its token parameter to a call to freshTempToken()"
+ *
+ * `token` is an optional parameter, for tests that need to predict the temp
+ * name in advance: it must be 1-32 lowercase hex characters, and anything
+ * else is refused before the filesystem is touched at all.
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably rejects a token that is not lowercase hex of length 1-32, before touching the filesystem"
+ *
+ * If a collision does happen anyway, `'wx'` refuses it and never follows it.
  * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  */
-export async function writeRecordDurably(path, body, { token = randomBytes(6).toString('hex') } = {}) {
+export async function writeRecordDurably(path, body, { token = freshTempToken() } = {}) {
+  if (!VALID_TOKEN.test(token)) {
+    throw new Error(`writeRecordDurably: token must be 1-32 lowercase hex characters, got ${JSON.stringify(token)}`);
+  }
   mkdirSync(dirname(path), { recursive: true });
   const serialized = `${JSON.stringify(body, null, 2)}\n`;
   const tmpPath = `${path}.tmp-${pid}-${token}`;
