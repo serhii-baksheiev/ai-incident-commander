@@ -6,8 +6,8 @@
  * (`createModelGenerateHypotheses`, `createModelInterpretResidualEvidence`,
  * `createModelChallengeHypothesis`).
  *
- * Intended design (not yet implemented - this file is RED against current
- * code): `ModelRoleOptions` gains an optional `execution?: CommittedExecution`
+ * The design pinned here: `ModelRoleOptions` carries an optional
+ * `execution?: CommittedExecution`
  * (`@aic/domain`). With it, each role wraps ONLY `port.complete(request)` in
  *
  *   execution.committed(
@@ -352,7 +352,7 @@ for (const roleCase of ROLE_CASES) {
  *   - `test/roles-model-nodes.test.mjs` › "routes a model-backed run to its
  *     challenge, with the leader the graph can see" stops at the first
  *     challenge and never loops back through `interpret_residual_evidence`.
- *   - `modelNodes` (`scripts/lane-arms.mjs`) drives every model role
+ *   - `modelNodes` (`scripts/lane-arms.mjs`) drives all four graph model roles
  *     together, but only through `evals.runGraphBenchmarkExperiment` against
  *     the replay-fixture corpus (`test/fixtures/benchmark-experiment.mjs`),
  *     which is a real-tool-replay harness this row has no need of.

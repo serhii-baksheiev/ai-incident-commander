@@ -5,6 +5,7 @@ import {
   type HypothesisStatus,
   type Prediction,
 } from './contracts.js';
+import { quoteModelText } from './conclusion-rules.js';
 import {
   STATUS_RULES,
   STATUS_RULES_VERSION,
@@ -161,7 +162,7 @@ export function deriveHypothesisStatus({
 
   if (table === undefined) {
     throw new Error(
-      `deriveHypothesisStatus: unknown status-rules version '${requestedVersion}'`,
+      `deriveHypothesisStatus: unknown status-rules version ${quoteModelText(requestedVersion)}`,
     );
   }
 
@@ -180,7 +181,7 @@ export function deriveHypothesisStatus({
   for (const assessment of hypothesisAssessments) {
     if (!evidenceById.has(assessment.evidenceId)) {
       throw new Error(
-        `assessment evidenceId does not reference supplied evidence: ${assessment.evidenceId}`,
+        `assessment evidenceId does not reference supplied evidence: ${quoteModelText(assessment.evidenceId)}`,
       );
     }
 
@@ -189,7 +190,7 @@ export function deriveHypothesisStatus({
       !predictionsById.has(assessment.predictionId)
     ) {
       throw new Error(
-        `assessment predictionId does not reference this hypothesis: ${assessment.predictionId}`,
+        `assessment predictionId does not reference this hypothesis: ${quoteModelText(assessment.predictionId)}`,
       );
     }
   }

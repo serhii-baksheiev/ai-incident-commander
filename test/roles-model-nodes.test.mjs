@@ -233,7 +233,7 @@ test('refuses a hypothesis id the run already carries, rather than overwriting i
     () => node(state),
     (error) =>
       error instanceof ModelRoleOutputError &&
-      /already carries: h-existing/.test(error.message),
+      /already carries: "h-existing"/.test(error.message),
     'the refusal must name the id it refused on',
   );
 });

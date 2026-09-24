@@ -11,11 +11,9 @@
  * (`@aic/domain`), and no provenance or scenario-identifying text reaching
  * the model that the role does not put there on purpose.
  *
- * `createModelProposeConclusion` does not exist yet
- * (`packages/roles/src/investigation-roles.ts`); every row below fails today
- * because `requireExport` cannot find it, or (for the two rows that read
- * `@aic/domain` exports the domain-hardening slice adds) because those exports
- * do not exist either.
+ * `createModelProposeConclusion` (`packages/roles/src/investigation-roles.ts`)
+ * is what every row below pins, alongside the two rows that read the
+ * `@aic/domain` exports the domain-hardening slice adds.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';

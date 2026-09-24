@@ -3,6 +3,7 @@ import {
   conclusionCauseCountViolation,
   EvidenceAssessmentSchema,
   IncidentConclusionSchema,
+  quoteModelText,
   type EvidenceAssessment,
   type IncidentConclusion,
 } from '@aic/domain';
@@ -262,7 +263,7 @@ export function createModelNaiveInvestigation(
     });
     const hypothesisIds = new Set<string>();
     for (const { id } of hypotheses) {
-      if (hypothesisIds.has(id)) refuse(`declared hypothesis id ${id} twice`);
+      if (hypothesisIds.has(id)) refuse(`declared hypothesis id ${quoteModelText(id)} twice`);
       hypothesisIds.add(id);
     }
 
@@ -272,13 +273,13 @@ export function createModelNaiveInvestigation(
       const hypothesisId = ownValue(candidate, 'hypothesisId');
       const effect = ownValue(candidate, 'effect');
       if (typeof evidenceId !== 'string' || !shownEvidenceIds.has(evidenceId)) {
-        refuse(`an assessment names evidence that was not shown: ${String(evidenceId)}`);
+        refuse(`an assessment names evidence that was not shown: ${quoteModelText(String(evidenceId))}`);
       }
       if (typeof hypothesisId !== 'string' || !hypothesisIds.has(hypothesisId)) {
-        refuse(`an assessment names a hypothesis the answer did not declare: ${String(hypothesisId)}`);
+        refuse(`an assessment names a hypothesis the answer did not declare: ${quoteModelText(String(hypothesisId))}`);
       }
       if (typeof effect !== 'string' || !effects.includes(effect)) {
-        refuse(`an assessment carries an effect outside the domain's: ${String(effect)}`);
+        refuse(`an assessment carries an effect outside the domain's: ${quoteModelText(String(effect))}`);
       }
       return { evidenceId, hypothesisId, effect: effect as EvidenceAssessment['effect'] };
     });
@@ -315,19 +316,19 @@ export function createModelNaiveInvestigation(
     }
     for (const { hypothesisId, cause, evidenceIds } of conclusion.causes) {
       if (!hypothesisIds.has(hypothesisId)) {
-        refuse(`a cause names a hypothesis the answer did not declare: ${hypothesisId}`);
+        refuse(`a cause names a hypothesis the answer did not declare: ${quoteModelText(hypothesisId)}`);
       }
       const unshown = evidenceIds.find((evidenceId) => !shownEvidenceIds.has(evidenceId));
-      if (unshown !== undefined) refuse(`a cause cites evidence that was not shown: ${unshown}`);
+      if (unshown !== undefined) refuse(`a cause cites evidence that was not shown: ${quoteModelText(unshown)}`);
       if (!vocabulary.includes(cause.mechanism)) {
-        refuse(`a cause's mechanism is outside the vocabulary: ${cause.mechanism}`);
+        refuse(`a cause's mechanism is outside the vocabulary: ${quoteModelText(cause.mechanism)}`);
       }
     }
     requireCauseCount(conclusion);
 
     const stopKind = ownValue(document, 'stopKind');
     if (typeof stopKind !== 'string' || !(NAIVE_STOP_KINDS as readonly string[]).includes(stopKind)) {
-      refuse(`the stop kind is not one a single call can report: ${String(stopKind)}`);
+      refuse(`the stop kind is not one a single call can report: ${quoteModelText(String(stopKind))}`);
     }
 
     return { hypotheses, assessments, conclusion, stopKind: stopKind as NaiveStopKind };

@@ -1,3 +1,4 @@
+import { quoteModelText } from './conclusion-rules.js';
 import { deriveHypothesisStatus } from './evaluation.js';
 import { STATUS_RULES, type StatusRulesVersion } from './status-rules.js';
 import type {
@@ -77,7 +78,7 @@ export function deriveHypothesisStanding(
   const requestedVersion: string = rulesVersion;
   if (!Object.hasOwn(STATUS_RULES, requestedVersion)) {
     throw new Error(
-      `deriveHypothesisStanding: unknown status-rules version '${requestedVersion}'`,
+      `deriveHypothesisStanding: unknown status-rules version ${quoteModelText(requestedVersion)}`,
     );
   }
 
