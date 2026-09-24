@@ -1,7 +1,8 @@
 /**
  * AIC-56 slice E: `createFencedCheckpointer(inner, context, { beforeWrite? })`
- * — decision 9 of docs/decisions/durable-run-execution.md, provisionally:
- * "the exclusion primitive is a fenced checkpointer" — writes through the
+ * — decision 9 of docs/decisions/durable-run-execution.md (no longer
+ * provisional since the record's "T-4 verdict"): "the exclusion primitive is
+ * a fenced checkpointer" — writes through the
  * checkpointer are fenced by the same ownership identity as product commits.
  *
  * This file is the half decidable WITHOUT a database: the calling

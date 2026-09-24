@@ -67,7 +67,8 @@ carry?**
 9. **The exclusion primitive is a fenced checkpointer, provisionally.** Writes
    through the checkpointer are fenced by the same ownership identity as product
    commits (a `FencedCheckpointer`). The run-scoped advisory lock of the earlier
-   design is not restored.
+   design is not restored. *(Since AIC-57: no longer provisional — see "T-4
+   verdict (AIC-57)" below. The ruling's wording is kept as it was given.)*
 10. **Run events are downstream evidence.** `run_events` are append-only durable
     evidence and a stream source for audit and projections. They are not an
     orchestrator and are not the source of ownership.
@@ -121,34 +122,37 @@ the put-scoped-lock fallback of decision 11 is not opened.
 **Run.** `infra/postgres/tests/t4-race.live.mjs` on main `b51436d`, with
 `T4_REPETITIONS=2000`, against a local `postgres:17-alpine` container from
 `infra/postgres/compose.yaml`: each of the six orderings, S1 to S6, ran 2,000
-times, and all 12,009 tests passed with none failing. Every repetition runs the
-matrix's assertions (a) to (h), named in that file, which check the outcomes
-decision 11 requires: one tool call in total, one committed node result
-produced by the first attempt, a completed run with the same result and
-product snapshot across repetitions, and a recorded `checkpoint_fork` for the
-stale attempt. The command is in that file's header. The TAP transcripts are
+times, and all 12,009 tests passed with none failing. The matrix's assertions
+(a) to (h), named in that file, check the outcomes decision 11 requires. Each
+repetition checks for one tool call in total, one committed node result
+produced by the first attempt, a completed run, and a recorded
+`checkpoint_fork` for the stale attempt. After all repetitions, the normalized
+result and the product snapshot's core fields must be identical across every
+repetition. The event sequence is checked run by run and is not compared
+across runs. The command is in that file's header. The TAP transcripts are
 not committed.
 
 **Measured.** The file prints two series:
 
 - `t4-window-ms landed p50=12.607 p99=46.097 n=150`: the time between a fence
-  check passing and the checkpoint write landing, when nothing holds it. This
-  is how long a writer that has just lost its lease can still land a write,
-  and the post-write recheck is what turns that write into a recorded fork.
+  check passing and the checkpoint write landing, when nothing holds it. A
+  writer that loses its lease inside this window still lands its write, and
+  the post-write recheck is what turns that write into a recorded fork.
 - `t4-sweep-attempts p50=1.000 p99=1.000 n=12000 max=2`: how many sweeps each
   run needed before it was reclaimed. The harness allows up to 20.
 
 An earlier stress run, on `6bcacdc`, failed because of the harness, not the
 checkpointer. At S1 repetition 579 the first sweep returned nothing and a
-later one reclaimed the run, and repetitions were not isolated from each
-other, so every later repetition claimed that leftover run. That run produced
+later one reclaimed the run. Repetitions were not isolated from each other,
+so from then on each repetition claimed a run an earlier repetition had left
+behind instead of its own. That run produced
 no evidence for S2 to S6. The harness now retries the sweep and cleans up
 after each repetition (#108).
 
 **What the matrix does not cover.**
 
-- **The pre-write fence.** A mutation that removes it leaves the matrix green.
-  The fence is pinned by `fenced-checkpointer.live.mjs` › "a real zombie
+- **The pre-write fence.** It is pinned outside the matrix, by
+  fenced-checkpointer.live.mjs › "a real zombie
   worker's checkpoint write is refused by a real RunWriteContext after a
   takeover, fence_rejections records it with kind = checkpoint, and B's
   checkpoint is unaffected".
@@ -156,11 +160,14 @@ after each repetition (#108).
   records the node, the new worker never reaches it, and the run records no
   `node_result.reused` event. The matrix accepts both event shapes and does
   not count how many repetitions took each (`normalizeSnapshotEvents` in the
-  harness).
+  harness). Reuse after a takeover is pinned outside the matrix, by
+  run-write-context.live.mjs › "a replay after a takeover must still not call
+  compute again: the committed result is reused, not recomputed by the new
+  attempt".
 - **`putWrites` timing.** The window is sampled for `put` only.
 - **A failed recheck.** If the post-write recheck fails for any reason other
   than a recorded refusal, a valid owner's write fails:
-  `fenced-checkpointer.test.mjs` › "a post-write recheck that fails for any
+  fenced-checkpointer.test.mjs › "a post-write recheck that fails for any
   reason other than a recorded fence refusal fails the write loudly instead of
   making the fork silent".
 - **Scale.** This was one database on one machine, run one test at a time. CI

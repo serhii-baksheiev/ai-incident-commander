@@ -35,7 +35,8 @@ export interface FencedCheckpointerOptions {
  *
  * The fence check and the inner saver's write are separate statements on
  * separate connections, so a lease can be lost between them; that window is
- * what AIC-57 measures, and why the decision is Proposed until it does.
+ * what AIC-57 measured (the record's "T-4 verdict"), and why `#recheck` below
+ * records a write that lands in it.
  *
  * see fenced-checkpointer.test.mjs › "put, putWrites and deleteThread each run
  * the fence, then beforeWrite, then the inner saver, in that order" and ›

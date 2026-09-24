@@ -118,7 +118,7 @@ On recovery, the same `exec_key` reuses the committed result.
 
 A deliberate re-observation is different: it creates a new logical operation and a new key.
 
-The design record is in [docs/decisions/durable-run-execution.md](docs/decisions/durable-run-execution.md). Its remaining architecture proof is the deterministic **T-4 race matrix** in AIC-57.
+The design record is in [docs/decisions/durable-run-execution.md](docs/decisions/durable-run-execution.md). It is Accepted: its architecture proof, the deterministic **T-4 race matrix** in AIC-57, passed, and the record states what the matrix measured and what it does not cover.
 
 ## Evaluation philosophy
 
@@ -179,7 +179,7 @@ AIC is actively evolving beyond the original v0.1 kernel.
 | v0.2 Investigation Quality | Evidence repair / stronger model-vs-baseline evaluation in progress |
 | PostgreSQL persistence foundation | Implemented |
 | Durable run substrate | Implemented |
-| T-4 FencedCheckpointer proof | In progress |
+| T-4 FencedCheckpointer proof | Passed; the durable-run design record is Accepted |
 | Safe Operations | Next major product capability |
 | Knowledge / RAG | Planned after v0.3 gate |
 | Long-term memory | Conditional on a measured learning objective |
