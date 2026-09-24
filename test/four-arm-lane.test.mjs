@@ -498,6 +498,9 @@ function usageCounter() {
 test("reports the naive and model arms' usage as the delta over each arm's own execution, never cumulative", async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
   const counter = usageCounter();
+  // The ledger has already spent before the lane starts, so neither arm's
+  // figures can equal the cumulative reading.
+  counter.advance({ calls: 3, inputTokens: 700, outputTokens: 60 });
   const naiveDelta = { calls: 2, inputTokens: 100, outputTokens: 20 };
   const modelDelta = { calls: 5, inputTokens: 300, outputTokens: 90 };
 
@@ -643,9 +646,8 @@ test('sums claimCount over runs on the arm metric and carries claimCounts per sc
 /**
  * Partial instrumentation publishes neither a misleading sum nor a
  * per-scenario array shorter than its scores: one run of one scenario lacks
- * `claimCount`, which must sink `carriesClaimCounts` for the WHOLE metric,
- * not just that one scenario.
- * see live-model-lane.ts, `summarize` › the `carriesClaimCounts` guard
+ * `claimCount`, which must drop the claim counts for the WHOLE metric, not
+ * just that one scenario.
  */
 test('publishes no claimCount and no claimCounts anywhere when one result of the arm lacks it', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
@@ -1103,12 +1105,9 @@ test('excludes a metric the oracle misses best on from graphVsNaive, while a met
 
 /**
  * `challenge_effect` is never compared between the graph and the naive arm:
- * the naive arm runs no challenge round, so every one of its results marks
- * the metric not-applicable (`NAIVE_NOT_APPLICABLE`,
- * `test/naive-arm.test.mjs` › "challenge_effect is never computed for a naive
- * result, and every result carries notApplicable equal to
- * NAIVE_NOT_APPLICABLE"), and `graphVsNaiveFor` skips a key present in either
- * arm's notApplicable map before it ever reads that arm's metric.
+ * the naive arm marks it not applicable, so it is never computed for that arm
+ * and there is no naive score to compare.
+ * see naive-arm.test.mjs › "challenge_effect is never computed for a naive result, and every result carries notApplicable equal to NAIVE_NOT_APPLICABLE"
  *
  * The naive arm here is the REAL `runNaiveBenchmarkExperiment`, driven over
  * the calibration plan, rather than the fixture's `scriptedExperiment` — the

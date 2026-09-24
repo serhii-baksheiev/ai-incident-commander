@@ -776,28 +776,25 @@ function comparabilityFor(
 
 /**
  * Win/tie/loss between the graph (model) arm and the naive arm, scenario by
- * scenario, over every metric the oracle marked comparable and neither arm
- * marked not-applicable.
+ * scenario, over every metric the oracle marked comparable and both arms
+ * scored. A metric an arm declares not applicable is never computed for it,
+ * so it has no score here to compare.
  * see four-arm-lane.test.mjs › "counts win, tie and loss per metric between the graph and the naive arm, against the oracle"
+ * see four-arm-lane.test.mjs › "excludes a metric the oracle misses best on from graphVsNaive, while a metric it reaches best on stays"
+ * see four-arm-lane.test.mjs › "never compares challenge_effect between the graph and the naive arm, because the naive arm marks it not-applicable"
  */
 function graphVsNaiveFor({
   comparability,
   naiveMetrics,
-  naiveNotApplicable,
   modelMetrics,
-  modelNotApplicable,
 }: Readonly<{
   comparability: Readonly<Partial<Record<GateMetricKey, LiveModelLaneComparabilityEntry>>>;
   naiveMetrics: LiveModelLaneMetrics;
-  naiveNotApplicable: NotApplicableMetrics | undefined;
   modelMetrics: LiveModelLaneMetrics;
-  modelNotApplicable: NotApplicableMetrics | undefined;
 }>): Readonly<Partial<Record<GateMetricKey, LiveModelLaneGraphVsNaiveEntry>>> {
   const result: Record<string, LiveModelLaneGraphVsNaiveEntry> = {};
   for (const [key, entry] of Object.entries(comparability)) {
     if (entry === undefined || !entry.comparable) continue;
-    if (Object.hasOwn(naiveNotApplicable ?? {}, key)) continue;
-    if (Object.hasOwn(modelNotApplicable ?? {}, key)) continue;
     const naiveMetric = naiveMetrics[key as GateMetricKey];
     const modelMetric = modelMetrics[key as GateMetricKey];
     if (naiveMetric === undefined || modelMetric === undefined) continue;
@@ -1071,9 +1068,7 @@ export async function runLiveModelLane(
       ? graphVsNaiveFor({
           comparability,
           naiveMetrics: naiveSummary,
-          naiveNotApplicable,
           modelMetrics: modelSummary,
-          modelNotApplicable,
         })
       : undefined;
 
