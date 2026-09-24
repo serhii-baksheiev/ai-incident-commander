@@ -1,0 +1,280 @@
+/**
+ * AIC-114 (v0.2 evidence repair, slice 0d): the scenario id leaks into model
+ * prompts.
+ *
+ * `initialBenchmarkState` (`packages/evals/src/benchmark-evaluation.ts`) sets
+ * `incident: { id: input.scenarioId, ... }`, and every model role's prompt
+ * (`packages/roles/src/investigation-roles.ts`, `describeState`) serializes
+ * `incident` into the request it sends. So a live model reads labels straight
+ * out of `REPLAY_SCENARIOS` — `bad-deployment`, `false-alert`, and the rest —
+ * which is the ground truth this benchmark exists to keep from the thing it is
+ * grading. This file pins the leak and the shape of the fix: the incident id a
+ * node receives must be an opaque derivation of the run, never the scenario.
+ *
+ * 🔴 **Nothing in this file calls a real model, provider, or network.** Every
+ * row drives the graph with a hand-written fake `ModelPort` that answers a
+ * scripted, schema-valid document for whichever role asked (told apart by
+ * `request.outputSchema`), which is exactly why the first test below can
+ * afford to run EVERY scenario in `REPLAY_SCENARIOS`: no model anywhere ever
+ * sees any of them, so there is no cost and no credential to running the full
+ * set rather than a sample.
+ */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import * as evals from '@aic/evals';
+
+import { modelNodes, scriptedNodes } from '../scripts/eval-live-model.mjs';
+import { benchmarkVersions } from './fixtures/benchmark-experiment.mjs';
+
+const MODEL_BACKED_ROLES = Object.freeze([
+  'generate_hypotheses',
+  'interpret_residual_evidence',
+  'challenge_hypothesis',
+]);
+
+const ALL_SCENARIO_IDS = evals.REPLAY_SCENARIOS.map(({ id }) => id);
+
+function requireEvalsExport(name) {
+  assert.ok(evals[name] !== undefined, `@aic/evals must export ${name}`);
+  return evals[name];
+}
+
+/**
+ * `createBenchmarkPlan` (and so `runGraphBenchmarkExperiment` with
+ * `scenarioSet: 'ad-hoc'`) refuses anything other than exactly five scenarios
+ * — see `createBenchmarkPlan` in `packages/evals/src/benchmark-evaluation.ts`.
+ * `REPLAY_SCENARIOS` carries more than five, so this batches every scenario
+ * into groups of five, padding the final group by repeating earlier scenarios
+ * rather than inventing a sixth fixture. Padding only ever means "this
+ * scenario runs an extra time"; it never drops a scenario from the sweep.
+ */
+function scenarioBatchesOfFive() {
+  const scenarios = evals.REPLAY_SCENARIOS;
+  const batches = [];
+  for (let start = 0; start < scenarios.length; start += 5) {
+    const batch = scenarios.slice(start, start + 5);
+    for (let index = 0; batch.length < 5; index += 1) {
+      batch.push(scenarios[index % scenarios.length]);
+    }
+    batches.push(batch);
+  }
+  return batches;
+}
+
+/** Tell the three model-backed roles apart by the answer shape they declared. */
+function roleFromOutputSchema(outputSchema) {
+  const keys = new Set(Object.keys(outputSchema?.properties ?? {}));
+  if (keys.has('hypotheses')) return 'generate_hypotheses';
+  if (keys.has('assessments')) return 'interpret_residual_evidence';
+  if (keys.has('alternative') && keys.has('discriminatingTests')) {
+    return 'challenge_hypothesis';
+  }
+  throw new Error(
+    `fake port cannot classify a request from its outputSchema keys: ${[...keys].join(', ')}`,
+  );
+}
+
+/**
+ * A fake `ModelPort` that records every request it was asked (`system` AND
+ * `prompt`, per `ModelCompletionRequest`, `packages/roles/src/reference-model-port.ts`)
+ * and answers a document that satisfies the domain schema each role parses
+ * with — enough for the graph to run generate_hypotheses,
+ * interpret_residual_evidence (twice: once before the mandatory challenge
+ * round and once after) and challenge_hypothesis to completion, never enough
+ * to make a claim about model quality.
+ */
+function createFakeModelPort() {
+  const captured = [];
+  let counter = 0;
+
+  function portFor({ runId, scenarioId }) {
+    return {
+      async complete(request) {
+        const role = roleFromOutputSchema(request.outputSchema);
+        counter += 1;
+        captured.push({
+          role,
+          runId,
+          scenarioId,
+          system: request.system,
+          prompt: request.prompt,
+        });
+
+        let document;
+        if (role === 'generate_hypotheses') {
+          document = {
+            hypotheses: [
+              { id: `fake-hypothesis-${counter}`, statement: 'a fake candidate cause' },
+            ],
+          };
+        } else if (role === 'interpret_residual_evidence') {
+          document = { assessments: [] };
+        } else {
+          document = {
+            alternative: {
+              id: `fake-alternative-${counter}`,
+              statement: 'a fake alternative cause',
+            },
+            discriminatingTests: [
+              {
+                id: `fake-test-${counter}`,
+                predictionId: `fake-prediction-${counter}`,
+                tool: 'metrics',
+                input: {},
+                cost: 'cheap',
+                status: 'planned',
+              },
+            ],
+          };
+        }
+
+        return {
+          text: JSON.stringify(document),
+          modelId: 'fake-model-under-test',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+  }
+
+  return { portFor, captured };
+}
+
+test('shows no REPLAY_SCENARIOS id in any model prompt, for every scenario and every model-backed role', async () => {
+  const runGraphBenchmarkExperiment = requireEvalsExport('runGraphBenchmarkExperiment');
+  const { portFor, captured } = createFakeModelPort();
+
+  for (const scenarios of scenarioBatchesOfFive()) {
+    await runGraphBenchmarkExperiment({
+      experimentId: 'aic-114-scenario-leak-probe',
+      scenarioSet: 'ad-hoc',
+      scenarios,
+      runsPerScenario: 3,
+      metadata: benchmarkVersions,
+      createNodes: (record) =>
+        modelNodes(record, portFor({ runId: record.runId, scenarioId: record.scenarioId })),
+      async recordEvaluation() {},
+    });
+  }
+
+  assert.ok(captured.length > 0, 'expected at least one model request, or nothing was exercised');
+
+  // Every role must have been reached ON EVERY RUN, so this test cannot pass by
+  // capturing one role once and never exercising the other two.
+  const rolesByRun = new Map();
+  for (const entry of captured) {
+    const roles = rolesByRun.get(entry.runId) ?? new Set();
+    roles.add(entry.role);
+    rolesByRun.set(entry.runId, roles);
+  }
+  assert.ok(rolesByRun.size > 0, 'expected at least one investigated run');
+  for (const [runId, roles] of rolesByRun) {
+    for (const role of MODEL_BACKED_ROLES) {
+      assert.ok(
+        roles.has(role),
+        `run ${runId} never reached model-backed role ${role}, so this test could pass without exercising it`,
+      );
+    }
+  }
+
+  for (const entry of captured) {
+    for (const scenarioId of ALL_SCENARIO_IDS) {
+      const leaksInSystem = entry.system.includes(scenarioId);
+      const leaksInPrompt = entry.prompt.includes(scenarioId);
+      assert.equal(
+        leaksInSystem || leaksInPrompt,
+        false,
+        `role ${entry.role} (run ${entry.runId}, scenario ${entry.scenarioId}) was shown REPLAY_SCENARIOS id "${scenarioId}" in its ${leaksInSystem ? 'system' : 'prompt'} text`,
+      );
+    }
+  }
+});
+
+test('derives the incident id shown to the model from runId, not from the scenario', async () => {
+  const opaqueIncidentId = requireEvalsExport('opaqueIncidentId');
+  const runGraphBenchmarkExperiment = requireEvalsExport('runGraphBenchmarkExperiment');
+
+  const runIdA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const runIdB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  assert.equal(
+    opaqueIncidentId(runIdA),
+    opaqueIncidentId(runIdA),
+    'must be deterministic: the same runId derives the same incident id twice',
+  );
+  assert.notEqual(
+    opaqueIncidentId(runIdA),
+    opaqueIncidentId(runIdB),
+    'two different runIds must derive two different incident ids',
+  );
+  assert.equal(
+    opaqueIncidentId(runIdA).includes(runIdA),
+    false,
+    'the derived id must not embed the runId verbatim',
+  );
+  for (const scenarioId of ALL_SCENARIO_IDS) {
+    assert.equal(
+      opaqueIncidentId(runIdA).includes(scenarioId),
+      false,
+      `the derived id must not embed a REPLAY_SCENARIOS id (checked: ${scenarioId})`,
+    );
+  }
+
+  // Now capture the id a real graph node actually receives, and require it to
+  // be exactly this function's answer for that run's own runId — not an
+  // independent claim about the function in isolation.
+  const scenarios = evals.REPLAY_SCENARIOS.slice(0, 5);
+  let observed;
+  await runGraphBenchmarkExperiment({
+    experimentId: 'aic-114-opaque-incident-id-probe',
+    scenarioSet: 'ad-hoc',
+    scenarios,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    createNodes: (record) => {
+      const nodes = scriptedNodes(record);
+      return {
+        ...nodes,
+        async normalize_incident(state) {
+          if (observed === undefined) {
+            observed = { runId: record.runId, incidentId: state.incident.id };
+          }
+          return nodes.normalize_incident(state);
+        },
+      };
+    },
+    async recordEvaluation() {},
+  });
+
+  assert.ok(
+    observed !== undefined,
+    'expected at least one run to reach normalize_incident with an observable incident id',
+  );
+  assert.equal(
+    observed.incidentId,
+    opaqueIncidentId(observed.runId),
+    'the incident id a graph node receives must be exactly opaqueIncidentId(runId)',
+  );
+});
+
+test('keeps scenarioId as evaluation metadata', () => {
+  const createBenchmarkPlan = requireEvalsExport('createBenchmarkPlan');
+  const scenarios = evals.REPLAY_SCENARIOS.slice(0, 5);
+
+  const records = createBenchmarkPlan({
+    experimentId: 'aic-114-metadata-guard',
+    scenarios,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+  });
+
+  assert.equal(records.length, 15);
+  for (const record of records) {
+    assert.equal(
+      record.metadata.scenarioId,
+      record.scenario.id,
+      'the fix must stop showing scenarioId to the model, not stop recording it as evaluation metadata',
+    );
+  }
+});
