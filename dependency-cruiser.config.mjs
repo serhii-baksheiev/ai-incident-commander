@@ -32,6 +32,29 @@ export default {
         path: '(?:^|/)node_modules/(?:langchain(?:/|$)|@langchain/)|^(?:langchain(?:/|$)|@langchain/)',
       },
     },
+    {
+      name: 'graph-does-not-import-persistence',
+      comment:
+        'AIC-56: the graph layer never reaches the run-scoped PostgreSQL substrate directly — ' +
+        'only through whatever bounded port packages/persistence chooses to expose to it, if any.',
+      severity: 'error',
+      from: { path: '^packages/graph/' },
+      to: { path: '^packages/persistence(?:/|$)' },
+    },
+    {
+      name: 'graph-does-not-import-pg',
+      comment: 'AIC-56: the graph layer never reaches the PostgreSQL driver directly.',
+      severity: 'error',
+      from: { path: '^packages/graph/' },
+      to: { path: '(?:^|/)node_modules/pg(?:/|$)|^pg(?:/|$)' },
+    },
+    {
+      name: 'only-persistence-imports-pg',
+      comment: 'AIC-56: only packages/persistence may import the PostgreSQL driver.',
+      severity: 'error',
+      from: { path: '^packages/(?!persistence(?:/|$))' },
+      to: { path: '(?:^|/)node_modules/pg(?:/|$)|^pg(?:/|$)' },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

@@ -5,6 +5,7 @@ import {
   type CheckpointListOptions,
   type CheckpointMetadata,
   type CheckpointTuple,
+  type DeltaChannelHistory,
   type PendingWrite,
 } from '@langchain/langgraph-checkpoint';
 
@@ -64,6 +65,23 @@ class FencedCheckpointer extends BaseCheckpointSaver {
 
   list(config: RunnableConfig, options?: CheckpointListOptions): AsyncGenerator<CheckpointTuple> {
     return this.#inner.list(config, options);
+  }
+
+  /**
+   * Reads are not fenced (this class's own header), and delegating here is
+   * what keeps that true for this member too: `BaseCheckpointSaver` ships a
+   * default implementation that reconstructs history through `getTuple` +
+   * `parentConfig`, which on THIS class would walk the fenced wrapper's own
+   * (unfenced, but still indirect) `getTuple` instead of an inner saver's own
+   * storage-aware override — see fenced-checkpointer.test.mjs ›
+   * "getDeltaChannelHistory delegates to the inner saver, not to the
+   * inherited base-class default".
+   */
+  getDeltaChannelHistory(options: {
+    config: RunnableConfig;
+    channels: string[];
+  }): Promise<Record<string, DeltaChannelHistory>> {
+    return this.#inner.getDeltaChannelHistory(options);
   }
 
   async put(
