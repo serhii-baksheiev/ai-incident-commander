@@ -393,21 +393,11 @@ function writeRecordingsFile(path: string, recordings: StoredRecordings): void {
     try {
       unlinkSync(tempPath);
     } catch {
-      // Nothing was left to clean up — the write itself is what failed.
+      // Best effort: the temporary file may never have been created, or its
+      // removal may itself fail; the original error is what is rethrown.
     }
     throw error;
   }
-}
-
-/** A unique, non-exported key used only to detect the file store's own bulk-rekey capability below — never serialized, never part of the public `ReplayStore` contract. */
-const FILE_STORE_BULK_REKEY: unique symbol = Symbol('bound-source-registry.file-store-bulk-rekey');
-
-interface BulkRekeyableReplayStore extends ReplayStore {
-  readonly [FILE_STORE_BULK_REKEY]?: (options: {
-    readonly sourceBindingId: string;
-    readonly fromAdapter: string;
-    readonly toAdapter: string;
-  }) => Promise<number>;
 }
 
 /**
@@ -424,7 +414,7 @@ interface BulkRekeyableReplayStore extends ReplayStore {
  * own output, verbatim — AIC-100 slice c adds redaction; this slice does not.
  */
 export function createFileReplayStore(path: string): ReplayStore {
-  const store: BulkRekeyableReplayStore = {
+  return {
     async get(identity) {
       return readRecordingsFile(path)[identity];
     },
@@ -441,44 +431,7 @@ export function createFileReplayStore(path: string): ReplayStore {
       delete recordings[identity];
       writeRecordingsFile(path, recordings);
     },
-    // A single read + single write over every matching entry, rather than
-    // `rekeyReplayRecordings`'s generic get/set/delete-per-entry fallback,
-    // which would otherwise re-read and re-write this whole file once per
-    // matched entry (O(n) file I/O per entry, so O(n^2) overall — review
-    // round 1 performance finding).
-    async [FILE_STORE_BULK_REKEY]({ sourceBindingId, fromAdapter, toAdapter }) {
-      const recordings = readRecordingsFile(path);
-      const next: StoredRecordings = Object.create(null) as StoredRecordings;
-      let migrated = 0;
-      for (const [key, outcome] of Object.entries(recordings)) {
-        const parsedIdentity = parseReplayIdentity(key);
-        if (
-          parsedIdentity !== null &&
-          parsedIdentity.sourceBindingId === sourceBindingId &&
-          parsedIdentity.adapter === fromAdapter
-        ) {
-          const newIdentity = buildReplayIdentity({
-            sourceBindingId,
-            adapter: toAdapter,
-            requestFingerprint: parsedIdentity.requestFingerprint,
-          });
-          next[newIdentity] = withRekeyedProvenanceAdapter(outcome, toAdapter);
-          migrated += 1;
-        } else {
-          next[key] = outcome;
-        }
-      }
-      if (migrated > 0) {
-        writeRecordingsFile(path, next);
-      }
-      return migrated;
-    },
   };
-  return store;
-}
-
-function hasBulkRekey(store: ReplayStore): store is BulkRekeyableReplayStore {
-  return typeof (store as BulkRekeyableReplayStore)[FILE_STORE_BULK_REKEY] === 'function';
 }
 
 /**
@@ -495,6 +448,12 @@ function hasBulkRekey(store: ReplayStore): store is BulkRekeyableReplayStore {
  * `fromAdapter === toAdapter` is a no-op: it returns `0` without touching the
  * store at all — no read, no write — so the recording is left exactly where
  * it was, still replayable (review round 1, code-reviewer blocker 3).
+ *
+ * One implementation for every store, through the public `ReplayStore`
+ * methods. Over `createFileReplayStore` each `get`/`set`/`delete` rewrites
+ * the whole file, so a migration costs O(entries × matches) file I/O — a
+ * known cost, accepted for fixture-sized stores rather than kept in a second,
+ * store-specific copy of this algorithm.
  */
 export async function rekeyReplayRecordings(
   store: ReplayStore,
@@ -508,13 +467,6 @@ export async function rekeyReplayRecordings(
 
   if (fromAdapter === toAdapter) {
     return 0;
-  }
-
-  if (hasBulkRekey(store)) {
-    const bulkRekey = store[FILE_STORE_BULK_REKEY];
-    if (bulkRekey) {
-      return bulkRekey({ sourceBindingId, fromAdapter, toAdapter });
-    }
   }
 
   const keys = await store.keys();

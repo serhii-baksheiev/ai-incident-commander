@@ -905,6 +905,52 @@ test('rekeyReplayRecordings migrates a matching recording to the new adapter ver
   assert.equal(replayed.status, 'ok', 'after an explicit migration, replay under the new adapter version must hit');
 });
 
+test('rekeyReplayRecordings migrates over a FILE store too: the count, the new key, the stored provenance.adapter, an untouched non-matching entry, and a replay hit from a fresh store over the same file', async (t) => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createFileReplayStore = fileReplayStoreFactory();
+  const rekeyReplayRecordings = rekeyReplayRecordingsFactory();
+  const path = join(withScratchDir(t), 'recordings.json');
+  const store = createFileReplayStore(path);
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [
+      { sourceBindingId: 'binding-a', source: buildOkSource({ version: '1.0.0' }), credentialRefId: null },
+      { sourceBindingId: 'binding-b', source: buildOkSource({ version: '1.0.0' }), credentialRefId: null },
+    ],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  await recorder.execute('binding-b', 'fetch-logs', { service: 'checkout' });
+
+  const migratedCount = await rekeyReplayRecordings(store, {
+    sourceBindingId: 'binding-a',
+    fromAdapter: 'fixture-adapter@1.0.0',
+    toAdapter: 'fixture-adapter@2.0.0',
+  });
+  assert.equal(migratedCount, 1);
+
+  const fingerprint = handBuiltFingerprint('fetch-logs', { service: 'checkout' });
+  const onDisk = JSON.parse(readFileSync(path, 'utf8'));
+  const newIdentity = handBuiltIdentity({ sourceBindingId: 'binding-a', adapter: 'fixture-adapter@2.0.0', requestFingerprint: fingerprint });
+  const oldIdentity = handBuiltIdentity({ sourceBindingId: 'binding-a', adapter: 'fixture-adapter@1.0.0', requestFingerprint: fingerprint });
+  const untouchedIdentity = handBuiltIdentity({ sourceBindingId: 'binding-b', adapter: 'fixture-adapter@1.0.0', requestFingerprint: fingerprint });
+  assert.deepEqual(Object.keys(onDisk).sort(), [newIdentity, untouchedIdentity].sort(), 'the file holds the migrated key and the untouched entry, and no longer the old key');
+  assert.equal(onDisk[newIdentity].provenance.adapter, 'fixture-adapter@2.0.0');
+  assert.equal(onDisk[untouchedIdentity].provenance.adapter, 'fixture-adapter@1.0.0');
+  assert.equal(Object.hasOwn(onDisk, oldIdentity), false);
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource({ version: '2.0.0' }), credentialRefId: null }],
+    store: createFileReplayStore(path),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  const replayed = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(replayed.status, 'ok', 'after the migration, a fresh file store over the same path serves the new adapter version');
+});
+
 test('rekeyReplayRecordings leaves an unrelated recording (a different sourceBindingId) untouched — nothing re-keys implicitly', async () => {
   const createBoundSourceRegistry = createBoundSourceRegistryFactory();
   const createMemoryReplayStore = memoryReplayStoreFactory();
