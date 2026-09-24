@@ -384,7 +384,7 @@ for (const [field, decoy] of INHERITED_METADATA_DECOYS) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The three optional fields are assigned onto the projection rather than
+ * The optional fields are assigned onto the projection rather than
  * declared in its literal, and an ordinary assignment is the shape an inherited
  * accessor swallows. The field then vanishes from `extra.metadata` while the
  * outputs beside it still carry the versioned evaluator's metrics — a record
@@ -394,6 +394,7 @@ const SWALLOWABLE_METADATA_WRITES = [
   ['evaluatorVersion', 'inherited-evaluator-v9'],
   ['seed', 99],
   ['docsAvailable', true],
+  ['temperature', 0.5],
 ];
 
 for (const [field, decoy] of SWALLOWABLE_METADATA_WRITES) {

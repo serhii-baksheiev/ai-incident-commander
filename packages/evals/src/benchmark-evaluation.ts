@@ -48,7 +48,11 @@ export interface BenchmarkVersions {
   readonly toolMode: 'live' | 'replay';
   readonly knowledgeSetVersion: string;
   readonly memoryEnabled: boolean;
-  readonly temperature: number;
+  /**
+   * Absent when no sampling temperature is sent, which is every role today.
+   * see naive-role.test.mjs › "sends no temperature field, so the naive arm samples exactly as the graph arm does"
+   */
+  readonly temperature?: number;
   readonly seed?: number;
   readonly docsAvailable?: boolean;
   /**

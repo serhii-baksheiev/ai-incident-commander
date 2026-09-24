@@ -83,10 +83,13 @@ const PERSISTED_METADATA_KEYS = [
   'knowledgeSetVersion',
   'memoryEnabled',
   'humanReview',
-  'temperature',
 ] as const satisfies readonly (keyof PersistedBenchmarkRunMetadata)[];
 
+// `temperature` is optional: no role sends one to the provider, so a run that
+// declares none publishes none rather than a value that was never applied.
+// see persistence-four-arm.test.mjs › "publishes no temperature key when the run metadata declares none"
 const PERSISTED_OPTIONAL_METADATA_KEYS = [
+  'temperature',
   'evaluatorVersion',
   'seed',
   'docsAvailable',
@@ -173,7 +176,7 @@ export interface PersistedBenchmarkRunMetadata {
   readonly knowledgeSetVersion: string;
   readonly memoryEnabled: boolean;
   readonly humanReview: false;
-  readonly temperature: number;
+  readonly temperature?: number;
   readonly seed?: number;
   readonly docsAvailable?: boolean;
   // Optional for the reason `BenchmarkVersions` states where they originate: a
@@ -201,9 +204,12 @@ export interface PersistedBenchmarkEvaluation {
   readonly runId: string;
   readonly actualStopKind: string;
   readonly metrics: Readonly<
-    Record<string, Readonly<{ key: string; score: number }>>
+    Record<string, Readonly<{ key: string; score: number; claimCount?: number }>>
   >;
   readonly resources?: Readonly<Record<string, unknown>>;
+  readonly notApplicable?: Readonly<
+    Partial<Record<(typeof PERSISTED_BEHAVIOR_METRIC_KEYS)[number], string>>
+  >;
   readonly behaviorMetrics?: Readonly<
     Partial<
       Record<
@@ -500,7 +506,7 @@ function requireMetrics(
   result: PersistedBenchmarkEvaluation,
 ): Record<
   (typeof PERSISTED_METRIC_KEYS)[number],
-  Readonly<{ key: string; score: number }>
+  Readonly<{ key: string; score: number; claimCount?: number }>
 > {
   // The CONTAINER is read own-only too, not just the metrics inside it: a result
   // that never declared `metrics` would otherwise pick up an inherited object
@@ -542,12 +548,49 @@ function requireMetrics(
       // itself never crossed the wire — and the two reads below that used to
       // take `key` and `score` off it again were plain `[[Get]]`s on caller
       // data, checked here and read there.
-      return [key, { key, score }];
+      if (key !== 'unsupported_claim_rate') return [key, { key, score }];
+      // The rate's denominator travels with it when the evaluation owns one.
+      // see persistence-four-arm.test.mjs › "publishes claimCount on unsupported_claim_rate when the evaluation owns a non-negative safe integer one"
+      const claimCount: unknown = ownValue(metric, 'claimCount');
+      if (claimCount === undefined) return [key, { key, score }];
+      if (typeof claimCount !== 'number' || !Number.isSafeInteger(claimCount) || claimCount < 0) {
+        throw new Error(`benchmark result metric claim count is not a count: ${key}`);
+      }
+      return [key, { key, score, claimCount }];
     }),
   ) as Record<
     (typeof PERSISTED_METRIC_KEYS)[number],
-    Readonly<{ key: string; score: number }>
+    Readonly<{ key: string; score: number; claimCount?: number }>
   >;
+}
+
+/**
+ * The behavior metrics an arm declares not applicable, each with its reason,
+ * or nothing when the evaluation declares none. Read own-only and refused by
+ * name when malformed, like the behavior metrics beside it.
+ * see persistence-four-arm.test.mjs › "publishes a declared notApplicable map at outputs.notApplicable"
+ */
+function requireNotApplicable(
+  result: PersistedBenchmarkEvaluation,
+): Readonly<Record<string, string>> | undefined {
+  const declared = ownValue(result, 'notApplicable');
+  if (declared === undefined) return undefined;
+  if (typeof declared !== 'object' || declared === null || Array.isArray(declared)) {
+    throw new Error('benchmark result notApplicable is not an object');
+  }
+  const behaviorKeys = new Set<string>(PERSISTED_BEHAVIOR_METRIC_KEYS);
+  const projected: Record<string, string> = {};
+  for (const key of Object.keys(declared)) {
+    const reason = ownValue(declared, key);
+    if (!behaviorKeys.has(key)) {
+      throw new Error(`benchmark result notApplicable names an unknown behavior metric: ${key}`);
+    }
+    if (typeof reason !== 'string' || reason === '') {
+      throw new Error(`benchmark result notApplicable needs a reason: ${key}`);
+    }
+    defineOwn(projected, key, reason);
+  }
+  return projected;
 }
 
 /**
@@ -824,6 +867,7 @@ async function persistPreparedExperiment({
     runIds.push(record.runId);
     const metrics = requireMetrics(rawResult as PersistedBenchmarkEvaluation);
     const resources = requireResourceEvidence(rawResult as PersistedBenchmarkEvaluation);
+    const notApplicable = requireNotApplicable(rawResult as PersistedBenchmarkEvaluation);
     // Own-read, the same way `projectRunMetadata` reads this field further down
     // this function. This is the pairing input that decides whether the run measured
     // behaviour at all, so a `[[Get]]` here let an inherited version admit
@@ -838,6 +882,13 @@ async function persistPreparedExperiment({
         ? declaredEvaluatorVersion
         : undefined,
     );
+    // A metric is either scored or not applicable, never both.
+    // see persistence-four-arm.test.mjs › "refuses a result that both scores a behavior metric and declares it not applicable"
+    for (const key of Object.keys(notApplicable ?? {})) {
+      if (Object.hasOwn(behaviorMetrics, key)) {
+        throw new Error(`benchmark result both scores and declares not applicable: ${key}`);
+      }
+    }
 
     await client.createRun({
       id: record.runId,
@@ -856,6 +907,7 @@ async function persistPreparedExperiment({
         // One key per dimension, never merged into a score, and absent when the
         // run was not measured.
         ...(resources === undefined ? {} : { resources }),
+        ...(notApplicable === undefined ? {} : { notApplicable }),
       },
       extra: {
         metadata: projectRunMetadata(record.metadata as PersistedBenchmarkRunMetadata),
