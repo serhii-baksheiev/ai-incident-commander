@@ -225,9 +225,9 @@ test('claimNext skips a row a concurrent transaction already holds with FOR UPDA
 });
 
 /* -------------------------------------------------------------------------- */
-/* AIC-57 T-4 stress finding — sweepExpired's FOR UPDATE SKIP LOCKED skips a  */
-/* row a concurrent transaction holds with a conflicting lock, and the very  */
-/* next sweep reclaims it once that lock is released                        */
+/* sweepExpired's FOR UPDATE SKIP LOCKED skips a row a concurrent           */
+/* transaction holds with a conflicting lock, and the next sweep reclaims it */
+/* once that lock is released (AIC-57: the T-4 harness retries its sweep)    */
 /* -------------------------------------------------------------------------- */
 
 test('a sweep skips an expired run another transaction holds a row lock on, and the next sweep reclaims it', async (t) => {
@@ -238,25 +238,23 @@ test('a sweep skips an expired run another transaction holds a row lock on, and 
   assert.equal(claim.runId, runId);
 
   // A separate client, in its own uncommitted transaction, holds FOR KEY
-  // SHARE on the run's row. FOR KEY SHARE is the weakest row lock PostgreSQL
-  // has: it does not block this test's own plain UPDATE of lease_expires_at
-  // below (that is not a `FOR ... UPDATE`-locked read at all), but it DOES
-  // conflict with sweepExpired's own inner `FOR UPDATE SKIP LOCKED` — so the
-  // sweep must skip this row while the lock is held, exactly as measured in
-  // the 2000-repetition stress at rep 579.
+  // SHARE on the run's row. FOR KEY SHARE does not conflict with the FOR NO
+  // KEY UPDATE lock this test's own UPDATE of lease_expires_at takes below,
+  // but it DOES conflict with sweepExpired's inner `FOR UPDATE SKIP LOCKED` —
+  // so the sweep must skip this row while the lock is held.
   const lockClient = await store.pool.connect();
-  await lockClient.query('begin');
-  const { rows: lockedRows } = await lockClient.query(
-    'select run_id from aic_app.runs where run_id = $1 for key share',
-    [runId],
-  );
-  assert.equal(
-    lockedRows[0]?.run_id,
-    runId,
-    'the test\'s own client must hold the FOR KEY SHARE lock before the lease is expired, or this row proves nothing',
-  );
 
   try {
+    await lockClient.query('begin');
+    const { rows: lockedRows } = await lockClient.query(
+      'select run_id from aic_app.runs where run_id = $1 for key share',
+      [runId],
+    );
+    assert.equal(
+      lockedRows[0]?.run_id,
+      runId,
+      'the test\'s own client must hold the FOR KEY SHARE lock before the lease is expired, or this row proves nothing',
+    );
     await store.pool.query(
       `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
       [runId],
@@ -269,8 +267,11 @@ test('a sweep skips an expired run another transaction holds a row lock on, and 
       'sweepExpired must SKIP a row a concurrent transaction holds with FOR KEY SHARE, rather than blocking on it or reclaiming it out from under the lock holder',
     );
   } finally {
-    await lockClient.query('commit');
-    lockClient.release();
+    try {
+      await lockClient.query('commit');
+    } finally {
+      lockClient.release();
+    }
   }
 
   const secondSweep = await store.sweepExpired();
