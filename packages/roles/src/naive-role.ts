@@ -1,5 +1,6 @@
 import {
   CauseClaimSchema,
+  conclusionCauseCountViolation,
   EvidenceAssessmentSchema,
   IncidentConclusionSchema,
   type EvidenceAssessment,
@@ -220,17 +221,16 @@ function refuseUnknownKeys(value: unknown, allowed: ReadonlySet<string>, where: 
   );
 }
 
+/**
+ * Delegates to `@aic/domain`'s `conclusionCauseCountViolation` (AIC-119),
+ * which the future graph conclusion role needs the same rule for. The text
+ * refused here is the domain function's own — this role no longer states it —
+ * so a future refactor cannot silently change what the naive arm refuses.
+ * see conclusion-rules.test.mjs › "correspondence: packages/roles/src/naive-role.ts's cause-count refusal produces the exact same text conclusionCauseCountViolation is required to — this row passes TODAY, before the domain export exists, and must keep passing once naive-role delegates to it"
+ */
 function requireCauseCount(conclusion: IncidentConclusion): void {
-  const count = conclusion.causes.length;
-  if ((conclusion.kind === 'no-incident' || conclusion.kind === 'inconclusive') && count !== 0) {
-    refuse(`a ${conclusion.kind} conclusion names no cause, and this one names ${count}`);
-  }
-  if (conclusion.kind === 'root-cause' && count !== 1) {
-    refuse(`a root-cause conclusion names exactly one cause, and this one names ${count}`);
-  }
-  if (conclusion.kind === 'multiple-causes' && count < 2) {
-    refuse(`a multiple-causes conclusion names at least two causes, and this one names ${count}`);
-  }
+  const violation = conclusionCauseCountViolation(conclusion);
+  if (violation !== undefined) refuse(violation);
 }
 
 export function createModelNaiveInvestigation(
