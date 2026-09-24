@@ -956,7 +956,7 @@ test('reads null as absent for an optional assessment field, as any JSON author 
     {
       assessments: [{
         id: 'a-1',
-        evidenceId: 'e-1',
+        evidenceId: 'evidence-1',
         hypothesisId: 'h-1',
         predictionId: null,
         effect: 'supports',
@@ -966,7 +966,13 @@ test('reads null as absent for an optional assessment field, as any JSON author 
     },
   ]);
 
-  const result = await createModelInterpretResidualEvidence({ port, at })(initialState());
+  // The assessment names evidence and a hypothesis the state really carries, so
+  // the only thing under test is how an optional field spelled null is read.
+  const state = {
+    ...initialState(),
+    hypotheses: [{ id: 'h-1', statement: 'a plausible cause', createdBy: 'initial' }],
+  };
+  const result = await createModelInterpretResidualEvidence({ port, at })(state);
 
   assert.equal(result.assessments.length, 1, 'the assessment must survive an optional field spelled null');
   assert.equal(
