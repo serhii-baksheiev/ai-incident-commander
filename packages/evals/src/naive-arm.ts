@@ -68,9 +68,13 @@ type NaiveExperimentOptions = OmitEach<
 export async function runNaiveBenchmarkExperiment(
   options: NaiveExperimentOptions,
 ): Promise<BenchmarkExperiment> {
-  const naive = options.investigate;
+  // `collectResources` is stripped at runtime too: the type omits it, but a
+  // JavaScript caller can still pass one, and this arm measures nothing itself.
+  // see naive-arm.test.mjs › "runNaiveBenchmarkExperiment does not forward a caller-smuggled collectResources option to the underlying runner"
+  const { investigate: naive, collectResources: _dropped, ...rest } = options as NaiveExperimentOptions &
+    Readonly<{ collectResources?: unknown }>;
   return runBenchmarkExperiment({
-    ...options,
+    ...rest,
     notApplicable: NAIVE_NOT_APPLICABLE,
     async investigate(input) {
       // One call per run. A refusal propagates, and the run records nothing.

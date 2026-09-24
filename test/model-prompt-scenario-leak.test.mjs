@@ -337,10 +337,11 @@ test('shows no REPLAY_SCENARIOS id in the naive role prompt, for every scenario'
  * AIC-116 (v0.2 evidence repair, slice 2): the same sweep, driven through the
  * BENCHMARK RUNNER rather than by hand-building `NaiveInvestigationInput`
  * above — `runNaiveBenchmarkExperiment` projects each execution input with
- * `naiveInputFor` before it ever reaches the role, so this row is the one that
- * would catch a runner that quietly forwarded more than the projection does
- * (a stray `scenarioId`, the raw `fixture`, or `metadata`) even though the role
- * itself only ever reads what it is handed.
+ * `naiveInputFor` before it ever reaches the role. This row pins only that no
+ * REPLAY_SCENARIOS id reaches a prompt along that path. What the projection
+ * itself carries is pinned elsewhere:
+ * see naive-arm.test.mjs › "naiveInputFor carries no scenario id, ground truth or metadata anywhere in its result"
+ * see naive-arm.test.mjs › "keeps scenario ground truth outside the naive investigation callback, over the calibration plan"
  */
 test('shows no REPLAY_SCENARIOS id in any prompt when runNaiveBenchmarkExperiment drives the real naive role over a capturing fake port', async () => {
   const runNaiveBenchmarkExperiment = requireEvalsExport('runNaiveBenchmarkExperiment');

@@ -501,7 +501,7 @@ test('the graph runner is unaffected: a graph result carries no notApplicable ke
 /* D. evaluateBenchmarkRecord: an optional notApplicable argument             */
 /* -------------------------------------------------------------------------- */
 
-function notApplicableProbeRecord(scenario) {
+function notApplicableProbeRecord(scenario, evaluatorVersion = structuralVersions.evaluatorVersion) {
   const runId = 'notApplicable-probe-run';
   return {
     experimentId: 'notApplicable-probe',
@@ -511,6 +511,7 @@ function notApplicableProbeRecord(scenario) {
     threadId: runId,
     metadata: {
       ...structuralVersions,
+      evaluatorVersion,
       runId,
       scenarioId: scenario.id,
       humanReview: false,
@@ -530,6 +531,202 @@ function notApplicableProbeOutcome() {
     rootCauseHypothesisId: 'notApplicable-probe-hyp',
   };
 }
+
+/**
+ * Which conditional behavior metric applies to which calibration scenario,
+ * and the condition on the scenario's own `groundTruth` that `evaluateBenchmarkRecord`
+ * decides it from (`packages/evals/src/benchmark-evaluation.ts`) — read off
+ * `replay-scenarios.ts` directly, not asserted from the evaluator's own
+ * behavior, so the row below is checking the evaluator against an
+ * independent fact about the fixture rather than against itself.
+ */
+const NOT_APPLICABLE_TABLE_ROWS = Object.freeze([
+  Object.freeze({
+    metric: 'misleading_evidence_handling',
+    scenarioId: 'dependency-caused-incident-b',
+    assertConditionHolds(groundTruth) {
+      assert.notEqual(groundTruth.rootCause, undefined);
+      assert.notEqual(groundTruth.misleadingEvidence, undefined);
+    },
+  }),
+  Object.freeze({
+    metric: 'false_alert_correctness',
+    scenarioId: 'false-alert',
+    assertConditionHolds(groundTruth) {
+      assert.equal(groundTruth.expectedConclusionKind, 'no-incident');
+    },
+  }),
+  Object.freeze({
+    metric: 'challenge_effect',
+    scenarioId: 'challenge-keeps-leader',
+    assertConditionHolds(groundTruth) {
+      assert.notEqual(groundTruth.expectedLeaderChangeAfterChallenge, undefined);
+    },
+  }),
+]);
+
+const NOT_APPLICABLE_TABLE_EVALUATOR_VERSIONS = Object.freeze([
+  evals.BEHAVIOR_EVALUATOR_VERSION,
+  'behavior-evaluators-v0.3',
+]);
+
+for (const row of NOT_APPLICABLE_TABLE_ROWS) {
+  for (const evaluatorVersion of NOT_APPLICABLE_TABLE_EVALUATOR_VERSIONS) {
+    test(`evaluateBenchmarkRecord skips ${row.metric} on ${row.scenarioId} under evaluatorVersion ${evaluatorVersion} when notApplicable names it, and computes it by default`, () => {
+      const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === row.scenarioId);
+      assert.ok(scenario, `missing scenario ${row.scenarioId}`);
+      row.assertConditionHolds(scenario.groundTruth);
+
+      const record = notApplicableProbeRecord(scenario, evaluatorVersion);
+
+      // Control: with no notApplicable argument, the metric is present — so
+      // the row below is not vacuously true of a metric never computed here.
+      const controlResult = evals.evaluateBenchmarkRecord({
+        record,
+        outcome: notApplicableProbeOutcome(),
+      });
+      assert.equal(
+        Object.hasOwn(controlResult.behaviorMetrics, row.metric),
+        true,
+        `${row.metric} must be present on ${row.scenarioId} under evaluatorVersion ${evaluatorVersion} when notApplicable is not given`,
+      );
+
+      const notApplicable = Object.freeze({ [row.metric]: `${row.metric} is not applicable for this probe` });
+      const skippedResult = evals.evaluateBenchmarkRecord({
+        record,
+        outcome: notApplicableProbeOutcome(),
+        notApplicable,
+      });
+      assert.equal(
+        Object.hasOwn(skippedResult.behaviorMetrics, row.metric),
+        false,
+        `${row.metric} must be absent on ${row.scenarioId} under evaluatorVersion ${evaluatorVersion} when notApplicable names it`,
+      );
+      assert.deepEqual(skippedResult.notApplicable, notApplicable);
+    });
+  }
+}
+
+test('evaluateBenchmarkRecord given notApplicable: null throws a named refusal rather than a TypeError from Object.entries', () => {
+  const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'challenge-keeps-leader');
+  assert.ok(scenario);
+
+  assert.throws(
+    () =>
+      evals.evaluateBenchmarkRecord({
+        record: notApplicableProbeRecord(scenario),
+        outcome: notApplicableProbeOutcome(),
+        notApplicable: null,
+      }),
+    (error) => {
+      assert.ok(
+        error instanceof Error && !(error instanceof TypeError),
+        `expected a named Error (not a TypeError), got ${error?.constructor?.name}: ${error?.message}`,
+      );
+      assert.match(error.message, /notApplicable|not.applicable/i);
+      return true;
+    },
+  );
+});
+
+test('evaluateBenchmarkRecord given a non-object notApplicable refuses it by naming the required shape', () => {
+  const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'challenge-keeps-leader');
+  assert.ok(scenario);
+
+  assert.throws(
+    () =>
+      evals.evaluateBenchmarkRecord({
+        record: notApplicableProbeRecord(scenario),
+        outcome: notApplicableProbeOutcome(),
+        notApplicable: 'challenge_effect',
+      }),
+    (error) => {
+      assert.ok(
+        error instanceof Error && !(error instanceof TypeError),
+        `expected a named Error (not a TypeError), got ${error?.constructor?.name}: ${error?.message}`,
+      );
+      assert.match(error.message, /object|map/i);
+      return true;
+    },
+  );
+});
+
+test('runBenchmarkExperiment refuses an invalid notApplicable before calling investigate for any record', async () => {
+  const runBenchmarkExperiment = requireEvalsExport('runBenchmarkExperiment');
+  let investigateCalls = 0;
+
+  await assert.rejects(() =>
+    runBenchmarkExperiment({
+      experimentId: 'notApplicable-invalid-refused-before-investigate',
+      scenarioSet: 'ad-hoc',
+      scenarios: evals.REPLAY_SCENARIOS.slice(0, 5),
+      runsPerScenario: 3,
+      metadata: structuralVersions,
+      notApplicable: { not_a_metric: 'x' },
+      async investigate() {
+        investigateCalls += 1;
+        return {
+          claims: [],
+          supportingEvidenceIds: [],
+          evidenceFingerprints: [],
+          referencedEvidenceIds: [],
+          stopKind: 'stalled',
+          conclusionKind: 'inconclusive',
+        };
+      },
+      async recordEvaluation() {},
+    }),
+  );
+
+  assert.equal(
+    investigateCalls,
+    0,
+    'an invalid notApplicable must be refused before the plan drives a single investigate call',
+  );
+});
+
+test('runNaiveBenchmarkExperiment does not forward a caller-smuggled collectResources option to the underlying runner', async () => {
+  const runNaiveBenchmarkExperiment = requireEvalsExport('runNaiveBenchmarkExperiment');
+  let collectResourcesCalls = 0;
+
+  const experiment = await runNaiveBenchmarkExperiment({
+    experimentId: 'naive-collect-resources-not-forwarded',
+    scenarioSet: 'calibration',
+    runsPerScenario: 3,
+    metadata: structuralVersions,
+    // `NaiveExperimentOptions` (packages/evals/src/naive-arm.ts) omits
+    // `collectResources` at the type level; this is a JS caller passing it
+    // anyway, which TypeScript cannot stop at runtime.
+    collectResources() {
+      collectResourcesCalls += 1;
+      return {
+        logicalIterationsUsed: 1,
+        declaredLlmCallsUsed: 1,
+        toolCallsUsed: 1,
+        retryCount: 0,
+        resumeCount: 0,
+      };
+    },
+    async investigate() {
+      return DEFAULT_NAIVE_ANSWER;
+    },
+    async recordEvaluation() {},
+  });
+
+  assert.equal(
+    collectResourcesCalls,
+    0,
+    'the naive arm measures nothing about its own spend: a smuggled collectResources must never run',
+  );
+  assert.ok(experiment.results.length > 0);
+  for (const result of experiment.results) {
+    assert.equal(
+      Object.hasOwn(result, 'resources'),
+      false,
+      'a naive result must carry no own resources key when nothing measured it',
+    );
+  }
+});
 
 test('evaluateBenchmarkRecord omits a metric named in notApplicable, and the result carries the map', () => {
   const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'challenge-keeps-leader');

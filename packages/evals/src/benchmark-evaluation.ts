@@ -253,6 +253,10 @@ function requireNotApplicable(
   notApplicable: NotApplicableMetrics | undefined,
 ): ReadonlySet<string> {
   if (notApplicable === undefined) return new Set();
+  // see naive-arm.test.mjs › "evaluateBenchmarkRecord given notApplicable: null throws a named refusal rather than a TypeError from Object.entries"
+  if (notApplicable === null || typeof notApplicable !== 'object' || Array.isArray(notApplicable)) {
+    throw new Error('notApplicable must be an object mapping a behavior metric to its reason');
+  }
   const behaviorKeys = new Set<string>(BEHAVIOR_METRIC_KEYS);
   for (const [key, reason] of Object.entries(notApplicable)) {
     if (!behaviorKeys.has(key)) {
@@ -739,6 +743,9 @@ export async function runBenchmarkExperiment(
   options: BenchmarkExperimentOptions,
 ): Promise<BenchmarkExperiment> {
   const records = createExecutionBenchmarkPlan(options);
+  // Refused before the first investigation, so a bad map costs no model call.
+  // see naive-arm.test.mjs › "runBenchmarkExperiment refuses an invalid notApplicable before calling investigate for any record"
+  requireNotApplicable(options.notApplicable);
   const results: BenchmarkEvaluation[] = [];
 
   for (const record of records) {
