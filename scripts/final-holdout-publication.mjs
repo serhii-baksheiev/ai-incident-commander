@@ -47,6 +47,12 @@ import * as evals from '@aic/evals';
  * exists — symlink or not — so the write never follows it.
  * see final-evaluation-publication.test.mjs › "writeRecordDurably writes pretty-printed JSON with a trailing newline, leaving no leftover temp file"
  * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
+ *
+ * A crash between `openSync` and the rename below leaves `${path}.tmp-${pid}` on disk; a later write to the SAME
+ * path by a process with the SAME pid then fails with EEXIST naming that file. The prior record stays intact,
+ * and deleting that file restores the write. This cannot cost a legitimate later measurement: `recordPath`
+ * (scripts/eval-final-holdout.mjs) derives `path` from the candidate's fingerprint, and `decideFinalEvaluation`
+ * refuses to admit a second run for a candidate whose record already exists.
  */
 export async function writeRecordDurably(path, body) {
   mkdirSync(dirname(path), { recursive: true });
@@ -182,6 +188,9 @@ export async function publishRecordedMeasurement({ recordPath, mode, persist, ve
   if (typeof record.experiments !== 'object' || record.experiments === null) {
     throw new Error('the record must carry its own experiments to be published');
   }
+  if (typeof record.candidate?.headSha !== 'string' || record.candidate.headSha.length === 0) {
+    throw new Error('the record must carry its own candidate.headSha to be published');
+  }
 
   const plan = record.publicationPlan;
   const logPath = attemptLogPath(recordPath);
@@ -192,8 +201,8 @@ export async function publishRecordedMeasurement({ recordPath, mode, persist, ve
     measurementSha256,
   });
 
-  const headSha12 =
-    typeof record.candidate?.headSha === 'string' ? record.candidate.headSha.slice(0, 12) : 'unknown';
+  // record.candidate.headSha is required above, so no fallback is needed here.
+  const headSha12 = record.candidate.headSha.slice(0, 12);
   const candidateFingerprint = record.candidate?.fingerprint;
 
   const newAttempts = [];

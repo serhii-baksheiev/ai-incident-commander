@@ -986,7 +986,9 @@ async function persistPreparedExperiment({
  * `ownValue` until round 2 of AIC-120 found the same gap there: an own
  * ACCESSOR `client` read as absent and the read-back call fell through to the
  * live default client.
- * see persist-boundary-refusals.test.mjs › "refuses verifyPersistedBenchmarkReference options whose client is an own accessor"
+ * see persist-boundary-refusals.test.mjs › the CLIENT_SLOT_ENTRY_POINTS entry
+ * named 'verifyPersistedBenchmarkReference', whose generated row
+ * "refuses ${name} options whose client is an own accessor" runs it
  */
 function ownClient(options: unknown): LangSmithPersistenceClient | undefined {
   if (typeof options !== 'object' || options === null) return undefined;
