@@ -59,6 +59,24 @@ function metricsOf(result) {
   return metrics;
 }
 
+/**
+ * Which metrics reached their best value on every scenario that emitted them.
+ * A metric no scenario emitted was not measured, so it is not reached.
+ * see oracle-positive-control.test.mjs › "reachesBest does not count a metric no
+ * scenario emitted as reached"
+ */
+export function reachesBestOf(scenarios, bestValues) {
+  const reachesBest = {};
+  for (const [key, best] of Object.entries(bestValues)) {
+    const emitted = scenarios.some(({ metrics }) => Object.hasOwn(metrics, key));
+    const scenariosBelowBest = scenarios
+      .filter(({ metrics }) => Object.hasOwn(metrics, key) && metrics[key].score !== best)
+      .map(({ scenarioId }) => scenarioId);
+    reachesBest[key] = { reached: emitted && scenariosBelowBest.length === 0, scenariosBelowBest };
+  }
+  return reachesBest;
+}
+
 export async function buildOracleReport() {
   let providerCalls = 0;
   const originalFetch = globalThis.fetch;
@@ -105,15 +123,7 @@ export async function buildOracleReport() {
     };
   });
 
-  const reachesBest = {};
-  for (const [key, best] of Object.entries(evals.METRIC_BEST_VALUES)) {
-    const scenariosBelowBest = scenarios
-      .filter(({ metrics }) => Object.hasOwn(metrics, key) && metrics[key].score !== best)
-      .map(({ scenarioId }) => scenarioId);
-    // A metric no scenario emitted was not reached: nothing was measured.
-    const emitted = scenarios.some(({ metrics }) => Object.hasOwn(metrics, key));
-    reachesBest[key] = { reached: emitted && scenariosBelowBest.length === 0, scenariosBelowBest };
-  }
+  const reachesBest = reachesBestOf(scenarios, evals.METRIC_BEST_VALUES);
 
   return {
     evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,

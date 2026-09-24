@@ -151,8 +151,8 @@ npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./la
 > roles", "no HTTP request has left this machine for a provider", "no
 > model-quality figure, token count or cost figure in this repository was
 > produced by a model". All three were true when written and all three are now
-> false: `docs/evidence/` holds seventeen committed reports carrying 237 provider
-> calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
+> false: `docs/evidence/` holds seventeen committed live-model reports carrying
+> 237 provider calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
 > records.
 >
 > The same disclosure was written in other files, each in different words.

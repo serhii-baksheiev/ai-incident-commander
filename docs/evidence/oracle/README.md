@@ -5,6 +5,11 @@ oracle arm (`@aic/evals/oracle`) over the calibration partition, scored by the
 evaluator as it stood before any evaluator repair (AIC-113). The oracle knows
 the answer. A metric it cannot bring to its best value is a metric that no arm
 can be judged on until the evaluator or its ground truth is repaired (AIC-105).
+That reading holds here because no fixture statement in the calibration corpus
+equals its ground-truth predicate. The oracle fingerprints only the evidence it
+cites, while the graph projection fingerprints everything it collected, so on a
+corpus where some did match, a graph arm could score above the oracle on a
+fingerprint metric.
 
 The file is generated, not written by hand. A test keeps it equal to a fresh
 run, and a second test pins the same table against numbers read off the code by

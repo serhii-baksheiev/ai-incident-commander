@@ -26,7 +26,8 @@ import {
  * every model-quality verdict. Two mechanisms keep it on the evaluator side:
  * the package root does not export it — it is reachable only as
  * `@aic/evals/oracle` — and dependency-cruiser refuses an import of this
- * module from anywhere under `packages/`.
+ * module from anywhere under `packages/` or `apps/`, and of `@aic/evals`
+ * itself from any package but evals and from any app.
  * see oracle-positive-control.test.mjs › "never exports the oracle arm from the
  * @aic/evals package root" and › "rejects packages/graph importing
  * @aic/evals/oracle"

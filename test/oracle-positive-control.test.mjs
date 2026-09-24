@@ -536,6 +536,11 @@ test('rejects packages/graph importing @aic/evals/oracle', () => {
     0,
     `npm run lint:graph accepted a graph import of @aic/evals/oracle: the ground-truth-reading oracle arm must never be reachable from outside its own module\n${commandDiagnostics('npm run lint:graph', result)}`,
   );
+  assert.match(
+    result.stdout + result.stderr,
+    /oracle-arm-is-evaluator-side-only/,
+    `the refusal must come from oracle-arm-is-evaluator-side-only itself, not only from a broader rule beside it that would mask its removal\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
 });
 
 test('rejects a file in packages/evals/src, other than oracle-arm.ts itself, importing oracle-arm by relative path', () => {
@@ -546,6 +551,11 @@ test('rejects a file in packages/evals/src, other than oracle-arm.ts itself, imp
     result.status,
     0,
     `npm run lint:graph accepted a relative import of oracle-arm.js from a different module in packages/evals/src: only oracle-arm.ts itself may reference the module it defines\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
+  assert.match(
+    result.stdout + result.stderr,
+    /oracle-arm-is-evaluator-side-only/,
+    `the refusal must come from oracle-arm-is-evaluator-side-only itself, not only from a broader rule beside it that would mask its removal\n${commandDiagnostics('npm run lint:graph', result)}`,
   );
 });
 
@@ -558,6 +568,11 @@ test('rejects apps/cli, the shipped binary, importing @aic/evals/oracle', () => 
     0,
     `npm run lint:graph accepted an apps/cli import of @aic/evals/oracle: the shipped application must not reach the ground-truth-reading oracle either\n${commandDiagnostics('npm run lint:graph', result)}`,
   );
+  assert.match(
+    result.stdout + result.stderr,
+    /oracle-arm-is-evaluator-side-only/,
+    `the refusal must come from oracle-arm-is-evaluator-side-only itself, not only from a broader rule beside it that would mask its removal\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
 });
 
 test('rejects packages/graph importing the @aic/evals root, where the scenarios and their ground truth live', () => {
@@ -569,6 +584,20 @@ test('rejects packages/graph importing the @aic/evals root, where the scenarios 
     0,
     `npm run lint:graph accepted a graph import of the @aic/evals root: an investigating layer must not be able to read benchmark ground truth\n${commandDiagnostics('npm run lint:graph', result)}`,
   );
+  assert.match(
+    result.stdout + result.stderr,
+    /benchmark-ground-truth-is-evaluator-side-only/,
+    `the refusal must come from benchmark-ground-truth-is-evaluator-side-only itself, not only from a broader rule beside it that would mask its removal\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
+});
+
+test('reachesBest does not count a metric no scenario emitted as reached', async () => {
+  const { reachesBestOf } = await import('../scripts/eval-oracle.mjs');
+  const scenarios = [{ scenarioId: 'only', metrics: { termination_correctness: { score: 1 } } }];
+  assert.deepEqual(reachesBestOf(scenarios, { termination_correctness: 1, challenge_effect: 1 }), {
+    termination_correctness: { reached: true, scenariosBelowBest: [] },
+    challenge_effect: { reached: false, scenariosBelowBest: [] },
+  });
 });
 
 test('declares the oracle report as an npm script, so it is invoked by name and built first', () => {
