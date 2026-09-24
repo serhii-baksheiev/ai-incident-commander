@@ -2508,6 +2508,46 @@ test('accepts construction with a binding whose adapterId and version are both s
   );
 });
 
+/**
+ * Resolution of the adapterId conflict noted above: adapterId is checked by
+ * its own pattern, SAFE_ADAPTER_ID, which permits ':' (the colon-collision
+ * rows construct adapterId 'b:c' on purpose) but not '@' — the separator of
+ * `adapterId@version` in provenance — nor whitespace. Both adapterId and
+ * version must also come back unchanged from redactEvidenceOutput: an
+ * all-alphanumeric credential (an AWS access key id) passes a character-class
+ * pattern, so the pattern alone cannot refuse it.
+ */
+function constructWithDescriptor({ adapterId, version }) {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  return createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSource({ adapterId, version }), credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+}
+
+test('publishes SAFE_ADAPTER_ID, which accepts a colon but not @ or whitespace (review round 2)', () => {
+  assert.equal(tools.SAFE_ADAPTER_ID instanceof RegExp, true, '@aic/tools must export SAFE_ADAPTER_ID');
+  assert.equal(tools.SAFE_ADAPTER_ID.test('b:c'), true);
+  assert.equal(tools.SAFE_ADAPTER_ID.test('fixture-adapter'), true);
+  assert.equal(tools.SAFE_ADAPTER_ID.test('bad@adapter'), false);
+  assert.equal(tools.SAFE_ADAPTER_ID.test('bad adapter'), false);
+});
+
+test('construction accepts adapterId "b:c", and refuses an adapterId with @, whitespace or a credential shape (review round 2)', () => {
+  assert.doesNotThrow(() => constructWithDescriptor({ adapterId: 'b:c', version: '1.0.0' }));
+  for (const adapterId of ['bad@adapter', 'bad adapter', fixtureGithubToken]) {
+    assert.throws(() => constructWithDescriptor({ adapterId, version: '1.0.0' }), `adapterId ${JSON.stringify(adapterId.slice(0, 8))}… must be refused`);
+  }
+});
+
+test('construction refuses a version that is a credential shape even when every character is a safe token character (review round 2)', () => {
+  assert.equal(tools.SAFE_ADAPTER_TOKEN.test(fixtureAwsAccessKeyId), true, 'premise: the AWS key id fixture passes the character-class pattern');
+  assert.throws(() => constructWithDescriptor({ adapterId: 'fixture-adapter', version: fixtureAwsAccessKeyId }));
+});
+
 /* -------------------------------------------------------------------------- */
 /* security advisory 7 (taken) — URL inline credentials redacted for ANY      */
 /* scheme, not only http(s)                                                  */
