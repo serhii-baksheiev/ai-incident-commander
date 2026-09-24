@@ -4,6 +4,7 @@ import type { BoundSourceBinding, BoundSourceRegistry, SourceBudgets } from '../
 import { createBoundSourceRegistry, createMemoryReplayStore } from '../src/bound-source-registry.js';
 import {
   isReadOnlyToolId,
+  isToolResult,
   type IncidentTool,
   type ToolResult,
 } from '../src/contracts.js';
@@ -65,7 +66,10 @@ export class LiveToolAdapter<Input = unknown, Output = Evidence[]> {
     const outcome = await this.#registry.execute(toolId, toolId, input);
 
     if (outcome.status === 'ok') {
-      return outcome.output as ToolResult<Output>;
+      // the wrapped tool's own promise, not the registry, decides this shape
+      return isToolResult<Output>(outcome.output)
+        ? outcome.output
+        : { status: 'error', message: 'tool execution failed' };
     }
 
     if (outcome.reason === 'adapter_error') {

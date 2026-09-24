@@ -4,6 +4,7 @@ import type { BoundSourceBinding, BoundSourceRegistry } from '../src/bound-sourc
 import { createBoundSourceRegistry, createMemoryReplayStore } from '../src/bound-source-registry.js';
 import {
   isReadOnlyToolId,
+  isToolResult,
   READ_ONLY_TOOL_REGISTRY,
   type ToolResult,
 } from '../src/contracts.js';
@@ -81,8 +82,8 @@ export class ReplayToolAdapter<Output = Evidence[]> {
 
     const outcome = await this.#registry.execute(toolId, toolId, input);
 
-    if (outcome.status === 'ok') {
-      return outcome.output as ToolResult<Output>;
+    if (outcome.status === 'ok' && isToolResult<Output>(outcome.output)) {
+      return outcome.output;
     }
 
     return {
