@@ -2,6 +2,7 @@ export * from './conclusion-rules.js';
 export * from './contracts.js';
 export * from './evaluation.js';
 export * from './execution.js';
+export * from './hypothesis-standing.js';
 export * from './intake.js';
 export * from './reducers.js';
 export * from './run-event-stream.js';

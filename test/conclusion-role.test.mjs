@@ -292,8 +292,10 @@ test('shows a different prompt when challengeRounds differs, so the round count 
  * so a status computed for the wrong hypothesis is caught too.
  *
  * The two expected statuses are worked out BY HAND against
- * `BASELINE_STATUS_RULES` (`packages/domain/src/status-rules.ts`) and
- * `deriveHypothesisStatus`'s check order (`packages/domain/src/evaluation.ts`)
+ * `STATUS_RULES['v0.2']` (`packages/domain/src/status-rules.ts`) — the table
+ * `deriveHypothesisStatus` reads by default, which is what the role under
+ * test actually calls — and `deriveHypothesisStatus`'s check order
+ * (`packages/domain/src/evaluation.ts`)
  * — this test calls neither: the expectations below are literals, per
  * `.claude/rules/invariants.md` ("the independent-oracle invariant").
  *

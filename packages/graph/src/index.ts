@@ -22,6 +22,8 @@ import {
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
 export * from './investigation.js';
+export * from './nodes/derive-hypothesis-state.js';
+export * from './nodes/termination.js';
 
 export const GRAPH_DEPENDENCIES = [DOMAIN_LAYER] as const;
 

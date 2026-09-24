@@ -42,9 +42,11 @@ import test from 'node:test';
 import { INCIDENT_STATE_SCHEMA_VERSION, STATUS_RULES_VERSION } from '@aic/domain';
 import * as domain from '@aic/domain';
 import { createInvestigationGraph } from '@aic/graph';
+import * as graphPackage from '@aic/graph';
 import * as persistence from '@aic/persistence';
 import * as roles from '@aic/roles';
 
+import { requireFunction } from './fixtures/benchmark-experiment.mjs';
 import { createFakeCommittedExecution } from './fixtures/fake-committed-execution.mjs';
 import { scopedIncident } from './fixtures/scoped-incident.mjs';
 
@@ -541,6 +543,176 @@ test('records a distinct model.role exec key for propose_conclusion too, one edg
     new Set(recording.keys).size,
     recording.keys.length,
     'no model.role exec key may repeat across the run, including the propose_conclusion call this row adds',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 6 - AIC-119 slice 2, plan section 2f: the canonical, state-driven      */
+/* termination_check drives a SECOND challenge round on its own, with no     */
+/* scripted termination_check at all                                         */
+/* -------------------------------------------------------------------------- */
+
+function requireStateTerminationCheck() {
+  return requireFunction(graphPackage, 'createStateTerminationCheck', '@aic/graph');
+}
+
+/**
+ * Every prior row in this file scripts `termination_check` by hand (it asks
+ * for exactly one challenge round, then terminates). This row instead uses
+ * the canonical, state-derived node: `challengeRounds` alone no longer
+ * decides when to stop, so a scripted port that makes the FIRST challenge
+ * alternative the sole corroborated hypothesis after round 0 does not, on
+ * its own, reach a terminal decision - AIC-119's own policy 2 (T4, plan
+ * section 2c) mandates a SECOND round once leadership has just passed to the
+ * newest challenge-created hypothesis. Only once that second round's
+ * alternative fails to unseat the first (round 2's interpret adds no new
+ * assessment) does `r === MAX_CHALLENGE_ROUNDS` retire T4 and let T5 name the
+ * first alternative sufficient (plan section 2f's own count):
+ *
+ *   generate -> interpret(round 0) -> challenge(round 0)
+ *     -> interpret(round 1) -> challenge(round 1)
+ *     -> interpret(round 2) -> propose_conclusion
+ *
+ * seven model calls, never four or five, because the canonical termination
+ * node - not this test - decides how many rounds a corroborated leader with
+ * no confirmed prediction actually needs.
+ */
+test('AIC-119 slice 2: the canonical state-derived termination_check forces a second challenge round once leadership passes to the newest alternative, reaching propose_conclusion exactly once after seven model calls with seven distinct exec keys', async () => {
+  const createStateTerminationCheck = requireStateTerminationCheck();
+  const answers = [
+    jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+    jsonCompletion({ assessments: [] }),
+    jsonCompletion({
+      alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
+      discriminatingTests: [
+        { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
+      ],
+    }),
+    jsonCompletion({
+      assessments: [
+        {
+          id: 'a-alt1-support-1',
+          evidenceId: 'evidence-2',
+          hypothesisId: 'alt-1',
+          effect: 'supports',
+          strength: 'medium',
+          rationale: 'a log correlates the dependency upgrade with the incident window',
+        },
+        {
+          id: 'a-alt1-support-2',
+          evidenceId: 'evidence-3',
+          hypothesisId: 'alt-1',
+          effect: 'supports',
+          strength: 'high',
+          rationale: 'a second, independent log confirms the dependency upgrade',
+        },
+      ],
+    }),
+    jsonCompletion({
+      alternative: { id: 'alt-2', statement: 'a third-party outage, not the dependency upgrade' },
+      discriminatingTests: [
+        { id: 'dt-2', predictionId: 'p-2', tool: 'logs.search', input: {}, cost: 'cheap' },
+      ],
+    }),
+    jsonCompletion({ assessments: [] }),
+    jsonCompletion({
+      kind: 'root-cause',
+      causes: [
+        {
+          hypothesisId: 'alt-1',
+          cause: { component: 'dependency-service', mechanism: 'config-drift' },
+          evidenceIds: ['evidence-2'],
+        },
+      ],
+    }),
+  ];
+  const remaining = [...answers];
+  let portCalls = 0;
+  const port = {
+    async complete() {
+      portCalls += 1;
+      const next = remaining.shift();
+      assert.ok(next !== undefined, 'the scripted port ran out of answers: the scenario asked for an eighth model call');
+      return next;
+    },
+  };
+  const recording = createRecordingExecution();
+
+  const nodes = Object.fromEntries(LIFECYCLE_NODES.map((name) => [name, async () => ({})]));
+  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({ port, execution: recording, at });
+  nodes.interpret_residual_evidence = roles.createModelInterpretResidualEvidence({
+    port,
+    execution: recording,
+    at,
+  });
+  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({ port, execution: recording, at });
+  let proposeConclusionCalls = 0;
+  const proposeConclusionNode = roles.createModelProposeConclusion({
+    port,
+    execution: recording,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
+  nodes.propose_conclusion = async (state) => {
+    proposeConclusionCalls += 1;
+    return proposeConclusionNode(state);
+  };
+  nodes.termination_check = createStateTerminationCheck();
+
+  const state = initialState();
+  state.evidence = [
+    ...state.evidence,
+    {
+      id: 'evidence-2',
+      trialId: 'trial-2',
+      kind: 'log',
+      source: 'app-log',
+      observedAt: '2026-01-01T00:05:00.000Z',
+      statement: 'a log entry correlated with the incident window',
+      rawRef: 'logs/2',
+    },
+    {
+      id: 'evidence-3',
+      trialId: 'trial-3',
+      kind: 'log',
+      source: 'app-log',
+      observedAt: '2026-01-01T00:06:00.000Z',
+      statement: 'a second, independent log entry',
+      rawRef: 'logs/3',
+    },
+  ];
+
+  const graph = createInvestigationGraph({ nodes });
+  const result = await graph.execute({ kind: 'start', state });
+
+  assert.equal(
+    portCalls,
+    7,
+    'the scenario must reach exactly seven model calls: generate, interpret x3 (rounds 0-2), challenge x2 (rounds 0-1), and the conclusion',
+  );
+  assert.equal(
+    recording.keys.length,
+    portCalls,
+    'the counting port is the independent oracle: one exec key must be recorded per model call, no more and no fewer',
+  );
+  assert.equal(
+    new Set(recording.keys).size,
+    recording.keys.length,
+    'no model.role exec key may repeat across the run, including across the three interpret_residual_evidence re-entries this canonical-termination scenario forces',
+  );
+  assert.equal(
+    proposeConclusionCalls,
+    1,
+    'propose_conclusion must be reached exactly once: the canonical termination reaches its own terminal decision without the kernel forcing yet another challenge round on top of it',
+  );
+  assert.equal(
+    result.control.stopKind,
+    'sufficient',
+    'the canonical termination must reach the terminal sufficient stop kind once alt-1 is the sole corroborated hypothesis and no competing leader remains',
+  );
+  assert.equal(
+    result.control.challengeRounds,
+    2,
+    'two challenge rounds must actually run: the mandatory first round (challengeRounds === 0), and a second one forced by policy 2 once leadership passed to the newest challenge alternative',
   );
 });
 
