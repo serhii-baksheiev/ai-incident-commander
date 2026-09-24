@@ -187,3 +187,14 @@ export {
   type RetentionCheckpointer,
   type RunProductSnapshot,
 } from './retention.js';
+
+/**
+ * AIC-58 slice a: a durable, tail/poll `RunEventStreamSource` (the domain
+ * port `@aic/domain` declares) over `aic_app.run_events`.
+ */
+export {
+  createRunEventStreamSource,
+  MAX_RUN_EVENT_READ_LIMIT,
+  MIN_RUN_EVENT_POLL_INTERVAL_MS,
+  type RunEventStreamSourceOptions,
+} from './run-event-stream.js';
