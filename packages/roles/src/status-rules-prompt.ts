@@ -89,9 +89,6 @@ function pluralize(count: number, noun: string): string {
  */
 function describePrecedence(status: string, precedence: readonly string[]): string {
   const index = precedence.indexOf(status);
-  if (index < 0) {
-    throw new Error(`describeStatusRules: status '${status}' has no place in the precedence order`);
-  }
   if (index === 0) {
     return ' This is checked before every other status, so nothing later can override it.';
   }

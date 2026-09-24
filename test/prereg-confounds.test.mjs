@@ -6,7 +6,7 @@
  * run mechanically against the corpus rather than asserted in prose.
  *
  * The confound: a scenario is single-decisive-evidence when the corpus's own
- * `ok` tool results carry at most one distinct evidence id that both (a) the
+ * `ok` tool results carry exactly one distinct evidence id that both (a) the
  * structural ground truth expects
  * (`STRUCTURAL_GROUND_TRUTH[id].expectedEvidenceIds`,
  * `packages/evals/src/structural-ground-truth.ts`) and (b) is not also
@@ -74,9 +74,9 @@ function decisiveNonMisleadingIdsOf(scenarioId) {
  * Measured directly against this tree:
  *   dependency-caused-incident-b -> ['inventory-api-pool-saturation']  (1)
  *   challenge-changes-leader     -> ['inventory-api-challenge-saturation'] (1)
- * Both are at or under the confound threshold of 1 decisive, non-misleading
- * evidence id, which is the fresh fixture check owner ruling D1 item 6 asks
- * for before the confound can be named in the preregistration addendum.
+ * Each carries exactly one decisive, non-misleading evidence id, which is the
+ * fresh fixture check owner ruling D1 item 6 asks for before the confound can
+ * be named in the preregistration addendum.
  */
 function assertSingleDecisiveEvidence(scenarioId) {
   const decisiveIds = decisiveNonMisleadingIdsOf(scenarioId);
