@@ -286,12 +286,22 @@ const JSON_ONLY = 'Answer with one JSON document and nothing else. No prose, no 
 /**
  * One model call, committed when an execution port is given. The key is the
  * call's position in the run — role, prompt version and the graph-owned
- * counters that move between calls — and the request's own fingerprint travels
- * with it, so two different requests that ever land on one key are refused as
- * an integrity violation rather than one silently answering the other. see
+ * counters — and the request's own fingerprint travels with it, so two
+ * different requests that ever land on one key are refused as an integrity
+ * violation rather than one silently answering the other.
+ *
+ * The key is sufficient only while every graph edge back into a model role
+ * moves one of `iterationsUsed`, `challengeRounds` or `resumeCount`; an edge
+ * that re-entered a role without moving one would give two calls one key and
+ * turn the second into a permanent integrity refusal. see
  * durable-model-replay.test.mjs › "records a distinct model.role exec key for
  * every model call across generate -> interpret -> challenge -> interpret, and
  * no key ever repeats"
+ *
+ * The completion is committed before the role parses it, so a truncated or
+ * malformed answer is what later attempts replay for that key, and changing
+ * `maxOutputTokens` changes the request under the same key — an integrity
+ * refusal, not a retry.
  */
 function completeOnce(
   { port, execution, promptVersion }: { port: ModelPort; execution?: CommittedExecution; promptVersion: string },
