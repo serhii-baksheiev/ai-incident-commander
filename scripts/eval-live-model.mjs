@@ -140,6 +140,9 @@ const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
  * final-evaluation while calibration stayed at zero on every axis).
  * see lane-arms.test.mjs › "the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra"
  */
+// This command never reads this path on its own: a caller passes it as
+// `--control-baseline`. The export is the one spelling of the path that tests
+// and operators share.
 export const CALIBRATION_CONTROL_BASELINE_PATH = join(
   REPO_ROOT,
   'docs',

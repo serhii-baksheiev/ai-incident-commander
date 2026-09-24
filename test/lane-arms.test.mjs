@@ -17,6 +17,10 @@
  * `docs/evidence/control-baseline-calibration.json` (through
  * `readControlBaseline`, the one committed reader —
  * `scripts/eval-final-holdout.mjs`) for the baseline row. Neither row derives its expectation from `lane-arms.mjs` itself.
+ * The scenario-independence row is the exception to "a literal or a
+ * committed file": it asserts relations between runs (a renamed clone
+ * matches, a sparse variant differs) plus stop kinds derived by hand from
+ * the T0-T6 table.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -678,8 +682,9 @@ function deterministicSupportInterpreter(state) {
 
 /**
  * Every calibration scenario supplies at least two independently-identified
- * `ok` fixture entries (`evals.BENCHMARK_SCENARIO_PARTITIONS.calibration`,
- * checked against every scenario's own fixture), so
+ * `ok` fixture entries (distinct evidence ids, over
+ * `evals.BENCHMARK_SCENARIO_PARTITIONS.calibration` — asserted at the top of
+ * the row below), so
  * `deterministicSupportInterpreter` above corroborates the sole hypothesis
  * `scriptedNodes`' fixture-based `generate_hypotheses` creates, on every one
  * of them: the real corpus alone never exercises the `stalled` branch under
@@ -718,6 +723,20 @@ function renamedClone(scenario, id) {
  */
 test("scriptedNodes(record)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a sparse-evidence variant reaches a different one", async () => {
   const { scriptedNodes } = await import('../scripts/lane-arms.mjs');
+
+  for (const scenarioId of evals.BENCHMARK_SCENARIO_PARTITIONS.calibration) {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `the calibration partition names ${scenarioId}, which REPLAY_SCENARIOS must carry`);
+    const okEvidenceIds = new Set(
+      scenario.fixture.entries
+        .filter(({ result }) => result.status === 'ok')
+        .flatMap(({ result }) => result.output.map(({ id }) => id)),
+    );
+    assert.ok(
+      okEvidenceIds.size >= 2,
+      `${scenarioId} must supply at least two distinct ok evidence ids, the premise that makes the sparse variant below necessary`,
+    );
+  }
 
   const original = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'bad-deployment');
   assert.ok(original, 'the calibration corpus must still carry bad-deployment');
@@ -761,6 +780,14 @@ test("scriptedNodes(record)'s termination depends on state, never on the scenari
     stopKindsById.get(original.id),
     'a state with fewer than two independent supports must reach a different termination decision than one with enough to corroborate — proving the decision tracks evidence in state, not which scenario produced it',
   );
+
+  // Literals derived by hand from T0-T6 (packages/graph/src/nodes/termination.ts):
+  // every ok item supports the sole initial hypothesis at medium strength, so
+  // with at least two of them it is corroborated and, after the mandatory
+  // round, the only member of the competing set -> T5 sufficient; with one it
+  // stays a candidate -> T6 stalled.
+  assert.equal(stopKindsById.get(original.id), 'sufficient', 'bad-deployment under the support-everything interpreter corroborates its leader: T5 sufficient');
+  assert.equal(stopKindsById.get(sparse.id), 'stalled', 'a single supporting item leaves the leader a candidate: T6 stalled');
 
   const reachable = new Set(stopKindsById.values());
   assert.ok(reachable.size > 1, 'the reachable stop kinds across this batch must not collapse onto one constant route');

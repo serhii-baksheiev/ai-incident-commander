@@ -37,7 +37,13 @@ import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
  * `sufficient`, `derive_hypothesis_state` always answers `{}`); wiring the
  * canonical ones here is what lets the control arm and the model arm actually
  * exercise state-driven termination rather than the fixture's constant.
- * `modelNodes` inherits both, because it spreads `scriptedNodes`. The one
+ * `modelNodes` inherits both, because it spreads `scriptedNodes`, so a model
+ * run can stop `stalled` or `ambiguous` where the fixture's constant always
+ * answered `sufficient`, and can run a second challenge round within the
+ * graph's challenge cap.
+ * see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
+ * see state-termination.test.mjs › "T6: after a round has run, no hypothesis reaching corroborated or above is stalled, not sufficient by default"
+ * The one
  * implementation both lane commands use, so the control arm and the model
  * arm's base nodes cannot drift apart.
  * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation"
