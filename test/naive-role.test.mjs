@@ -432,6 +432,24 @@ test('refuses an unknown key on the conclusion, on a cause, and on a cause descr
   await assertRefused(onDescription, /severity/, 'an unknown key on a cause description must be refused, not dropped');
 });
 
+test('names unknown keys escaped and capped, so a hostile key cannot shape the refusal message', async () => {
+  const answer = baseAnswer();
+  answer.conclusion['line-one\nline-two'] = 1;
+  for (let index = 0; index < 50; index += 1) answer.conclusion[`extra-${index}`] = index;
+  const { port } = fakePort([answer]);
+  const node = makeNode({ port });
+  await assert.rejects(
+    () => node({ incidentId: INCIDENT_ID, entries: sampleEntries() }),
+    (error) => {
+      assert.doesNotMatch(error.message, /line-one\nline-two/, 'a raw newline from a model-chosen key must not reach the message');
+      assert.match(error.message, /line-one\\nline-two/, 'the key is named, escaped');
+      assert.ok(error.message.length < 600, `the message must stay bounded however many keys the answer invents (${error.message.length})`);
+      assert.match(error.message, /and \d+ more/, 'the cap must say how many keys it left out');
+      return true;
+    },
+  );
+});
+
 test('reads the conclusion only from what the answer owns, never from Object.prototype', async () => {
   const withoutKind = baseAnswer();
   delete withoutKind.conclusion.kind;

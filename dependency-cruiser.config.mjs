@@ -102,6 +102,19 @@ export default {
         reachable: true,
       },
     },
+    {
+      name: 'naive-arm-does-not-reach-the-graph',
+      comment:
+        'AIC-116: the naive arm\'s benchmark runner is the no-graph baseline. It may not ' +
+        'import the orchestration graph, directly or through any module it imports; the ' +
+        'graph runner lives in graph-benchmark.ts for that reason.',
+      severity: 'error',
+      from: { path: '^packages/evals/(?:src|dist)/naive-arm\\.' },
+      to: {
+        path: '(?:^|/)packages/graph(?:/|$)|(?:^|/)node_modules/@aic/graph(?:/|$)|^@aic/graph(?:/|$)',
+        reachable: true,
+      },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
