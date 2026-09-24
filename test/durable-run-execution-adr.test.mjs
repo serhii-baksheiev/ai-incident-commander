@@ -30,12 +30,36 @@ const section = (markdown, heading) => {
  * that each decision the two tickets are built against is recorded in it rather
  * than paraphrased from memory.
  */
-test('is Proposed until AIC-57 decides it, and names the tickets built against it', () => {
+test('is Accepted on AIC-57\'s T-4 verdict, and names the tickets built against it', () => {
   const adr = readAdr();
-  assert.match(adr, /^\s*-\s+\*\*Status:\*\*\s+Proposed\b/m, 'the record must be Proposed, not Accepted, before AIC-57 runs');
-  assert.match(adr, /Accepted[^.]*AIC-57/, 'the record must say AIC-57 is what can move it to Accepted');
+  assert.match(adr, /^\s*-\s+\*\*Status:\*\*\s+Accepted\b/m, 'the record must be Accepted once AIC-57\'s race matrix has passed');
+  assert.match(adr, /Accepted[^.]*AIC-57/, 'the record must say AIC-57 is what moved it to Accepted');
   for (const ticket of ['AIC-56', 'AIC-57', 'AIC-58', 'AIC-42']) {
     assert.match(adr, new RegExp(`\\b${ticket}\\b`), `the record must name ${ticket}`);
+  }
+});
+
+/**
+ * AIC-57 records its verdict in this record (Consequences). The row pins the
+ * parts a reader needs to re-run it and to know what it does not cover: the
+ * stress command, the orderings, both measured series the harness prints, and
+ * the one exclusion the matrix does not itself pin — the pre-write fence,
+ * which another live file does.
+ */
+test('records the T-4 verdict: how to re-run it, what it measured, and what the matrix does not cover', () => {
+  const verdict = section(readAdr(), 'T-4 verdict (AIC-57)');
+  for (const [part, pattern] of [
+    ['the stress repetition count', /T4_REPETITIONS=2000/],
+    ['all six orderings', /S1[\s\S]*?S6/],
+    ['the fence-to-write window series', /t4-window-ms/],
+    ['the sweep-attempts series', /t4-sweep-attempts/],
+    ['the harness file', /infra\/postgres\/tests\/t4-race\.live\.mjs/],
+    [
+      'the pre-write fence is pinned outside the matrix',
+      /fenced-checkpointer\.live\.mjs › "a real zombie worker's checkpoint write is refused by a real RunWriteContext after a takeover/,
+    ],
+  ]) {
+    assert.match(verdict, pattern, `the T-4 verdict must record: ${part}`);
   }
 });
 
