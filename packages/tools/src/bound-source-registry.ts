@@ -259,8 +259,13 @@ export interface BoundSourceBinding {
    * check, compared at construction against this binding's own construction-time
    * `describe()` snapshot (never a fresh call). A mismatch throws synchronously,
    * before any binding's `check()`/`execute()` ever runs — see
-   * test/bound-source-compatibility.test.mjs. Omitted: no check, so every
-   * pre-AIC-98 binding keeps working unchanged.
+   * test/bound-source-compatibility.test.mjs › "refuses construction when a
+   * binding's expectedAdapter names a different adapter@version than
+   * describe() reports (compatibility handshake, AIC-98 slice a)". Omitted:
+   * no check, so every pre-AIC-98 binding keeps working unchanged — see that
+   * file's › "constructs successfully when expectedAdapter is absent,
+   * keeping every pre-AIC-98 binding working unchanged (the field is
+   * additive)".
    */
   readonly expectedAdapter?: string;
 }
@@ -516,7 +521,9 @@ export function createBoundSourceRegistry(
     // The compatibility handshake (AIC-98, slice a): compared against THIS
     // construction-time snapshot, never a fresh describe() call, and before
     // any binding's check()/execute() ever runs — see
-    // test/bound-source-compatibility.test.mjs.
+    // test/bound-source-compatibility.test.mjs › "refuses construction when a
+    // binding's expectedAdapter names a different adapter@version than
+    // describe() reports (compatibility handshake, AIC-98 slice a)".
     if (binding.expectedAdapter !== undefined && binding.expectedAdapter !== adapter) {
       throw new Error(
         `createBoundSourceRegistry: binding ${JSON.stringify(binding.sourceBindingId)} expected adapter ${JSON.stringify(binding.expectedAdapter)}, got ${JSON.stringify(adapter)}`,
