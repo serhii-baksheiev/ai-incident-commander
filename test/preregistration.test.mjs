@@ -34,16 +34,13 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  * and this map's keys must name the same set.
  *
  * `v0.2-four-arm-supplement-1.md` (dated 2026-09-24) is AIC-119 slice E's own
- * addition, written in the Green step: it names `reference-roles-prompt-v0.3`,
+ * addition, landed in the Green step: it names `reference-roles-prompt-v0.3`,
  * what changed (the conclusion role wired into the graph arm, the interpret
  * id contract), and that it supersedes only v0.2-four-arm.md's prompt-version
- * row. The digest below is a PLACEHOLDER — the file does not exist yet, so
- * this row fails today on the file-name comparison, before the digest is even
- * read. Once the Green step commits the real file, replace the placeholder
- * with its actual digest: `sha256:$(shasum -a 256 docs/evidence/preregistration/v0.2-four-arm-supplement-1.md | cut -d' ' -f1)`
- * (equivalently, `` `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}` ``,
- * the same computation this file's own digest row below uses) — and never
- * edit it again after that.
+ * row. The digest below is the file's real, committed `sha256` — the same
+ * computation this file's own digest row below uses — and, exactly like
+ * every other entry in this map, it may never be edited again after this:
+ * a correction is a new dated file and a new entry, never a changed value.
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',

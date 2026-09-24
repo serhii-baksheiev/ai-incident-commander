@@ -778,6 +778,120 @@ test('an assessment naming evidence the run does not carry throws a plain (non-M
   );
 });
 
+/**
+ * Round-2 (code-reviewer blocker 3, `investigation-roles.ts:764`): the
+ * `hypothesisId` branch of the same validation loop had no test — with it
+ * deleted, the full suite stayed green. This row is the independent-oracle
+ * check that closes it: `deriveHypothesisStatus` filters assessments BY
+ * hypothesis (`packages/domain/src/evaluation.ts`), so it never throws on an
+ * unknown `hypothesisId` — meaning this branch is a genuinely new refusal,
+ * not a pre-emption of a throw that already existed further down.
+ */
+test('an assessment naming a hypothesisId the state does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileHypothesisId = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  const state = baseState({
+    assessments: [
+      {
+        id: 'a-1',
+        evidenceId: 'e-1',
+        hypothesisId: hostileHypothesisId,
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'because',
+        producedBy: 'llm',
+        promptVersion: 'reference-roles-prompt-v0.2',
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  });
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(
+        !(error instanceof ModelRoleOutputError),
+        'a state whose assessments name an unknown hypothesis is a state/harness fault, not a model-quality refusal',
+      );
+      assert.ok(
+        !error.message.includes('\n'),
+        `a raw newline from a hostile id must never reach the message: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+    'a state whose assessments name a hypothesis the run does not carry must throw before the port is ever asked',
+  );
+  assert.equal(
+    requests.length,
+    0,
+    'the port must not be called before the assessment references are validated',
+  );
+});
+
+/**
+ * Round-2 (code-reviewer blocker 3, `investigation-roles.ts:770`): the
+ * `predictionId` branch of the same loop, also untested — with it deleted,
+ * the full suite stayed green. The fixture below is the case the branch
+ * exists for: the named prediction is real, but it belongs to a DIFFERENT
+ * hypothesis than the assessment names, so a check that only asked "does
+ * this predictionId exist anywhere" would wrongly accept it.
+ */
+test('an assessment naming a predictionId that is not a prediction of its hypothesis throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostilePredictionId = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  const state = baseState({
+    predictions: [
+      {
+        id: hostilePredictionId,
+        hypothesisId: 'h-2',
+        statement: 'if true, some other signal would appear',
+        expectedIfTrue: [],
+        expectedIfFalse: [],
+        status: 'untested',
+      },
+    ],
+    assessments: [
+      {
+        id: 'a-1',
+        evidenceId: 'e-1',
+        hypothesisId: 'h-1',
+        predictionId: hostilePredictionId,
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'because',
+        producedBy: 'llm',
+        promptVersion: 'reference-roles-prompt-v0.2',
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  });
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(
+        !(error instanceof ModelRoleOutputError),
+        'a state whose assessments name a predictionId of the wrong hypothesis is a state/harness fault, not a model-quality refusal',
+      );
+      assert.ok(
+        !error.message.includes('\n'),
+        `a raw newline from a hostile id must never reach the message: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+    'a state whose assessments name a predictionId that is not a prediction of its named hypothesis must throw before the port is ever asked',
+  );
+  assert.equal(
+    requests.length,
+    0,
+    'the port must not be called before the assessment references are validated',
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* Advisory 3: two defensive details, pinned                                  */
 /* -------------------------------------------------------------------------- */
