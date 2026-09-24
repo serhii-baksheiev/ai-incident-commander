@@ -505,7 +505,13 @@ export function createBoundSourceRegistry(
     bindingsById.set(binding.sourceBindingId, {
       binding,
       adapter: `${descriptor.adapterId}@${descriptor.version}`,
-      operations: descriptor.operations,
+      // A frozen COPY, never the adapter's own array: `descriptor.operations`
+      // is the adapter's live reference, and a later push onto that same
+      // array must never widen this entry's allow-list retroactively. See
+      // test/bound-source-registry.test.mjs › "a later push onto the
+      // adapter's own describe().operations array does not widen the
+      // registry's allow-list … (review round 3, advisory)".
+      operations: Object.freeze([...descriptor.operations]),
     });
   }
 

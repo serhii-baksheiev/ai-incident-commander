@@ -51,12 +51,15 @@
  *     match — including the `Bearer ` prefix — is dropped, not just the
  *     token;
  *   - a PEM private-key block: the `-----BEGIN ... PRIVATE KEY-----` header
- *     (optional trailing horizontal whitespace and an optional RFC 1421
- *     `Proc-Type`/`DEK-Info` header block tolerated before the body), an
- *     optional multi-line base64 body, and an optional matching
- *     `-----END ... PRIVATE KEY-----` footer — the WHOLE block is replaced,
- *     not just the header (see "the PEM pattern" below); a non-private PEM
- *     block such as a certificate is left alone;
+ *     (optional trailing horizontal whitespace and an optional, optionally
+ *     indented RFC 1421 `Proc-Type`/`DEK-Info` header block tolerated before
+ *     the body), then either a FOOTER-ANCHORED whole block — an indented or
+ *     multi-line base64 body followed by a MANDATORY matching
+ *     `-----END ... PRIVATE KEY-----` footer — or, when no such footer
+ *     follows, a FOOTER-LESS block of nothing but base64 lines of 16+
+ *     characters each; the WHOLE block is replaced, not just the header (see
+ *     "the PEM pattern" below); a non-private PEM block such as a certificate
+ *     is left alone;
  *   - inline `user:pass` URL credentials for ANY scheme matching
  *     `[A-Za-z][A-Za-z0-9+.-]*://` in either case (not only `http(s)`, and not
  *     only lower-case), where the scheme and host are kept and only the
@@ -106,7 +109,8 @@
  * covering either case without an `i` flag, which would also affect every
  * other pattern sharing this same array.
  *
- * The PEM pattern is a single, non-backtracking run: a literal header, then
+ * The PEM pattern is two alternatives, each a single non-backtracking run,
+ * tried footer-anchored first and footer-less second: a literal header, then
  * ONE optional continuation group that only ever engages once an actual
  * newline is reached — optional trailing horizontal whitespace (`[ \t]*`) is
  * tolerated immediately before that newline, but is never consumed on its
@@ -117,22 +121,48 @@
  * near-miss row pinning "key material: <header> follows") left with that
  * prose untouched, and is also what makes trailing whitespace before the
  * header's own newline no longer defeat the whole group (review round 2,
- * finding 3a). Once that gate is passed, zero or more RFC 1421
- * `Proc-Type`/`DEK-Info` header lines are consumed, each ending in its own
- * newline (`(?:[A-Za-z-]+:[^\r\n]*\r?\n)*`, review round 2, finding 3b), then
- * one optional blank-line newline, then the base64 body — a single greedy
- * character class, `[A-Za-z0-9+/=\r\n]`, that deliberately excludes a literal
- * space so a FOOTER-LESS header cannot consume past itself into unrelated log
- * text that contains spaces (review round 2, finding 3c) — then an OPTIONAL
- * literal footer. Every quantified region here (the gate's `\r?\n`, the
- * header-line loop, the body's own greedy class, and the footer's own
- * internal `[A-Z0-9 ]*`) is quantified once, and none of them wraps another
- * quantified region over the SAME characters — the header-line loop's two
- * classes (`[A-Za-z-]+` and `[^\r\n]*`) do overlap on letters, so a
- * colon-free run of letters can cost one bounded backtrack over that run
- * before the loop gives up and the body class takes over, but that cost is
- * paid at most once per PEM header, never nested inside another repetition —
- * the same bounded shape `.claude/scripts/lib/secrets.mjs` uses for its own
+ * finding 3a). Once that gate is passed, zero or more RFC 1421 header lines
+ * are consumed — restricted to the literal `Proc-Type:` or `DEK-Info:` labels
+ * specifically, each optionally indented and ending in its own newline
+ * (`(?:[ \t]*(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*`) — an ordinary
+ * colon-bearing log line such as `"INFO: service healthy"` never matches this
+ * loop, because neither literal label matches its own text (review round 3,
+ * finding 4). What follows is ONE of two alternatives:
+ *
+ *   A) FOOTER-ANCHORED — a single greedy character class,
+ *      `[A-Za-z0-9+/=\s]`, that tolerates whitespace (including further
+ *      newlines and per-line indentation, so a YAML-block-scalar-indented
+ *      body is still consumed in full — review round 3, findings 1 and 2)
+ *      but EXCLUDES the literal characters `-` and `:`. Because the class
+ *      excludes `-`, it always stops deterministically at the next `-----`
+ *      (a real footer or another header) with no backtracking needed to find
+ *      that boundary; a MANDATORY matching `-----END ... PRIVATE KEY-----`
+ *      footer must follow immediately.
+ *   B) FOOTER-LESS fallback, tried only once A fails to find a footer — zero
+ *      or more (optionally indented) lines that are NOTHING BUT 16-or-more
+ *      base64 characters, each ending in its own newline except optionally
+ *      the last:
+ *      `(?:[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*(?:\r?\n[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*)*)?`.
+ *      A line containing a space, a colon, or fewer than 16 base64
+ *      characters — including a short word like `"INFO"` or a colon-bearing
+ *      log line — ends the match there instead of being partly consumed
+ *      (review round 3, finding 4), which is also what makes the
+ *      already-established footer-less row above keep the leading word of
+ *      its own first followup line intact.
+ *
+ * Every quantified region here is either quantified once with nothing nested
+ * inside it over the same characters, or — the header-line loop's `[ \t]*`
+ * indent and `[^\r\n]*` line-content class — two classes that DO overlap on
+ * letters but are separated by a mandatory literal label, so a
+ * label-mismatched line costs at most one bounded backtrack over its own
+ * indentation before the loop gives up, never nested inside another
+ * repetition. Alternative A's body class and B's base64-line class are each a
+ * single quantified region with nothing else competing for the same
+ * characters: A's class and the footer's literal `-----` are disjoint (the
+ * class excludes `-`), and B's base64 class and its own surrounding
+ * `[ \t]*` are disjoint alphabets (base64 excludes space and tab), so control
+ * passes from one to the other with no backtracking in either case — the
+ * same bounded shape `.claude/scripts/lib/secrets.mjs` uses for its own
  * credential patterns (`.claude/rules/invariants.md`, "a guard that fails
  * open must do provably bounded work" — applied here to a redactor rather
  * than a hook, since this module runs on every recorded and returned outcome
@@ -143,10 +173,28 @@
  * line carries trailing spaces and a tab before its own newline (review round
  * 2, finding 3a)", › "redacts an ENCRYPTED PEM block whose RFC 1421
  * Proc-Type/DEK-Info headers sit between the BEGIN header and the base64 body
- * — no body line and no footer survive (review round 2, finding 3b)", and ›
+ * — no body line and no footer survive (review round 2, finding 3b)", ›
  * "does not over-redact past a FOOTER-LESS PEM header: plain log lines with
  * spaces survive (review round 2, finding 3c: the body class must not
- * include a literal space)".
+ * include a literal space)", › "redacts the WHOLE PEM block even when every
+ * continuation line is INDENTED, as inside a YAML block scalar — the
+ * surrounding document text survives (review round 3, finding 1)", › "redacts
+ * the WHOLE PEM block even when a body line carries a single TRAILING space —
+ * the following body line and the footer must not survive (review round 3,
+ * finding 2)", › "redacts an INDENTED ENCRYPTED PEM block: the base64 body,
+ * the footer, and the DEK-Info value all fail to survive when every
+ * continuation line is indented (review round 3, finding 3)", and › "does not
+ * treat an ordinary colon-bearing log line as an RFC 1421 header line after a
+ * FOOTER-LESS PEM header: the lines survive exactly, leading level word
+ * included (review round 3, finding 4)". The five PEM timing rows pinning
+ * that none of the above reintroduces a quadratic pattern on 1 MiB of
+ * adversarial input are, all in test/bound-source-registry.test.mjs and all
+ * titled "(review round 3, PEM timing)": › "redactEvidenceOutput stays within
+ * a bound on 1 MiB of repeated PEM headers with no footer …", › "…on a
+ * footer-less PEM header followed by 1 MiB of base64 …", › "…on a PEM header
+ * followed by 1 MiB of whitespace …", › "…on 1 MiB of \"Proc-Type: x\" lines
+ * after a PEM header …", and › "…on a PEM header, ~1 MiB of base64 body, and
+ * a footer …".
  *
  * `MAX_REDACTION_DEPTH` bounds recursion: the depth check happens BEFORE a
  * container's children are visited, so recursion never goes deeper than
@@ -178,10 +226,11 @@ const REDACTED = '[REDACTED]';
  * more than one quantified region each, so each of THEM is bounded a
  * different way instead — a leading lookbehind that prunes almost every
  * starting position for the URL pattern, and a mandatory-newline gate plus
- * non-overlapping classes for the PEM pattern — spelled out in this file's
- * header comment, next to the timing rows in
- * test/bound-source-registry.test.mjs that measure each one (review round 2,
- * findings 1 and 3).
+ * disjoint, non-overlapping classes for the PEM pattern's two alternatives —
+ * spelled out in this file's header comment, next to the timing rows in
+ * test/bound-source-registry.test.mjs that measure each one: the URL
+ * pattern's ReDoS rows (review round 2, finding 1) and the five PEM timing
+ * rows this file's header comment names by test name (review round 3).
  */
 interface CredentialPattern {
   readonly pattern: RegExp;
@@ -213,15 +262,22 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
     // trailing horizontal whitespace — [ \t]* — is tolerated before that
     // newline, but is never consumed on its own if no newline follows it,
     // because the whole group backtracks to zero width when the mandatory
-    // `\r?\n` fails), then zero or more RFC 1421 header lines
-    // (`Proc-Type`/`DEK-Info`, each ending in its own newline), then one
-    // optional blank-line newline, then the base64 body — a character class
-    // WITHOUT a literal space, so a footer-less header cannot over-redact
-    // into unrelated log text — then an optional matching footer. See this
-    // file's header comment, "The PEM pattern is a single, non-backtracking
-    // run".
+    // `\r?\n` fails), then zero or more RFC 1421 header lines (`Proc-Type:`
+    // or `DEK-Info:` specifically, each optionally indented and ending in its
+    // own newline — never an arbitrary `word:` log line), then ONE of two
+    // alternatives, tried in order:
+    //   A) FOOTER-ANCHORED — a body class that tolerates whitespace
+    //      (including further newlines and indentation) but EXCLUDES '-' and
+    //      ':', so it always stops deterministically at the next '-----' or
+    //      colon, then a MANDATORY matching footer;
+    //   B) FOOTER-LESS fallback — zero or more (optionally indented) base64
+    //      lines of 16+ characters each, and nothing else: a line containing
+    //      a space, a colon, or fewer than 16 base64 characters ends the
+    //      match there rather than being partly consumed.
+    // See this file's header comment, "The PEM pattern is two alternatives,
+    // each a single non-backtracking run".
     pattern:
-      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*\r?\n(?:[A-Za-z-]+:[^\r\n]*\r?\n)*\r?\n?[A-Za-z0-9+/=\r\n]*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?/g,
+      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*\r?\n(?:[ \t]*(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*(?:[A-Za-z0-9+/=\s]*-----END [A-Z0-9 ]*PRIVATE KEY-----|(?:[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*(?:\r?\n[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*)*)?))?/g,
     replacement: REDACTED,
   },
   {
