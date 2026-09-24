@@ -343,6 +343,7 @@ export interface LiveModelLaneModelArm {
    * aggregated over this arm's own results. Absent when the arm refused, for
    * the same reason `metrics` is absent then — see the note on `metrics`
    * above.
+   * see four-arm-lane.test.mjs › "a refused model arm carries no predictionGapCounts, exactly as it carries no metrics"
    */
   readonly predictionGapCounts?: PredictionGapCounts;
 }

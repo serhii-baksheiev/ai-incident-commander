@@ -48,14 +48,24 @@ export interface PredictionGap {
  * see prediction-gap.test.mjs › "no hypotheses at all, terminated stalled,
  * reports an undefined leader and stalledOther, and nothing else"
  *
- * `stalledLeaderLacksConfirmedPrediction` and `stalledOther` partition every
- * non-`sufficient` stop: the former only when the leader is `corroborated`
- * with zero confirmed predictions and the stop is `stalled` or `ambiguous`;
- * every other non-`sufficient` stop, including `tools-unavailable`, reports
- * `stalledOther`.
- * see prediction-gap.test.mjs › "a tools-unavailable termination reports
- * stalledOther, never stalledLeaderLacksConfirmedPrediction, whatever the
- * leader status"
+ * The five flags answer the ruling's five questions separately and are NOT a
+ * partition of the runs: one run can set several, e.g. a corroborated leader
+ * stopped `ambiguous` sets both `finalCorroborated` and
+ * `stalledLeaderLacksConfirmedPrediction`.
+ * see prediction-gap.test.mjs › "two corroborated hypotheses that terminated ambiguous report stalledLeaderLacksConfirmedPrediction on the earlier-listed leader"
+ *
+ * Of those, only `stalledLeaderLacksConfirmedPrediction` and `stalledOther`
+ * are exclusive of each other: a final state not stopped `sufficient` sets
+ * exactly one of them. The former needs the leader `corroborated`, zero
+ * confirmed predictions, and a `stalled` or `ambiguous` stop. Anything else
+ * not stopped `sufficient`, including `tools-unavailable`, sets `stalledOther`.
+ * see prediction-gap.test.mjs › "a tools-unavailable termination reports stalledOther, never stalledLeaderLacksConfirmedPrediction, whatever the leader status"
+ *
+ * "Lacks a confirmed prediction" is literal. A refuted or untested prediction
+ * is not a confirmed one, so a leader carrying only those reads the same as a
+ * leader with no prediction at all.
+ * see prediction-gap.test.mjs › "a corroborated leader carrying only a refuted and an untested prediction counts zero confirmed predictions and, stopped ambiguous, reports stalledLeaderLacksConfirmedPrediction"
+ * see prediction-gap.test.mjs › "leaderConfirmedPredictions counts only the leader's confirmed predictions, not every prediction it carries"
  */
 export function predictionGapOf(finalState: IncidentState): PredictionGap {
   const { standings, leaderId } = deriveHypothesisStanding(

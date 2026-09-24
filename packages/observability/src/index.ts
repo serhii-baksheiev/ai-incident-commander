@@ -245,6 +245,32 @@ const PERSISTED_PREDICTION_GAP_KEYS = [
   'stalledOther',
 ] as const;
 
+/**
+ * The scalar type each prediction-gap field carries. A value of another type
+ * is refused by name, as every sibling projection in this file refuses its own.
+ * see persistence-four-arm.test.mjs › "refuses a predictionGap field whose value is not of that field's scalar type, and publishes no run for it"
+ */
+const PREDICTION_GAP_FIELD_TYPES: Readonly<
+  Record<(typeof PERSISTED_PREDICTION_GAP_KEYS)[number], 'string' | 'number' | 'boolean'>
+> = {
+  stopKind: 'string',
+  leaderId: 'string',
+  leaderStatus: 'string',
+  highestStatus: 'string',
+  leaderConfirmedPredictions: 'number',
+  finalCorroborated: 'boolean',
+  finalSupported: 'boolean',
+  sufficientFromCorroborated: 'boolean',
+  stalledLeaderLacksConfirmedPrediction: 'boolean',
+  stalledOther: 'boolean',
+};
+
+const PREDICTION_GAP_TYPE_WORDS = {
+  string: 'a string or absent',
+  number: 'a finite number',
+  boolean: 'a boolean',
+} as const;
+
 export interface PersistedBenchmarkExperiment {
   readonly records: readonly PersistedBenchmarkRecord[];
   readonly results: readonly PersistedBenchmarkEvaluation[];
@@ -617,7 +643,7 @@ function requireNotApplicable(
  * The prediction-gap diagnostic a result declares, or nothing when it declares
  * none. Read own-only; a field the diagnostic does not declare is refused by
  * name, before anything is sent.
- * see persistence-four-arm.test.mjs › "refuses a predictionGap carrying a key the diagnostic does not declare, before anything is sent"
+ * see persistence-four-arm.test.mjs › "refuses a predictionGap carrying a key the diagnostic does not declare, and publishes no run for it"
  */
 function requirePredictionGap(
   result: PersistedBenchmarkEvaluation,
@@ -634,7 +660,20 @@ function requirePredictionGap(
       throw new Error(`benchmark result predictionGap names an unknown field: ${key}`);
     }
     const value = ownValue(declared, key);
-    if (value !== undefined) defineOwn(projected, key, value);
+    if (value === undefined) continue;
+    const expected = PREDICTION_GAP_FIELD_TYPES[key as (typeof PERSISTED_PREDICTION_GAP_KEYS)[number]];
+    const matches =
+      expected === 'string'
+        ? typeof value === 'string'
+        : expected === 'number'
+          ? typeof value === 'number' && Number.isFinite(value)
+          : typeof value === 'boolean';
+    if (!matches) {
+      throw new Error(
+        `benchmark result predictionGap field ${key} must be ${PREDICTION_GAP_TYPE_WORDS[expected]}`,
+      );
+    }
+    defineOwn(projected, key, value);
   }
   return projected;
 }
