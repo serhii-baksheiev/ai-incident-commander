@@ -16,7 +16,7 @@
  * property this whole ticket exists to protect.
  * see final-evaluation-publication.test.mjs › "T5: publish-final-holdout.mjs and final-holdout-publication.mjs import no role, lane or benchmark runner, and name no corpus, so publication cannot execute a scenario"
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync,
   fsyncSync,
@@ -30,6 +30,19 @@ import { basename, dirname, join } from 'node:path';
 import { pid } from 'node:process';
 
 import * as evals from '@aic/evals';
+
+/**
+ * A fresh temp-name token: 6 bytes from Node's CSPRNG (`randomBytes`),
+ * hex-encoded as 12 lowercase characters. Each call to `writeRecordDurably`
+ * gets its own, via this function's use as the `token` parameter's default.
+ * see final-evaluation-publication.test.mjs › "the source of freshTempToken is exactly one return of randomBytes(6).toString('hex'), imported from node:crypto"
+ * see final-evaluation-publication.test.mjs › "freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls"
+ */
+export function freshTempToken() {
+  return randomBytes(6).toString('hex');
+}
+
+const VALID_TOKEN = /^[0-9a-f]{1,32}$/;
 
 /**
  * Durably write `body` to `path`: write to a sibling temp file, fsync it,
@@ -48,16 +61,37 @@ import * as evals from '@aic/evals';
  * see final-evaluation-publication.test.mjs › "writeRecordDurably writes pretty-printed JSON with a trailing newline, leaving no leftover temp file"
  * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  *
- * A crash between `openSync` and the rename below leaves `${path}.tmp-${pid}` on disk; a later write to the SAME
- * path by a process with the SAME pid then fails with EEXIST naming that file. The prior record stays intact,
- * and deleting that file restores the write. This cannot cost a legitimate later measurement: `recordPath`
- * (scripts/eval-final-holdout.mjs) derives `path` from the candidate's fingerprint, and `decideFinalEvaluation`
- * refuses to admit a second run for a candidate whose record already exists.
+ * By default, each call gets a fresh 48-bit random token from
+ * `freshTempToken()`, so a file or symlink left — or planted — at an earlier
+ * temp name is very unlikely to collide with a later write. That is a
+ * probabilistic guarantee, not a "cannot": it is what makes the
+ * complete-record write after a spent hold-out proceed cleanly rather than
+ * fail on a name a killed prior run happened to also pick.
+ * see final-evaluation-publication.test.mjs › "freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls"
+ * see final-evaluation-publication.test.mjs › "the source of writeRecordDurably defaults its token parameter to a call to freshTempToken()"
+ * see final-evaluation-publication.test.mjs › "the source of freshTempToken is exactly one return of randomBytes(6).toString('hex'), imported from node:crypto"
+ *
+ * `token` is an optional parameter, for tests that need to predict the temp
+ * name in advance: it must be a string of 1-32 lowercase hex characters, and anything
+ * else is refused before the filesystem is touched at all.
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably rejects a token that is not lowercase hex of length 1-32, before touching the filesystem"
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses a token that is not a primitive string, even when it coerces to valid hex"
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably rejects a malformed token before creating any missing parent directory"
+ *
+ * If a collision does happen anyway, `'wx'` refuses it and never follows it.
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  */
-export async function writeRecordDurably(path, body) {
+export async function writeRecordDurably(path, body, { token = freshTempToken() } = {}) {
+  // `typeof` first: a number, a boxed String or an object with a toString
+  // would otherwise be coerced once to pass the check and again to build the
+  // path, and the two coercions need not agree.
+  if (typeof token !== 'string' || !VALID_TOKEN.test(token)) {
+    const shown = typeof token === 'string' ? JSON.stringify(token.slice(0, 40)) : `a ${typeof token}`;
+    throw new Error(`writeRecordDurably: token must be a string of 1-32 lowercase hex characters, got ${shown}`);
+  }
   mkdirSync(dirname(path), { recursive: true });
   const serialized = `${JSON.stringify(body, null, 2)}\n`;
-  const tmpPath = `${path}.tmp-${pid}`;
+  const tmpPath = `${path}.tmp-${pid}-${token}`;
   const fileHandle = openSync(tmpPath, 'wx');
   try {
     writeSync(fileHandle, serialized);
