@@ -33,10 +33,11 @@ import {
  * see naive-role.test.mjs › "rejects packages/roles/src/naive-role.ts importing @aic/graph"
  * see naive-role.test.mjs › "rejects packages/roles/src/naive-role.ts reaching the graph through a module it imports"
  *
- * Sampling: no temperature is sent. The reference model refuses sampling
- * parameters, and the graph's roles send none either, so both arms run the
- * provider's default sampling alike.
- * see naive-role.test.mjs › "sends no temperature field: the reference model rejects a sampling parameter with a 400"
+ * Sampling: no temperature is sent. `ModelCompletionRequest` carries no
+ * sampling field, so neither this role nor the graph's roles can send one, and
+ * both arms run the provider's default sampling alike. Why the item's
+ * "temperature 0" is not honoured is recorded on AIC-115.
+ * see naive-role.test.mjs › "sends no temperature field, so the naive arm samples exactly as the graph arm does"
  */
 export const NAIVE_PROMPT_VERSION = 'naive-single-prompt-v0.1' as const;
 
@@ -272,7 +273,25 @@ export function createModelNaiveInvestigation(
       return { evidenceId, hypothesisId, effect: effect as EvidenceAssessment['effect'] };
     });
 
-    const conclusion = parseWith(ROLE, IncidentConclusionSchema, ownValue(document, 'conclusion'));
+    // Rebuilt from own reads, as the other roles rebuild what they parse: the
+    // schema would otherwise read an inherited field as the model's answer.
+    const declared = ownValue(document, 'conclusion');
+    const conclusion = parseWith(ROLE, IncidentConclusionSchema, {
+      kind: ownValue(declared, 'kind'),
+      causes: ownArray(ROLE, declared, 'causes').map((cause) => {
+        const claimed = ownValue(cause, 'cause');
+        const trigger = ownValue(claimed, 'trigger');
+        return {
+          hypothesisId: ownValue(cause, 'hypothesisId'),
+          cause: {
+            component: ownValue(claimed, 'component'),
+            mechanism: ownValue(claimed, 'mechanism'),
+            ...(trigger === undefined ? {} : { trigger }),
+          },
+          evidenceIds: ownValue(cause, 'evidenceIds'),
+        };
+      }),
+    });
     for (const { hypothesisId, cause, evidenceIds } of conclusion.causes) {
       if (!hypothesisIds.has(hypothesisId)) {
         refuse(`a cause names a hypothesis the answer did not declare: ${hypothesisId}`);

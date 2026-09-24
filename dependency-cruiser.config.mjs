@@ -87,6 +87,9 @@ export default {
           '(?:^|/)packages/evals/|' +
           '(?:^|/)node_modules/@aic/evals(?:/|$)|' +
           '^@aic/evals(?:/|$)',
+      },
+    },
+    {
       name: 'naive-role-does-not-import-the-graph',
       comment:
         'AIC-115: the naive single-prompt role is the no-graph baseline the graph arm is ' +

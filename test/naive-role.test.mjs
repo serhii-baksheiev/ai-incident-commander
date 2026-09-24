@@ -335,7 +335,7 @@ test('derives the cause mechanism enum from exactly the mechanisms vocabulary th
 /* The token budget and the rejected sampling parameter                       */
 /* -------------------------------------------------------------------------- */
 
-test('sends the exported DEFAULT_MAX_OUTPUT_TOKENS as maxOutputTokens by default, never a literal', async () => {
+test('sends the exported DEFAULT_MAX_OUTPUT_TOKENS as maxOutputTokens by default', async () => {
   const DEFAULT_MAX_OUTPUT_TOKENS = requireExport('DEFAULT_MAX_OUTPUT_TOKENS');
   const { port, requests } = fakePort([baseAnswer()]);
   const node = makeNode({ port });
@@ -350,7 +350,7 @@ test('sends the exported DEFAULT_MAX_OUTPUT_TOKENS as maxOutputTokens by default
   );
 });
 
-test('sends no temperature field: the reference model rejects a sampling parameter with a 400', async () => {
+test('sends no temperature field, so the naive arm samples exactly as the graph arm does', async () => {
   const { port, requests } = fakePort([baseAnswer()]);
   const node = makeNode({ port });
 
@@ -404,6 +404,18 @@ async function assertRefused(answer, messagePattern, description) {
   );
   assert.equal(requests.length, 1, `${description}: a refusal must still be exactly one call`);
 }
+
+test('refuses an assessment whose effect is outside the domain effect vocabulary', async () => {
+  const answer = baseAnswer();
+  answer.assessments = [{ evidenceId: 'evidence-1', hypothesisId: 'h-1', effect: 'confirms' }];
+  await assertRefused(answer, /effect/i, 'an assessment effect must be one the domain declares');
+});
+
+test('refuses a hypothesis with an empty id', async () => {
+  const answer = baseAnswer();
+  answer.hypotheses = [{ id: '', statement: 'an anonymous hypothesis' }, ...answer.hypotheses];
+  await assertRefused(answer, /id/i, 'every hypothesis must carry a non-empty id');
+});
 
 test('refuses an assessment naming an evidence id not among the shown evidence', async () => {
   const answer = baseAnswer();

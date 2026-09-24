@@ -169,7 +169,6 @@ const ASSESSMENTS_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-
 const CHALLENGE_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
@@ -218,7 +217,6 @@ const CHALLENGE_SCHEMA = Object.freeze({
 /** The prompt set this module ships, versioned so a run can record which it used. */
 export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.2' as const;
 
-
 export { DEFAULT_MAX_OUTPUT_TOKENS } from './role-output.js';
 
 export interface ModelRoleOptions {
@@ -236,7 +234,6 @@ export interface ModelRoleOptions {
   /** The clock, injected so an assessment's `at` is decidable in a test. */
   readonly at?: () => string;
 }
-
 
 /**
  * One model call, committed when an execution port is given. The key is the
@@ -276,7 +273,6 @@ function completeOnce(
   const inputFingerprint = `sha256:${createHash('sha256').update(JSON.stringify(canonicalJson(request))).digest('hex')}`;
   return execution.committed(execKey, () => port.complete(request), { inputFingerprint });
 }
-
 
 /**
  * The state the model is shown.
