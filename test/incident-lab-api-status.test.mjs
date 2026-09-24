@@ -9,6 +9,7 @@ import test from 'node:test';
 import { childEnv } from './fixtures/child-env.mjs';
 
 const READINESS_DEADLINE_MS = 30_000;
+const PROBE_TIMEOUT_MS = 2_000;
 
 async function reserveFreePort() {
   const server = createServer();
@@ -61,8 +62,9 @@ async function startApiWithUnavailableDependencies(t) {
 
   const baseUrl = `http://127.0.0.1:${port}`;
   // A wall-clock deadline, not an attempt count: a fixed 50 x 20 ms loop gave
-  // the child about one second, and under concurrent suite load it needs
-  // several, which made this row fail with no fault in the lab API.
+  // the child about one second to bind, so a child that is merely slow to
+  // start failed this row with no fault in the lab API. Each probe is bounded
+  // too, so the deadline in the failure message is one the loop enforces.
   const deadline = Date.now() + READINESS_DEADLINE_MS;
   let waitMs = 20;
   while (Date.now() < deadline) {
@@ -72,6 +74,9 @@ async function startApiWithUnavailableDependencies(t) {
     try {
       const response = await fetch(new URL('/control/reset', baseUrl), {
         method: 'POST',
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.min(PROBE_TIMEOUT_MS, deadline - Date.now())),
+        ),
       });
       if (response.ok) return { baseUrl };
     } catch {
