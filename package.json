@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "lint": "npm run lint:graph && npm run lint:domain && npm run lint:config",
-    "lint:graph": "depcruise --config dependency-cruiser.config.mjs packages",
+    "lint:graph": "depcruise --config dependency-cruiser.config.mjs packages apps",
     "lint:domain": "eslint \"packages/domain/**/*.ts\" --max-warnings 0",
     "lint:config": "node scripts/check-domain-manifest.mjs && node scripts/check-domain-tsconfig.mjs",
     "build": "tsc -b",
@@ -34,7 +34,8 @@
     "eval:live-model": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-live-model.mjs",
     "check": "npm run lint && npm run build && npm test",
     "cli": "node apps/cli/dist/index.js",
-    "eval:final-holdout": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs"
+    "eval:final-holdout": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs",
+    "eval:oracle": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-oracle.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

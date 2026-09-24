@@ -50,6 +50,9 @@ export const ORACLE_ARM = Object.freeze({
 const ROOT_CAUSE_HYPOTHESIS_ID = 'oracle-root-cause';
 const INITIAL_LEADER_HYPOTHESIS_ID = 'oracle-initial-leader';
 
+// A deliberately separate spelling of fingerprint equality, not an import of
+// the evaluators' own: a positive control that asked the evaluator what counts
+// as a match would agree with it by construction and prove nothing.
 function sameFingerprint(
   fingerprint: EvidenceFingerprint,
   evidence: Readonly<{ kind: string; source: string; statement: string }>,

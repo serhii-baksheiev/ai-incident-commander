@@ -23,6 +23,10 @@ import type {
  * `BenchmarkOutcome` by the same function below and scored by the same
  * evaluators — a second projection per arm would be a second place for one arm
  * to be credited with something another is not.
+ *
+ * `hypotheses` is not read by `outcomeFromArmAnswer`: no metric scores a
+ * hypothesis list. It is carried so an answer can be checked for self-reference
+ * — every hypothesis id a cause or an assessment names is one it declared.
  */
 export interface ArmAnswer {
   readonly hypotheses: readonly Readonly<{ id: string; statement: string }>[];

@@ -17,9 +17,13 @@
  * guides evaluator repair, and repair guidance never comes from the hold-out.
  * see oracle-positive-control.test.mjs › "never runs or scores a hold-out scenario"
  *
- * No provider is reachable from the oracle, and this command measures that
- * rather than asserting it: `fetch` is replaced for the run by a function that
- * counts and refuses, and the count is what `providerCalls` reports.
+ * `providerCalls` counts calls to the global `fetch` binding during the run:
+ * it is replaced by a function that counts and refuses, and restored after.
+ * That is the transport the provider port uses today
+ * (`packages/roles/src/reference-model-port.ts`); a call made through
+ * `node:http`, a socket or a child process would not be counted.
+ *
+ * `npm run eval:oracle` builds first and runs this with the same preload.
  */
 import { realpathSync } from 'node:fs';
 import { argv, exit, stderr, stdout } from 'node:process';
@@ -106,7 +110,9 @@ export async function buildOracleReport() {
     const scenariosBelowBest = scenarios
       .filter(({ metrics }) => Object.hasOwn(metrics, key) && metrics[key].score !== best)
       .map(({ scenarioId }) => scenarioId);
-    reachesBest[key] = { reached: scenariosBelowBest.length === 0, scenariosBelowBest };
+    // A metric no scenario emitted was not reached: nothing was measured.
+    const emitted = scenarios.some(({ metrics }) => Object.hasOwn(metrics, key));
+    reachesBest[key] = { reached: emitted && scenariosBelowBest.length === 0, scenariosBelowBest };
   }
 
   return {

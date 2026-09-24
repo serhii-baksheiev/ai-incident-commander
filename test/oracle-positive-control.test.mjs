@@ -22,26 +22,18 @@
  * cause and still cannot find a citation for it. That is what section E below
  * pins, read off the code by hand rather than computed by it.
  *
- * Nothing in this file is implemented yet:
- *  - `@aic/evals` gains `ArmAnswer`, `shownEvidenceOf`, `outcomeFromArmAnswer`
- *    and `METRIC_BEST_VALUES` (root export).
- *  - a NEW subpath `@aic/evals/oracle` (packages/evals/src/oracle-arm.ts)
- *    gains `ORACLE_ARM`, `oracleAnswerFor` and `runOracleBenchmarkExperiment`,
- *    reachable only by that subpath — never from the package root, because an
- *    evaluator that can casually import ground truth is an evaluator a real
- *    arm could accidentally read it from too.
- *  - a dependency-cruiser rule forbids every file under `packages/` other
- *    than `oracle-arm.ts` itself from importing that module, by subpath or by
- *    relative path.
- *  - `scripts/eval-oracle.mjs` prints the report this file pins, and
+ * What the rows pin:
+ *  - the `@aic/evals` root exports `ArmAnswer`, `shownEvidenceOf`,
+ *    `outcomeFromArmAnswer` and `METRIC_BEST_VALUES`, and never the oracle;
+ *  - the oracle is reachable only as `@aic/evals/oracle`, and a
+ *    dependency-cruiser rule refuses an import of it from `packages/` or
+ *    `apps/`, by subpath or by relative path;
+ *  - the oracle's citation path and its leader-change path each work on a
+ *    hand-built scenario, so an all-zero calibration table cannot be the
+ *    oracle failing to cite;
+ *  - `scripts/eval-oracle.mjs` prints the calibration report, and
  *    `docs/evidence/oracle/behavior-evaluators-v0.2.json` is its committed
  *    output.
- *
- * So every test below is expected to fail — most because the export, module
- * or file does not exist yet, and the two "must never export from the root"
- * rows are the only ones already true today, kept here because they are
- * boundary invariants this slice must not regress the moment the oracle
- * lands.
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -319,6 +311,98 @@ test('oracleAnswerFor reports an unchanged leader across the challenge for chall
   );
 });
 
+/**
+ * Two hand-built scenarios, because the calibration corpus exercises neither
+ * path below: no fixture statement there equals its own predicate, and no
+ * calibration scenario expects the leader to change. Without these rows an
+ * oracle that could never cite, or never report a changed leader, would print
+ * the same table as the real one. Hand-built rather than read from the hold-out,
+ * which repair work never reads.
+ */
+const citationProbeScenario = Object.freeze({
+  id: 'oracle-citation-probe',
+  groundTruth: Object.freeze({
+    rootCause: Object.freeze({ component: 'probe-api', mechanism: 'probe mechanism' }),
+    expectedStopKind: 'sufficient',
+    expectedConclusionKind: 'root-cause',
+    expectedEvidence: Object.freeze([
+      Object.freeze({ kind: 'log', source: 'logs/probe', predicate: 'probe failure observed' }),
+    ]),
+    misleadingEvidence: Object.freeze([
+      Object.freeze({ kind: 'deploy', source: 'deployments/probe', predicate: 'probe deploy overlapped' }),
+    ]),
+  }),
+  fixture: Object.freeze({
+    version: 1,
+    entries: Object.freeze([
+      Object.freeze({ toolId: 'logs', input: {}, result: Object.freeze({ status: 'ok', output: Object.freeze([makeEvidence('probe-log', 'log', 'logs/probe', 'probe failure observed')]) }) }),
+      Object.freeze({ toolId: 'deployments', input: {}, result: Object.freeze({ status: 'ok', output: Object.freeze([makeEvidence('probe-deploy', 'deploy', 'deployments/probe', 'probe deploy overlapped')]) }) }),
+      Object.freeze({ toolId: 'metrics', input: {}, result: Object.freeze({ status: 'ok', output: Object.freeze([makeEvidence('probe-noise', 'metric', 'metrics/probe', 'unrelated metric')]) }) }),
+    ]),
+  }),
+});
+
+function probeRecord(scenario) {
+  return {
+    experimentId: 'oracle-probe',
+    exampleId: 'oracle-probe-example',
+    scenario,
+    runId: 'oracle-probe-run',
+    threadId: 'oracle-probe-run',
+    metadata: { ...benchmarkVersions, runId: 'oracle-probe-run', scenarioId: scenario.id, humanReview: false },
+  };
+}
+
+test('oracleAnswerFor cites a shown item whose statement equals its ground-truth predicate, and the evaluator scores that answer best', async () => {
+  const { oracleAnswerFor } = await import('@aic/evals/oracle');
+  const { answer } = oracleAnswerFor(citationProbeScenario);
+
+  assert.deepEqual(answer.conclusion.causes[0].evidenceIds, ['probe-log']);
+  assert.deepEqual(
+    answer.assessments.map(({ evidenceId, effect }) => [evidenceId, effect]),
+    [['probe-log', 'supports'], ['probe-deploy', 'contradicts']],
+  );
+
+  const result = evals.evaluateBenchmarkRecord({
+    record: probeRecord(citationProbeScenario),
+    outcome: evals.outcomeFromArmAnswer({ answer, fixture: citationProbeScenario.fixture }),
+  });
+  assert.equal(result.metrics.unsupported_claim_rate.score, 0);
+  assert.equal(result.metrics.evidence_coverage.score, 1);
+  assert.equal(result.metrics.termination_correctness.score, 1);
+  assert.equal(result.behaviorMetrics.misleading_evidence_handling.score, 1);
+  assert.equal(result.behaviorMetrics.misleading_evidence_handling.reason, 'passed');
+});
+
+test('oracleAnswerFor reports a changed leader when the ground truth expects the challenge to change it, and the evaluator scores that best', async () => {
+  const { oracleAnswerFor } = await import('@aic/evals/oracle');
+  const scenario = {
+    ...citationProbeScenario,
+    id: 'oracle-leader-change-probe',
+    groundTruth: { ...citationProbeScenario.groundTruth, expectedLeaderChangeAfterChallenge: true },
+  };
+  const { answer, challengeEffect } = oracleAnswerFor(scenario);
+
+  assert.ok(challengeEffect, 'a declared leader-change expectation must produce a challenge observation');
+  assert.notEqual(challengeEffect.leaderBeforeChallengeId, challengeEffect.leaderAfterChallengeId);
+  const hypothesisIds = new Set(answer.hypotheses.map(({ id }) => id));
+  assert.ok(hypothesisIds.has(challengeEffect.leaderBeforeChallengeId), 'the leader before the challenge must be a hypothesis the answer declares');
+  assert.ok(hypothesisIds.has(challengeEffect.leaderAfterChallengeId), 'the leader after the challenge must be a hypothesis the answer declares');
+  assert.equal(challengeEffect.leaderAfterChallengeId, answer.conclusion.causes[0].hypothesisId);
+
+  const result = evals.evaluateBenchmarkRecord({
+    record: probeRecord(scenario),
+    outcome: evals.outcomeFromArmAnswer({ answer, fixture: scenario.fixture, challengeEffect }),
+  });
+  assert.equal(result.behaviorMetrics.challenge_effect.score, 1);
+  assert.equal(result.behaviorMetrics.challenge_effect.reason, 'passed');
+});
+
+test('METRIC_BEST_VALUES names exactly the metrics the benchmark and behavior evaluators publish, in both directions', () => {
+  const published = [...evals.BENCHMARK_METRIC_KEYS, ...evals.BEHAVIOR_METRIC_KEYS].sort();
+  assert.deepEqual(Object.keys(evals.METRIC_BEST_VALUES).sort(), published);
+});
+
 test('cites only evidence ids the fixture actually shows, for every calibration scenario (never a hold-out one)', async () => {
   const { oracleAnswerFor } = await import('@aic/evals/oracle');
   const calibrationIds = new Set(evals.BENCHMARK_SCENARIO_PARTITIONS.calibration);
@@ -463,6 +547,35 @@ test('rejects a file in packages/evals/src, other than oracle-arm.ts itself, imp
     0,
     `npm run lint:graph accepted a relative import of oracle-arm.js from a different module in packages/evals/src: only oracle-arm.ts itself may reference the module it defines\n${commandDiagnostics('npm run lint:graph', result)}`,
   );
+});
+
+test('rejects apps/cli, the shipped binary, importing @aic/evals/oracle', () => {
+  const result = runDepcruiseProbe((fixtureRoot) =>
+    writeProbeSource(fixtureRoot, 'apps/cli', 'import "@aic/evals/oracle";\n'),
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint:graph accepted an apps/cli import of @aic/evals/oracle: the shipped application must not reach the ground-truth-reading oracle either\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
+});
+
+test('rejects packages/graph importing the @aic/evals root, where the scenarios and their ground truth live', () => {
+  const result = runDepcruiseProbe((fixtureRoot) =>
+    writeProbeSource(fixtureRoot, 'packages/graph', 'import { REPLAY_SCENARIOS } from "@aic/evals";\nexport const leaked = REPLAY_SCENARIOS;\n'),
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint:graph accepted a graph import of the @aic/evals root: an investigating layer must not be able to read benchmark ground truth\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
+});
+
+test('declares the oracle report as an npm script, so it is invoked by name and built first', () => {
+  const manifest = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf8'));
+  assert.equal(typeof manifest.scripts['eval:oracle'], 'string');
+  assert.match(manifest.scripts['eval:oracle'], /npm run build/);
+  assert.match(manifest.scripts['eval:oracle'], /scripts\/eval-oracle\.mjs/);
 });
 
 /* -------------------------------------------------------------------------- */
