@@ -377,15 +377,11 @@ test('both eval-live-model.mjs and eval-final-holdout.mjs reach modelNodes from 
 });
 
 /**
- * `.claude/rules/invariants.md` ("one mechanism, one implementation"):
- * `scriptedNodes` exists three times today — its own copy in
- * `scripts/lane-arms.mjs`, and a second, independent copy in each of
- * `scripts/eval-live-model.mjs` and `scripts/eval-final-holdout.mjs`
- * (code-reviewer round-1 advisory, `eval-final-holdout.mjs:236`,
- * `eval-live-model.mjs:165`: "in a change whose header cites 'one mechanism,
- * one implementation'"). This row is `modelNodes`'s sibling row above, for
- * `scriptedNodes` — it fails today because neither script reaches
- * `scriptedNodes` from `./lane-arms.mjs`; each still declares its own.
+ * `.claude/rules/invariants.md` ("one mechanism, one implementation"): the
+ * control arm's nodes and the model arm's base nodes come from one
+ * `scriptedNodes`, in `scripts/lane-arms.mjs`. This row is `modelNodes`'s
+ * sibling row above: it guards against either lane command declaring its own
+ * copy again, which is how the two used to drift apart unnoticed.
  */
 test('both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation', () => {
   for (const relativePath of ['scripts/eval-live-model.mjs', 'scripts/eval-final-holdout.mjs']) {

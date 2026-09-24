@@ -757,6 +757,8 @@ export function createModelProposeConclusion(
     // conclusion the harness cannot even validate would spend a call on a run
     // that was never going to get an answer through.
     // see conclusion-role.test.mjs › "an assessment naming evidence the run does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id"
+    // see conclusion-role.test.mjs › "an assessment naming a hypothesisId the state does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id"
+    // see conclusion-role.test.mjs › "an assessment naming a predictionId that is not a prediction of its hypothesis throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id"
     for (const assessment of state.assessments) {
       if (!state.evidence.some(({ id }) => id === assessment.evidenceId)) {
         throw new Error(
