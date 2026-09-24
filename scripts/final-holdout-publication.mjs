@@ -37,13 +37,22 @@ import * as evals from '@aic/evals';
  * between the write and the rename leaves the PREVIOUS file intact rather
  * than a half-written one, and a crash after the rename cannot lose it to a
  * directory entry that was never flushed.
+ *
+ * The temp file is opened with `'wx'` — exclusive create, `O_CREAT | O_EXCL`
+ * — rather than plain `'w'`. `'w'` has no `O_EXCL`/`O_NOFOLLOW` and follows a
+ * pre-created symlink at the temp path, so a leftover temp file from a killed
+ * prior run (or an attacker) replaced by a symlink turns this write into a
+ * write through the link to wherever it points, followed by a rename of that
+ * target into place at `path`. `'wx'` refuses to open when the path already
+ * exists — symlink or not — so the write never follows it.
  * see final-evaluation-publication.test.mjs › "writeRecordDurably writes pretty-printed JSON with a trailing newline, leaving no leftover temp file"
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  */
 export async function writeRecordDurably(path, body) {
   mkdirSync(dirname(path), { recursive: true });
   const serialized = `${JSON.stringify(body, null, 2)}\n`;
   const tmpPath = `${path}.tmp-${pid}`;
-  const fileHandle = openSync(tmpPath, 'w');
+  const fileHandle = openSync(tmpPath, 'wx');
   try {
     writeSync(fileHandle, serialized);
     fsyncSync(fileHandle);
@@ -152,6 +161,7 @@ function capReason(error) {
  * attempt.
  * see final-evaluation-publication.test.mjs › "T6: two failed publishOnly attempts followed by a successful one leave the attempt log holding all three, in order"
  * see final-evaluation-publication.test.mjs › "T10: persist succeeds but verify rejects — the arm logs readback-failed with its reference kept, distinct from ingestion-failed, and the next publishOnly verifies the same reference with no new persist call"
+ * see final-evaluation-publication.test.mjs › "publishOnly persists each required arm under a dataset name built from the record’s own head SHA and attempt number, and a retry after ingestion-failed bumps the suffix"
  */
 export async function publishRecordedMeasurement({ recordPath, mode, persist, verify, now, newAttemptId }) {
   const raw = readFileSync(recordPath);

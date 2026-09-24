@@ -977,11 +977,16 @@ async function persistPreparedExperiment({
  *     file's rule is that a present field which cannot be read is refused
  *     rather than defaulted.
  *
- * 🔴 It is shared by both entry points deliberately. The first version guarded
- * only the plural one, and every caller in this repository uses the singular —
- * so the refusal sat on the path nobody takes while the path everybody takes
- * kept the behaviour it was meant to close. A `security-scanner` probe found it
- * by making a real outbound call to the live workspace.
+ * 🔴 It is shared by all three entry points deliberately. The first version
+ * guarded only the plural one, and every caller in this repository uses the
+ * singular — so the refusal sat on the path nobody takes while the path
+ * everybody takes kept the behaviour it was meant to close. A
+ * `security-scanner` probe found it by making a real outbound call to the
+ * live workspace. `verifyPersistedBenchmarkReference` read its slot with plain
+ * `ownValue` until round 2 of AIC-120 found the same gap there: an own
+ * ACCESSOR `client` read as absent and the read-back call fell through to the
+ * live default client.
+ * see persist-boundary-refusals.test.mjs › "refuses verifyPersistedBenchmarkReference options whose client is an own accessor"
  */
 function ownClient(options: unknown): LangSmithPersistenceClient | undefined {
   if (typeof options !== 'object' || options === null) return undefined;
@@ -1171,7 +1176,7 @@ export async function verifyPersistedBenchmarkReference(
     reference: PersistedBenchmarkReference;
   }>,
 ): Promise<VerifiedBenchmarkReference> {
-  const suppliedClient = ownValue(options, 'client') as LangSmithReadbackClient | undefined;
+  const suppliedClient = ownClient(options) as LangSmithReadbackClient | undefined;
   const client = suppliedClient ?? (createLangSmithClient() as unknown as LangSmithReadbackClient);
   const reference = ownValue(options, 'reference');
   if (reference === undefined) {
@@ -1185,6 +1190,11 @@ export async function verifyPersistedBenchmarkReference(
 
   const readbackDataset = await client.readDataset({ datasetId });
   const readbackDatasetId = requireNativeIdentity(readbackDataset, 'id', 'read-back dataset');
+  if (readbackDatasetId !== datasetId) {
+    throw new Error(
+      `read-back dataset id ${readbackDatasetId} disagrees with the requested datasetId ${datasetId}`,
+    );
+  }
 
   const projectIds: string[] = [];
   for (const project of projects) {
