@@ -32,9 +32,10 @@ import { pid } from 'node:process';
 import * as evals from '@aic/evals';
 
 /**
- * A fresh 48-bit random temp-name token, hex-encoded (12 lowercase hex
- * characters). Each call to `writeRecordDurably` gets its own, via this
- * function's use as the `token` parameter's default.
+ * A fresh temp-name token: 6 bytes from Node's CSPRNG (`randomBytes`),
+ * hex-encoded as 12 lowercase characters. Each call to `writeRecordDurably`
+ * gets its own, via this function's use as the `token` parameter's default.
+ * see final-evaluation-publication.test.mjs › "the source of freshTempToken is exactly one return of randomBytes(6).toString('hex'), imported from node:crypto"
  * see final-evaluation-publication.test.mjs › "freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls"
  */
 export function freshTempToken() {
@@ -68,18 +69,25 @@ const VALID_TOKEN = /^[0-9a-f]{1,32}$/;
  * fail on a name a killed prior run happened to also pick.
  * see final-evaluation-publication.test.mjs › "freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls"
  * see final-evaluation-publication.test.mjs › "the source of writeRecordDurably defaults its token parameter to a call to freshTempToken()"
+ * see final-evaluation-publication.test.mjs › "the source of freshTempToken is exactly one return of randomBytes(6).toString('hex'), imported from node:crypto"
  *
  * `token` is an optional parameter, for tests that need to predict the temp
- * name in advance: it must be 1-32 lowercase hex characters, and anything
+ * name in advance: it must be a string of 1-32 lowercase hex characters, and anything
  * else is refused before the filesystem is touched at all.
  * see final-evaluation-publication.test.mjs › "writeRecordDurably rejects a token that is not lowercase hex of length 1-32, before touching the filesystem"
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses a token that is not a primitive string, even when it coerces to valid hex"
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably rejects a malformed token before creating any missing parent directory"
  *
  * If a collision does happen anyway, `'wx'` refuses it and never follows it.
  * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  */
 export async function writeRecordDurably(path, body, { token = freshTempToken() } = {}) {
-  if (!VALID_TOKEN.test(token)) {
-    throw new Error(`writeRecordDurably: token must be 1-32 lowercase hex characters, got ${JSON.stringify(token)}`);
+  // `typeof` first: a number, a boxed String or an object with a toString
+  // would otherwise be coerced once to pass the check and again to build the
+  // path, and the two coercions need not agree.
+  if (typeof token !== 'string' || !VALID_TOKEN.test(token)) {
+    const shown = typeof token === 'string' ? JSON.stringify(token.slice(0, 40)) : `a ${typeof token}`;
+    throw new Error(`writeRecordDurably: token must be a string of 1-32 lowercase hex characters, got ${shown}`);
   }
   mkdirSync(dirname(path), { recursive: true });
   const serialized = `${JSON.stringify(body, null, 2)}\n`;
