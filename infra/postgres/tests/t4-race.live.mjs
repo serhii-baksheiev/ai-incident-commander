@@ -244,6 +244,22 @@ function deferredPromise() {
 }
 
 /**
+ * Module scope (not exported — reachable from both the window-measurement
+ * test and its own empty-sample row below, so they call the same one
+ * implementation rather than two copies). For an empty `samples`, `at(50)`/
+ * `at(99)` would index past the end of an empty sorted array (`undefined`,
+ * whose `.toFixed(3)` throws) — reported explicitly as `n=0` instead, with
+ * no `NaN`/`undefined` in the line this file's header documents as stable
+ * and greppable for the stress run.
+ */
+function percentiles(samples) {
+  if (samples.length === 0) return 'p50=n/a p99=n/a n=0';
+  const sorted = [...samples].sort((a, b) => a - b);
+  const at = (p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+  return `p50=${at(50).toFixed(3)} p99=${at(99).toFixed(3)} n=${sorted.length}`;
+}
+
+/**
  * The adversarial tool: every ACTUAL invocation returns content that carries
  * its own 1-indexed call number, so two real calls for the same run are
  * observably different, not merely counted.
@@ -450,7 +466,7 @@ function createBGates(target) {
   return { wait, reachedTarget: reached.promise, release: held.resolve, isHeld: target !== undefined };
 }
 
-/** Wraps B's inner checkpointer so its first getTuple routes through gates.wait('S2'); the put-after-commit holds (S4/S5) are separate, built with withHeldPutAfterCommit. */
+/** Wraps B's inner checkpointer so its first getTuple routes through gates.wait('S2'); the post-commit-write holds (S4/S5) are separate, built with withHeldPostCommitPut/withHeldPostCommitPutWrites. */
 function withBGatedReads(inner, gates) {
   let getTupleCount = 0;
   return new Proxy(inner, {
@@ -550,6 +566,55 @@ function normalizeSnapshotEvents(snapshot) {
   }));
 }
 
+/**
+ * Retries `store.sweepExpired()` up to `attempts` times (`delayMs` apart)
+ * until `runId` is among the reclaimed rows. `sweepExpired`'s inner `FOR
+ * UPDATE SKIP LOCKED` can legitimately skip a row another transaction
+ * transiently holds and hand it to a LATER sweep instead — see
+ * infra/postgres/tests/run-store.live.mjs › "a sweep skips an expired run
+ * another transaction holds a row lock on, and the next sweep reclaims it".
+ * Bounded work only: every call any attempt made is checked against `runId`
+ * (a sweep reclaiming a DIFFERENT run would be this repetition claiming a
+ * leftover, not proof of its own reclaim), and a run never freed fails
+ * closed, naming `runId` and the attempt count, rather than waiting forever.
+ */
+async function sweepUntilReclaimed(store, runId, { attempts, delayMs }) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const swept = await store.sweepExpired();
+    for (const sweptRunId of swept) {
+      assert.equal(sweptRunId, runId, `sweepUntilReclaimed swept a run other than its own: expected ${runId}, got ${sweptRunId}`);
+    }
+    if (swept.includes(runId)) return swept;
+    if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  throw new Error(`sweepUntilReclaimed: ${runId} was not reclaimed after ${attempts} attempts`);
+}
+
+/**
+ * Moves `runId` to a terminal state (`failed`, with a `terminal_reason` that
+ * names this cleanup) if — and only if — it is still `queued` or `running`,
+ * so a leftover run from a failed or aborted repetition cannot be claimed or
+ * swept by a LATER repetition sharing the same store/table (measured
+ * directly at S1 rep 579: without this, `claimNext`'s oldest-first ordering
+ * handed a later repetition the earlier repetition's own leftover run).
+ * Clears `owner_worker_id`/`lease_expires_at` too, so the terminal row can
+ * never look `running` again — `aic_app.runs`'s `runs_lease_ownership_check`
+ * CHECK constraint (packages/persistence/src/app-schema.ts) requires those
+ * two set only while `status = 'running'`.
+ */
+async function abandonLeftoverRun(store, runId) {
+  await store.pool.query(
+    `update aic_app.runs
+     set status = 'failed',
+         terminal_reason = 'abandoned_by_t4_race_harness',
+         owner_worker_id = NULL,
+         lease_expires_at = NULL
+     where run_id = $1
+       and status in ('queued', 'running')`,
+    [runId],
+  );
+}
+
 const ORDERINGS = Object.freeze([
   'S1-released-before-B-claims',
   'S2-released-before-B-reads-thread',
@@ -609,8 +674,7 @@ async function runOneRace(t, store, ordering) {
     `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
     [runId],
   );
-  const swept = await store.sweepExpired();
-  assert.deepEqual(swept, [runId], 'sweepExpired must reclaim exactly this repetition\'s run');
+  await sweepUntilReclaimed(store, runId, { attempts: 20, delayMs: 25 });
 
   async function releaseAAndAwaitSettlement() {
     aBarrier.resolve();
@@ -753,8 +817,7 @@ async function runS1Race(t, store) {
     `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
     [runId],
   );
-  const swept = await store.sweepExpired();
-  assert.deepEqual(swept, [runId], 'sweepExpired must reclaim exactly this repetition\'s run');
+  await sweepUntilReclaimed(store, runId, { attempts: 20, delayMs: 25 });
 
   aBarrier.resolve();
   await aSettled;
@@ -1007,6 +1070,13 @@ test(
               ? await runS1Race(st, store)
               : await runOneRace(st, store, ordering);
 
+          // Per-repetition isolation (both the S1 and the S2-S6 path): if this
+          // repetition's own assertions below throw, its run must not be left
+          // `queued`/`running` for a LATER repetition's `claimNext`/
+          // `sweepExpired` to pick up instead of its own fresh run — see
+          // `abandonLeftoverRun`'s own header.
+          st.after(() => abandonLeftoverRun(store, runId));
+
           const expectedExecKey = domain.buildExecKey('tool.trial', { runId, testId, trialAttempt: 1 });
 
           // (a) the adversarial tool was called exactly once in total.
@@ -1232,11 +1302,6 @@ test('measures the natural window between the fence check and the inner write, u
     }
   }
 
-  const percentiles = (samples) => {
-    const sorted = [...samples].sort((a, b) => a - b);
-    const at = (p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
-    return `p50=${at(50).toFixed(3)} p99=${at(99).toFixed(3)} n=${sorted.length}`;
-  };
   // eslint-disable-next-line no-console -- the stable prefixes this file's header documents, for the stress run to grep.
   console.log(`t4-window-ms dispatch ${percentiles(windowsMs)}`);
   // eslint-disable-next-line no-console -- the exposure window the ADR records: fence resolved -> write landed.
