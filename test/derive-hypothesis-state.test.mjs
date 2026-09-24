@@ -85,6 +85,19 @@ test('derive_hypothesis_state refuses an assessment naming a prediction that bel
   assert.throws(run, /^Error: derive_hypothesis_state: an assessment names a prediction/);
 });
 
+test('derive_hypothesis_state refuses an assessment naming a prediction id that exists nowhere, even when its hypothesis has predictions of its own', () => {
+  // h-1 owns p-1, so the ownership half of the check alone would find a
+  // prediction of h-1; only the identity half separates the hostile id from
+  // p-1. Without it the refusal falls to the status derivation's older,
+  // unescaped message.
+  const predictions = [
+    { id: 'p-1', hypothesisId: 'h-1', statement: 'x', expectedIfTrue: [], expectedIfFalse: [], status: 'untested' },
+  ];
+  const run = () => node()(state({ predictions, assessments: [assessment({ predictionId: HOSTILE })] }));
+  assertEscapedRefusal(run);
+  assert.throws(run, /^Error: derive_hypothesis_state: an assessment names a prediction/);
+});
+
 test('derive_hypothesis_state returns an empty result for a state whose assessments all name what the state holds', () => {
   assert.deepEqual(node()(state({ assessments: [assessment({})] })), {});
 });
