@@ -91,6 +91,7 @@ import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { readControlBaseline } from './eval-final-holdout.mjs';
+import { naiveArm, oracleArm } from './lane-arms.mjs';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -141,7 +142,7 @@ const baseMetadata = Object.freeze({
   promptVersion: REFERENCE_PROMPT_VERSION,
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,
-  evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
+  evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
   // Both arms replay their TOOLS. Only the three roles differ between them,
   // which is what keeps the comparison about the model rather than about the
   // environment the two arms ran against.
@@ -197,6 +198,18 @@ async function main() {
   // of it: the LangSmith record has to be the runs, not the report about them.
   let modelExperiment;
 
+  // One port for both paid arms, so the naive and graph-model arms spend
+  // through the same ledger and the same credential read.
+  let port;
+  const sharedPort = () => {
+    port ??= createReferenceModelPort({
+      apiKey: readModelCredential(env),
+      modelId: config.modelId,
+      ledger,
+    });
+    return port;
+  };
+
   const report = await evals.runLiveModelLane({
     env,
     // Declared, never defaulted. This command is run repeatedly and must never
@@ -218,6 +231,14 @@ async function main() {
         async recordEvaluation() {},
       });
     },
+    runOracleArm: oracleArm({ experimentId: `aic-94-oracle-${headSha().slice(0, 12)}` }),
+    async runNaiveArm(plan) {
+      return naiveArm({
+        experimentId: `aic-94-naive-${headSha().slice(0, 12)}`,
+        port: sharedPort(),
+        config,
+      })(plan);
+    },
     async runModelArm(plan) {
       // The credential's VALUE is read through `readModelCredential`, the same
       // function `resolveModelConfig` uses for its availability decision — not a
@@ -232,12 +253,7 @@ async function main() {
       // the property worth having: exactly one function reads it.
       // see roles-boundary.test.mjs › "reads the credential value in
       // readModelCredential and nowhere else in packages or scripts"
-      const apiKey = readModelCredential(env);
-      const port = createReferenceModelPort({
-        apiKey,
-        modelId: config.modelId,
-        ledger,
-      });
+      const port = sharedPort();
       modelExperiment = await evals.runGraphBenchmarkExperiment({
         experimentId: `aic-94-model-${headSha().slice(0, 12)}`,
         scenarioSet: plan.scenarioSet,

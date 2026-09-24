@@ -58,6 +58,7 @@ import {
 
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
+import { naiveArm, oracleArm } from './lane-arms.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -119,7 +120,7 @@ export function corpusFingerprint(runsPerScenario) {
 
 function baseMetadata() {
   return {
-    evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
+    evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
     graphVersion: 'aic-19-final-holdout',
     promptVersion: REFERENCE_PROMPT_VERSION,
     toolsetVersion: 'replay-v0.1',
@@ -354,6 +355,17 @@ async function main() {
   });
   let modelExperiment;
   let publication = null;
+  // One port for both paid arms: the naive and graph-model arms spend through
+  // the same ledger and the same credential read.
+  let port;
+  const sharedPort = () => {
+    port ??= createReferenceModelPort({
+      apiKey: readModelCredential(env),
+      modelId: config.modelId,
+      ledger,
+    });
+    return port;
+  };
   let publicationSkipped;
 
   const report = await evals.runLiveModelLane({
@@ -386,12 +398,12 @@ async function main() {
         async recordEvaluation() {},
       });
     },
+    runOracleArm: oracleArm({ experimentId: `aic-19-oracle-${head.slice(0, 12)}` }),
+    async runNaiveArm(plan) {
+      return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan);
+    },
     async runModelArm(plan) {
-      const port = createReferenceModelPort({
-        apiKey: readModelCredential(env),
-        modelId: config.modelId,
-        ledger,
-      });
+      const port = sharedPort();
       modelExperiment = await evals.runGraphBenchmarkExperiment({
         experimentId: `aic-19-model-${head.slice(0, 12)}`,
         scenarioSet: plan.scenarioSet,
