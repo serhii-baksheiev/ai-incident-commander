@@ -13,9 +13,10 @@
  * Independent oracle: what a row expects is either a literal, or read from a
  * committed evidence file this module does not produce —
  * `docs/evidence/oracle/behavior-evaluators-v0.3.json` for the oracle row, and
- * `docs/evidence/control-baseline.json` (through `readControlBaseline`, the
- * one committed reader — `scripts/eval-final-holdout.mjs`) for the baseline
- * row. Neither row derives its expectation from `lane-arms.mjs` itself.
+ * `docs/evidence/control-baseline.json` and
+ * `docs/evidence/control-baseline-calibration.json` (through
+ * `readControlBaseline`, the one committed reader —
+ * `scripts/eval-final-holdout.mjs`) for the baseline row. Neither row derives its expectation from `lane-arms.mjs` itself.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -794,15 +795,16 @@ function fakeNaivePort() {
  * A whole lane, driven through the real `runLiveModelLane`, with a scripted
  * (zero-score, deterministic) control and model arm and a caller-supplied
  * naive arm — the shape `publishNaiveArm`'s rows below need on their input
- * side. The control baseline defaults to the committed
- * `docs/evidence/control-baseline.json` (through `readControlBaseline`, row 4
- * above's own reader) so the scripted control arm never moves against it and
+ * side. The control baseline defaults to the committed calibration baseline,
+ * `docs/evidence/control-baseline-calibration.json` (through
+ * `readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH)`, row 4 above's own
+ * reader), because this lane runs the calibration corpus — so the scripted control arm never moves against it and
  * the naive arm's `reportable` flag turns on ordinary completion — set
  * `includeControlBaseline: false` for the row that needs the undeclared-
  * baseline path instead.
  */
 async function publishNaiveLane({ runNaiveArm, includeControlBaseline = true } = {}) {
-  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const runLiveModelLane = requireExport('runLiveModelLane');
 
@@ -823,7 +825,7 @@ async function publishNaiveLane({ runNaiveArm, includeControlBaseline = true } =
     experimentId: 'aic-117d-publish-naive',
     headSha: HEAD_SHA,
     metadata: v3Metadata,
-    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH) } : {}),
     async runControlArm(plan) {
       return scriptedGraphExperiment('aic-117d-publish-naive-control', plan);
     },
@@ -1064,6 +1066,7 @@ async function scriptedModelExperimentFor(label, plan) {
  * cannot produce.
  */
 async function fourArmLaneForPublish({ runModelArm, runNaiveArm, includeControlBaseline = true } = {}) {
+  const { CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const runLiveModelLane = requireExport('runLiveModelLane');
 
@@ -1073,7 +1076,7 @@ async function fourArmLaneForPublish({ runModelArm, runNaiveArm, includeControlB
     experimentId: 'aic-117d-publish-arms',
     headSha: HEAD_SHA,
     metadata: v3Metadata,
-    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH) } : {}),
     async runControlArm(plan) {
       return scriptedModelExperimentFor('control', plan);
     },

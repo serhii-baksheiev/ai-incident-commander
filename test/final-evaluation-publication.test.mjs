@@ -127,7 +127,7 @@ async function fourArmLaneCapturing({
   includeNaiveArm = true,
   includeControlBaseline = true,
 } = {}) {
-  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const { naiveArm } = await import('../scripts/lane-arms.mjs');
 
@@ -173,7 +173,7 @@ async function fourArmLaneCapturing({
     experimentId: 'aic-120-lane',
     headSha: HEAD_SHA,
     metadata: v3Metadata,
-    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH) } : {}),
     async runControlArm(plan) {
       return scriptedGraphExperiment('control', plan);
     },
@@ -1282,7 +1282,7 @@ test('completeHoldout returns exitCode 0, and calls neither persist nor verify, 
 
 test("T3: execute runs exactly once, and a counting fake naive port used inside it takes no further calls once completeHoldout has finished, even though publication then fails", async (t) => {
   const { completeHoldout } = await import('../scripts/eval-final-holdout.mjs');
-  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const { naiveArm } = await import('../scripts/lane-arms.mjs');
 
@@ -1326,7 +1326,7 @@ test("T3: execute runs exactly once, and a counting fake naive port used inside 
       experimentId: 'aic-120-t3',
       headSha: HEAD_SHA,
       metadata: v3Metadata,
-      controlBaseline: readControlBaseline(),
+      controlBaseline: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH),
       async runControlArm(plan) {
         return scriptedGraphExperiment('control', plan);
       },
