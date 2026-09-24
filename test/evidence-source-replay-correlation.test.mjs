@@ -11,13 +11,12 @@
  *   - test/fixtures/evidence-sources/github/fixture-repo.v2.json
  *   - test/fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json
  * — produced by the manual recorder,
- * `packages/tools/tests/record-evidence-fixtures.live.mjs`, the only place
- * either fixture is ever written or refreshed. Neither committed file exists
- * yet; every row below is red for that one reason, not for a defect in the
- * bindings, the registry, or this file's own assertions — see the two
- * existence rows at the top, which name the missing paths directly, and the
- * "record-evidence-fixtures.live.mjs" reference above for how to produce
- * them.
+ * `packages/tools/tests/record-evidence-fixtures.record.mjs`, the only place
+ * either fixture is ever written or refreshed. The two existence rows at the
+ * top guard that both files stay committed at those exact paths: a checkout
+ * that lost one, or a rename that moved it, fails there directly, rather
+ * than every row below failing for a reason that has nothing to do with the
+ * bindings, the registry, or this file's own assertions.
  *
  * ## The bindings
  *
@@ -97,20 +96,20 @@ const EXPECTED_PULL_REQUEST_TITLE_FRAGMENT = 'pool from 20 to 5';
 const EXPECTED_PULL_REQUEST_BODY_FRAGMENT = 'peak traffic';
 
 /* -------------------------------------------------------------------------- */
-/* Existence rows — name the missing fixture paths directly                   */
+/* Existence rows — guard that both committed fixtures stay at their path     */
 /* -------------------------------------------------------------------------- */
 
-test('the recorded github@1 fixture is committed at test/fixtures/evidence-sources/github/fixture-repo.v2.json (produce it with packages/tools/tests/record-evidence-fixtures.live.mjs)', () => {
+test('the recorded github@1 fixture is committed at test/fixtures/evidence-sources/github/fixture-repo.v2.json (produce it with packages/tools/tests/record-evidence-fixtures.record.mjs)', () => {
   assert.ok(
     existsSync(GITHUB_FIXTURE_PATH),
-    `missing ${GITHUB_FIXTURE_PATH} — record it with packages/tools/tests/record-evidence-fixtures.live.mjs`,
+    `missing ${GITHUB_FIXTURE_PATH} — record it with packages/tools/tests/record-evidence-fixtures.record.mjs`,
   );
 });
 
-test('the recorded lab@1 fixture is committed at test/fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json (produce it with packages/tools/tests/record-evidence-fixtures.live.mjs)', () => {
+test('the recorded lab@1 fixture is committed at test/fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json (produce it with packages/tools/tests/record-evidence-fixtures.record.mjs)', () => {
   assert.ok(
     existsSync(LAB_FIXTURE_PATH),
-    `missing ${LAB_FIXTURE_PATH} — record it with packages/tools/tests/record-evidence-fixtures.live.mjs`,
+    `missing ${LAB_FIXTURE_PATH} — record it with packages/tools/tests/record-evidence-fixtures.record.mjs`,
   );
 });
 
@@ -278,8 +277,21 @@ test('replays a deployment/change-correlation investigation over the github-fixt
 test("replay of the github-fixture chain never calls the bound source's token() or fetch() (replay never touches the adapter)", async () => {
   const { registry, token, fetchFn } = buildGithubRegistry();
 
-  await registry.execute(GITHUB_BINDING_ID, 'list_deployments', { environment: 'production' });
-  await registry.execute(GITHUB_BINDING_ID, 'get_pull_request', { number: EXPECTED_PULL_REQUEST_NUMBER });
+  // Each call must actually replay successfully — a total replay miss (an
+  // outcome whose status is not 'ok') would also never touch token()/fetch()
+  // and must not be read as passing this row.
+  const deploymentsOutcome = await registry.execute(GITHUB_BINDING_ID, 'list_deployments', { environment: 'production' });
+  assert.equal(
+    deploymentsOutcome.status,
+    'ok',
+    `list_deployments must replay ok; got ${JSON.stringify(deploymentsOutcome)}`,
+  );
+  const pullRequestOutcome = await registry.execute(GITHUB_BINDING_ID, 'get_pull_request', { number: EXPECTED_PULL_REQUEST_NUMBER });
+  assert.equal(
+    pullRequestOutcome.status,
+    'ok',
+    `get_pull_request must replay ok; got ${JSON.stringify(pullRequestOutcome)}`,
+  );
 
   assert.equal(token.calls.length, 0, "the github-fixture binding's token() must never be called during replay");
   assert.equal(fetchFn.calls.length, 0, "the github-fixture binding's fetch() must never be called during replay");
@@ -335,36 +347,55 @@ test('the committed fixture files carry no GitHub credential shape (github_pat_,
 
 const AIC_GITHUB_FIXTURE_REPO_ENV_VAR = 'AIC_GITHUB_FIXTURE_REPO';
 
-test('the committed fixture files never carry this environment\'s own AIC_GITHUB_FIXTURE_REPO value, when the environment provides one to compare against', () => {
+test('the committed fixture files never carry this environment\'s own AIC_GITHUB_FIXTURE_REPO value, case-insensitively, when the environment provides one to compare against', (t) => {
   const envValue = process.env[AIC_GITHUB_FIXTURE_REPO_ENV_VAR];
   if (typeof envValue !== 'string' || envValue.trim() === '') {
     // Nothing to compare against in this environment: the two unconditional
-    // rows below (the assembled URL pattern, and the api.github.com
-    // neutral-stand-in check) still guard the private repository's identity
-    // on their own, without needing this environment variable at all.
+    // rows below (the github.com URL row, and the api.github.com/repos/
+    // neutral-stand-in row) still guard the private repository's identity on
+    // their own, without needing this environment variable at all.
+    t.skip(`${AIC_GITHUB_FIXTURE_REPO_ENV_VAR} is not set in this environment — nothing to compare against here`);
     return;
   }
   const raw = readCommittedFixturesRawText();
   const escaped = envValue.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.doesNotMatch(
     raw,
-    new RegExp(escaped),
-    `the committed fixture files must never contain this environment's own ${AIC_GITHUB_FIXTURE_REPO_ENV_VAR} value`,
+    new RegExp(escaped, 'i'),
+    `the committed fixture files must never contain this environment's own ${AIC_GITHUB_FIXTURE_REPO_ENV_VAR} value, case-insensitively`,
   );
 });
 
-test('the committed fixture files carry no github.com URL naming the private fixture repository, unconditionally', () => {
+test('every github.com URL recorded in the committed fixture files names the neutral stand-in fixture-owner (and fixture-repo, when a repository segment follows), unconditionally', () => {
   const raw = readCommittedFixturesRawText();
-  // Assembled from pieces, deliberately, rather than spelled as one literal:
-  // the private repository's own name never appears contiguous with a
-  // "github.com/<owner>/" prefix anywhere in this file's own source.
-  const privateRepoName = ['aic', 'github', 'fixture'].join('-');
-  const privateUrlPattern = new RegExp(`github${'.'}com/[^\\s"']+/${privateRepoName}(?:[/"'\\s]|$)`, 'i');
-  assert.doesNotMatch(
-    raw,
-    privateUrlPattern,
-    'the committed fixture files must carry no github.com URL naming the private fixture repository',
+  // The negative lookbehind excludes api.github.com/repos/<owner>/<repo>,
+  // which the row below this one already checks on its own path shape: this
+  // row is the plain github.com host — the web UI and git-clone form, seen in
+  // fields like html_url, url and svn_url.
+  const urlPattern = /(?<!api\.)github\.com\/([^\s"'/]+)(?:\/([^\s"'/]+))?/g;
+  const matches = Array.from(raw.matchAll(urlPattern));
+  assert.ok(
+    matches.length > 0,
+    'expected at least one github.com URL recorded in the committed fixtures — otherwise this row guards nothing',
   );
+  for (const match of matches) {
+    const owner = match[1];
+    // A clone URL's repo segment carries a trailing ".git" (e.g.
+    // "fixture-repo.git"); stripped before comparing against the stand-in.
+    const repo = match[2] === undefined ? undefined : match[2].replace(/\.git$/, '');
+    assert.equal(
+      owner,
+      'fixture-owner',
+      `github.com URL owner segment must be the neutral stand-in "fixture-owner"; got ${JSON.stringify(match[1])} in ${JSON.stringify(match[0])}`,
+    );
+    if (repo !== undefined) {
+      assert.equal(
+        repo,
+        'fixture-repo',
+        `github.com URL repo segment must be the neutral stand-in "fixture-repo"; got ${JSON.stringify(match[2])} in ${JSON.stringify(match[0])}`,
+      );
+    }
+  }
 });
 
 test('every api.github.com/repos/ path recorded in the committed fixture files uses the neutral stand-in fixture-owner/fixture-repo, never the private fixture repository\'s own owner or name', () => {
@@ -384,11 +415,14 @@ test('every api.github.com/repos/ path recorded in the committed fixture files u
 test('every email address recorded in the committed fixture files is either the synthetic @example.invalid domain or a GitHub noreply address, never a real personal email', () => {
   const raw = readCommittedFixturesRawText();
   const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const allMatches = Array.from(raw.matchAll(emailPattern)).map((match) => match[0]);
+  assert.ok(
+    allMatches.length > 0,
+    'expected at least one email-shaped string recorded in the committed fixtures (every GitHub repo\'s ssh_url guarantees git@github.com) — otherwise this row guards nothing',
+  );
   // `git@github.com` is the SSH remote user GitHub reports in every repo's
   // `ssh_url`, not a person's address, so it is the one non-email match skipped.
-  const emails = Array.from(raw.matchAll(emailPattern))
-    .map((match) => match[0])
-    .filter((email) => email !== 'git@github.com');
+  const emails = allMatches.filter((email) => email !== 'git@github.com');
   for (const email of emails) {
     const isSynthetic = email.toLowerCase().endsWith('@example.invalid');
     const isGithubNoreply = /@[a-z0-9.-]*noreply\.github\.com$/i.test(email);

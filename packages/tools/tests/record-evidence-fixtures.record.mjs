@@ -9,17 +9,28 @@
  *
  * Not under `test/`, for the same reason `packages/tools/tests/github-source.live.mjs`
  * (beside this file) is not: `npm test`'s default discovery does not reach a
- * `tests/` directory (plural) whose files are named `*.live.mjs` rather than
- * `*.test.mjs`, so this file never runs without being asked for by name — see
- * that file's own header for the full convention this one follows,
- * including "refuse, never skip" for a missing credential.
+ * `tests/` directory (plural), and this file's name matches none of the
+ * default patterns either (`*.test.mjs`, `*-test.mjs`, `*_test.mjs`,
+ * `test-*.mjs`) — two independent reasons this file never runs without being
+ * asked for by name, the same way that file does not.
+ *
+ * Named `*.record.mjs`, not `*.live.mjs`, for a narrower, second reason:
+ * `test:live-github` (package.json) runs every
+ * `packages/tools/tests/*.live.mjs` file as a read-only live check, and this
+ * recorder is not one — it writes the two committed fixtures, overwrites
+ * tracked files, and resets the running lab, none of which that lane may ever
+ * do as a side effect. The `.record.mjs` extension keeps it out of that
+ * glob; it runs only by the exact, explicit invocations below — see
+ * `packages/tools/tests/github-source.live.mjs`'s own header for the rest of
+ * the convention this file still follows, including "refuse, never skip" for
+ * a missing credential.
  *
  * ## How to run the GitHub half
  *
  *   AIC_GITHUB_TOKEN=<a fine-grained, read-only PAT for the fixture repo> \
  *     AIC_GITHUB_FIXTURE_REPO=<owner>/<repo> \
  *     npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \
- *     --test packages/tools/tests/record-evidence-fixtures.live.mjs
+ *     --test packages/tools/tests/record-evidence-fixtures.record.mjs
  *
  * ## How to run the lab half
  *
@@ -32,7 +43,7 @@
  *   AIC_LAB_HOST_PORT=8099 docker compose --file incident-lab/compose.yaml up --detach --wait
  *   AIC_LAB_BASE_URL=http://127.0.0.1:8099 \
  *     npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \
- *     --test packages/tools/tests/record-evidence-fixtures.live.mjs
+ *     --test packages/tools/tests/record-evidence-fixtures.record.mjs
  *
  * Both halves run in the same `--test` invocation; each refuses independently
  * of the other's environment variables.
@@ -51,15 +62,19 @@
  *
  * `record` mode captures the adapter's real output verbatim, which still
  * carries the private fixture repository's own `owner`/`repo` (in URLs,
- * `full_name` fields, and the owner's own login). Before the recording ever
- * reaches the committed path, `scrubOwnerAndRepoDeep` walks every string in
- * every recorded `ok` outcome's `output` and replaces the real `owner/repo`
- * pair (and each half standalone) with the neutral stand-in
+ * `full_name` fields, and the owner's own login) in whatever case GitHub
+ * happens to echo them back in. Before the recording ever reaches the
+ * committed path, `scrubOwnerAndRepoDeep` walks every string in every
+ * recorded `ok` outcome's `output` and replaces the real `owner/repo` pair
+ * (and each half standalone), case-insensitively, with the neutral stand-in
  * `fixture-owner`/`fixture-repo`, and `assertScrubComplete` re-reads the
  * fully assembled file text and refuses to write it if either real value
- * still appears anywhere in it — including inside `provenance` or the stored
- * identity keys, checked below for the separate, structural reason that
- * follows.
+ * still appears anywhere in it, case-insensitively — including inside
+ * `provenance` or the stored identity keys, checked below for the separate,
+ * structural reason that follows. The checker's comparison (a whole-string
+ * lowercase substring search) is deliberately not the scrubber's own (a
+ * per-match, case-insensitive regex substitution), so the two can never share
+ * the same blind spot.
  *
  * ## The identity note
  *
@@ -73,6 +88,18 @@
  * either input. `assertIdentityCarriesNoRepositoryIdentity` below verifies
  * this structurally, over the actual recorded keys and provenance objects,
  * rather than merely asserting it in this comment.
+ *
+ * ## Accepted residual identifiers
+ *
+ * The scrub step replaces the owner's login and the repo's name — never the
+ * owner's numeric user id, the owner's avatar URL, the repo's numeric id, or
+ * any GitHub `node_id` (which itself encodes only numeric ids, never a login
+ * or repo name). Both reviewers who read this file judged scrubbing those
+ * residual values unnecessary, since none of them names the private fixture
+ * repository, and risky to attempt: a numeric id collides with an unrelated
+ * number (a deployment id, a PR number, a status id) far more easily than a
+ * login or repo name does, so a substring scrub of it would risk corrupting
+ * the fixture's own shape instead of protecting anyone's identity.
  */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -120,7 +147,7 @@ const START_THE_GITHUB_HALF = `set ${PAT_ENV_VAR_NAME} to a fine-grained, read-o
 
   ${PAT_ENV_VAR_NAME}=<pat> ${FIXTURE_REPO_ENV_VAR_NAME}=<owner>/<repo> \\
     npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \\
-    --test packages/tools/tests/record-evidence-fixtures.live.mjs
+    --test packages/tools/tests/record-evidence-fixtures.record.mjs
 
 This lane refuses rather than skipping: it is the only place the committed
 github@1 fixture is ever produced, so a skip would report it as up to date
@@ -131,7 +158,7 @@ const START_THE_LAB_HALF = `set ${LAB_BASE_URL_ENV_VAR_NAME} to a running Incide
   AIC_LAB_HOST_PORT=8099 docker compose --file incident-lab/compose.yaml up --detach --wait
   ${LAB_BASE_URL_ENV_VAR_NAME}=http://127.0.0.1:8099 \\
     npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \\
-    --test packages/tools/tests/record-evidence-fixtures.live.mjs
+    --test packages/tools/tests/record-evidence-fixtures.record.mjs
 
 This lane refuses rather than skipping: it is the only place the committed
 lab@1 fixture is ever produced, so a skip would report it as up to date when
@@ -178,10 +205,24 @@ function withScratchStorePath(t) {
 /* The scrub step — GitHub half only                                          */
 /* -------------------------------------------------------------------------- */
 
-/** Replaces every occurrence of the private repository's identity in one string. */
+/** Escapes a literal string for safe interpolation into a RegExp source. */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Replaces every occurrence of the private repository's identity in one
+ * string, case-insensitively: GitHub echoes an owner login or repo name back
+ * in whatever case the caller (or another user) originally used, so a scrub
+ * that only matched the exact case recorded in this run's own env vars would
+ * still leak a differently-cased survivor.
+ */
 function scrubOwnerAndRepoInString(value, { owner, repo }) {
   const fullName = `${owner}/${repo}`;
-  return value.split(fullName).join('fixture-owner/fixture-repo').split(owner).join('fixture-owner').split(repo).join('fixture-repo');
+  return value
+    .replace(new RegExp(escapeRegExp(fullName), 'gi'), 'fixture-owner/fixture-repo')
+    .replace(new RegExp(escapeRegExp(owner), 'gi'), 'fixture-owner')
+    .replace(new RegExp(escapeRegExp(repo), 'gi'), 'fixture-repo');
 }
 
 /**
@@ -230,24 +271,48 @@ function assertIdentityCarriesNoRepositoryIdentity(recordings, { owner, repo }) 
   }
 }
 
-/** Refuses to write a scrub that missed something, over the exact bytes that would be written. */
-function assertScrubComplete(fileText, { owner, repo }) {
-  assert.ok(
-    !fileText.includes(owner),
-    `scrub incomplete: the fixture repository's owner ${JSON.stringify(owner)} still appears in the recording about to be committed`,
-  );
-  assert.ok(
-    !fileText.includes(repo),
-    `scrub incomplete: the fixture repository's name ${JSON.stringify(repo)} still appears in the recording about to be committed`,
-  );
+/**
+ * Refuses to write text that still carries a forbidden identity string,
+ * checked case-insensitively (both sides lowercased) against the exact bytes
+ * that would be written. `forbiddenValues` maps a human-readable label to the
+ * string that must never survive; a falsy value is skipped, so a caller with
+ * nothing to check (no lab base URL configured, say) can still pass its slot
+ * through uniformly.
+ *
+ * Deliberately a different comparison than the scrubber's own
+ * (`scrubOwnerAndRepoInString`, a per-match regex substitution): this
+ * function does one whole-string lowercase substring search per forbidden
+ * value, so a bug in the scrub and a bug in this check would have to be the
+ * same bug in two unrelated pieces of code to both miss the same survivor.
+ */
+function assertScrubComplete(fileText, forbiddenValues) {
+  const lowerFileText = fileText.toLowerCase();
+  for (const [label, value] of Object.entries(forbiddenValues)) {
+    if (!value) {
+      continue;
+    }
+    assert.ok(
+      !lowerFileText.includes(value.toLowerCase()),
+      `scrub incomplete: ${label} (${JSON.stringify(value)}) still appears, case-insensitively, in the recording about to be committed`,
+    );
+  }
 }
 
-function writeCommittedFixture(path, recordings) {
+/**
+ * Sorts a recording map's keys and serializes it to the exact bytes that get
+ * committed to disk — the one serializer both halves go through, so the
+ * completeness check above always runs on the same bytes `writeCommittedFixtureText`
+ * writes, never on a second, independently reassembled copy.
+ */
+function serializeCommittedFixture(recordings) {
   const sorted = {};
   for (const key of Object.keys(recordings).sort()) {
     sorted[key] = recordings[key];
   }
-  const fileText = `${JSON.stringify(sorted, null, 2)}\n`;
+  return `${JSON.stringify(sorted, null, 2)}\n`;
+}
+
+function writeCommittedFixtureText(path, fileText) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, fileText, 'utf8');
 }
@@ -335,15 +400,13 @@ test('records the github@1 fixture at test/fixtures/evidence-sources/github/fixt
 
   assertIdentityCarriesNoRepositoryIdentity(scrubbed, identity);
 
-  const sorted = {};
-  for (const key of Object.keys(scrubbed).sort()) {
-    sorted[key] = scrubbed[key];
-  }
-  const fileText = `${JSON.stringify(sorted, null, 2)}\n`;
-  assertScrubComplete(fileText, identity);
+  const fileText = serializeCommittedFixture(scrubbed);
+  assertScrubComplete(fileText, {
+    "the fixture repository's owner": owner,
+    "the fixture repository's name": repo,
+  });
 
-  mkdirSync(dirname(GITHUB_FIXTURE_PATH), { recursive: true });
-  writeFileSync(GITHUB_FIXTURE_PATH, fileText, 'utf8');
+  writeCommittedFixtureText(GITHUB_FIXTURE_PATH, fileText);
 
   assert.ok(existsSync(GITHUB_FIXTURE_PATH), `expected ${GITHUB_FIXTURE_PATH} to have been written`);
 });
@@ -390,7 +453,16 @@ test('records the lab@1 fixture at test/fixtures/evidence-sources/lab/deployment
   );
 
   const recordedRaw = JSON.parse(readFileSync(scratchStorePath, 'utf8'));
-  writeCommittedFixture(LAB_FIXTURE_PATH, recordedRaw);
+  const fileText = serializeCommittedFixture(recordedRaw);
+  // Same completeness check as the GitHub half, run against a different
+  // forbidden value: the lab source records no owner/repo, but a future
+  // observation could echo back the lab's own host, so this guards that case
+  // even though today's fixture never contains it.
+  assertScrubComplete(fileText, {
+    'the AIC_LAB_BASE_URL host': new URL(baseUrl).host,
+  });
+
+  writeCommittedFixtureText(LAB_FIXTURE_PATH, fileText);
 
   assert.ok(existsSync(LAB_FIXTURE_PATH), `expected ${LAB_FIXTURE_PATH} to have been written`);
 });
