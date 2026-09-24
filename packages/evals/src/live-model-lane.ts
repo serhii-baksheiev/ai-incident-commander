@@ -80,14 +80,19 @@ import type { GateMetricKey } from './benchmark-regression-gate.js';
  *     harness move from a model move without one.
  *     see live-model-lane.test.mjs › "refuses to report model quality when no control baseline was declared"
  *   - 🔴 **The control arm's sensitivity is the sensitivity of whatever nodes
- *     the caller passes as the control, and the one this repository wires up is
- *     at the floor on EVERY metric it emits.** Measured, not counted: the
- *     replay-backed control scores a single value of zero on all six, and zero
- *     is the worst score for five of them. So the control arm can catch a
- *     harness change that moves a metric UP or that stops emitting one, and it
- *     cannot catch one that pushes any metric further down — there is no
- *     further down. Read every `harness-regression` verdict as covering that
- *     first direction only.
+ *     the caller passes as the control, and the one this repository wires up
+ *     (`scripts/lane-arms.mjs`'s `scriptedNodes`) is at the floor on five of the
+ *     six metrics it emits, over the final-evaluation corpus.** Measured, not
+ *     counted: `termination_correctness` moved off zero to 0.1 once AIC-119
+ *     slice 3 wired the canonical, state-driven `termination_check` in; the
+ *     other five still score a single value of zero, which is the worst score
+ *     for four of them and the best for `unsupported_claim_rate`. So the
+ *     control arm can catch a harness change that moves one of those five UP
+ *     or that stops emitting one, and it cannot catch one that pushes any of
+ *     those five further down — there is no further down.
+ *     `termination_correctness` is off the floor, so a `harness-regression`
+ *     verdict on it covers both directions; read every other verdict as
+ *     covering the first direction only.
  *     see live-model-lane.test.mjs › "measures the harness zero that makes evidence_coverage unreportable"
  */
 

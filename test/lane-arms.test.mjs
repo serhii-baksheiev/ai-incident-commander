@@ -13,9 +13,14 @@
  * Independent oracle: what a row expects is either a literal, or read from a
  * committed evidence file this module does not produce —
  * `docs/evidence/oracle/behavior-evaluators-v0.3.json` for the oracle row, and
- * `docs/evidence/control-baseline.json` (through `readControlBaseline`, the
- * one committed reader — `scripts/eval-final-holdout.mjs`) for the baseline
- * row. Neither row derives its expectation from `lane-arms.mjs` itself.
+ * `docs/evidence/control-baseline.json` and
+ * `docs/evidence/control-baseline-calibration.json` (through
+ * `readControlBaseline`, the one committed reader —
+ * `scripts/eval-final-holdout.mjs`) for the baseline row. Neither row derives its expectation from `lane-arms.mjs` itself.
+ * The scenario-independence row is the exception to "a literal or a
+ * committed file": it asserts relations between runs (a renamed clone
+ * matches, a sparse variant differs) plus stop kinds derived by hand from
+ * the T0-T6 table.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -23,6 +28,7 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import * as domain from '@aic/domain';
 import * as evals from '@aic/evals';
 import { MODEL_API_KEY_VARIABLE } from '@aic/roles';
 import { NAIVE_PROMPT_VERSION } from '@aic/roles/naive';
@@ -395,22 +401,162 @@ test('both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes fr
 });
 
 /* -------------------------------------------------------------------------- */
+/* 3c. scriptedNodes and modelNodes carry the canonical derive_hypothesis_    */
+/*     state and termination_check nodes (AIC-119 slice 3)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A state-driven state, proven by BEHAVIOUR rather than by identity or a
+ * source-text match: the fixture's own `termination_check` ignores every
+ * field below and always answers `sufficient`; the fixture's own
+ * `derive_hypothesis_state` ignores every field below and always answers
+ * `{}`. The literal expectations are read off T0-T6 by hand
+ * (`packages/graph/src/nodes/termination.ts`), never by calling
+ * `createStateTerminationCheck`/`createDeriveHypothesisState` to compute
+ * them — the same independent-oracle discipline `state-termination.test.mjs`
+ * already holds itself to.
+ *
+ * `challengeRounds: 1`, one `createdBy: 'initial'` candidate hypothesis, no
+ * assessments, non-empty evidence and an ok trial: T0 does not fire (evidence
+ * is non-empty); T1 does not fire (a hypothesis exists); the sole hypothesis
+ * has no qualifying assessment, so it stays `candidate` and is never a member
+ * of `{supported, corroborated}` — T2 does not fire (`r` is already 1), T3
+ * and T4 do not fire (no hypothesis is in that set at all, so `competing` is
+ * empty), and T5 does not fire (`competing.length` is 0, not 1) — leaving T6:
+ * `stalled`.
+ */
+test('scriptedNodes(record) and modelNodes(record, port) both carry the canonical derive_hypothesis_state and termination_check nodes, proven by behaviour rather than identity or source text', async () => {
+  const { scriptedNodes, modelNodes } = await import('../scripts/lane-arms.mjs');
+  const input = calibrationExecutionInput();
+
+  let portCalls = 0;
+  const fakePort = {
+    async complete() {
+      portCalls += 1;
+      throw new Error('neither termination_check nor derive_hypothesis_state may ever reach a model port');
+    },
+  };
+
+  const oneCandidateNoAssessments = {
+    incident: { id: 'aic-119s3-lane-arms-termination-candidate' },
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [{
+      id: 'trial-1',
+      runId: 'aic-119s3-lane-arms-termination-run',
+      testId: 'test-1',
+      attempt: 1,
+      tool: 'logs.search',
+      input: {},
+      status: 'ok',
+      durationMs: 10,
+      evidenceIds: ['e-1'],
+    }],
+    evidence: [{
+      id: 'e-1',
+      trialId: 'trial-1',
+      kind: 'deploy',
+      source: 'deployment-history',
+      observedAt: '2026-09-24T08:00:00.000Z',
+      statement: 'observation recorded as e-1',
+      rawRef: 'replay://evidence/e-1',
+      reliability: 'medium',
+    }],
+    assessments: [],
+    control: {
+      runId: 'aic-119s3-lane-arms-termination-run',
+      schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
+      statusRulesVersion: domain.STATUS_RULES_VERSION,
+      phase: 'terminating',
+      maxIterations: 4,
+      llmCallBudget: 8,
+      reservedChallengeBudget: 2,
+      challengeRounds: 1,
+      iterationsUsed: 0,
+      llmCallsUsed: 0,
+      resumeCount: 0,
+      humanReview: false,
+    },
+  };
+
+  for (const nodes of [scriptedNodes(input), modelNodes(input, fakePort)]) {
+    const decision = await nodes.termination_check(oneCandidateNoAssessments);
+    assert.deepEqual(
+      decision,
+      { route: 'terminal', stopKind: 'stalled' },
+      'the fixture terminator hardcodes stopKind: "sufficient" regardless of state; the canonical node reads this state as T6',
+    );
+  }
+
+  const danglingAssessment = {
+    incident: { id: 'aic-119s3-lane-arms-derive-dangling' },
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [{
+      id: 'a-dangling',
+      evidenceId: 'evidence-the-state-does-not-carry',
+      hypothesisId: 'h-1',
+      effect: 'supports',
+      strength: 'high',
+      rationale: 'names evidence nobody collected',
+      producedBy: 'rule',
+    }],
+    control: { statusRulesVersion: domain.STATUS_RULES_VERSION },
+  };
+
+  for (const nodes of [scriptedNodes(input), modelNodes(input, fakePort)]) {
+    assert.throws(
+      () => nodes.derive_hypothesis_state(danglingAssessment),
+      /derive_hypothesis_state:/,
+      'the fixture no-op returns {} unconditionally; the canonical node refuses an assessment naming evidence the state does not carry',
+    );
+  }
+
+  assert.equal(portCalls, 0, 'neither termination_check nor derive_hypothesis_state may ever reach the model port');
+});
+
+/* -------------------------------------------------------------------------- */
 /* 4. the committed control baseline, under v0.3, both corpora                */
 /* -------------------------------------------------------------------------- */
 
 /**
  * The scripted control's own observed baseline, over the real plan, compared
- * against the one committed file — in both directions, so neither a missing
- * nor an extra axis can hide.
+ * against ONE committed file PER CORPUS — in both directions, so neither a
+ * missing nor an extra axis can hide.
+ *
+ * AIC-119 slice 3 re-declares the baseline: wiring the canonical, state-driven
+ * `termination_check`/`derive_hypothesis_state` into `scriptedNodes` moves
+ * `termination_correctness` for the final-evaluation corpus (the hold-out
+ * scenarios are not all `sufficient`-expecting), while the calibration corpus
+ * stays at zero on every axis. One file can no longer declare both corpora, so
+ * `docs/evidence/control-baseline.json` stays the FINAL-EVALUATION baseline
+ * (read by `readControlBaseline()`, its existing default path) and
+ * `docs/evidence/control-baseline-calibration.json` is the calibration
+ * baseline, read by `readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH)` —
+ * the ONE reader both files share (`.claude/rules/invariants.md`, "one
+ * mechanism, one implementation"), never a second parser of its own.
  * Under v0.3 the lane withholds nothing, so `evidence_coverage` is among the
- * axes the control observes and the file must declare it.
+ * axes the control observes and both files must declare it.
  */
-test('the committed control baseline equals what the scripted control arm observes under v0.3, over calibration and over final-evaluation, with no axis missing and none extra', async () => {
-  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+test('the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra', async () => {
+  const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const runLiveModelLane = requireExport('runLiveModelLane');
 
-  const declared = readControlBaseline();
+  assert.equal(
+    typeof CALIBRATION_CONTROL_BASELINE_PATH,
+    'string',
+    'scripts/eval-live-model.mjs must export CALIBRATION_CONTROL_BASELINE_PATH: the calibration command needs its own baseline path, distinct from the hold-out default readControlBaseline() reads',
+  );
+
+  const declaredByScenarioSet = {
+    calibration: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH),
+    'final-evaluation': readControlBaseline(),
+  };
 
   for (const scenarioSet of ['calibration', 'final-evaluation']) {
     async function scriptedGraphExperiment(experimentId, plan) {
@@ -428,29 +574,223 @@ test('the committed control baseline equals what the scripted control arm observ
     const report = await runLiveModelLane({
       env: { [MODEL_API_KEY_VARIABLE]: fakeApiKey() },
       scenarioSet,
-      experimentId: `aic-117b-control-baseline-${scenarioSet}`,
+      experimentId: `aic-119s3-control-baseline-${scenarioSet}`,
       headSha: HEAD_SHA,
       metadata: v3Metadata,
       async runControlArm(plan) {
-        return scriptedGraphExperiment(`aic-117b-control-${scenarioSet}`, plan);
+        return scriptedGraphExperiment(`aic-119s3-control-${scenarioSet}`, plan);
       },
       async runModelArm(plan) {
-        return scriptedGraphExperiment(`aic-117b-model-${scenarioSet}`, plan);
+        return scriptedGraphExperiment(`aic-119s3-model-${scenarioSet}`, plan);
       },
     });
 
     const observed = report.arms.control.observedBaseline;
+    const declared = declaredByScenarioSet[scenarioSet];
     assert.deepEqual(
       Object.keys(observed).sort(),
       Object.keys(declared).sort(),
-      `over ${scenarioSet}, docs/evidence/control-baseline.json must declare exactly the axes the scripted control observes under v0.3 — no axis missing, none extra`,
+      `over ${scenarioSet}, its own committed baseline file must declare exactly the axes the scripted control observes under v0.3 — no axis missing, none extra`,
     );
     assert.deepEqual(
       observed,
       declared,
-      `over ${scenarioSet}, docs/evidence/control-baseline.json must equal what the scripted control arm observes under v0.3`,
+      `over ${scenarioSet}, its own committed baseline file must equal what the scripted control arm observes under v0.3`,
     );
   }
+});
+
+/* -------------------------------------------------------------------------- */
+/* 4b. both baseline files carry a _history of what they used to declare      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `_history`'s first entry records what the file declared BEFORE AIC-119
+ * slice 3 re-declared it: all six axes at 0, measured under status rules
+ * `v0.1` with the fixture's constant `terminal/sufficient` terminator (the
+ * termination node every baseline before this ticket was measured against).
+ * Read as raw JSON, and only the six metric keys are compared — never the
+ * whole entry — so this row does not pin how the entry spells its own
+ * rationale or its status-rules/terminator fields.
+ */
+test('both docs/evidence/control-baseline.json and docs/evidence/control-baseline-calibration.json carry a non-empty _history whose first entry records the previous values as all six axes at 0', () => {
+  const metricKeys = sixMetricKeys();
+  assert.equal(metricKeys.length, 6);
+
+  for (const relativePath of [
+    'docs/evidence/control-baseline.json',
+    'docs/evidence/control-baseline-calibration.json',
+  ]) {
+    const raw = JSON.parse(readFileSync(join(REPO_ROOT, relativePath), 'utf8'));
+    assert.ok(Array.isArray(raw._history), `${relativePath} must carry a _history array`);
+    assert.ok(raw._history.length > 0, `${relativePath}'s _history must be non-empty`);
+
+    const [firstEntry] = raw._history;
+    const previousMetrics = Object.fromEntries(metricKeys.map((key) => [key, firstEntry?.[key]]));
+    assert.deepEqual(
+      previousMetrics,
+      Object.fromEntries(metricKeys.map((key) => [key, 0])),
+      `${relativePath}'s _history[0] must record all six axes at 0, what this file declared before AIC-119 slice 3`,
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* 4c. scripts/eval-live-model.mjs declares the v0.3 graph                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The scripted arm and the model arm now run the canonical, state-driven
+ * `derive_hypothesis_state`/`termination_check` nodes (AIC-119 slice 3), so
+ * the graph version the calibration command declares moves from `graph-v0.2`
+ * to `graph-v0.3` — the same source-regex style `final-evaluation-command.test.mjs`
+ * already uses for this file.
+ */
+test('scripts/eval-live-model.mjs declares graphVersion as graph-v0.3', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-live-model.mjs'), 'utf8');
+  assert.match(
+    source,
+    /graphVersion:\s*'graph-v0\.3'/,
+    "scripts/eval-live-model.mjs's baseMetadata must declare graphVersion as graph-v0.3",
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 4d. benchmark-level scenario independence: the lane's scriptedNodes        */
+/*     termination depends on state, never on the scenario id or ground truth */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every evidence item supports `state.hypotheses[0]` at `medium` strength,
+ * `producedBy: 'rule'`, one assessment id per evidence item — deterministic,
+ * scenario-blind, and independent of `@aic/roles`.
+ */
+function deterministicSupportInterpreter(state) {
+  const hypothesisId = state.hypotheses[0]?.id;
+  return {
+    assessments: state.evidence.map((evidenceItem) => ({
+      id: `aic-119s3-deterministic-support-${evidenceItem.id}`,
+      evidenceId: evidenceItem.id,
+      hypothesisId,
+      effect: 'supports',
+      strength: 'medium',
+      rationale: `deterministic interpreter: ${evidenceItem.id} supports ${hypothesisId}`,
+      producedBy: 'rule',
+    })),
+  };
+}
+
+/**
+ * Every calibration scenario supplies at least two independently-identified
+ * `ok` fixture entries (distinct evidence ids, over
+ * `evals.BENCHMARK_SCENARIO_PARTITIONS.calibration` — asserted at the top of
+ * the row below), so
+ * `deterministicSupportInterpreter` above corroborates the sole hypothesis
+ * `scriptedNodes`' fixture-based `generate_hypotheses` creates, on every one
+ * of them: the real corpus alone never exercises the `stalled` branch under
+ * this interpreter. `sparseEvidenceVariant` builds a scenario with the same
+ * shape as a real one, its fixture trimmed to a single entry, so fewer than
+ * two independent supports reach the hypothesis and T6 fires instead — the
+ * two branches this row needs both come from `scriptedNodes` reading STATE,
+ * never scenario identity.
+ */
+function sparseEvidenceVariant(scenario, id) {
+  return {
+    ...scenario,
+    id,
+    groundTruth: { ...scenario.groundTruth, expectedStopKind: 'stalled' },
+    fixture: { ...scenario.fixture, entries: scenario.fixture.entries.slice(0, 1) },
+  };
+}
+
+/** A renamed-id, flipped-ground-truth clone of a real scenario — nothing else about it differs. */
+function renamedClone(scenario, id) {
+  return {
+    ...scenario,
+    id,
+    groundTruth: {
+      ...scenario.groundTruth,
+      expectedStopKind: scenario.groundTruth.expectedStopKind === 'sufficient' ? 'ambiguous' : 'sufficient',
+    },
+  };
+}
+
+/**
+ * `runGraphBenchmarkExperiment`'s ad-hoc plan requires exactly five scenarios
+ * (a v0.1 constraint unrelated to this row); two real calibration scenarios
+ * fill the remaining slots and their own results are read too, corroborating
+ * the same finding the header above states.
+ */
+test("scriptedNodes(record)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a sparse-evidence variant reaches a different one", async () => {
+  const { scriptedNodes } = await import('../scripts/lane-arms.mjs');
+
+  for (const scenarioId of evals.BENCHMARK_SCENARIO_PARTITIONS.calibration) {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `the calibration partition names ${scenarioId}, which REPLAY_SCENARIOS must carry`);
+    const okEvidenceIds = new Set(
+      scenario.fixture.entries
+        .filter(({ result }) => result.status === 'ok')
+        .flatMap(({ result }) => result.output.map(({ id }) => id)),
+    );
+    assert.ok(
+      okEvidenceIds.size >= 2,
+      `${scenarioId} must supply at least two distinct ok evidence ids, the premise that makes the sparse variant below necessary`,
+    );
+  }
+
+  const original = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'bad-deployment');
+  assert.ok(original, 'the calibration corpus must still carry bad-deployment');
+  const clone = renamedClone(original, 'aic-119s3-scenario-independence-clone');
+  const sparse = sparseEvidenceVariant(original, 'aic-119s3-scenario-independence-sparse');
+  const fillerOne = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'db-pool-exhaustion');
+  const fillerTwo = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'false-alert');
+  assert.ok(fillerOne && fillerTwo, 'the calibration corpus must still carry both filler scenarios');
+
+  const experiment = await evals.runGraphBenchmarkExperiment({
+    experimentId: 'aic-119s3-scenario-independence',
+    scenarioSet: 'ad-hoc',
+    scenarios: [original, clone, sparse, fillerOne, fillerTwo],
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    createNodes: (record) => ({
+      ...scriptedNodes(record),
+      interpret_residual_evidence: deterministicSupportInterpreter,
+    }),
+    async recordEvaluation() {},
+  });
+
+  const stopKindsById = new Map();
+  for (const [index, record] of experiment.records.entries()) {
+    const stopKind = experiment.results[index].actualStopKind;
+    const seenBefore = stopKindsById.get(record.scenario.id);
+    assert.ok(
+      seenBefore === undefined || seenBefore === stopKind,
+      `every run of ${record.scenario.id} must reach the same stop kind: this interpreter and the termination node are both deterministic`,
+    );
+    stopKindsById.set(record.scenario.id, stopKind);
+  }
+
+  assert.equal(
+    stopKindsById.get(clone.id),
+    stopKindsById.get(original.id),
+    'renaming the scenario id and flipping groundTruth.expectedStopKind must not change the termination decision',
+  );
+  assert.notEqual(
+    stopKindsById.get(sparse.id),
+    stopKindsById.get(original.id),
+    'a state with fewer than two independent supports must reach a different termination decision than one with enough to corroborate — proving the decision tracks evidence in state, not which scenario produced it',
+  );
+
+  // Literals derived by hand from T0-T6 (packages/graph/src/nodes/termination.ts):
+  // every ok item supports the sole initial hypothesis at medium strength, so
+  // with at least two of them it is corroborated and, after the mandatory
+  // round, the only member of the competing set -> T5 sufficient; with one it
+  // stays a candidate -> T6 stalled.
+  assert.equal(stopKindsById.get(original.id), 'sufficient', 'bad-deployment under the support-everything interpreter corroborates its leader: T5 sufficient');
+  assert.equal(stopKindsById.get(sparse.id), 'stalled', 'a single supporting item leaves the leader a candidate: T6 stalled');
+
+  const reachable = new Set(stopKindsById.values());
+  assert.ok(reachable.size > 1, 'the reachable stop kinds across this batch must not collapse onto one constant route');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -482,15 +822,16 @@ function fakeNaivePort() {
  * A whole lane, driven through the real `runLiveModelLane`, with a scripted
  * (zero-score, deterministic) control and model arm and a caller-supplied
  * naive arm — the shape `publishNaiveArm`'s rows below need on their input
- * side. The control baseline defaults to the committed
- * `docs/evidence/control-baseline.json` (through `readControlBaseline`, row 4
- * above's own reader) so the scripted control arm never moves against it and
+ * side. The control baseline defaults to the committed calibration baseline,
+ * `docs/evidence/control-baseline-calibration.json` (through
+ * `readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH)`, row 4 above's own
+ * reader), because this lane runs the calibration corpus — so the scripted control arm never moves against it and
  * the naive arm's `reportable` flag turns on ordinary completion — set
  * `includeControlBaseline: false` for the row that needs the undeclared-
  * baseline path instead.
  */
 async function publishNaiveLane({ runNaiveArm, includeControlBaseline = true } = {}) {
-  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const runLiveModelLane = requireExport('runLiveModelLane');
 
@@ -511,7 +852,7 @@ async function publishNaiveLane({ runNaiveArm, includeControlBaseline = true } =
     experimentId: 'aic-117d-publish-naive',
     headSha: HEAD_SHA,
     metadata: v3Metadata,
-    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH) } : {}),
     async runControlArm(plan) {
       return scriptedGraphExperiment('aic-117d-publish-naive-control', plan);
     },
@@ -752,6 +1093,7 @@ async function scriptedModelExperimentFor(label, plan) {
  * cannot produce.
  */
 async function fourArmLaneForPublish({ runModelArm, runNaiveArm, includeControlBaseline = true } = {}) {
+  const { CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
   const runLiveModelLane = requireExport('runLiveModelLane');
 
@@ -761,7 +1103,7 @@ async function fourArmLaneForPublish({ runModelArm, runNaiveArm, includeControlB
     experimentId: 'aic-117d-publish-arms',
     headSha: HEAD_SHA,
     metadata: v3Metadata,
-    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH) } : {}),
     async runControlArm(plan) {
       return scriptedModelExperimentFor('control', plan);
     },

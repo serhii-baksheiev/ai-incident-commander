@@ -1,0 +1,23 @@
+{
+  "_why": "The scripted control arm's expected metric means over the CALIBRATION corpus, DECLARED so a harness regression is detectable. Without a declared baseline the lane refuses to call the model arm reportable at all — a metric that moved could not be attributed to the model rather than to the harness. `scripts/eval-live-model.mjs` reads it only when passed as `--control-baseline docs/evidence/control-baseline-calibration.json` (its path is exported as CALIBRATION_CONTROL_BASELINE_PATH); without that flag the command reads no baseline. The final-evaluation corpus has its own file, docs/evidence/control-baseline.json, read by scripts/eval-final-holdout.mjs.",
+  "_measured": "Measured by running the scripted control arm with no provider call under behavior-evaluators-v0.3, over the calibration corpus: every axis below is 0. Pinned: see lane-arms.test.mjs › 'the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra'.",
+  "_limit": "Zero is the numeric FLOOR on all six of these axes for the calibration corpus, so this baseline detects a harness change that moves a metric UP and cannot detect one that pushes it further down — there is no further down. Zero is the BEST score for unsupported_claim_rate and the WORST score for the other five. Unlike docs/evidence/control-baseline.json (the final-evaluation corpus), the canonical termination node wired in AIC-119 slice 3 does not move termination_correctness off this floor here: see lane-arms.test.mjs › 'the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra'.",
+  "_completeness": "Every axis the control arm observes must appear here. That is enforced, not remembered: see live-model-lane.test.mjs > 'refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do'.",
+  "_history": [
+    {
+      "_note": "What the pre-slice-3 baseline declared, before this file existed as a separate calibration baseline: all six axes at 0, declared under status rules v0.1 (PR #117) and re-observed unchanged under v0.2 (PR #130), both times with the fixture's constant terminal/sufficient terminator, so the terminator is the one variable this slice changed (test/fixtures/benchmark-experiment.mjs), which answered the same regardless of state, scenario or ground truth. AIC-119 slice 3 split docs/evidence/control-baseline.json into this calibration file and the final-evaluation file once wiring the canonical, state-driven termination_check/derive_hypothesis_state into scripts/lane-arms.mjs's scriptedNodes moved termination_correctness off zero for final-evaluation while calibration stayed at zero on every axis. The pre-split bytes remain in git history.",
+      "unsupported_claim_rate": 0,
+      "evidence_coverage": 0,
+      "termination_correctness": 0,
+      "false_alert_correctness": 0,
+      "misleading_evidence_handling": 0,
+      "challenge_effect": 0
+    }
+  ],
+  "unsupported_claim_rate": 0,
+  "evidence_coverage": 0,
+  "termination_correctness": 0,
+  "false_alert_correctness": 0,
+  "misleading_evidence_handling": 0,
+  "challenge_effect": 0
+}
