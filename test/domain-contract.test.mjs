@@ -86,7 +86,7 @@ const state = {
   control: {
     runId: 'run-1',
     schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
-    statusRulesVersion: 'v0.1',
+    statusRulesVersion: domain.STATUS_RULES_VERSION,
     phase: 'concluding',
     maxIterations: 8,
     llmCallBudget: 12,
@@ -228,9 +228,14 @@ test('upserts collection members by replacing in place and appending new ids', (
 
 test('publishes explicit state and baseline status-rule versions', () => {
   assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 4);
-  assert.equal(domain.STATUS_RULES_VERSION, state.control.statusRulesVersion);
+  // AIC-119 slice 1 bumps the current status-rules version to v0.2, while
+  // `BASELINE_STATUS_RULES` stays the historical v0.1 table (a literal here,
+  // not `domain.STATUS_RULES_VERSION`, or this pin would float with the
+  // constant it is supposed to check) — see test/status-rules-v02.test.mjs for
+  // the full v0.1/v0.2 table pins and the `corroborated` status they add.
+  assert.equal(domain.STATUS_RULES_VERSION, 'v0.2');
   assert.deepEqual(domain.BASELINE_STATUS_RULES, {
-    version: domain.STATUS_RULES_VERSION,
+    version: 'v0.1',
     hypothesis: {
       statuses: ['candidate', 'supported', 'weakened', 'rejected'],
       derivedFrom: ['predictions', 'assessments'],
@@ -257,6 +262,11 @@ test('publishes explicit state and baseline status-rule versions', () => {
       },
     },
   });
+  assert.deepEqual(
+    domain.STATUS_RULES['v0.1'],
+    domain.BASELINE_STATUS_RULES,
+    'STATUS_RULES must serve the historical v0.1 table unchanged, not a re-derived copy',
+  );
 });
 
 test('rejects control state persisted under the previous schema version', () => {
@@ -465,7 +475,9 @@ test('accepts a challenge round count past the graph cap, which is not a schema 
   );
 });
 
-test('keeps the baseline status-rules version at v0.1 across the state schema bump', () => {
-  assert.equal(domain.STATUS_RULES_VERSION, 'v0.1');
+test('bumps the current status-rules version to v0.2 across the state schema bump, while v0.1 stays derivable', () => {
+  assert.equal(domain.STATUS_RULES_VERSION, 'v0.2');
   assert.equal(domain.BASELINE_STATUS_RULES.version, 'v0.1');
+  assert.equal(domain.STATUS_RULES['v0.1'].version, 'v0.1');
+  assert.equal(domain.STATUS_RULES['v0.2'].version, 'v0.2');
 });
