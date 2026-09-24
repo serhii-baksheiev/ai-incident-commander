@@ -18,6 +18,12 @@
  * see conclusion-role.test.mjs › "the corroborated and supported sentences carry the table's own numbers and strengths"
  * see conclusion-role.test.mjs › "a mutated table (minimumIndependentSupports 3) yields a different corroborated sentence containing 3, proving the text is generated"
  * see conclusion-role.test.mjs › "propose_conclusion's system prompt contains every sentence describeStatusRules(STATUS_RULES[STATUS_RULES_VERSION]) returns"
+ *
+ * One limit, and the test that holds it: the corroborated sentence quotes the
+ * corroborated rule's own copy of the support requirements, while
+ * `deriveHypothesisStatus` applies the supported rule's copy to both
+ * statuses. The two copies are kept equal in every table.
+ * see conclusion-role.test.mjs › "in every STATUS_RULES table, corroborated's support requirements equal supported's, which are the ones deriveHypothesisStatus applies to both"
  */
 
 /**
@@ -55,6 +61,13 @@ export interface StatusRulesTableLike {
   };
 }
 
+function listAnd(items: readonly string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
 function listOr(items: readonly string[]): string {
   if (items.length === 0) return '';
   if (items.length === 1) return items[0];
@@ -76,11 +89,14 @@ function pluralize(count: number, noun: string): string {
  */
 function describePrecedence(status: string, precedence: readonly string[]): string {
   const index = precedence.indexOf(status);
-  if (index <= 0) {
+  if (index < 0) {
+    throw new Error(`describeStatusRules: status '${status}' has no place in the precedence order`);
+  }
+  if (index === 0) {
     return ' This is checked before every other status, so nothing later can override it.';
   }
   const earlier = precedence.slice(0, index).map((name) => `'${name}'`);
-  return ` This is only reached once ${listOr(earlier)} ${earlier.length > 1 ? 'have' : 'has'} already been ruled out.`;
+  return ` This is only reached once ${listAnd(earlier)} ${earlier.length > 1 ? 'have' : 'has'} already been ruled out.`;
 }
 
 /**
@@ -118,11 +134,15 @@ function describeRuleClauses(rule: StatusRuleDefinition): string[] {
   }
 
   if (rule.predictionStatus !== undefined) {
-    clauses.push(`a contradicted prediction with status '${rule.predictionStatus}'`);
-  }
-
-  if (rule.evidenceReliability !== undefined) {
-    clauses.push(`the contradicting evidence at reliability '${rule.evidenceReliability}'`);
+    clauses.push(
+      `a contradicting assessment tied to a prediction with status '${rule.predictionStatus}'${
+        rule.evidenceReliability !== undefined
+          ? `, drawn from evidence at reliability '${rule.evidenceReliability}'`
+          : ''
+      }`,
+    );
+  } else if (rule.evidenceReliability !== undefined) {
+    clauses.push(`contradicting evidence at reliability '${rule.evidenceReliability}'`);
   }
 
   return clauses;
@@ -149,12 +169,18 @@ export function describeStatusRules(table: StatusRulesTableLike): Record<string,
 
   for (const status of statuses) {
     const rule = rules[status];
-    if (rule?.fallback) {
+    if (rule === undefined) {
+      throw new Error(`describeStatusRules: status '${status}' has no rule`);
+    }
+    if (!precedence.includes(status)) {
+      throw new Error(`describeStatusRules: status '${status}' has no place in the precedence order`);
+    }
+    if (rule.fallback) {
       sentences[status] = `'${status}' is the fallback status: it applies whenever a hypothesis matches none of the other statuses.`;
       continue;
     }
 
-    const clauses = rule ? describeRuleClauses(rule) : [];
+    const clauses = describeRuleClauses(rule);
     const requirement = clauses.length > 0 ? joinClauses(clauses) : 'no stated requirement';
     sentences[status] = `'${status}' requires ${requirement}.${describePrecedence(status, precedence)}`;
   }
