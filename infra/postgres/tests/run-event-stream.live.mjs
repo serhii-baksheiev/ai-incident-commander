@@ -377,56 +377,71 @@ test(
     const connectionString = requireConnectionString();
     await persistence.setupApplicationSchema(connectionString);
 
+    // AIC-58 review round 1, advisory finding 5: store1 is deliberately
+    // closed mid-test (below, simulating a process restart) and so cannot be
+    // registered with t.after the way freshStore's own store is — a second
+    // close() on an already-ended pool throws. store1Closed tracks whether
+    // the deliberate close already ran, so the finally block below still
+    // guarantees a close if anything between construction and that point
+    // throws, without double-closing on the ordinary path.
     const store1 = await persistence.createRunStore(connectionString, DEFAULT_OPTIONS);
-    await store1.pool.query(
-      'truncate table aic_app.runs, aic_app.node_results, aic_app.run_events, aic_app.run_event_counters, aic_app.run_trials, aic_app.run_evidence, aic_app.fence_rejections',
-    );
+    let store1Closed = false;
+    try {
+      await store1.pool.query(
+        'truncate table aic_app.runs, aic_app.node_results, aic_app.run_events, aic_app.run_event_counters, aic_app.run_trials, aic_app.run_evidence, aic_app.fence_rejections',
+      );
 
-    const runId = `run-event-stream-restart-${randomUUID()}`;
-    await store1.createRun({ runId, input: {} });
-    const claim = await store1.claimNext('worker-restart');
-    assert.equal(claim?.runId, runId);
-    const context = await persistence.openRunWriteContext(store1, claim);
+      const runId = `run-event-stream-restart-${randomUUID()}`;
+      await store1.createRun({ runId, input: {} });
+      const claim = await store1.claimNext('worker-restart');
+      assert.equal(claim?.runId, runId);
+      const context = await persistence.openRunWriteContext(store1, claim);
 
-    const total = 4;
-    for (let i = 0; i < total; i += 1) {
-      const execKey = domain.buildExecKey('tool.trial', { runId, testId: `restart-${i}`, trialAttempt: 1 });
-      await context.committed(execKey, async () => ({ i }), { project: noProjection });
-    }
-    await context.complete('done');
+      const total = 4;
+      for (let i = 0; i < total; i += 1) {
+        const execKey = domain.buildExecKey('tool.trial', { runId, testId: `restart-${i}`, trialAttempt: 1 });
+        await context.committed(execKey, async () => ({ i }), { project: noProjection });
+      }
+      await context.complete('done');
 
-    // Independent oracle, read on the FIRST pool before it is ever closed.
-    const { rows: expectedRows } = await store1.pool.query(
-      'select seq, type, execution_attempt, payload, created_at from aic_app.run_events where run_id = $1 order by seq',
-      [runId],
-    );
-    assert.equal(expectedRows.length, total + 1, 'the fixture must produce one event per commit plus one for complete(), or this row proves nothing');
+      // Independent oracle, read on the FIRST pool before it is ever closed.
+      const { rows: expectedRows } = await store1.pool.query(
+        'select seq, type, execution_attempt, payload, created_at from aic_app.run_events where run_id = $1 order by seq',
+        [runId],
+      );
+      assert.equal(expectedRows.length, total + 1, 'the fixture must produce one event per commit plus one for complete(), or this row proves nothing');
 
-    // Simulates a process restart: the pool that did the writing is fully closed.
-    await store1.close();
+      // Simulates a process restart: the pool that did the writing is fully closed.
+      await store1.close();
+      store1Closed = true;
 
-    const store2 = await persistence.createRunStore(connectionString, DEFAULT_OPTIONS);
-    t.after(async () => {
-      await store2.close();
-    });
-    const source2 = createRunEventStreamSourceFactory()(store2.pool);
+      const store2 = await persistence.createRunStore(connectionString, DEFAULT_OPTIONS);
+      t.after(async () => {
+        await store2.close();
+      });
+      const source2 = createRunEventStreamSourceFactory()(store2.pool);
 
-    const read = await source2.readAfter(runId, 0, { limit: 100 });
+      const read = await source2.readAfter(runId, 0, { limit: 100 });
 
-    assert.equal(
-      read.length,
-      expectedRows.length,
-      'a brand-new pool and source must read every event a prior, now-closed pool committed: process restart must not lose stream history',
-    );
-    for (const [index, event] of read.entries()) {
-      const expected = expectedRows[index];
-      assert.equal(event.runId, runId);
-      assert.equal(event.seq, Number(expected.seq));
-      assert.equal(event.type, expected.type);
-      assert.equal(event.executionAttempt, Number(expected.execution_attempt));
-      assert.deepEqual(event.payload, expected.payload);
-      assert.ok(event.createdAt instanceof Date, 'RunEvent.createdAt must be a Date');
-      assert.equal(event.createdAt.toISOString(), new Date(expected.created_at).toISOString());
+      assert.equal(
+        read.length,
+        expectedRows.length,
+        'a brand-new pool and source must read every event a prior, now-closed pool committed: process restart must not lose stream history',
+      );
+      for (const [index, event] of read.entries()) {
+        const expected = expectedRows[index];
+        assert.equal(event.runId, runId);
+        assert.equal(event.seq, Number(expected.seq));
+        assert.equal(event.type, expected.type);
+        assert.equal(event.executionAttempt, Number(expected.execution_attempt));
+        assert.deepEqual(event.payload, expected.payload);
+        assert.ok(event.createdAt instanceof Date, 'RunEvent.createdAt must be a Date');
+        assert.equal(event.createdAt.toISOString(), new Date(expected.created_at).toISOString());
+      }
+    } finally {
+      if (!store1Closed) {
+        await store1.close();
+      }
     }
   },
 );
@@ -561,6 +576,150 @@ test(
     assert.ok(
       tailed.every((event) => event.runId === runIdA),
       'tail(runIdA, ...) must never yield an event belonging to run B, even though run B has two committed events of its own',
+    );
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* Row 6 — LIVE correspondence: the storage column's own type vs.            */
+/* MAX_RUN_EVENT_SEQ (AIC-58 review finding 1)                                */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'LIVE correspondence: aic_app.run_events.seq is PostgreSQL "integer" (int4), and @aic/domain.MAX_RUN_EVENT_SEQ equals int4\'s own maximum (2^31-1) — a later column widening, or a constant change with no matching migration, must redden this row in either direction',
+  { timeout: 20_000 },
+  async (t) => {
+    const store = await freshStore(t);
+
+    const { rows } = await store.pool.query(
+      `select data_type from information_schema.columns
+       where table_schema = 'aic_app' and table_name = 'run_events' and column_name = 'seq'`,
+    );
+    assert.equal(rows.length, 1, 'information_schema must report exactly one seq column on aic_app.run_events, or this row proves nothing about its type');
+    assert.equal(
+      rows[0].data_type,
+      'integer',
+      'run_events.seq must be PostgreSQL "integer" (int4, max 2147483647) for MAX_RUN_EVENT_SEQ to be a correct ceiling — if this column is ever widened (e.g. to bigint), MAX_RUN_EVENT_SEQ must widen with it, and this assertion must go red until it does',
+    );
+
+    // Independent literal, 2^31-1 — never domain.MAX_RUN_EVENT_SEQ read back
+    // against itself, or a drifted constant would agree with itself here.
+    assert.equal(
+      domain.MAX_RUN_EVENT_SEQ,
+      2147483647,
+      'MAX_RUN_EVENT_SEQ must equal 2^31-1, the exact maximum PostgreSQL "integer" (int4) can hold — if the constant is ever changed with no matching column migration, this assertion must go red',
+    );
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* Row 7 — readAfter's own limit pages a backlog exactly (AIC-58 review      */
+/* finding 3a)                                                                */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'readAfter(runId, afterSeq, { limit }) pages a small backlog exactly: the first two committed events, then the remainder',
+  { timeout: 20_000 },
+  async (t) => {
+    const store = await freshStore(t);
+    const { runId, claim } = await createAndClaim(store, 'worker-limit-paging');
+    const context = await persistence.openRunWriteContext(store, claim);
+
+    const total = 3;
+    for (let i = 0; i < total; i += 1) {
+      const execKey = domain.buildExecKey('tool.trial', { runId, testId: `limit-paging-${i}`, trialAttempt: 1 });
+      await context.committed(execKey, async () => ({ i }), { project: noProjection });
+    }
+
+    // Independent oracle: the test's own SQL, never the source under test.
+    const { rows: allRows } = await store.pool.query('select seq from aic_app.run_events where run_id = $1 order by seq', [runId]);
+    assert.equal(allRows.length, total, 'the fixture must produce one event per commit, or this row proves nothing about paging');
+
+    const source = createRunEventStreamSourceFactory()(store.pool);
+
+    const firstPage = await source.readAfter(runId, 0, { limit: 2 });
+    assert.deepEqual(
+      firstPage.map((event) => event.seq),
+      allRows.slice(0, 2).map((row) => Number(row.seq)),
+      'readAfter(runId, 0, { limit: 2 }) over 3 committed events must return exactly the first two, in order',
+    );
+
+    const secondPage = await source.readAfter(runId, firstPage.at(-1).seq, { limit: 2 });
+    assert.deepEqual(
+      secondPage.map((event) => event.seq),
+      allRows.slice(2).map((row) => Number(row.seq)),
+      'readAfter(runId, <last seq of the first page>, { limit: 2 }) must return exactly the remaining (third) event',
+    );
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* Row 8 — tail's pageSize seam pages a backlog larger than one page         */
+/* (AIC-58 review finding 3b)                                                 */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'createRunEventStreamSource(pool, { pageSize }) makes tail page a backlog larger than one page, yielding every committed event exactly once, in order',
+  { timeout: 20_000 },
+  async (t) => {
+    const store = await freshStore(t);
+    const { runId, claim } = await createAndClaim(store, 'worker-tail-paging');
+    const context = await persistence.openRunWriteContext(store, claim);
+
+    const total = 5;
+    for (let i = 0; i < total; i += 1) {
+      const execKey = domain.buildExecKey('tool.trial', { runId, testId: `tail-paging-${i}`, trialAttempt: 1 });
+      await context.committed(execKey, async () => ({ i }), { project: noProjection });
+    }
+
+    // Independent oracle: the test's own SQL, never the source under test.
+    const { rows: allRows } = await store.pool.query('select seq from aic_app.run_events where run_id = $1 order by seq', [runId]);
+    assert.equal(allRows.length, total, 'the fixture must produce one event per commit, or this row proves nothing about paging');
+
+    // Instrumentation, not the source under test: wraps the store's REAL
+    // pool.query to record the LIMIT bound value of every run_events SELECT
+    // tail issues, then restores it — proving tail actually paged in
+    // pageSize-sized chunks, rather than fetching everything in one
+    // DEFAULT_READ_LIMIT-sized poll (5 events comfortably fits in the
+    // existing 500-row default, which is exactly why this seam needs its own
+    // assertion: a green run without it would not prove paging happened).
+    const pageSize = 2;
+    const realQuery = store.pool.query.bind(store.pool);
+    const limitsSeen = [];
+    store.pool.query = (sql, params) => {
+      if (typeof sql === 'string' && /from\s+"aic_app"\.run_events/i.test(sql) && Array.isArray(params) && params.length === 3) {
+        limitsSeen.push(params[2]);
+      }
+      return realQuery(sql, params);
+    };
+    t.after(() => {
+      store.pool.query = realQuery;
+    });
+
+    const source = createRunEventStreamSourceFactory()(store.pool, { pageSize });
+
+    const collected = [];
+    const controller = new AbortController();
+    for await (const event of source.tail(runId, { lastEventId: 0, signal: controller.signal, pollIntervalMs: 20 })) {
+      collected.push(event);
+      if (collected.length >= total) {
+        controller.abort();
+        break;
+      }
+    }
+
+    assert.deepEqual(
+      collected.map((event) => event.seq),
+      allRows.map((row) => Number(row.seq)),
+      'tail must yield every committed event exactly once, in order, regardless of how many pages it took',
+    );
+    assert.ok(
+      limitsSeen.length >= Math.ceil(total / pageSize),
+      `tail({ pageSize: ${pageSize} }) over ${total} events must have issued at least ${Math.ceil(total / pageSize)} paged run_events queries, but issued ${limitsSeen.length}: ${JSON.stringify(limitsSeen)}`,
+    );
+    assert.ok(
+      limitsSeen.every((limit) => limit === pageSize),
+      `every run_events query tail issues must bound its LIMIT to the configured pageSize (${pageSize}), but saw ${JSON.stringify(limitsSeen)}`,
     );
   },
 );
