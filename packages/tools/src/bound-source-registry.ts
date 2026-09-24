@@ -10,6 +10,7 @@ import type {
   EvidenceSource,
   EvidenceSourceOutcome,
   EvidenceSourceProvenance,
+  EvidenceSourceRefusalReason,
 } from './evidence-source.js';
 import { redactEvidenceOutput } from './redaction.js';
 
@@ -34,20 +35,70 @@ import { redactEvidenceOutput } from './redaction.js';
  * `{ maxPages }` hint passed as `execute`'s additive third argument; and
  * `redactEvidenceOutput` (`./redaction.js`) run over an `ok` outcome's output
  * before it is stored in `record` mode and before it is returned to the
- * caller in both `live` and `record`. `replay` never re-applies a budget: it
- * serves whatever was recorded under the budget in force at record time,
- * because the adapter is never called in replay at all and the stored
- * output was already redacted when it was written.
+ * caller in both `live` and `record`.
  *
- * What this module redacts, stated exactly: only an `ok` outcome's `output`.
- * A `refused` outcome's `reason` is always one of the six typed codes in
- * `EVIDENCE_SOURCE_REFUSAL_REASONS` (never free text — see
- * `./evidence-source.ts`'s `classifyEvidenceSourceFailure`), and provenance
- * fields such as `sourceBindingId`/`adapter`/`credentialRefId` carry no
- * adapter-supplied free text either, so neither needs this module's
- * attention. A caller who invents a new field that DOES carry adapter free
- * text (an `interactionId`-like note, a diagnostic message) is responsible
- * for its own redaction — this module's contract is `output` only.
+ * Review round 1 on slice c added three more findings this file now
+ * satisfies too (test/bound-source-registry.test.mjs's "AIC-100 slice c —
+ * review round 1 findings" block):
+ *   - `replay` redacts the `output` of a STORED `ok` hit too, not only what
+ *     `record` itself wrote — a recording made before redaction shipped, or
+ *     written by a caller that bypassed the registry, still never reaches a
+ *     replaying caller unredacted (security + code-reviewer blocker 2).
+ *   - an adapter's own `execute()` may RETURN (not throw) a `refused` outcome
+ *     whose `reason` is free text rather than one of
+ *     `EVIDENCE_SOURCE_REFUSAL_REASONS` — the registry normalizes that reason
+ *     to `adapter_error` before it reaches the caller or `store.set`, exactly
+ *     as it already does for a THROWN, unclassified failure (code-reviewer
+ *     blocker 5). A reason the adapter returns that IS already one of the six
+ *     typed reasons is kept unchanged.
+ *   - a binding's `describe().adapterId`/`.version` are validated at
+ *     construction, synchronously, against `SAFE_ADAPTER_ID`/
+ *     `SAFE_ADAPTER_TOKEN` AND checked to survive `redactEvidenceOutput`
+ *     unchanged — an all-alphanumeric value can pass a character-class
+ *     pattern while still being credential-shaped (an AWS access-key id is
+ *     exactly this case), so the pattern alone is not enough (code-reviewer
+ *     blocker 6, review round 2). `adapterId` permits `:` (the colon-collision
+ *     rows in this same test file construct one on purpose);  `version` does
+ *     not, matching the separator `` `${adapterId}@${version}` `` uses in
+ *     `provenance.adapter`.
+ *
+ * `replay` never re-applies a budget: it serves whatever was recorded under
+ * the budget in force at record time, because the adapter is never called in
+ * replay at all.
+ *
+ * What this module redacts, stated exactly, and what it does not:
+ *   - an `ok` outcome's `output` is redacted in every mode that ever hands one
+ *     to a caller or a store: `live` and `record` redact the adapter's raw
+ *     output before returning or storing it; `replay` redacts whatever
+ *     `output` the stored recording carries on every hit, regardless of
+ *     whether that recording was itself written redacted.
+ *   - a `refused` outcome's `reason` is always one of the six typed codes in
+ *     `EVIDENCE_SOURCE_REFUSAL_REASONS` by the time it reaches a caller or
+ *     `store.set` — never free text — because every path that can produce one
+ *     (a thrown failure via `classifyEvidenceSourceFailure`, an
+ *     adapter-RETURNED refusal via the normalization above, and a replayed
+ *     recording via `isWellFormedStoredOutcome`'s own check) enforces the
+ *     closed set before the reason is used.
+ *   - every `EvidenceSourceProvenance` field is BUILT BY THE REGISTRY, never
+ *     copied from an adapter's own (possibly foreign) provenance:
+ *     `sourceBindingId` is the caller's argument; `adapter` is
+ *     `` `${adapterId}@${version}` `` from the CURRENT binding's `describe()`,
+ *     validated at construction as above; `credentialRefId` is the CURRENT
+ *     binding's own value; `fetchedAt` is `clock().toISOString()` in
+ *     `live`/`record`, or the RECORDED value on a replay hit;
+ *     `requestFingerprint` is `createRequestFingerprint`'s hash of
+ *     `operation`/`input`. None of the four carries adapter-supplied free
+ *     text.
+ *   - what is NOT covered: a field a caller invents outside `output`/`reason`/
+ *     `provenance` (an `interactionId`-like note, a diagnostic message) is
+ *     that caller's own responsibility to redact — this module's contract is
+ *     exactly the three fields above. A call whose adapter `execute()` never
+ *     settles or rejects keeps running in the background past the configured
+ *     `timeoutMs`: the registry's timeout race (below) stops WAITING on it,
+ *     it does not cancel it — there is no `AbortSignal` threaded into
+ *     `execute()` in this slice, so an adapter that ignores its own
+ *     internal deadline continues consuming resources even after `execute()`
+ *     has already resolved `refused`/`timeout` to its caller.
  *
  * The module reads no ambient clock: every `fetchedAt` comes from the
  * injected `clock: () => Date` an options bag carries, never `Date.now()` or
@@ -109,6 +160,61 @@ function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): Sou
     }
   }
   return merged;
+}
+
+/**
+ * The safe-token pattern a binding's `describe().version` must match before
+ * it is trusted in `provenance.adapter` (`` `${adapterId}@${version}` ``):
+ * letters, digits, `.`, `_` and `-` only — no `:` (the separator `adapterId`
+ * alone is allowed to carry, see `SAFE_ADAPTER_ID` below), no `@` (the
+ * `adapterId@version` separator itself) and no whitespace. Matching this
+ * pattern is necessary but not sufficient: `validateSafeAdapterField` below
+ * also requires the value to survive `redactEvidenceOutput` unchanged, because
+ * an all-alphanumeric credential (an AWS access-key id) passes this
+ * character-class check while still being credential-shaped (review round 1,
+ * code-reviewer blocker 6; review round 2). See
+ * test/bound-source-registry.test.mjs's "SAFE_ADAPTER_TOKEN" and
+ * "construction refuses a version that is a credential shape" rows.
+ */
+export const SAFE_ADAPTER_TOKEN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * The safe-token pattern a binding's `describe().adapterId` must match: the
+ * same character set as `SAFE_ADAPTER_TOKEN` plus `:` — deliberately more
+ * permissive than `version`, because this file's own replay-identity design
+ * (and its colon-collision regression rows) constructs an `adapterId` such as
+ * `'b:c'` on purpose. Still refuses `@` (the `adapterId@version` separator)
+ * and whitespace, and — like `SAFE_ADAPTER_TOKEN` — is not sufficient on its
+ * own: `validateSafeAdapterField` also requires the value to survive
+ * `redactEvidenceOutput` unchanged. See
+ * test/bound-source-registry.test.mjs's "SAFE_ADAPTER_ID" and "construction
+ * accepts adapterId \"b:c\"" rows (review round 2).
+ */
+export const SAFE_ADAPTER_ID = /^[A-Za-z0-9._:-]+$/;
+
+/**
+ * Refuses (synchronously, at construction) a `describe()` field that either
+ * fails its own safe-token pattern, or — even when it passes that pattern —
+ * would be changed by `redactEvidenceOutput`, which is how a credential shape
+ * built entirely from the pattern's own allowed characters (an AWS
+ * access-key id: letters and digits only) is still caught.
+ */
+function validateSafeAdapterField(
+  bindingId: string,
+  fieldName: 'adapterId' | 'version',
+  value: string,
+  pattern: RegExp,
+): void {
+  if (!pattern.test(value)) {
+    throw new Error(
+      `createBoundSourceRegistry: binding ${JSON.stringify(bindingId)}'s describe().${fieldName} ${JSON.stringify(value)} does not match the safe-token pattern`,
+    );
+  }
+  if (redactEvidenceOutput(value) !== value) {
+    throw new Error(
+      `createBoundSourceRegistry: binding ${JSON.stringify(bindingId)}'s describe().${fieldName} is credential-shaped and is refused`,
+    );
+  }
 }
 
 /** One evidence source bound into a registry under a stable id. */
@@ -207,6 +313,20 @@ function parseReplayIdentity(identity: string): ParsedReplayIdentity | null {
 }
 
 const BOUND_SOURCE_MODES: readonly BoundSourceMode[] = ['live', 'record', 'replay'];
+
+/**
+ * Normalizes an adapter-RETURNED refusal `reason` to one of the six typed
+ * codes: a reason already inside `EVIDENCE_SOURCE_REFUSAL_REASONS` is kept
+ * unchanged; anything else — free text, or any other value a loosely-typed
+ * adapter hands back — becomes `adapter_error`, mirroring how
+ * `classifyEvidenceSourceFailure` already normalizes a THROWN, unclassified
+ * failure (review round 1, code-reviewer blocker 5).
+ */
+function normalizeRefusalReason(reason: unknown): EvidenceSourceRefusalReason {
+  return typeof reason === 'string' && (EVIDENCE_SOURCE_REFUSAL_REASONS as readonly string[]).includes(reason)
+    ? (reason as EvidenceSourceRefusalReason)
+    : 'adapter_error';
+}
 
 /**
  * A stored value is trusted only once it is checked to be a well-formed
@@ -325,6 +445,9 @@ export function createBoundSourceRegistry(
         `createBoundSourceRegistry: duplicate sourceBindingId ${binding.sourceBindingId}`,
       );
     }
+    const descriptor = binding.source.describe();
+    validateSafeAdapterField(binding.sourceBindingId, 'adapterId', descriptor.adapterId, SAFE_ADAPTER_ID);
+    validateSafeAdapterField(binding.sourceBindingId, 'version', descriptor.version, SAFE_ADAPTER_TOKEN);
     bindingsById.set(binding.sourceBindingId, binding);
   }
 
@@ -403,8 +526,14 @@ export function createBoundSourceRegistry(
         // keeping only the RECORDED fetchedAt, the one field a replay hit
         // takes from the stored recording rather than the replaying clock.
         const rebuiltProvenance = buildProvenance(stored.provenance.fetchedAt);
+        // A stored `ok` output is redacted here too, even though `record`
+        // already redacts before `store.set`: an older recording (made before
+        // redaction shipped) or one written by a caller that bypassed the
+        // registry may still carry a raw credential, and a replay hit must
+        // never hand it back unredacted (review round 1, security +
+        // code-reviewer blocker 2).
         return stored.status === 'ok'
-          ? { status: 'ok', output: stored.output, provenance: rebuiltProvenance }
+          ? { status: 'ok', output: redactEvidenceOutput(stored.output), provenance: rebuiltProvenance }
           : { status: 'refused', reason: stored.reason, provenance: rebuiltProvenance };
       }
 
@@ -443,7 +572,17 @@ export function createBoundSourceRegistry(
           const fetchedAt = clock().toISOString();
           const result = raced.result;
           if (result.status !== 'ok') {
-            outcome = { status: 'refused', reason: result.reason, provenance: buildProvenance(fetchedAt) };
+            // An adapter may RETURN (rather than throw) a `refused` outcome
+            // whose `reason` is free text instead of one of the six typed
+            // codes; normalize it the same way a thrown, unclassified failure
+            // already is, so a valid typed reason is kept unchanged and
+            // anything else becomes `adapter_error` (review round 1,
+            // code-reviewer blocker 5).
+            outcome = {
+              status: 'refused',
+              reason: normalizeRefusalReason(result.reason),
+              provenance: buildProvenance(fetchedAt),
+            };
           } else {
             // Result-size budget (AIC-100 slice c): measured on the
             // adapter's RAW output, before redaction — see

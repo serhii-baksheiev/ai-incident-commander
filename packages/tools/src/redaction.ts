@@ -6,13 +6,36 @@
  * test/bound-source-registry.test.mjs's "the registry redacts BEFORE
  * persistence and BEFORE returning the outcome to its caller" block).
  *
- * Scope, stated exactly: this walks a JSON-shaped `value` (arrays, plain
- * objects, strings, and other primitives left alone) and replaces a
- * credential-shaped SUBSTRING inside a string with `[REDACTED]`. It does not
- * touch a `reason` or an `interactionId`-like free-text field outside
- * `output` — those are a different surface's concern, not this module's (see
- * `./bound-source-registry.ts`'s updated doc comments, which name what is and
- * is not redacted).
+ * Scope, stated exactly: this walks a value built only from JSON-shaped
+ * containers — arrays, and plain objects whose prototype is `Object.prototype`
+ * or `null` — replacing a credential-shaped SUBSTRING inside a string with
+ * `[REDACTED]` in place; a string, number, boolean or `null` leaf is otherwise
+ * left alone (a string is scanned; the other three pass through unchanged).
+ * Anything that is NOT one of those two container shapes — a `Buffer`, `Map`,
+ * `Set`, `Date`, `Error`, or any other class instance — fails CLOSED to the
+ * fixed sentinel `'[REDACTED:unsupported]'` rather than being walked as if it
+ * were a plain object (which would either silently expose a `Buffer`'s bytes
+ * as numeric-string keys, or silently collapse a `Map`/`Set`/`Date`/`Error` to
+ * `{}`, since none of those have their own state on ordinary enumerable
+ * properties). See test/bound-source-registry.test.mjs's `for` loop over
+ * `UNSUPPORTED_REDACTION_VALUE_ROWS` (review round 1, security + code-reviewer
+ * blocker 3). An own key literally named `'__proto__'` (the shape
+ * `JSON.parse` produces for that text, as opposed to the object-literal syntax
+ * `{ __proto__: x }`, which reassigns the real prototype at construction time
+ * instead) is preserved as an ordinary own data property of the walked
+ * object: the output object's own keys are written with
+ * `Object.defineProperty`, which — unlike an ordinary `output[key] = value`
+ * assignment — never invokes `Object.prototype`'s own `__proto__` accessor,
+ * so the output's real `[[Prototype]]` stays `Object.prototype` throughout.
+ * See test/bound-source-registry.test.mjs › "a __proto__ own key in adapter
+ * output is KEPT as an own key in the returned and persisted output, and the
+ * output's prototype is never adapter-controlled (review round 1,
+ * code-reviewer blocker 4)".
+ *
+ * This does not touch a `reason` or an `interactionId`-like free-text field
+ * outside `output` — those are a different surface's concern, not this
+ * module's (see `./bound-source-registry.ts`'s doc comments, which name what
+ * is and is not redacted there).
  *
  * Six credential shapes are recognised, each pinned in
  * test/bound-source-registry.test.mjs with a runtime-assembled example (never
@@ -23,19 +46,58 @@
  *   - a "Bearer <token>" credential (20+ token characters), where the WHOLE
  *     match — including the `Bearer ` prefix — is dropped, not just the
  *     token;
- *   - a PEM private-key header (`-----BEGIN ... PRIVATE KEY-----`), as
- *     opposed to a non-private PEM block such as a certificate;
- *   - inline `user:pass` URL credentials, where the scheme and host are kept
- *     and only the credential part is replaced;
+ *   - a PEM private-key block: the `-----BEGIN ... PRIVATE KEY-----` header,
+ *     an optional multi-line base64 body immediately following it on a new
+ *     line, and an optional matching `-----END ... PRIVATE KEY-----` footer —
+ *     the WHOLE block is replaced, not just the header (see "the PEM pattern"
+ *     below); a non-private PEM block such as a certificate is left alone;
+ *   - inline `user:pass` URL credentials for ANY scheme matching
+ *     `[a-z][a-z0-9+.-]*://` (not only `http(s)`), where the scheme and host
+ *     are kept and only the credential part between `//` and `@` is replaced;
  *   - a Slack bot/user/app/legacy-workspace token shape (`xox[abpr]-...`).
  *
- * Every pattern below is a single literal-prefixed run with at most one
- * bounded quantifier and boundary lookarounds — no quantifier nests inside
- * another, matching this project's own bounded-regex convention in
- * `.claude/scripts/lib/secrets.mjs` (`.claude/rules/invariants.md`, "a guard
- * that fails open must do provably bounded work" — applied here to a
- * redactor rather than a hook, since this module runs on every recorded and
- * returned outcome rather than failing open on error).
+ * What this does NOT catch — stated exactly, because a redactor's own limits
+ * are exactly the kind of claim `.claude/rules/invariants.md` requires be
+ * either generated or pointed at a test, and none of the following has a test
+ * asserting it IS caught:
+ *   - any token family outside the six above — a fine-grained GitHub PAT
+ *     (`github_pat_...`), an AWS secret access key or session token, a JWT, a
+ *     generic API-key-shaped string with no recognisable prefix;
+ *   - a lower-case `authorization: bearer <token>` header (the pinned pattern
+ *     is the literal `Bearer ` prefix, case-sensitive);
+ *   - HTTP Basic-auth credentials carried as a base64 `Authorization: Basic
+ *     ...` header value;
+ *   - a `password=...` (or similarly named) query-string parameter, or a
+ *     credential sitting in a dumped environment-variable listing;
+ *   - a credential whose characters are split across more than one string (a
+ *     token chunked by an upstream API into separate array elements, or wrapped
+ *     mid-token) — this module only scans the SUBSTRINGS of each individual
+ *     string value, never joins sibling strings before scanning;
+ *   - a credential that is itself base64-wrapped (encoded so it no longer
+ *     matches any of the six shapes' own character classes);
+ *   - a credential-shaped object KEY — only string VALUES are scanned; a key
+ *     name that happens to look like a credential is left as-is (object keys
+ *     are never rewritten by this module, only preserved or, for an
+ *     unsupported container, replaced in bulk).
+ *
+ * The PEM pattern is a single, non-backtracking run: a literal header, then
+ * an OPTIONAL body group that only engages when a newline immediately follows
+ * the header (so a header followed by plain trailing prose on the same line —
+ * see the near-miss row pinning "key material: <header> follows" — is left
+ * with that prose untouched), and inside that body group one greedy character
+ * class over `[A-Za-z0-9+/=\s]` consumes the base64 lines in ONE linear pass,
+ * then an OPTIONAL literal footer. Each of the three quantified regions
+ * (`\r?\n`, the body's own greedy class, and the footer's own internal
+ * `[A-Z0-9 ]*`) is quantified once and none of them wraps another quantified
+ * group, so there is no repetition-inside-repetition for the engine to
+ * backtrack across — the same bounded shape
+ * `.claude/scripts/lib/secrets.mjs` uses for its own credential patterns
+ * (`.claude/rules/invariants.md`, "a guard that fails open must do provably
+ * bounded work" — applied here to a redactor rather than a hook, since this
+ * module runs on every recorded and returned outcome rather than failing open
+ * on error). See test/bound-source-registry.test.mjs › "redacts the WHOLE PEM
+ * private-key block, including a multi-line base64 body — the body never
+ * survives anywhere in the output (review round 1, security blocker 1)".
  *
  * `MAX_REDACTION_DEPTH` bounds recursion: the depth check happens BEFORE a
  * container's children are visited, so recursion never goes deeper than
@@ -56,6 +118,7 @@
 export const MAX_REDACTION_DEPTH = 20;
 
 const DEPTH_SENTINEL = '[REDACTED:depth]';
+const UNSUPPORTED_SENTINEL = '[REDACTED:unsupported]';
 const REDACTED = '[REDACTED]';
 
 /**
@@ -88,17 +151,19 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
     replacement: REDACTED,
   },
   {
-    // PEM private-key header: `-----BEGIN ... PRIVATE KEY-----`. A
-    // non-private PEM block (e.g. a certificate) never contains the literal
-    // "PRIVATE KEY" segment and so is left untouched.
-    pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g,
+    // PEM private-key block: header, optional newline-led base64 body (one
+    // greedy, non-nested character class), optional matching footer — see
+    // this file's header comment, "The PEM pattern is a single,
+    // non-backtracking run".
+    pattern:
+      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n[A-Za-z0-9+/=\s]*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?/g,
     replacement: REDACTED,
   },
   {
-    // Inline URL credentials: `scheme://user:pass@` — only the credential
-    // part between `//` and `@` is replaced, keeping the scheme (captured in
-    // group 1) and the host that follows `@`.
-    pattern: /(https?:\/\/)[^/\s:@]+:[^/\s@]*@/g,
+    // Inline URL credentials, any scheme: `scheme://user:pass@` — only the
+    // credential part between `//` and `@` is replaced, keeping the scheme
+    // (captured in group 1) and the host that follows `@`.
+    pattern: /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]*@/g,
     replacement: `$1${REDACTED}@`,
   },
   {
@@ -118,6 +183,48 @@ function redactString(value: string): string {
   return result;
 }
 
+/**
+ * A value this module will walk as a container of further values: an array,
+ * or a plain object — one whose prototype is exactly `Object.prototype` (an
+ * object literal, or the result of `JSON.parse`) or `null` (`Object.create(null)`).
+ * Anything else that is still `typeof value === 'object'` — a `Buffer`, `Map`,
+ * `Set`, `Date`, `Error`, or any other class instance — is NOT walked; see
+ * this file's header comment for why walking one of those would either leak
+ * its bytes as numeric keys or silently collapse it to `{}`.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Copies every own enumerable key of `source` onto a fresh, ordinary object —
+ * whose real `[[Prototype]]` is `Object.prototype`, exactly like the object
+ * literal `{}` this function starts from — using `Object.defineProperty`
+ * rather than `output[key] = value`. That distinction is the whole point: an
+ * ordinary assignment to the key `'__proto__'` on a normal object invokes
+ * `Object.prototype`'s own `__proto__` ACCESSOR and reassigns the object's
+ * real prototype; `Object.defineProperty` always creates or overwrites an
+ * ordinary OWN DATA property instead, regardless of the key's name, so a
+ * `'__proto__'` key from `source` survives as an own key here rather than
+ * silently becoming (or shadowing into) the output's actual prototype.
+ */
+function buildRedactedObject(source: Record<string, unknown>, depth: number): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    Object.defineProperty(output, key, {
+      value: redactAtDepth(source[key], depth + 1),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return output;
+}
+
 function redactAtDepth(value: unknown, depth: number): unknown {
   if (depth > MAX_REDACTION_DEPTH) {
     return DEPTH_SENTINEL;
@@ -128,22 +235,28 @@ function redactAtDepth(value: unknown, depth: number): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => redactAtDepth(item, depth + 1));
   }
+  if (isPlainObject(value)) {
+    return buildRedactedObject(value, depth);
+  }
   if (value !== null && typeof value === 'object') {
-    const output: Record<string, unknown> = {};
-    for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
-      output[key] = redactAtDepth(entryValue, depth + 1);
-    }
-    return output;
+    // A Buffer, Map, Set, Date, Error, or any other class instance: fails
+    // CLOSED to a fixed sentinel rather than being walked as a plain object —
+    // see this file's header comment (review round 1, security +
+    // code-reviewer blocker 3).
+    return UNSUPPORTED_SENTINEL;
   }
   return value;
 }
 
 /**
- * Pure, deep, bounded redaction over a JSON-shaped value: arrays and plain
- * objects are walked (keys are kept, non-string values are left alone), and
- * a credential-shaped substring inside a string is replaced with
- * `[REDACTED]` in place. See this file's header for the six recognised
- * shapes and the depth-cap fail-closed behaviour.
+ * Pure, deep, bounded redaction over a value built only from JSON-shaped
+ * containers: arrays and plain objects are walked (keys are kept, non-string
+ * leaves are left alone), and a credential-shaped substring inside a string
+ * is replaced with `[REDACTED]` in place. Anything else — a `Buffer`, `Map`,
+ * `Set`, `Date`, `Error`, or other class instance, anywhere in the walk —
+ * fails closed to `[REDACTED:unsupported]`. See this file's header for the
+ * six recognised credential shapes, what this module does NOT catch, and the
+ * depth-cap fail-closed behaviour.
  */
 export function redactEvidenceOutput(value: unknown): unknown {
   return redactAtDepth(value, 0);

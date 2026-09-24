@@ -39,6 +39,8 @@ export {
   rekeyReplayRecordings,
   DEFAULT_SOURCE_BUDGETS,
   REPLAY_IDENTITY_VERSION,
+  SAFE_ADAPTER_ID,
+  SAFE_ADAPTER_TOKEN,
 } from './bound-source-registry.js';
 export type {
   BoundSourceBinding,
