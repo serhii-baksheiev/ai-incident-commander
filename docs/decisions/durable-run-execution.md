@@ -1,10 +1,10 @@
 # Durable run execution — PostgreSQL leases, fencing and committed node results
 
-- **Status:** Proposed, 2026-09-24 (AIC-56). The owner accepted the direction
-  below on 2026-09-23, in place of an ADR-DURABLE-RUN-EXECUTION text that was
-  referenced by AIC-56 and AIC-57 but never written down. It becomes
-  **Accepted** only when AIC-57's race matrix passes (decision 11); until then
-  the exclusion primitive of decision 9 is provisional.
+- **Status:** Accepted, 2026-09-24, on AIC-57's race matrix (decision 11;
+  "T-4 verdict" below). Proposed earlier the same day (AIC-56). The owner
+  accepted the direction below on 2026-09-23, in place of an
+  ADR-DURABLE-RUN-EXECUTION text that was referenced by AIC-56 and AIC-57 but
+  never written down.
 - **Scope:** v0.3, the infrastructure track (AIC-53). Production operating
   policy is v1.0 and is named where it applies.
 - **Built against by:** AIC-56 (durable run substrate), AIC-57 (T-4 race
@@ -67,7 +67,8 @@ carry?**
 9. **The exclusion primitive is a fenced checkpointer, provisionally.** Writes
    through the checkpointer are fenced by the same ownership identity as product
    commits (a `FencedCheckpointer`). The run-scoped advisory lock of the earlier
-   design is not restored.
+   design is not restored. *(Since AIC-57: no longer provisional — see "T-4
+   verdict (AIC-57)" below. The ruling's wording is kept as it was given.)*
 10. **Run events are downstream evidence.** `run_events` are append-only durable
     evidence and a stream source for audit and projections. They are not an
     orchestrator and are not the source of ownership.
@@ -81,6 +82,8 @@ carry?**
     not a flaky test. If it happens, this record stays Proposed and only the
     exclusion primitive is reopened — and the first fallback evaluated is a
     put-scoped lock around checkpoint writes, not the run-scoped advisory lock.
+    *(Since AIC-57: the matrix passed, so this fallback was not opened — see
+    "T-4 verdict (AIC-57)" below.)*
 12. **Integrity events are observable, never silently repaired.** Lease
     acquisition, renewal, expiry and takeover; a stale or fenced commit
     rejected; a committed result reused; recovery and resume; a replay
@@ -112,6 +115,65 @@ between them; `completed` and `failed` are terminal.
 The domain enforces the same table (`assertRunTransition` in
 `packages/domain/src/execution.ts`), and the two are kept equal by
 durable-run-execution-adr.test.mjs › "states the run lifecycle as a table that matches the domain transitions in both directions"
+
+## T-4 verdict (AIC-57)
+
+T-4 passed, so decision 9's fenced checkpointer is no longer provisional and
+the put-scoped-lock fallback of decision 11 is not opened.
+
+**Run.** `infra/postgres/tests/t4-race.live.mjs` on main `b51436d`, with
+`T4_REPETITIONS=2000`, against a local `postgres:17-alpine` container from
+`infra/postgres/compose.yaml`: each of the six orderings, S1 to S6, ran 2,000
+times, and all 12,009 tests passed with none failing. The matrix's assertions
+(a) to (h), named in that file, check the outcomes decision 11 requires. Each
+repetition checks for one tool call in total, one committed node result
+produced by the first attempt, a completed run, and a recorded
+`checkpoint_fork` for the stale attempt. After all repetitions, the normalized
+result and the product snapshot's core fields must be identical across every
+ordering and repetition. The event sequence is checked run by run and is not compared
+across runs. The command is in that file's header. The TAP transcripts are
+not committed.
+
+**Measured.** The file prints two series:
+
+- `t4-window-ms landed p50=12.607 p99=46.097 n=150`: the time between a fence
+  check passing and the checkpoint write landing, when nothing holds it. A
+  writer that loses its lease inside this window still lands its write, and
+  the post-write recheck is what turns that write into a recorded fork.
+- `t4-sweep-attempts p50=1.000 p99=1.000 n=12000 max=2`: how many sweeps each
+  run needed before it was reclaimed. The harness allows up to 20.
+
+An earlier stress run, on `6bcacdc`, failed because of the harness, not the
+checkpointer. At S1 repetition 579 the first sweep returned nothing and a
+later one reclaimed the run. Repetitions were not isolated from each other,
+so from then on each repetition claimed a run an earlier repetition had left
+behind instead of its own. That run produced
+no evidence for S2 to S6. The harness now retries the sweep and cleans up
+after each repetition (#108).
+
+**What the matrix does not cover.**
+
+- **The pre-write fence.** It is pinned outside the matrix, by
+  fenced-checkpointer.live.mjs › "a real zombie
+  worker's checkpoint write is refused by a real RunWriteContext after a
+  takeover, fence_rejections records it with kind = checkpoint, and B's
+  checkpoint is unaffected".
+- **How often reuse happens.** When the first attempt's checkpoint already
+  records the node, the new worker never reaches it, and the run records no
+  `node_result.reused` event. The matrix accepts both event shapes and does
+  not count how many repetitions took each (`normalizeSnapshotEvents` in the
+  harness). Reuse after a takeover is pinned outside the matrix, by
+  run-write-context.live.mjs › "replay does not call compute again — in the
+  same context, and again after sweep+reclaim hands the run to a new
+  attempt".
+- **`putWrites` timing.** The window is sampled for `put` only.
+- **A failed recheck.** If the post-write recheck fails for any reason other
+  than a recorded refusal, a valid owner's write fails:
+  fenced-checkpointer.test.mjs › "a post-write recheck that fails for any
+  reason other than a recorded fence refusal fails the write loudly instead of
+  making the fork silent".
+- **Scale.** This was one database on one machine, run one test at a time. CI
+  runs the same file with `T4_REPETITIONS=3` on every pull request.
 
 ## Consequences
 
