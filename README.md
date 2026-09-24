@@ -238,8 +238,19 @@ The normal test suite does not call the real model provider.
 npm run build
 
 npm run cli -- --help
-npm run cli -- start --run-id demo --checkpoint ./checkpoints.sqlite
-npm run cli -- resume --run-id demo --checkpoint ./checkpoints.sqlite
+```
+
+The onboarding nouns (`service`, `env`, `source`, `policy`, `incident`,
+`doctor`, `apply`) that `--help` lists are stubs as of AIC-99 slice a; each
+prints "not implemented in this build" and exits non-zero.
+
+The persistence spike that used to run as `npm run cli -- start|resume` moved
+behind an explicit, **development-only** subcommand
+(`docs/decisions/integration-boundary.md`, "Terminology"):
+
+```bash
+npm run cli -- dev spike start --run-id demo --checkpoint ./checkpoints.sqlite
+npm run cli -- dev spike resume --run-id demo --checkpoint ./checkpoints.sqlite
 ```
 
 ### PostgreSQL live lane
