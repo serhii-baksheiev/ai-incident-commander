@@ -43,6 +43,12 @@ export interface CommittedOptions {
  */
 export interface RunWriteContext {
   readonly pool: Pool;
+  /**
+   * `compute` must resolve to a JSON value `canonicalJson` accepts. What comes
+   * back — on a first commit and on replay alike — is that value's canonical
+   * JSON round trip, not the object `compute` returned; a non-JSON result is
+   * refused after `compute` ran, and nothing is committed for it.
+   */
   committed<T>(execKey: string, compute: () => Promise<T>, options?: CommittedOptions): Promise<T>;
   markWaitingHuman(interactionId: string): Promise<void>;
   complete(reason?: string): Promise<void>;
@@ -60,6 +66,19 @@ export interface RunWriteContext {
  * now()" — for the same reason `RunStore.SQL_STATEMENTS` is: a claim about SQL
  * text belongs in the text itself, not only in a comment describing it.
  */
+/**
+ * The status transitions this module's statements perform, checked against the
+ * domain lifecycle once, at module load, the way `RUN_STORE_TRANSITIONS` is.
+ */
+const RUN_WRITE_CONTEXT_TRANSITIONS = Object.freeze([
+  ['running', 'waiting_human'],
+  ['running', 'completed'],
+  ['running', 'failed'],
+] as const);
+for (const [from, to] of RUN_WRITE_CONTEXT_TRANSITIONS) {
+  assertRunTransition(from, to);
+}
+
 export const RUN_WRITE_CONTEXT_FENCE_SQL = `
   SELECT 1
   FROM "${APPLICATION_SCHEMA}".runs
@@ -129,16 +148,14 @@ async function runFenced<T>(
         claim.ownerWorkerId,
         claim.executionAttempt,
       ]);
-      if (rows.length === 0) {
-        await client.query('ROLLBACK');
-        await recordFenceRejection(pool, claim, kind);
-        throw new StaleOwnerError(fenceRefusalMessage(claim, kind));
+      if (rows.length > 0) {
+        const result = await work(client);
+        await client.query('COMMIT');
+        return result;
       }
-      const result = await work(client);
-      await client.query('COMMIT');
-      return result;
+      await client.query('ROLLBACK');
     } catch (error) {
-      if (error instanceof StaleOwnerError || (error as PossiblyCommittedError)?.[COMMITTED_BEFORE_THROW]) {
+      if ((error as PossiblyCommittedError)?.[COMMITTED_BEFORE_THROW]) {
         throw error;
       }
       failure = error;
@@ -153,6 +170,19 @@ async function runFenced<T>(
   } finally {
     client.release(failure);
   }
+
+  // Refused. The rejection is recorded only after this client went back to the
+  // pool: asking the pool for a second connection while holding the first is
+  // how enough simultaneous refusals held every connection at once. see
+  // run-write-context.live.mjs › "more concurrent fence refusals than the pool
+  // has connections all end in StaleOwnerError instead of wedging the pool"
+  try {
+    await recordFenceRejection(pool, claim, kind);
+  } catch {
+    // The refusal is the answer the caller needs; failing to record it must
+    // not turn it into a different error.
+  }
+  throw new StaleOwnerError(fenceRefusalMessage(claim, kind));
 }
 
 /**
@@ -218,6 +248,34 @@ async function appendEvent(
  *    idempotent: no throw, the stored result is returned, and no second row is
  *    written". `node_results` is never UPDATEd.
  */
+/**
+ * The stored result text, provided it still hashes to the `result_sha` written
+ * beside it; otherwise an integrity violation is recorded and committed before
+ * it is thrown, so a corrupted committed result is never replayed as
+ * authoritative. see run-write-context.live.mjs › "replay refuses a stored
+ * result whose text no longer matches its result_sha"
+ */
+async function verifiedStoredText(
+  client: PoolClient,
+  claim: RunClaim,
+  execKey: string,
+  stored: { result_json: string; result_sha: string },
+): Promise<string> {
+  const actualSha = createHash('sha256').update(stored.result_json).digest('hex');
+  if (actualSha === stored.result_sha) return stored.result_json;
+  await appendEvent(client, claim.runId, claim.executionAttempt, 'execution.integrity_violation', {
+    execKey,
+    reason: 'stored_result_sha_mismatch',
+  });
+  await client.query('COMMIT');
+  const violation: PossiblyCommittedError = new ExecutionIntegrityViolation(
+    `the stored result for ${execKey} no longer matches its result_sha`,
+    { execKey },
+  );
+  violation[COMMITTED_BEFORE_THROW] = true;
+  throw violation;
+}
+
 async function committed<T>(
   pool: Pool,
   claim: RunClaim,
@@ -262,8 +320,9 @@ async function committed<T>(
       violation[COMMITTED_BEFORE_THROW] = true;
       throw violation;
     }
+    const text = await verifiedStoredText(client, claim, execKey, existing);
     await appendEvent(client, claim.runId, claim.executionAttempt, 'node_result.reused', { execKey });
-    return { found: true as const, value: JSON.parse(existing.result_json) as T };
+    return { found: true as const, value: JSON.parse(text) as T };
   });
 
   if (peek.found) {
@@ -291,9 +350,12 @@ async function committed<T>(
          WHERE run_id = $1 AND exec_key = $2`,
         [claim.runId, execKey],
       );
+      // The conflicting row is visible here: PostgreSQL's ON CONFLICT DO NOTHING
+      // waits for a concurrent inserter of the same key to finish, and this
+      // next statement reads the winner under READ COMMITTED.
       const stored = storedRows[0]!;
       if (stored.result_sha === resultSha) {
-        return JSON.parse(stored.result_json) as T;
+        return JSON.parse(await verifiedStoredText(client, claim, execKey, stored)) as T;
       }
       await appendEvent(client, claim.runId, claim.executionAttempt, 'execution.integrity_violation', {
         execKey,
@@ -341,7 +403,6 @@ async function committed<T>(
  */
 async function markWaitingHuman(pool: Pool, claim: RunClaim, interactionId: string): Promise<void> {
   await runFenced(pool, claim, 'markWaitingHuman', async (client) => {
-    assertRunTransition('running', 'waiting_human');
     await client.query(
       `UPDATE "${APPLICATION_SCHEMA}".runs
        SET status = 'waiting_human', owner_worker_id = NULL, lease_expires_at = NULL, interaction_id = $2
@@ -358,9 +419,10 @@ async function markWaitingHuman(pool: Pool, claim: RunClaim, interactionId: stri
  */
 async function complete(pool: Pool, claim: RunClaim, reason: string | undefined): Promise<void> {
   await runFenced(pool, claim, 'complete', async (client) => {
-    assertRunTransition('running', 'completed');
     await client.query(
-      `UPDATE "${APPLICATION_SCHEMA}".runs SET status = 'completed', terminal_reason = $2 WHERE run_id = $1`,
+      `UPDATE "${APPLICATION_SCHEMA}".runs
+       SET status = 'completed', terminal_reason = $2, owner_worker_id = NULL, lease_expires_at = NULL
+       WHERE run_id = $1`,
       [claim.runId, reason ?? null],
     );
     await appendEvent(client, claim.runId, claim.executionAttempt, 'run.completed', { reason: reason ?? null });
@@ -374,9 +436,10 @@ async function complete(pool: Pool, claim: RunClaim, reason: string | undefined)
  */
 async function fail(pool: Pool, claim: RunClaim, reason: string): Promise<void> {
   await runFenced(pool, claim, 'fail', async (client) => {
-    assertRunTransition('running', 'failed');
     await client.query(
-      `UPDATE "${APPLICATION_SCHEMA}".runs SET status = 'failed', terminal_reason = $2 WHERE run_id = $1`,
+      `UPDATE "${APPLICATION_SCHEMA}".runs
+       SET status = 'failed', terminal_reason = $2, owner_worker_id = NULL, lease_expires_at = NULL
+       WHERE run_id = $1`,
       [claim.runId, reason],
     );
     await appendEvent(client, claim.runId, claim.executionAttempt, 'run.failed', { reason });

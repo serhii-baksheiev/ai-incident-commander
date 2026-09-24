@@ -156,6 +156,11 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
         kind text NOT NULL,
         at timestamptz NOT NULL DEFAULT clock_timestamp()
       );
+
+      CREATE INDEX IF NOT EXISTS fence_rejections_run_at_idx
+        ON "aic_app".fence_rejections (run_id, at);
+      CREATE UNIQUE INDEX IF NOT EXISTS runs_interaction_id_key
+        ON "aic_app".runs (interaction_id) WHERE interaction_id IS NOT NULL;
     `,
   }),
 ]);

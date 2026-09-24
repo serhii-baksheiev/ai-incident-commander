@@ -188,15 +188,13 @@ export function createRunStore(connectionString: string, options: RunStoreOption
   const maxExecutionAttempts = assertPositiveInteger(options?.maxExecutionAttempts, 'maxExecutionAttempts');
 
   const pool = new Pool({ connectionString });
-  // An idle client can emit its own 'error' (e.g. the backend closing a
-  // connection this pool is not currently using) — with no listener, `pg`
-  // rethrows it as an uncaught exception on the process rather than a
-  // rejected promise a caller could catch. See app-schema.ts's own
-  // `setupApplicationSchema` for the security advisory this mirrors.
-  pool.on('error', () => {
-    // Nothing to reconcile here: no query is in flight against this idle
-    // client, and the pool discards it and opens a fresh one on next use.
-  });
+  // An idle client whose connection dies (a database restart or failover)
+  // makes the pool emit 'error'; an EventEmitter with no listener throws it,
+  // which would kill the process that owns the runs. No query is in flight on
+  // an idle client and the pool replaces it on next use, so the event is
+  // dropped here. see run-store.test.mjs › "an idle-client error on the store
+  // pool does not escape as an uncaught exception"
+  pool.on('error', () => {});
   const SQL_STATEMENTS = buildSqlStatements();
 
   return {
