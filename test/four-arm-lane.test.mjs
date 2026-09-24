@@ -212,8 +212,8 @@ test('still returns not-run oracle and naive arms, with model and control unchan
 
   assert.deepEqual(
     Object.keys(report.arms.control).sort(),
-    ['arm', 'metrics', 'movedMetrics', 'observedBaseline', 'status'],
-    'the control arm keeps its existing fields and gains status',
+    ['arm', 'metrics', 'movedMetrics', 'observedBaseline', 'predictionGapCounts', 'status'],
+    'the control arm keeps its existing fields and gains status and the prediction-gap counts (AIC-119 slice 4, a diagnostic, not a metric)',
   );
   assert.equal(
     report.arms.control.status,
@@ -222,8 +222,8 @@ test('still returns not-run oracle and naive arms, with model and control unchan
   );
   assert.deepEqual(
     Object.keys(report.arms.model).sort(),
-    ['arm', 'metrics', 'model', 'reportable', 'status'],
-    'the model arm keeps every existing field and gains only status and model',
+    ['arm', 'metrics', 'model', 'predictionGapCounts', 'reportable', 'status'],
+    'the model arm keeps every existing field and gains status, model and the prediction-gap counts (AIC-119 slice 4, a diagnostic, not a metric)',
   );
   assert.equal(report.arms.model.status, 'completed');
 });
@@ -475,6 +475,22 @@ test('gives the model arm a status field alongside its existing fields, for both
     }),
   );
   assert.equal(refused.arms.model.status, 'refused');
+});
+
+test('a refused model arm carries no predictionGapCounts, exactly as it carries no metrics', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const refused = await runLiveModelLane(
+    fourArmLaneOptions({
+      async runModelArm() {
+        throw new Error('model refused');
+      },
+    }),
+  );
+
+  assert.equal(refused.arms.model.status, 'refused');
+  assert.equal('metrics' in refused.arms.model, false);
+  assert.equal('predictionGapCounts' in refused.arms.model, false, 'a refused arm produced no results to count');
 });
 
 /* -------------------------------------------------------------------------- */

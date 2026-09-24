@@ -17,6 +17,7 @@ import {
 } from './benchmark-evaluation.js';
 import { BEHAVIOR_METRIC_KEYS, STRUCTURAL_EVALUATOR_VERSION } from './behavior-evaluators.js';
 import { BENCHMARK_BUDGET_POLICY } from './budget-policy.js';
+import { predictionGapCountsOf, type PredictionGapCounts } from './prediction-gap.js';
 import { BENCHMARK_SCENARIO_PARTITIONS } from './replay-scenarios.js';
 import type { GateMetricKey } from './benchmark-regression-gate.js';
 
@@ -265,6 +266,12 @@ export interface LiveModelLaneControlArm {
   readonly observedBaseline: Readonly<Partial<Record<GateMetricKey, number>>>;
   /** Every metric whose mean differs from the declared baseline. */
   readonly movedMetrics: readonly GateMetricKey[];
+  /**
+   * AIC-119 slice 4 (owner ruling D1, item 7): the prediction-gap diagnostic,
+   * aggregated over this arm's own results. NOT a metric — see
+   * `prediction-gap.ts`'s header.
+   */
+  readonly predictionGapCounts: PredictionGapCounts;
 }
 
 /** The shape of an arm the caller did not supply: not run, and never scored. */
@@ -331,6 +338,14 @@ export interface LiveModelLaneModelArm {
   readonly notApplicable?: NotApplicableMetrics;
   readonly model: Readonly<{ provider: string; modelId: string }>;
   readonly usage?: ModelUsageTotals;
+  /**
+   * AIC-119 slice 4 (owner ruling D1, item 7): the prediction-gap diagnostic,
+   * aggregated over this arm's own results. Absent when the arm refused, for
+   * the same reason `metrics` is absent then — see the note on `metrics`
+   * above.
+   * see four-arm-lane.test.mjs › "a refused model arm carries no predictionGapCounts, exactly as it carries no metrics"
+   */
+  readonly predictionGapCounts?: PredictionGapCounts;
 }
 
 export type LiveModelLaneVerdict =
@@ -1069,6 +1084,7 @@ export async function runLiveModelLane(
     ...(modelNotApplicable === undefined ? {} : { notApplicable: modelNotApplicable }),
     model: credentialFields,
     ...(modelUsage === undefined ? {} : { usage: modelUsage }),
+    ...(model === undefined ? {} : { predictionGapCounts: predictionGapCountsOf(model.results) }),
   };
 
   const comparability =
@@ -1111,6 +1127,7 @@ export async function runLiveModelLane(
         metrics: controlMetrics,
         observedBaseline,
         movedMetrics,
+        predictionGapCounts: predictionGapCountsOf(control.results),
       },
       oracle: oracleArm,
       naive: naiveArm,

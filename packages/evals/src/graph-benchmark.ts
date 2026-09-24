@@ -29,6 +29,7 @@ import {
   parseBenchmarkBudgetPolicy,
   type BenchmarkBudgetPolicy,
 } from './budget-policy.js';
+import { predictionGapOf } from './prediction-gap.js';
 
 /**
  * The graph arm's benchmark runner: the investigation graph executed over a
@@ -245,8 +246,13 @@ export async function runGraphBenchmarkExperiment(
   // Keyed by runId rather than returned through `investigate`, so the evidence
   // travels a path the opaque callback contract cannot reach.
   const measuredByRunId = new Map<string, MeasuredBenchmarkResources>();
+  // Same reasoning for the prediction-gap diagnostic (AIC-119 slice 4): it is
+  // computed from the graph's own final state, which `investigate` never
+  // returns to its caller — `outcomeFromGraphState` projects only what the
+  // evaluators need.
+  const finalStateByRunId = new Map<string, IncidentState>();
 
-  return runBenchmarkExperiment({
+  const experiment = await runBenchmarkExperiment({
     ...options,
     collectResources: (input) => measuredByRunId.get(input.runId),
     async investigate(input) {
@@ -301,6 +307,7 @@ export async function runGraphBenchmarkExperiment(
         kind: 'start',
         state: initialBenchmarkState(input, budgetPolicy),
       });
+      finalStateByRunId.set(input.runId, finalState);
       measuredByRunId.set(input.runId, {
         // The line that matters is WHO ORIGINATED THE NUMBER, not which channel
         // the graph owns — the graph owns the control block either way.
@@ -364,5 +371,20 @@ export async function runGraphBenchmarkExperiment(
       });
     },
   });
+
+  // Attached here, from the final state kept above by runId, rather than
+  // inside `investigate`: `runBenchmarkExperiment` builds each `BenchmarkEvaluation`
+  // itself and hands it to `recordEvaluation` before this function ever sees
+  // it, so the graph arm's own runner is the one place that can add a field
+  // the generic evaluator does not know about.
+  return {
+    ...experiment,
+    results: experiment.results.map((result) => {
+      const finalState = finalStateByRunId.get(result.runId);
+      return finalState === undefined
+        ? result
+        : { ...result, predictionGap: predictionGapOf(finalState) };
+    }),
+  };
 }
 

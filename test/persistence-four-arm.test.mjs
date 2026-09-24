@@ -415,3 +415,101 @@ test('no lane script under scripts/ declares a temperature field in its run meta
     );
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-119 slice 4: the prediction-gap diagnostic is published as run output,  */
+/* never as feedback                                                          */
+/* -------------------------------------------------------------------------- */
+
+const PREDICTION_GAP = Object.freeze({
+  stopKind: 'stalled',
+  leaderId: 'h-1',
+  leaderStatus: 'corroborated',
+  highestStatus: 'corroborated',
+  leaderConfirmedPredictions: 0,
+  finalCorroborated: true,
+  finalSupported: false,
+  sufficientFromCorroborated: false,
+  stalledLeaderLacksConfirmedPrediction: true,
+  stalledOther: false,
+});
+
+function resultWithPredictionGap(predictionGap) {
+  const record = dependencyIncidentRecord();
+  const result = { ...evals.evaluateBenchmarkRecord({ record, outcome: behaviorPerfectOutcomeFor(record.scenario) }), predictionGap };
+  return { record, result };
+}
+
+test('publishes a declared predictionGap at outputs.predictionGap and as no feedback row', async () => {
+  const capture = capturingClient();
+  const { record, result } = resultWithPredictionGap(PREDICTION_GAP);
+
+  await observability.persistBenchmarkExperiment({
+    client: capture.client,
+    datasetName: uniqueDatasetName('prediction-gap-published'),
+    experiment: { records: [record], results: [result] },
+  });
+
+  const [run] = capture.runs;
+  assert.deepEqual(run.outputs.predictionGap, { ...PREDICTION_GAP });
+  const gapKeys = new Set(Object.keys(PREDICTION_GAP));
+  assert.equal(
+    capture.feedback.some(({ key }) => gapKeys.has(key) || key.startsWith('prediction')),
+    false,
+    'the prediction-gap diagnostic is never a metric, so it never becomes a feedback row',
+  );
+});
+
+test('publishes no outputs.predictionGap when the result declares none', async () => {
+  const capture = capturingClient();
+  const record = dependencyIncidentRecord();
+  const result = evals.evaluateBenchmarkRecord({ record, outcome: behaviorPerfectOutcomeFor(record.scenario) });
+
+  await observability.persistBenchmarkExperiment({
+    client: capture.client,
+    datasetName: uniqueDatasetName('prediction-gap-absent'),
+    experiment: { records: [record], results: [result] },
+  });
+
+  const [run] = capture.runs;
+  assert.equal(Object.hasOwn(run.outputs, 'predictionGap'), false);
+});
+
+test('refuses a predictionGap carrying a key the diagnostic does not declare, and publishes no run for it', async () => {
+  const capture = capturingClient();
+  const { record, result } = resultWithPredictionGap({ ...PREDICTION_GAP, composite: 0.9 });
+
+  await assert.rejects(
+    () =>
+      observability.persistBenchmarkExperiment({
+        client: capture.client,
+        datasetName: uniqueDatasetName('prediction-gap-unknown-key'),
+        experiment: { records: [record], results: [result] },
+      }),
+    /predictionGap names an unknown field: composite/,
+  );
+  assert.deepEqual(capture.runs, []);
+});
+
+test('refuses a predictionGap field whose value is not of that field\'s scalar type, and publishes no run for it', async () => {
+  const cases = [
+    ['leaderId', { nested: 'object' }, /predictionGap field leaderId must be a string or absent/],
+    ['leaderConfirmedPredictions', '1', /predictionGap field leaderConfirmedPredictions must be a finite number/],
+    ['stalledOther', 'yes', /predictionGap field stalledOther must be a boolean/],
+  ];
+  for (const [field, value, pattern] of cases) {
+    const capture = capturingClient();
+    const { record, result } = resultWithPredictionGap({ ...PREDICTION_GAP, [field]: value });
+    // eslint-disable-next-line no-await-in-loop -- one refusal per field, each against its own capture
+    await assert.rejects(
+      () =>
+        observability.persistBenchmarkExperiment({
+          client: capture.client,
+          datasetName: uniqueDatasetName(`prediction-gap-bad-${field}`),
+          experiment: { records: [record], results: [result] },
+        }),
+      pattern,
+    );
+    assert.deepEqual(capture.runs, [], `${field}: no run is published for a malformed diagnostic`);
+  }
+});
