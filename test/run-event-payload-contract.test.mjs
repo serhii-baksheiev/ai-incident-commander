@@ -1,10 +1,16 @@
 /**
  * AIC-58, slice c: the pure domain half of "payloads remain small and
- * reference domain/evidence IDs rather than duplicating raw bodies; no
- * secret-bearing payloads" — a closed registry, `RUN_EVENT_PAYLOAD_KEYS`,
+ * reference domain/evidence IDs rather than duplicating raw bodies" — a
+ * closed registry, `RUN_EVENT_PAYLOAD_KEYS`,
  * naming exactly the `run_events.payload` keys each event `type` may carry,
  * and `assertRunEventPayload(type, payload)`, the refusal seam every write
  * eventually routes through.
+ *
+ * What this enforces is SHAPE and SIZE — a closed key set per type, values
+ * that are strings or null, each string at most 256 characters. It does not
+ * inspect CONTENT: a 256-character `reason` or `interactionId` can still carry
+ * a credential, so the ticket's "no secret-bearing payloads" stays the
+ * caller's obligation for those free-text fields, and nothing here checks it.
  *
  * The half that needs a real PostgreSQL — a fenced write whose payload
  * breaks the rule leaves NO `run_events` row and no counter increment
@@ -222,6 +228,28 @@ test('assertRunEventPayload refuses an unknown event type', () => {
   );
 });
 
+test('assertRunEventPayload refuses an inherited Object.prototype name as an unknown event type, with RunEventPayloadError rather than a TypeError', () => {
+  for (const type of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    assertRefusesAsRunEventPayloadError(type, { execKey: 'x' }, `the inherited name ${JSON.stringify(type)} is not a registered event type`);
+  }
+});
+
+test('a refusal echoes a caller-supplied type or key bounded and escaped — never a raw newline, never its full length', () => {
+  const longKey = `${'k'.repeat(300)}\n2026-09-24 ERROR forged-log-line`;
+  const longType = `${'t'.repeat(500)}\nforged`;
+  for (const [description, run] of [
+    ['an oversized, newline-carrying key', () => domain.assertRunEventPayload('run.failed', { [longKey]: 'x' })],
+    ['an oversized, newline-carrying type', () => domain.assertRunEventPayload(longType, {})],
+  ]) {
+    assert.throws(run, (error) => {
+      assert.ok(error instanceof domain.RunEventPayloadError, `${description}: must throw RunEventPayloadError`);
+      assert.ok(!error.message.includes('\n'), `${description}: the message must not carry a raw newline (a forged log line), got ${JSON.stringify(error.message.slice(0, 120))}`);
+      assert.ok(error.message.length <= 200, `${description}: the message must be bounded, got ${error.message.length} characters`);
+      return true;
+    });
+  }
+});
+
 test('assertRunEventPayload refuses a payload that is not a plain object', () => {
   for (const notAnObject of [null, undefined, 'a string', 42, true, ['execKey']]) {
     assertRefusesAsRunEventPayloadError(
@@ -286,9 +314,17 @@ test('every appendEvent(client, …) call site in run-write-context.ts uses a ty
   const sourceText = readFileSync(RUN_WRITE_CONTEXT_SOURCE_PATH, 'utf8');
   const sites = scanAppendEventCallSites(sourceText);
 
-  assert.ok(
-    sites.length >= 7,
-    `the regex scan found ${sites.length} appendEvent call sites in run-write-context.ts; the ticket's own grep names 7 call sites (2 for execution.integrity_violation) — a scan finding fewer is under-matching, not a clean file, and would make every row below pass by looking at nothing`,
+  // The floor is every appendEvent(client occurrence in the source, counted
+  // with a plain substring search independent of the scan's own regex: a call
+  // site the regex cannot parse (a nested payload, a double-quoted type, a
+  // payload passed as a variable) makes the counts differ and reddens here,
+  // instead of first failing at runtime inside a fenced transaction.
+  const occurrences = sourceText.split('appendEvent(client').length - 1;
+  assert.ok(occurrences > 0, 'run-write-context.ts must contain appendEvent(client call sites, or this row looks at nothing');
+  assert.equal(
+    sites.length,
+    occurrences,
+    `the regex scan parsed ${sites.length} appendEvent call sites but the source has ${occurrences} occurrences of "appendEvent(client" — every call site must be one the scan can read`,
   );
 
   for (const { type, keys } of sites) {
