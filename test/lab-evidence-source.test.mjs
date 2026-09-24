@@ -5,7 +5,7 @@
  * `EvidenceSource` (`packages/tools/src/evidence-source.ts`) over the
  * Incident Lab's `/observations/:toolId` and `/health` routes
  * (`incident-lab/services/api.mjs`), replacing the ad-hoc
- * `createObservationTool` currently built inline in
+ * `createObservationTool` built inline in
  * `incident-lab/src/scenario-candidates.mjs`.
  *
  * `fetch` is always injected in this file — every row below constructs a

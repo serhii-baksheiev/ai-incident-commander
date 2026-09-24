@@ -4,9 +4,8 @@
  * design's fixture-migration half.
  *
  * This file pins `migrateReplayFixtureV1(fixture, { fetchedAt })`, a NEW
- * export from `@aic/tools` (not yet implemented — every row below is
- * expected to fail on the missing export or the behaviour it names, never on
- * a typo in the test itself):
+ * export from `@aic/tools` (every row below guards the missing export or the
+ * behaviour it names, never a typo in the test itself):
  *
  *   `migrateReplayFixtureV1({ version: 1, responses }, { fetchedAt })` ->
  *   `{ recordings, skipped }`
