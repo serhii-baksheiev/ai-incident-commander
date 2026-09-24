@@ -109,7 +109,6 @@ export function canonicalJson(value: unknown): CanonicalJson {
 
 // ---- Run status machine -----------------------------------------------------
 
-
 /**
  * The durable run's statuses, as the "Run lifecycle" table of
  * docs/decisions/durable-run-execution.md states them. Frozen - see

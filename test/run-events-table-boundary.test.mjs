@@ -13,19 +13,14 @@
  * The brief states the naming boundary is exactly four files: `app-schema.ts`
  * (DDL), `run-write-context.ts` (writer), `run-event-stream.ts` (reader/tail
  * source), `retention.ts` (product-snapshot reader). Measured with a plain
- * `\brun_events\b` scan over `packages/persistence/src/*.ts`:
- * `index.ts` ALSO matches — its AIC-58 slice-a doc comment says "a durable,
- * tail/poll `RunEventStreamSource` (...) over `aic_app.run_events`". That is
- * prose describing what `run-event-stream.ts` re-exports, not a fifth module
- * that talks to the table — but the mechanical scan below cannot tell the
- * difference between a doc comment and a live SQL string, any more than
+ * `\brun_events\b` scan over `packages/persistence/src/*.ts`. The naming
+ * scan cannot tell a doc comment from a live SQL string, any more than
  * `test/postgres-checkpointer.test.mjs`'s own `STORAGE_SURFACE` scan can (see
  * that file's row 7 comment: "a table name in a SQL string is not an import
- * edge at all"). So this row is pinned to the four-file boundary the ticket
- * actually wants, and is RED against the repository as it stands today until
- * `index.ts`'s comment is reworded (or the module is added to the allow-list
- * deliberately, in which case this test's own allow-list is the place that
- * decision gets made on purpose rather than by drift).
+ * edge at all"), so a module that merely mentions the table in prose must
+ * either reword it — as `index.ts` did in this slice — or be added to the
+ * allow-list deliberately, which is where that decision is made on purpose
+ * rather than by drift.
  */
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';

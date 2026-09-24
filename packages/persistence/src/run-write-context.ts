@@ -55,8 +55,12 @@ export interface RunWriteContext {
    * (256) characters by `assertRunEventPayload` (`@aic/domain`). A longer one
    * is refused with `RunEventPayloadError`, and the whole transition rolls
    * back: the run keeps its status — `fail` with a long reason leaves it
-   * `running`. Pass a short code, not an error message or a stack. see
-   * run-event-payload.live.mjs.
+   * `running`. Pass a short code, not an error message or a stack. `fail` and
+   * `complete` are pinned by run-event-payload.live.mjs › "fail() with a reason
+   * one character past the cap is refused before any run_events row or counter
+   * increment lands, and the run stays running; exactly at the cap it is
+   * accepted" and its complete() twin; `markWaitingHuman` takes the same
+   * `appendEvent` path and has no row of its own.
    */
   markWaitingHuman(interactionId: string): Promise<void>;
   complete(reason?: string): Promise<void>;

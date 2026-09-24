@@ -168,7 +168,7 @@ export const MAX_RUN_EVENT_PAYLOAD_STRING = 256;
  * See test/run-event-payload-contract.test.mjs.
  *
  * Its message never echoes an unbounded value: `type` and `key` pass through
- * `echoed` (at most 64 characters, JSON-escaped, so no raw newline), and a
+ * `echoed` (cut to 64 characters, then JSON-escaped, so no raw newline), and a
  * refused oversized string is named by its length, never by its own text — the
  * cross-cutting rule `.claude/rules/invariants.md` states for a refusal that
  * can see attacker- or user-supplied data.
@@ -205,7 +205,10 @@ function describeKind(value: unknown): string {
 export function assertRunEventPayload(type: string, payload: unknown): void {
   // Own properties only: an inherited name such as `constructor` is not a
   // registered type (see the contract row on Object.prototype names).
-  const allowedKeys = Object.hasOwn(RUN_EVENT_PAYLOAD_KEYS, type) ? RUN_EVENT_PAYLOAD_KEYS[type] : undefined;
+  // A non-string type is refused rather than coerced through ToPropertyKey,
+  // the same guard buildExecKey keeps for its op.
+  const allowedKeys =
+    typeof type === 'string' && Object.hasOwn(RUN_EVENT_PAYLOAD_KEYS, type) ? RUN_EVENT_PAYLOAD_KEYS[type] : undefined;
   if (allowedKeys === undefined) {
     throw new RunEventPayloadError(`run event: unknown event type ${echoed(type)}`);
   }

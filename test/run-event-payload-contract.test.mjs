@@ -322,9 +322,11 @@ test('every appendEvent(client, …) call site in run-write-context.ts uses a ty
 
   // The floor is every appendEvent(client occurrence in the source, counted
   // with a plain substring search independent of the scan's own regex: a call
-  // site the regex cannot parse (a nested payload, a double-quoted type, a
-  // payload passed as a variable) makes the counts differ and reddens here,
-  // instead of first failing at runtime inside a fenced transaction.
+  // site written as appendEvent(client, … that the regex cannot parse (a
+  // nested payload, a double-quoted type, a payload passed as a variable)
+  // makes the counts differ and reddens here. Limit: a call broken across
+  // lines before `client` matches neither counter, so it is not seen here;
+  // the runtime assertRunEventPayload inside the fenced write still refuses it.
   const occurrences = sourceText.split('appendEvent(client').length - 1;
   assert.ok(occurrences > 0, 'run-write-context.ts must contain appendEvent(client call sites, or this row looks at nothing');
   assert.equal(
