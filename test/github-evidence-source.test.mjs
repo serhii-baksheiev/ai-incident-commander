@@ -59,10 +59,11 @@
  *
  * One row (the redaction-echo row below) is written against
  * `packages/tools/src/redaction.ts`'s OWN documented scope: that file's
- * header lists the six credential shapes `redactEvidenceOutput` recognises,
- * and a fine-grained `github_pat_...` token is explicitly named among what
- * it does NOT catch. This file's report states that gap plainly rather than
- * papering over it with a weaker assertion.
+ * header lists the seven credential shapes `redactEvidenceOutput`
+ * recognises, including the fine-grained `github_pat_...` shape
+ * `test/redaction-github-pat.test.mjs` pins. This row guards that a
+ * fine-grained token echoed back by a fake server is redacted rather than
+ * surviving into the outcome.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';

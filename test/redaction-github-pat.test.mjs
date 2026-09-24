@@ -1,13 +1,14 @@
 /**
- * AIC-98, slice b: `packages/tools/src/redaction.ts`'s own header states, in
- * its "What this does NOT catch" list, that a fine-grained GitHub PAT
- * (`github_pat_...`) is not one of the six credential shapes
- * `redactEvidenceOutput` recognises. The github@1 evidence source
- * (`test/github-evidence-source.test.mjs`) needs that gap closed: the
- * github@1 token must never survive redaction into a persisted recording or
- * a returned outcome. This file pins the new shape directly against
- * `redactEvidenceOutput`, mirroring `test/bound-source-registry.test.mjs`'s
- * own pattern-row and near-miss conventions for the six existing shapes.
+ * AIC-98, slice b: this file pins the seventh credential shape
+ * `redactEvidenceOutput` recognises — a fine-grained GitHub PAT
+ * (`github_pat_...`), documented alongside the other six in
+ * `packages/tools/src/redaction.ts`'s own header. The github@1 evidence
+ * source (`test/github-evidence-source.test.mjs`) is why this shape has to
+ * be redacted: the github@1 token must never survive redaction into a
+ * persisted recording or a returned outcome. This file pins the shape
+ * directly against `redactEvidenceOutput`, mirroring
+ * `test/bound-source-registry.test.mjs`'s own pattern-row and near-miss
+ * conventions for the other six shapes.
  *
  * GitHub's documented fine-grained PAT format is the literal `github_pat_`
  * followed by exactly 82 characters of `[A-Za-z0-9_]`. Every positive
