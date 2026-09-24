@@ -16,3 +16,19 @@ export {
   canonicalSerializeToolInput,
   createReplayFixtureKey,
 } from './replay-key.js';
+export {
+  EVIDENCE_SOURCE_REFUSAL_REASONS,
+  EvidenceSourceError,
+  classifyEvidenceSourceFailure,
+  createRequestFingerprint,
+  evidenceSourceOutcomeToToolResult,
+} from './evidence-source.js';
+export type {
+  EvidenceSource,
+  EvidenceSourceCheckResult,
+  EvidenceSourceDescriptor,
+  EvidenceSourceErrorOptions,
+  EvidenceSourceOutcome,
+  EvidenceSourceProvenance,
+  EvidenceSourceRefusalReason,
+} from './evidence-source.js';
