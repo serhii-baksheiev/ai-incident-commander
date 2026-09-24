@@ -702,19 +702,94 @@ test('writeRecordDurably writes pretty-printed JSON with a trailing newline, lea
   const raw = readFileSync(path, 'utf8');
   assert.equal(raw, `${JSON.stringify(body, null, 2)}\n`);
 
-  assert.deepEqual(readdirSync(dir), ['record.json'], 'no <path>.tmp-<pid> file may survive the write');
+  assert.deepEqual(readdirSync(dir), ['record.json'], 'no <path>.tmp-<pid>-<token> file may survive the write');
 });
 
 /**
- * AIC-120 round 2: before this fix, `writeRecordDurably` opened its temp file
+ * AIC-120 round 3 (security-scanner advisory carried from PR #124): the temp
+ * name was `${path}.tmp-${pid}` — predictable from the record path and this
+ * process's own pid, which any local reader can see. A file or symlink
+ * planted at that exact name for a FRESH candidate (never written before)
+ * made the complete-record write fail with EEXIST *after* the hold-out's
+ * model calls were already spent, losing the one-shot measurement the
+ * function exists to protect. The fix appends a random per-call token to the
+ * temp name, so a leftover or planted entry at the OLD name is simply a
+ * different path from the one this call opens — it is never even looked at.
+ */
+test('writeRecordDurably ignores a leftover file or symlink at the old predictable temp name, because the temp path now carries a random per-call token', async (t) => {
+  const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
+
+  await t.test('a leftover regular file at the old <path>.tmp-<pid> name does not block the write', async () => {
+    const dir = tempDir(t, 'aic-120-old-name-file-');
+    const path = join(dir, 'record.json');
+    const oldTmpPath = `${path}.tmp-${pid}`;
+    writeFileSync(oldTmpPath, 'leftover from a killed prior run\n');
+    const body = { hello: 'world' };
+
+    await writeRecordDurably(path, body);
+
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), body);
+  });
+
+  await t.test('a leftover symlink at the old <path>.tmp-<pid> name, pointing at a victim file, does not block the write and leaves the victim untouched', async () => {
+    const dir = tempDir(t, 'aic-120-old-name-symlink-');
+    const path = join(dir, 'record.json');
+    const targetPath = join(dir, 'victim.json');
+    const targetContents = 'untouched\n';
+    writeFileSync(targetPath, targetContents);
+    const oldTmpPath = `${path}.tmp-${pid}`;
+    symlinkSync(targetPath, oldTmpPath);
+    const body = { hello: 'world' };
+
+    await writeRecordDurably(path, body);
+
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), body);
+    assert.equal(
+      readFileSync(targetPath, 'utf8'),
+      targetContents,
+      'the symlink at the OLD name points at this victim; the new implementation must never open the old name at all, so the victim is left exactly as it was',
+    );
+  });
+});
+
+/**
+ * AIC-120 round 3: the random token (`randomBytes(6)`, 12 hex characters) is
+ * generated fresh per call, so two calls for the same path never derive the
+ * same temp name from `path` and `pid` alone. This is the property that
+ * makes the fix above safe to rely on across repeated legitimate writes, not
+ * just a one-off: nothing about a second call can collide with whatever the
+ * first call already cleaned up (or, per the row above, with anything
+ * sitting at the old name).
+ */
+test('writeRecordDurably succeeds on two calls to the same path from this process, leaving no leftover temp file from either call', async (t) => {
+  const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
+  const dir = tempDir(t, 'aic-120-write-twice-');
+  const path = join(dir, 'record.json');
+
+  await writeRecordDurably(path, { call: 1 });
+  await writeRecordDurably(path, { call: 2 });
+
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { call: 2 });
+  assert.deepEqual(
+    readdirSync(dir),
+    ['record.json'],
+    'each call must clean up its own temp file; no <path>.tmp-* entry from either call may survive',
+  );
+});
+
+/**
+ * AIC-120 round 3: before this fix, `writeRecordDurably` opened its temp file
  * with the plain `'w'` flag, which has no `O_EXCL`/`O_NOFOLLOW` and so
  * followed a pre-created symlink at that exact path. An attacker (or a
  * leftover temp file from a killed prior run, replaced by a symlink) who
  * planted `<path>.tmp-<pid>` pointing at an arbitrary file got that file
  * overwritten with the new record, and then renamed into place at `path` —
  * the write landed wherever the symlink pointed, never where the caller
- * asked. This row guards against that: the temp file is now opened with
- * `'wx'`, which refuses to open a path that already exists.
+ * asked. This row guards against that at the temp name this call actually
+ * uses: `'wx'` refuses to open a path that already exists, symlink or not.
+ * The explicit `token` is the test seam the fix exposes for exactly this —
+ * without it, the caller (this test) cannot predict the random name a
+ * default call would use and so could not plant anything at it.
  */
 test('writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched', async (t) => {
   const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
@@ -723,11 +798,12 @@ test('writeRecordDurably refuses to write through a pre-created symlink at its o
   const targetPath = join(dir, 'attacker-target.json');
   const targetContents = 'untouched\n';
   writeFileSync(targetPath, targetContents);
-  const tmpPath = `${path}.tmp-${pid}`;
+  const token = 'deadbeefcafe';
+  const tmpPath = `${path}.tmp-${pid}-${token}`;
   symlinkSync(targetPath, tmpPath);
 
   await assert.rejects(
-    () => writeRecordDurably(path, { hello: 'world' }),
+    () => writeRecordDurably(path, { hello: 'world' }, { token }),
     'a pre-created symlink at the temp path must be refused, not followed: opening it with a plain "w" flag writes through the link to whatever it points at',
   );
 
