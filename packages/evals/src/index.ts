@@ -9,6 +9,7 @@ export * from './benchmark-evaluation.js';
 export * from './graph-benchmark.js';
 export * from './live-model-lane.js';
 export * from './naive-arm.js';
+export * from './prediction-gap.js';
 export * from './behavior-evaluators.js';
 export * from './replay-scenarios.js';
 export * from './structural-ground-truth.js';

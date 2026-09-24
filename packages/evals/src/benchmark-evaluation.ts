@@ -29,6 +29,7 @@ import {
   type EvidenceFingerprint,
   type IncidentScenario,
 } from './replay-scenarios.js';
+import type { PredictionGap } from './prediction-gap.js';
 import { structuralGroundTruthFor } from './structural-ground-truth.js';
 
 export const BENCHMARK_METRIC_KEYS = [
@@ -260,6 +261,17 @@ export interface BenchmarkEvaluation {
    * see naive-arm.test.mjs › "evaluateBenchmarkRecord omits a metric named in notApplicable, and the result carries the map"
    */
   readonly notApplicable?: NotApplicableMetrics;
+  /**
+   * AIC-119 slice 4 (owner ruling D1, item 7): present only on a result the
+   * GRAPH arm produced (`runGraphBenchmarkExperiment` attaches it from the
+   * run's final state) — the naive and oracle runners never execute the graph
+   * and so never set it.
+   * see prediction-gap.test.mjs › "runGraphBenchmarkExperiment attaches
+   * predictionGap, computed from finalState, to every result"
+   * see prediction-gap.test.mjs › "predictionGap is absent from every result
+   * the naive arm and the oracle arm produce"
+   */
+  readonly predictionGap?: PredictionGap;
 }
 
 export type NotApplicableMetrics = Readonly<Partial<Record<BehaviorMetricKey, string>>>;
