@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,7 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
 // 🔴 Changing this value is changing a preregistration after the fact. The only
 // legitimate edit is to ADD a new dated file that names this one as superseded
 // and says why; this file and this pin stay as they are.
-const PINNED_SHA256 = 'sha256:f4d56c30800574b3309d2d82abee717cec6f26091ee77026b7b2500ca9887ecc';
+const PINNED_SHA256 = 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d';
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');
 
@@ -57,25 +57,65 @@ test('registers a direction for exactly the scenarios of the declared partition,
   assert.equal(new Set(rows.map((row) => row.scenario)).size, rows.length, 'a scenario is registered twice');
 });
 
-test('names each behaviour metric for exactly the calibration scenarios the committed oracle report emits it on', () => {
+/**
+ * Which behaviour metrics a scenario's ground truth calls for.
+ *
+ * 🔴 Deliberately a second copy of the emission conditions in
+ * `packages/evals/src/benchmark-evaluation.ts`, not an import of them: the
+ * document is checked against an independent statement of the rule, and that
+ * statement is itself checked against the committed oracle report below, so
+ * neither the document nor this copy can drift from production unnoticed.
+ */
+function behaviourMetricsCalledFor(groundTruth) {
+  const metrics = [];
+  if (groundTruth.rootCause !== undefined && groundTruth.misleadingEvidence !== undefined) {
+    metrics.push('misleading_evidence_handling');
+  }
+  if (groundTruth.expectedConclusionKind === 'no-incident') metrics.push('false_alert_correctness');
+  if (groundTruth.expectedLeaderChangeAfterChallenge !== undefined) metrics.push('challenge_effect');
+  return metrics;
+}
+
+const scenariosCalling = (key) =>
+  evals.REPLAY_SCENARIOS.filter((scenario) => behaviourMetricsCalledFor(scenario.groundTruth).includes(key))
+    .map((scenario) => scenario.id)
+    .sort();
+
+test('the duplicated applicability rule agrees with the committed oracle report on every calibration scenario', () => {
   const report = JSON.parse(readFileSync(ORACLE_REPORT, 'utf8'));
-  const section = text().split('## Metrics and where each one applies')[1].split('\n## ')[0];
+  assert.equal(report.partition, 'calibration');
   for (const key of evals.BEHAVIOR_METRIC_KEYS) {
     const emittedOn = report.scenarios
       .filter((scenario) => Object.hasOwn(scenario.metrics, key))
       .map((scenario) => scenario.scenarioId)
       .sort();
-    const line = section.split('\n').find((candidate) => candidate.startsWith(`- \`${key}\``));
-    assert.ok(line, `the applicability list names no line for ${key}`);
-    const named = evals.BENCHMARK_SCENARIO_PARTITIONS.calibration.filter((id) =>
-      new RegExp(`(^|[^a-z-])${id}([^a-z-]|$)`).test(line),
-    );
-    assert.deepEqual([...named].sort(), emittedOn, `${key}: the document and the oracle report disagree`);
+    const calibration = new Set(evals.BENCHMARK_SCENARIO_PARTITIONS.calibration);
+    assert.deepEqual(scenariosCalling(key).filter((id) => calibration.has(id)), emittedOn, key);
   }
 });
 
+test('names each behaviour metric for exactly the scenarios, in both partitions, whose ground truth calls for it', () => {
+  const section = text().split('## Metrics and where each one applies')[1].split('\n## ')[0];
+  const allIds = evals.REPLAY_SCENARIOS.map((scenario) => scenario.id);
+  for (const key of evals.BEHAVIOR_METRIC_KEYS) {
+    const line = section.split('\n').find((candidate) => candidate.startsWith(`- \`${key}\``));
+    assert.ok(line, `the applicability list names no line for ${key}`);
+    const named = allIds.filter((id) => new RegExp(`(^|[^a-z-])${id}([^a-z-]|$)`).test(line)).sort();
+    assert.deepEqual(named, scenariosCalling(key), `${key}: the document and the ground truth disagree`);
+  }
+});
+
+// A later version bump cannot edit the pinned document; it lands as a new
+// dated file in the same directory that supersedes it, and this row reads them
+// all, so the bump has a legal edit rather than pressure on this test.
+const registrationDirectory = () =>
+  readdirSync(dirname(PREREGISTRATION))
+    .filter((name) => name.endsWith('.md'))
+    .map((name) => readFileSync(join(dirname(PREREGISTRATION), name), 'utf8'))
+    .join('\n');
+
 test('states the evaluator, ground-truth, prompt and model versions the code declares, and its run count', () => {
-  const body = text();
+  const body = registrationDirectory();
   for (const version of [
     evals.STRUCTURAL_EVALUATOR_VERSION,
     evals.STRUCTURAL_GROUND_TRUTH_VERSION,
