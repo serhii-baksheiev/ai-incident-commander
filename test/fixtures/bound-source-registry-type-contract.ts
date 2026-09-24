@@ -97,9 +97,10 @@ async function typeCheckExecute(): Promise<void> {
 }
 void typeCheckExecute;
 
-// @ts-expect-error a binding requires credentialRefId (string | null), never omitted
+// The expect-error sits on the line TypeScript reports: the array element.
 const optionsMissingCredentialRefId: BoundSourceRegistryOptions = {
   mode: 'live',
+  // @ts-expect-error a binding requires credentialRefId (string | null), never omitted
   bindings: [{ sourceBindingId: 'binding-fixture', source: fakeSource }],
   store: memoryStore,
   clock: () => new Date(),
