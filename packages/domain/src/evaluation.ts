@@ -5,7 +5,11 @@ import {
   type HypothesisStatus,
   type Prediction,
 } from './contracts.js';
-import { BASELINE_STATUS_RULES } from './status-rules.js';
+import {
+  STATUS_RULES,
+  STATUS_RULES_VERSION,
+  type StatusRulesVersion,
+} from './status-rules.js';
 
 export interface PredictionEvidencePair {
   readonly prediction: Prediction;
@@ -37,6 +41,16 @@ export interface DeriveHypothesisStatusOptions {
   readonly predictions: readonly Prediction[];
   readonly assessments: readonly EvidenceAssessment[];
   readonly evidence: readonly Evidence[];
+  /**
+   * Which `STATUS_RULES` table to derive under. Defaults to the current
+   * `STATUS_RULES_VERSION` so ordinary callers get today's rules; pinning an
+   * older version (e.g. `'v0.1'`) keeps historical evidence and evaluation
+   * meaning what they meant when it was recorded. An unrecognised version
+   * throws rather than silently falling back — see status-rules-v02.test.mjs
+   * › "throws on an unknown status-rules version instead of silently falling
+   * back".
+   */
+  readonly rulesVersion?: StatusRulesVersion;
 }
 
 function requireRuleAssessment(
@@ -138,8 +152,20 @@ export function deriveHypothesisStatus({
   predictions,
   assessments,
   evidence,
+  rulesVersion = STATUS_RULES_VERSION,
 }: DeriveHypothesisStatusOptions): HypothesisStatus {
-  const rules = BASELINE_STATUS_RULES.hypothesis.rules;
+  const requestedVersion: string = rulesVersion;
+  const table: (typeof STATUS_RULES)[StatusRulesVersion] | undefined = (
+    STATUS_RULES as Record<string, (typeof STATUS_RULES)[StatusRulesVersion]>
+  )[requestedVersion];
+
+  if (table === undefined) {
+    throw new Error(
+      `deriveHypothesisStatus: unknown status-rules version '${requestedVersion}'`,
+    );
+  }
+
+  const rules = table.hypothesis.rules;
   const hypothesisPredictions = predictions.filter(
     (prediction) => prediction.hypothesisId === hypothesisId,
   );
@@ -221,12 +247,23 @@ export function deriveHypothesisStatus({
       ),
   );
 
-  if (
+  const meetsCorroborationShape =
     independentSupports.size >= rules.supported.minimumIndependentSupports &&
-    confirmedPredictions >= rules.supported.minimumConfirmedPredictions &&
-    !hasForbiddenContradiction
+    !hasForbiddenContradiction;
+
+  if (
+    meetsCorroborationShape &&
+    confirmedPredictions >= rules.supported.minimumConfirmedPredictions
   ) {
     return 'supported';
+  }
+
+  if (
+    'corroborated' in rules &&
+    meetsCorroborationShape &&
+    confirmedPredictions <= rules.corroborated.maximumConfirmedPredictions
+  ) {
+    return 'corroborated';
   }
 
   return 'candidate';

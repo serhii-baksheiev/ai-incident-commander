@@ -281,6 +281,63 @@ test('refuses a resume of a FINISHED v3 checkpoint that predates primaryScope, r
 });
 
 /* -------------------------------------------------------------------------- */
+/* a checkpoint persisted under an older status-rules version (AIC-119 s1)    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `assertPersistedStateVersion` checks `schemaVersion` and then
+ * `statusRulesVersion` (`packages/graph/src/investigation.ts`). No other row
+ * exercises the second half of that guard — this row does, independently of
+ * the `primaryScope` cutover above: only `control.statusRulesVersion` is
+ * rewritten, so a failure here can only be about the status-rules branch.
+ */
+function withStaleStatusRulesVersion(version) {
+  return (channels) => ({
+    ...channels,
+    control: { ...channels.control, statusRulesVersion: version },
+  });
+}
+
+const namesTheStatusRulesVersionThisGraphReads = new RegExp(
+  `this graph reads status-rules version ${STATUS_RULES_VERSION}\\b`,
+);
+
+test('refuses to resume a checkpoint persisted under status-rules version v0.1, naming the status-rules version', async () => {
+  const harness = createHarness({ runId: 'run-cutover-stale-status-rules-v0.1' });
+
+  try {
+    const interrupted = await harness.start();
+    const traceBeforeResume = [...harness.trace];
+    harness.rewritePersistedChannels(withStaleStatusRulesVersion('v0.1'));
+
+    const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a checkpoint persisted under status-rules version v0.1 must be refused, not resumed to completion',
+    );
+    assert.match(
+      outcome.error.message,
+      /^incompatible persisted state: status-rules version v0\.1\b/,
+      `the refusal must start by naming the persisted status-rules version it refused on: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheStatusRulesVersionThisGraphReads,
+      `the refusal must name the status-rules version this graph reads, taken from the constant: ${outcome.error.message}`,
+    );
+    assert.deepEqual(
+      harness.trace,
+      traceBeforeResume,
+      'the refusal must land before the resumed run executes another lifecycle node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
 /* the control row: a current-version, scoped checkpoint still resumes        */
 /* -------------------------------------------------------------------------- */
 
