@@ -55,6 +55,7 @@ import * as observability from '@aic/observability';
 
 import { benchmarkVersions, capturingClient, replayBackedNodes } from './fixtures/benchmark-experiment.mjs';
 import { childEnv } from './fixtures/child-env.mjs';
+import { withAccessorPollutedObjectPrototype } from './fixtures/prototype-decoy.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -326,6 +327,39 @@ test('evaluateBenchmarkRecord refuses an unknown evaluator version even on a sce
   );
 });
 
+/**
+ * The v0.3 path is a second writer of behavior metrics beside the v0.2 one, and
+ * it must record them the same prototype-safe way: an inherited accessor named
+ * like a metric would otherwise swallow a plain assignment and leave a record
+ * that declares an evaluator version and carries no behavior metric. The v0.2
+ * rows in metric-path-prototype-safety.test.mjs build v0.2 records, so they
+ * never reach this path.
+ */
+const STRUCTURAL_BEHAVIOR_METRIC_WRITES = [
+  ['dependency-caused-incident-b', 'misleading_evidence_handling', () => depBOutcome()],
+  ['false-alert', 'false_alert_correctness', () => falseAlertOutcome()],
+  ['challenge-keeps-leader', 'challenge_effect', () => ({ ...falseAlertOutcome(), conclusionKind: 'root-cause' })],
+];
+
+for (const [scenarioId, metricKey, outcome] of STRUCTURAL_BEHAVIOR_METRIC_WRITES) {
+  test(`v0.3 records its own ${metricKey} while Object.prototype carries an accessor of that name`, async () => {
+    const record = calibrationRecord(scenarioId, evals.STRUCTURAL_EVALUATOR_VERSION);
+    const swallowed = [];
+    const evaluation = await withAccessorPollutedObjectPrototype(
+      metricKey,
+      { evaluatorVersion: 'inherited-evaluator-v9', key: metricKey, score: 0, reason: 'incorrect-outcome' },
+      swallowed,
+      () => evals.evaluateBenchmarkRecord({ record, outcome: outcome() }),
+    );
+    assert.equal(
+      Object.hasOwn(evaluation.behaviorMetrics, metricKey),
+      true,
+      `an inherited setter must not swallow the v0.3 ${metricKey} (the setter received ${JSON.stringify(swallowed)})`,
+    );
+    assert.equal(evaluation.behaviorMetrics[metricKey].evaluatorVersion, evals.STRUCTURAL_EVALUATOR_VERSION);
+  });
+}
+
 test('evaluateBenchmarkRecord throws for a metadata evaluatorVersion neither v0.2 nor v0.3 names', () => {
   const record = calibrationRecord('false-alert', 'behavior-evaluators-v0.99');
   assert.throws(() => evals.evaluateBenchmarkRecord({ record, outcome: falseAlertOutcome() }));
@@ -514,6 +548,15 @@ function runEvalOracleScript(extraArgs = []) {
     { cwd: projectRoot, encoding: 'utf8', env: childEnv() },
   );
 }
+
+test('scripts/eval-oracle.mjs refuses --evaluator-version given without a value it knows', () => {
+  for (const extraArgs of [['--evaluator-version'], ['--evaluator-version', 'behavior-evaluators-v0.99']]) {
+    const executed = runEvalOracleScript(extraArgs);
+    assert.notEqual(executed.status, 0, `${extraArgs.join(' ')} must not fall back to a v0.2 report`);
+    assert.equal(executed.stdout, '', `${extraArgs.join(' ')} must print no report`);
+    assert.match(executed.stderr, /--evaluator-version needs/);
+  }
+});
 
 test('scripts/eval-oracle.mjs with no flag still prints the v0.2 report', () => {
   const executed = runEvalOracleScript();

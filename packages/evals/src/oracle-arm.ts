@@ -41,10 +41,12 @@ import {
  * It answers in the same `ArmAnswer` shape a non-graph model arm answers in,
  * and may cite evidence only by the ids the fixture shows, exactly as a model
  * arm may. So it identifies an evidence item as expected or misleading only
- * through what the ground truth says about that item — today, a fingerprint
- * that equals the item's `{kind, source, statement}` — and where the ground
- * truth names no item that way, the oracle can cite nothing. That is the
- * measurement, not a defect of the oracle.
+ * through what the ground truth says about that item. Under
+ * `behavior-evaluators-v0.2` that is a fingerprint equal to the item's
+ * `{kind, source, statement}`, and where the ground truth names no item that
+ * way the oracle can cite nothing — that is the measurement, not a defect of
+ * the oracle. Under `behavior-evaluators-v0.3` it is the item's id in
+ * `STRUCTURAL_GROUND_TRUTH`.
  * see oracle-positive-control.test.mjs › "oracleAnswerFor identifies no
  * evidence for bad-deployment, because no fixture statement equals the
  * ground-truth predicate"

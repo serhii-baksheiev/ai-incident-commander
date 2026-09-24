@@ -42,7 +42,14 @@ const RUNS_PER_SCENARIO = 3;
  */
 function evaluatorVersionFromArgs() {
   const index = argv.indexOf('--evaluator-version');
-  return index < 0 ? evals.BEHAVIOR_EVALUATOR_VERSION : argv[index + 1];
+  if (index < 0) return evals.BEHAVIOR_EVALUATOR_VERSION;
+  const value = argv[index + 1];
+  // A flag given without a value is refused rather than read as the default,
+  // or a mistyped command would print a v0.2 report under a v0.3 request.
+  if (value !== evals.BEHAVIOR_EVALUATOR_VERSION && value !== evals.STRUCTURAL_EVALUATOR_VERSION) {
+    throw new Error(`--evaluator-version needs ${evals.BEHAVIOR_EVALUATOR_VERSION} or ${evals.STRUCTURAL_EVALUATOR_VERSION}`);
+  }
+  return value;
 }
 
 const baseMetadata = Object.freeze({
@@ -165,7 +172,8 @@ const invokedDirectly = () => {
 };
 
 if (invokedDirectly()) {
-  buildOracleReport(evaluatorVersionFromArgs())
+  Promise.resolve()
+    .then(() => buildOracleReport(evaluatorVersionFromArgs()))
     .then((report) => stdout.write(`${JSON.stringify(report, null, 2)}\n`))
     .catch((error) => {
       stderr.write(`${error.name}: ${error.message}\n`);
