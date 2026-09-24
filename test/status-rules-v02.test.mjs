@@ -12,8 +12,9 @@
  *     at least one confirmed prediction. An untested, untestable or refuted
  *     prediction is "not confirmed"; it is never read as "no predictions" to
  *     let a hypothesis skip straight to `supported`.
- *   - Check order (owner ruling item 9): rejected, weakened, supported,
- *     corroborated, candidate — every check scoped to one hypothesis.
+ *   - Check order (the plan's choice, section 1a): rejected, weakened,
+ *     supported, corroborated, candidate — every check scoped to one
+ *     hypothesis.
  *
  * `rulesVersion` is optional on `deriveHypothesisStatus`; the default is the
  * current `STATUS_RULES_VERSION`, an unknown version throws, and v0.1 stays
@@ -452,7 +453,8 @@ test('pins the confirmed-prediction boundary between supported and corroborated'
 /**
  * `initialBenchmarkState` (`packages/evals/src/graph-benchmark.ts:48-50`)
  * refuses a benchmark run whose declared `metadata.statusRulesVersion` does
- * not match the graph's current `STATUS_RULES_VERSION` — untested until now.
+ * not match the graph's current `STATUS_RULES_VERSION` — the row below is
+ * this refusal's own test coverage.
  * Every other metadata field is the shipped, current-version fixture
  * (`benchmarkVersions`); only `statusRulesVersion` is stale.
  */

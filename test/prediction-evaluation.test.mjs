@@ -306,7 +306,13 @@ test('derives candidate, supported, weakened, and rejected by the v0.1 precedenc
     }),
   ];
   const derive = (hypothesisId) =>
-    deriveHypothesisStatus({ hypothesisId, predictions, assessments, evidence: evidenceItems });
+    deriveHypothesisStatus({
+      hypothesisId,
+      predictions,
+      assessments,
+      evidence: evidenceItems,
+      rulesVersion: 'v0.1',
+    });
 
   assert.deepEqual(
     ['candidate', 'supported', 'weakened', 'rejected'].map((hypothesisId) => ({
