@@ -564,7 +564,7 @@ test('refuses a cause mechanism outside the supplied vocabulary (refusal 5)', as
  * attacker-influenceable incident text back as a mechanism can forge a
  * complete, multi-line second message into operator/CI stderr and a
  * committed evidence record. Fixed the way `conclusion-rules.ts`'s
- * `nameValue` already fixes the sibling paths: JSON-escaped and truncated to
+ * `quoteModelText` (formerly `nameValue`) already fixes the sibling paths: JSON-escaped and truncated to
  * 80 characters.
  */
 test('escapes and truncates a hostile cause mechanism before it reaches the refusal message (refusal 5)', async () => {

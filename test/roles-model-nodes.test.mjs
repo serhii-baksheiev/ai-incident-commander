@@ -546,7 +546,7 @@ test('refuses an assessment whose predictionId is not a prediction of the named 
 /**
  * `.claude/rules/invariants.md` ("State the limits — and test them"): any
  * model-supplied id reaching a refusal message must be escaped and truncated,
- * the same way `refuseUnknownKeys` and `conclusion-rules.ts`'s `nameValue`
+ * the same way `refuseUnknownKeys` and `conclusion-rules.ts`'s `quoteModelText`
  * already do for their own sinks. Uses a hostile hypothesisId; the other two
  * ids above are pinned by name-matching only, this row pins the escaping
  * mechanism itself.
