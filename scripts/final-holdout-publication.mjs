@@ -16,7 +16,7 @@
  * property this whole ticket exists to protect.
  * see final-evaluation-publication.test.mjs › "T5: publish-final-holdout.mjs and final-holdout-publication.mjs import no role, lane or benchmark runner, and name no corpus, so publication cannot execute a scenario"
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync,
   fsyncSync,
@@ -48,16 +48,17 @@ import * as evals from '@aic/evals';
  * see final-evaluation-publication.test.mjs › "writeRecordDurably writes pretty-printed JSON with a trailing newline, leaving no leftover temp file"
  * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  *
- * A crash between `openSync` and the rename below leaves `${path}.tmp-${pid}` on disk; a later write to the SAME
- * path by a process with the SAME pid then fails with EEXIST naming that file. The prior record stays intact,
- * and deleting that file restores the write. This cannot cost a legitimate later measurement: `recordPath`
- * (scripts/eval-final-holdout.mjs) derives `path` from the candidate's fingerprint, and `decideFinalEvaluation`
- * refuses to admit a second run for a candidate whose record already exists.
+ * The temp name carries a fresh random token per call, so a file or symlink
+ * left — or planted — at any earlier temp name cannot collide with a later
+ * write, and the complete-record write after a spent hold-out is not blocked
+ * by one. If a collision did happen, `'wx'` refuses it and never follows it.
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably ignores a leftover file or symlink at the old predictable temp name, because the temp path now carries a random per-call token"
+ * see final-evaluation-publication.test.mjs › "writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched"
  */
-export async function writeRecordDurably(path, body) {
+export async function writeRecordDurably(path, body, { token = randomBytes(6).toString('hex') } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   const serialized = `${JSON.stringify(body, null, 2)}\n`;
-  const tmpPath = `${path}.tmp-${pid}`;
+  const tmpPath = `${path}.tmp-${pid}-${token}`;
   const fileHandle = openSync(tmpPath, 'wx');
   try {
     writeSync(fileHandle, serialized);
