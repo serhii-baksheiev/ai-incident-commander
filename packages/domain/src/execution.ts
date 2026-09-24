@@ -338,8 +338,8 @@ export class ExecutionIntegrityViolation extends Error {
 export class StaleOwnerError extends Error {
   readonly code = 'execution.fenced' as const;
 
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'StaleOwnerError';
   }
 }

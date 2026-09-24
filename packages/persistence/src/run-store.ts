@@ -188,6 +188,13 @@ export function createRunStore(connectionString: string, options: RunStoreOption
   const maxExecutionAttempts = assertPositiveInteger(options?.maxExecutionAttempts, 'maxExecutionAttempts');
 
   const pool = new Pool({ connectionString });
+  // An idle client whose connection dies (a database restart or failover)
+  // makes the pool emit 'error'; an EventEmitter with no listener throws it,
+  // which would kill the process that owns the runs. No query is in flight on
+  // an idle client and the pool replaces it on next use, so the event is
+  // dropped here. see run-store.test.mjs › "an idle-client error on the store
+  // pool does not escape as an uncaught exception"
+  pool.on('error', () => {});
   const SQL_STATEMENTS = buildSqlStatements();
 
   return {
@@ -195,6 +202,9 @@ export function createRunStore(connectionString: string, options: RunStoreOption
     SQL_STATEMENTS,
 
     async createRun({ runId, input }) {
+      if (typeof runId !== 'string' || runId.length === 0) {
+        throw new Error(`createRun requires a non-empty runId, got ${JSON.stringify(runId)}`);
+      }
       await pool.query(`INSERT INTO "${APPLICATION_SCHEMA}".runs (run_id, status, input) VALUES ($1, 'queued', $2::jsonb)`, [
         runId,
         JSON.stringify(input),

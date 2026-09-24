@@ -153,3 +153,15 @@ export {
   type RunStore,
   type RunStoreOptions,
 } from './run-store.js';
+
+/**
+ * AIC-56 slice C: the fenced write context every run-scoped write goes
+ * through, built on `RunStore` above.
+ */
+export {
+  openRunWriteContext,
+  RUN_WRITE_CONTEXT_FENCE_SQL,
+  type CommittedOptions,
+  type CommittedProjection,
+  type RunWriteContext,
+} from './run-write-context.js';

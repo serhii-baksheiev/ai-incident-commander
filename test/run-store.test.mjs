@@ -322,6 +322,40 @@ test('packages/persistence/package.json declares pg at exactly the version packa
   );
 });
 
+/* -------------------------------------------------------------------------- */
+/* Row 14 (AIC-56 slice C carry-over) — createRun refuses an empty runId      */
+/* before touching the database                                               */
+/* -------------------------------------------------------------------------- */
+
+test('createRun refuses an empty runId before touching the database', async (t) => {
+  const store = await buildRunStore(t);
+
+  await assert.rejects(
+    () => store.createRun({ runId: '', input: {} }),
+    (error) => {
+      assert.ok(error instanceof Error, 'createRun must reject with an Error');
+      assert.doesNotMatch(
+        error.message,
+        /econnrefused|connect|timeout/i,
+        `createRun with an empty runId must refuse synchronously, before ever dialing the database — a connection-shaped error message ("${error.message}") means it tried to reach the unreachable address first instead of validating runId`,
+      );
+      assert.match(
+        error.message,
+        /runId/,
+        'the refusal must name runId as the reason, not surface an unrelated failure',
+      );
+      return true;
+    },
+    'an empty runId is never a valid run identity; createRun must refuse it before issuing any SQL',
+  );
+
+  assert.deepEqual(
+    { totalCount: store.pool.totalCount, idleCount: store.pool.idleCount, waitingCount: store.pool.waitingCount },
+    { totalCount: 0, idleCount: 0, waitingCount: 0 },
+    'refusing an empty runId must not have touched the pool at all: the unreachable connection string means any real attempt would show up here',
+  );
+});
+
 test('the migration indexes the claim scan over queued runs and the sweep scan over running leases', () => {
   const sql = persistence.APPLICATION_MIGRATIONS.map((migration) => migration.sql).join('\n');
   assert.match(
@@ -334,4 +368,19 @@ test('the migration indexes the claim scan over queued runs and the sweep scan o
     /CREATE INDEX[^;]*ON "aic_app"\.runs\s*\(\s*lease_expires_at\s*\)\s*WHERE status = 'running'/i,
     'sweepExpired scans running runs by lease_expires_at; without a partial index every sweep is a sequential scan',
   );
+});
+
+test('an idle-client error on the store pool does not escape as an uncaught exception', async () => {
+  const store = persistence.createRunStore('postgresql://aic@127.0.0.1:1/unreachable', {
+    leaseMs: 30_000,
+    maxExecutionAttempts: 5,
+  });
+  try {
+    // An EventEmitter with no 'error' listener throws the emitted error; pg emits
+    // one on the pool when an idle client's connection dies (a database restart
+    // or failover), which would otherwise kill the process that owns the runs.
+    assert.doesNotThrow(() => store.pool.emit('error', new Error('idle client lost its connection')));
+  } finally {
+    await store.close();
+  }
 });
