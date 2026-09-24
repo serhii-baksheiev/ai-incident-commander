@@ -18,14 +18,19 @@
 import type {
   EvidenceSource,
   EvidenceSourceCheckResult,
+  EvidenceSourceDescriptor,
   EvidenceSourceOutcome,
+  EvidenceSourceProvenance,
 } from '@aic/tools';
 
 function acceptsEvidenceSource(source: EvidenceSource): void {
   void source;
 }
 
-const fakeProvenance = {
+// Annotated, so the literal is checked field by field: a field removed from
+// EvidenceSourceProvenance makes it an excess property here, and the
+// expect-error row below goes unused if a field stops being required.
+const fakeProvenance: EvidenceSourceProvenance = {
   sourceBindingId: 'binding-fixture',
   adapter: 'fixture-adapter@1.0.0',
   credentialRefId: null,
@@ -56,12 +61,27 @@ const fakeRefusedCheck: EvidenceSourceCheckResult = {
 };
 void fakeRefusedCheck;
 
+const fakeDescriptor: EvidenceSourceDescriptor = {
+  adapterId: 'fixture-adapter',
+  version: '1.0.0',
+  operations: ['fetch-logs'],
+};
+
+// @ts-expect-error provenance requires requestFingerprint
+const provenanceMissingFingerprint: EvidenceSourceProvenance = {
+  sourceBindingId: 'binding-fixture',
+  adapter: 'fixture-adapter@1.0.0',
+  credentialRefId: null,
+  fetchedAt: '2026-09-24T00:00:00.000Z',
+};
+void provenanceMissingFingerprint;
+
+// @ts-expect-error the descriptor requires version
+const descriptorMissingVersion: EvidenceSourceDescriptor = { adapterId: 'fixture-adapter', operations: [] };
+void descriptorMissingVersion;
+
 const fakeSource: EvidenceSource = {
-  describe: () => ({
-    adapterId: 'fixture-adapter',
-    version: '1.0.0',
-    operations: ['fetch-logs'],
-  }),
+  describe: () => fakeDescriptor,
   check: async () => fakeReadyCheck,
   execute: async (_operation, _input) => fakeOkOutcome,
 };

@@ -386,7 +386,11 @@ for (const reason of ['unavailable', 'denied', 'rate_limited', 'timeout']) {
     });
 
     assert.equal(result.status, 'unavailable');
-    assert.equal(typeof result.reason, 'string');
+    assert.equal(
+      result.reason,
+      reason,
+      `the ToolResult must carry the refusal reason itself (${reason}): projectToolResult gives all four the same test and prediction status, so this field is what keeps a 403 and a timeout apart`,
+    );
     assert.equal('output' in result, false);
   });
 }
