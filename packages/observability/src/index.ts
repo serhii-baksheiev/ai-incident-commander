@@ -232,7 +232,7 @@ export interface PersistedBenchmarkEvaluation {
  * and never as feedback, because it is a diagnostic, not a metric.
  * see persistence-four-arm.test.mjs › "publishes a declared predictionGap at outputs.predictionGap and as no feedback row"
  */
-export const PERSISTED_PREDICTION_GAP_KEYS = [
+const PERSISTED_PREDICTION_GAP_KEYS = [
   'stopKind',
   'leaderId',
   'leaderStatus',
