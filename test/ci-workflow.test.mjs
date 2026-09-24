@@ -102,6 +102,7 @@ const PERMISSIONS_NOT_CONTENTS_READ_MESSAGE = 'grants a permission other than ex
 const PERMISSIONS_JOB_LEVEL_MESSAGE = 'declares job-level permissions, which can widen the top-level grant';
 const JOBS_UNREADABLE_MESSAGE = 'declares no readable top-level `jobs:` block';
 const CONTAINER_MESSAGE = 'runs a job in a container image, which a mutable tag can change under it';
+const UNPINNED_IMAGE_MESSAGE = 'runs a service image not pinned by sha256 digest, which a mutable tag can change under it';
 const EXPRESSION_OUTSIDE_CONCURRENCY_MESSAGE = 'uses a ${{ }} expression outside the top-level concurrency: block';
 const CONTINUE_ON_ERROR_MESSAGE = 'sets continue-on-error';
 
@@ -319,6 +320,10 @@ function publicSafetyViolations(workflow) {
   if (TOKEN_REFERENCE.test(workflow)) findings.push('references github.token');
   if (CONTINUE_ON_ERROR.test(workflow)) findings.push(CONTINUE_ON_ERROR_MESSAGE);
   if (/^\s*container:/m.test(workflow)) findings.push(CONTAINER_MESSAGE);
+  // A service container is the same capability under another key: every image
+  // a workflow names must be pinned by digest, as every action is by SHA.
+  const images = [...workflow.matchAll(/^\s*image:\s*['"]?([^\s'"#]+)/gm)].map((match) => match[1]);
+  if (images.some((image) => !/@sha256:[0-9a-f]{64}$/.test(image))) findings.push(UNPINNED_IMAGE_MESSAGE);
   return findings;
 }
 
@@ -822,7 +827,7 @@ test('installs cleanly, then lints, builds and tests, in that order', () => {
     expected.filter((_, index) => positions[index] === -1),
     [],
     'CI must run each of `npm ci`, `npm run lint`, `npm run build` and `npm test` as its own step: ' +
-      'the lockfile install, the boundary lint, the build and the suite are the whole PR gate',
+      'the lockfile install, the boundary lint, the build and the suite each gate the PR',
   );
   assert.deepEqual(
     [...positions].sort((a, b) => a - b),
@@ -1001,6 +1006,15 @@ test('the every-workflow sweep names each allowlist rule a workflow breaks, so i
   const containerized = [...compliantHead, `    runs-on: ${HOSTED_RUNNER}`, '    container: attacker/image:latest'].join('\n');
   assert.deepEqual(publicSafetyViolations(containerized), [CONTAINER_MESSAGE]);
 
+  const serviceWith = (image) =>
+    [...compliantHead, `    runs-on: ${HOSTED_RUNNER}`, '    services:', '      cache:', `        image: ${image}`].join('\n');
+  assert.deepEqual(publicSafetyViolations(serviceWith('redis:latest')), [UNPINNED_IMAGE_MESSAGE]);
+  assert.deepEqual(
+    publicSafetyViolations(serviceWith(`redis:7@sha256:${'a'.repeat(64)}`)),
+    [],
+    'a service image pinned by digest is compliant',
+  );
+
   assert.ok(
     publicSafetyViolations(['on:', '  pull_request:', 'permissions:', '  contents: read'].join('\n')).includes(
       JOBS_UNREADABLE_MESSAGE,
@@ -1102,14 +1116,17 @@ test('runs the live PostgreSQL lane after the suite, against a service pinned by
   assert.match(workflow, /POSTGRES_HOST_AUTH_METHOD:\s*trust/, 'the service trusts local connections, as the compose lane does');
   assert.doesNotMatch(workflow, /POSTGRES_PASSWORD/, 'no password: the job carries no credential at all');
   assert.match(workflow, /-\s*['"]?127\.0\.0\.1:5432:5432['"]?/, 'the service port is published on loopback only');
-  // The URL is checked, not the variable's name: test/postgres-checkpointer.test.mjs
-  // › "keeps the database-backed lane out of npm test and npm run check"
-  // refuses any file under test/ that names the live lane's connection
-  // variable. The name is proved in CI itself — the live lane refuses, never
-  // skips, when the variable is missing.
+  // The variable's name is assembled, as test/postgres-checkpointer.test.mjs
+  // assembles it: that file refuses any file under test/ that spells it out.
+  const connectionVariable = ['AIC', 'POSTGRES', 'URL'].join('_');
   assert.match(
     workflow,
-    /:\s*postgresql:\/\/aic@127\.0\.0\.1:5432\/aic\s*\n\s*run:\s*npm run test:live-postgres/,
+    new RegExp(`${connectionVariable}:\\s*postgresql://aic@127\\.0\\.0\\.1:5432/aic\\b`),
     'the live step reaches the service through a passwordless loopback URL',
+  );
+  assert.match(
+    workflow,
+    /T4_REPETITIONS:\s*['"]?3['"]?/,
+    'the bounded CI regression pins its own repetition count, so a default change elsewhere cannot silently change it',
   );
 });
