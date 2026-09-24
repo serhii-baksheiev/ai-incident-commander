@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 
 import {
+  assertRunEventPayload,
   assertRunTransition,
   canonicalJson,
   ExecKeySchema,
@@ -48,6 +49,20 @@ export interface RunWriteContext {
    * An interaction id names at most one run (a unique index in migration 2);
    * reusing one held by another run is refused by the database and the
    * transaction rolls back.
+   *
+   * `markWaitingHuman`, `complete` and `fail` each append a run event whose
+   * string (`interactionId`, `reason`) is capped at `MAX_RUN_EVENT_PAYLOAD_STRING`
+   * (256) characters by `assertRunEventPayload` (`@aic/domain`). A longer one
+   * is refused with `RunEventPayloadError`, and the whole transition rolls
+   * back: the run keeps its status — `fail` with a long reason leaves it
+   * `running`. Pass a short code, not an error message or a stack. `fail` and
+   * `complete` are pinned by run-event-payload.live.mjs › "fail() with a reason
+   * one character past the cap is refused before any run_events row or counter
+   * increment lands, and the run stays running; exactly at the cap it is
+   * accepted" and › "complete() with a reason one character past the cap is
+   * refused before any run_events row or counter increment lands, and the run
+   * stays running; exactly at the cap it is accepted"; `markWaitingHuman` takes the same
+   * `appendEvent` path and has no row of its own.
    */
   markWaitingHuman(interactionId: string): Promise<void>;
   complete(reason?: string): Promise<void>;
@@ -222,7 +237,13 @@ async function nextSeq(client: PoolClient, runId: string): Promise<number> {
   return Number(rows[0]!.next_seq);
 }
 
-/** Appends one `run_events` row inside the caller's already-fenced transaction. */
+/**
+ * Appends one `run_events` row inside the caller's already-fenced
+ * transaction. `assertRunEventPayload` runs first, before `nextSeq`: a
+ * refused payload throws before the counter is even touched, so the whole
+ * fenced transaction rolls back with no row and no counter increment — see
+ * infra/postgres/tests/run-event-payload.live.mjs.
+ */
 async function appendEvent(
   client: PoolClient,
   runId: string,
@@ -230,6 +251,7 @@ async function appendEvent(
   type: string,
   payload: unknown,
 ): Promise<void> {
+  assertRunEventPayload(type, payload);
   const seq = await nextSeq(client, runId);
   await client.query(
     `INSERT INTO "${APPLICATION_SCHEMA}".run_events (run_id, seq, type, execution_attempt, payload)
