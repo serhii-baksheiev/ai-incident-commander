@@ -408,6 +408,21 @@ test('evidenceSourceOutcomeToToolResult maps a refused(adapter_error) outcome to
   assert.equal('output' in result, false);
 });
 
+test('an outcome whose reason is outside the five (only reachable from untyped JS or fixture JSON) still maps to a well-formed, untestable ToolResult, never a failed test, and never echoes the unknown string', () => {
+  const evidenceSourceOutcomeToToolResult = evidenceSourceOutcomeToToolResultFactory();
+  const result = evidenceSourceOutcomeToToolResult({
+    status: 'refused',
+    reason: 'quota_exceeded',
+    provenance: fixedProvenance(),
+  });
+
+  assert.deepEqual(result, { status: 'unavailable', reason: 'unavailable' });
+  const projection = tools.projectToolResult({ test: plannedTest, prediction: untestedPrediction, result });
+  assert.equal(projection.test.status, 'unavailable');
+  assert.equal(projection.prediction.status, 'untestable');
+  assert.deepEqual(projection.evidence, []);
+});
+
 /* -------------------------------------------------------------------------- */
 /* AIC-100 acceptance line, through the REAL projectToolResult                */
 /* -------------------------------------------------------------------------- */
@@ -430,6 +445,10 @@ test('a 403 (denied), a timeout and an empty successful result remain distinguis
     output: [],
     provenance: fixedProvenance(),
   });
+
+  // projectToolResult gives denied and timeout the same test and prediction
+  // status, so the bridge's ToolResult is where the two stay apart.
+  assert.notEqual(deniedResult.reason, timeoutResult.reason, 'a 403 and a timeout must reach the ToolResult as different reasons');
 
   const deniedProjection = tools.projectToolResult({
     test: plannedTest,
