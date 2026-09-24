@@ -127,6 +127,56 @@
  * `createRequestFingerprint` or the registry to ask it what it thinks the
  * right answer is (mirrors `test/evidence-source-contract.test.mjs`'s own
  * independent-oracle row for the identical reason).
+ *
+ * ## AIC-100 slice c — budgets and redaction (this file's own pins)
+ *
+ * `EVIDENCE_SOURCE_REFUSAL_REASONS` gaining `budget_exceeded` and
+ * `evidenceSourceOutcomeToToolResult`'s mapping for it are pinned in
+ * test/evidence-source-contract.test.mjs instead; this file pins what the
+ * REGISTRY itself does with the new reason and the two new mechanisms.
+ *
+ *   - `createBoundSourceRegistry({ ..., budgets })`: `budgets` is optional —
+ *     `{ timeoutMs, maxResultBytes, maxPages }`, all positive integers,
+ *     defaulting to the exported, frozen `DEFAULT_SOURCE_BUDGETS` when
+ *     omitted. A non-positive or non-integer field is refused (thrown,
+ *     synchronously) at construction, the same way an unknown `mode` or a
+ *     duplicate `sourceBindingId` already is.
+ *   - Timeout: in `live`/`record`, a call whose adapter `execute()` does not
+ *     settle within `budgets.timeoutMs` is refused `timeout` — using REAL
+ *     timers (the injected `clock` stays reserved for `fetchedAt` only, as
+ *     it already was in slice b).
+ *   - Result size: an `ok` outcome whose `output`, JSON-stringified, is more
+ *     than `budgets.maxResultBytes` (measured as
+ *     `Buffer.byteLength(JSON.stringify(output), 'utf8')` — pinned here,
+ *     since the ticket names the budget, not the exact measurement) is
+ *     refused `budget_exceeded` instead of `ok`; exactly at the cap it is
+ *     still `ok`.
+ *   - Pagination: the registry calls `source.execute(operation, input, {
+ *     maxPages })` — a third, additive argument carrying exactly
+ *     `{ maxPages }` from the configured budgets, nothing else. An adapter
+ *     that throws `EvidenceSourceError(..., { reason: 'budget_exceeded' })`
+ *     to signal it stopped at that page budget is refused `budget_exceeded`.
+ *   - `replay` NEVER re-applies any budget: a recording made under one
+ *     (possibly generous) budget replays `ok` even under a replaying
+ *     registry configured with a far stricter `maxResultBytes` — replay
+ *     serves what was recorded under the budget in force AT RECORD TIME, it
+ *     does not re-validate size (or re-run a timeout, since the adapter is
+ *     never called in replay at all).
+ *   - Redaction: in `record` mode, an `ok` outcome's `output` is redacted
+ *     BEFORE `store.set` — the persisted recording never carries a
+ *     credential the adapter returned. The outcome RETURNED to the caller in
+ *     both `live` and `record` is the REDACTED one too (state and traces are
+ *     downstream of the returned outcome, per the ticket). `redactEvidenceOutput(value)`
+ *     is exported as the pure, deep, bounded redactor: it walks arrays and
+ *     objects (keeping keys, leaving non-string values alone) and replaces a
+ *     credential-shaped SUBSTRING of any string with `[REDACTED]` in place —
+ *     six shapes, each pinned below with a runtime-ASSEMBLED example (never
+ *     written as one literal, per `.claude/scripts/lib/secrets.mjs`) and a
+ *     near-miss that must NOT be touched. `MAX_REDACTION_DEPTH` is exported
+ *     too: past it, `redactEvidenceOutput` fails CLOSED to the fixed
+ *     sentinel `'[REDACTED:depth]'` rather than continuing to recurse —
+ *     `.claude/rules/invariants.md`'s "a guard that fails open must do
+ *     provably bounded work", applied to a redactor rather than a hook.
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -251,6 +301,63 @@ function buildRefusingToBeCalledSource(overrides = {}) {
   });
 }
 
+/**
+ * Like `buildOkSource`, but with a caller-chosen `output` and capturing the
+ * THIRD argument execute() is called with (AIC-100 slice c's page-budget
+ * hint), so a test can assert both the output that flows through and exactly
+ * what the registry passed as that argument.
+ */
+function buildOkSourceWithOutput(
+  output,
+  { adapterId = 'fixture-adapter', version = '1.0.0', operations = ['fetch-logs'] } = {},
+) {
+  const calls = [];
+  return {
+    calls,
+    describe: () => ({ adapterId, version, operations }),
+    check: async () => ({ status: 'ready' }),
+    execute: async (operation, input, budgetHints) => {
+      calls.push({ operation, input, budgetHints });
+      return {
+        status: 'ok',
+        output,
+        // Deliberately foreign provenance, matching buildOkSource above —
+        // pins that the registry stays the single writer of provenance even
+        // for a caller-supplied output.
+        provenance: {
+          sourceBindingId: 'not-the-real-binding',
+          adapter: 'not-the-real-adapter@0.0.0',
+          credentialRefId: 'wrongcredentialplaceholder',
+          fetchedAt: '1970-01-01T00:00:00.000Z',
+          requestFingerprint: 'sha256:not-the-real-fingerprint',
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Builds a JSON object whose `JSON.stringify(...)` is EXACTLY `totalBytes`
+ * long: `{"data":"..."}` costs 11 fixed bytes (`{"data":"` is 9, the closing
+ * `"}` is 2) and the rest is ASCII `'A'` characters, whose UTF-8 byte length
+ * equals their character count — so this is exact and independent of
+ * whichever canonicalizer the implementation measures with, PROVIDED it
+ * measures `JSON.stringify(output)` itself (this file's own pinned
+ * definition of "exceeds maxResultBytes" — the ticket names the budget, not
+ * the exact measurement). Self-checked below rather than trusted.
+ */
+function buildJsonObjectOfByteSize(totalBytes) {
+  const fixedOverhead = 11;
+  assert.ok(totalBytes >= fixedOverhead, 'buildJsonObjectOfByteSize only supports totalBytes >= 11');
+  const output = { data: 'A'.repeat(totalBytes - fixedOverhead) };
+  assert.equal(
+    Buffer.byteLength(JSON.stringify(output), 'utf8'),
+    totalBytes,
+    'self-check: the constructed fixture must actually be exactly totalBytes long',
+  );
+  return output;
+}
+
 const fixedClock = (iso) => () => new Date(iso);
 
 /**
@@ -260,6 +367,26 @@ const fixedClock = (iso) => () => new Date(iso);
  * test/evidence-source-contract.test.mjs's identical `upstreamEchoedMarker`).
  */
 const upstreamEchoedMarker = 'zz9-bound-registry-fixture-marker-7731-not-a-real-value';
+
+/**
+ * Credential-shaped strings for `redactEvidenceOutput`'s pattern rows,
+ * ASSEMBLED AT RUNTIME from parts — never written out as one literal, per
+ * this project's own guard-secret-file vocabulary
+ * (`.claude/scripts/lib/secrets.mjs`). None of these are real credentials;
+ * each is shaped to match exactly one of the six patterns pinned below, and
+ * each has a paired near-miss that must NOT be touched.
+ */
+const fixtureGithubToken = ['gh', 'p_'].join('') + 'A'.repeat(36);
+const fixtureGithubTokenTooShort = ['gh', 'p_'].join('') + 'A'.repeat(35);
+const fixtureAwsAccessKeyId = 'AKIA' + 'B7'.repeat(8);
+const fixtureAwsAccessKeyIdTooShort = 'AKIA' + 'B7'.repeat(7) + 'B';
+const fixtureBearerCredential = ['Bearer', ' '].join('') + 'Zz9'.repeat(8);
+const fixtureBearerCredentialTooShort = ['Bearer', ' '].join('') + 'Zz9'.repeat(6);
+const fixturePemHeader = ['-----BEGIN ', 'RSA PRIVATE KEY-----'].join('');
+const fixtureNonPrivatePemHeader = '-----BEGIN CERTIFICATE-----';
+const fixtureUrlCredentialPart = ['user', ':', 'hunter2fixture'].join('');
+const fixtureSlackToken = ['xoxb', '-'].join('') + 'Q9z'.repeat(6);
+const fixtureSlackTokenWrongLetter = ['xoxq', '-'].join('') + 'Q9z'.repeat(6);
 
 /* -------------------------------------------------------------------------- */
 /* Row — the compile-time port contract                                       */
@@ -348,6 +475,33 @@ function rekeyReplayRecordingsFactory() {
   return tools.rekeyReplayRecordings;
 }
 
+function defaultSourceBudgetsFactory() {
+  assert.ok(
+    tools.DEFAULT_SOURCE_BUDGETS && typeof tools.DEFAULT_SOURCE_BUDGETS === 'object',
+    '@aic/tools must export DEFAULT_SOURCE_BUDGETS: { timeoutMs, maxResultBytes, maxPages }, all positive integers, frozen (AIC-100 slice c)',
+  );
+  return tools.DEFAULT_SOURCE_BUDGETS;
+}
+
+function redactEvidenceOutputFactory() {
+  assert.equal(
+    typeof tools.redactEvidenceOutput,
+    'function',
+    '@aic/tools must export redactEvidenceOutput(value): a pure, deep, bounded redactor over JSON values, used before persistence and before an outcome is returned to a caller (AIC-100 slice c)',
+  );
+  return tools.redactEvidenceOutput;
+}
+
+function maxRedactionDepthFactory() {
+  assert.equal(
+    typeof tools.MAX_REDACTION_DEPTH,
+    'number',
+    '@aic/tools must export MAX_REDACTION_DEPTH: the bounded recursion-depth cap redactEvidenceOutput fails closed at (AIC-100 slice c, invariants.md\'s "a guard that fails open must do provably bounded work")',
+  );
+  assert.ok(tools.MAX_REDACTION_DEPTH > 0, 'MAX_REDACTION_DEPTH must be positive');
+  return tools.MAX_REDACTION_DEPTH;
+}
+
 test('refuses construction with a mode outside live/record/replay', () => {
   const createBoundSourceRegistry = createBoundSourceRegistryFactory();
   const createMemoryReplayStore = memoryReplayStoreFactory();
@@ -375,6 +529,76 @@ test('refuses construction with two bindings sharing the same sourceBindingId', 
       ],
       store: createMemoryReplayStore(),
       clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    }),
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — DEFAULT_SOURCE_BUDGETS and budgets construction         */
+/* -------------------------------------------------------------------------- */
+
+test('publishes DEFAULT_SOURCE_BUDGETS as a frozen object of three positive-integer fields', () => {
+  const budgets = defaultSourceBudgetsFactory();
+  assert.equal(Object.isFrozen(budgets), true, 'DEFAULT_SOURCE_BUDGETS must be frozen');
+  for (const key of ['timeoutMs', 'maxResultBytes', 'maxPages']) {
+    assert.equal(typeof budgets[key], 'number', `DEFAULT_SOURCE_BUDGETS.${key} must be a number`);
+    assert.equal(Number.isInteger(budgets[key]), true, `DEFAULT_SOURCE_BUDGETS.${key} must be an integer`);
+    assert.ok(budgets[key] > 0, `DEFAULT_SOURCE_BUDGETS.${key} must be positive`);
+  }
+});
+
+test('accepts construction with no budgets field at all, falling back to DEFAULT_SOURCE_BUDGETS', () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+
+  assert.doesNotThrow(() =>
+    createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    }),
+  );
+});
+
+for (const badBudgets of [
+  { timeoutMs: 0, maxResultBytes: 1024, maxPages: 5 },
+  { timeoutMs: -1, maxResultBytes: 1024, maxPages: 5 },
+  { timeoutMs: 50, maxResultBytes: 0, maxPages: 5 },
+  { timeoutMs: 50, maxResultBytes: -1024, maxPages: 5 },
+  { timeoutMs: 50, maxResultBytes: 1024, maxPages: 0 },
+  { timeoutMs: 50, maxResultBytes: 1024, maxPages: -5 },
+  { timeoutMs: 50.5, maxResultBytes: 1024, maxPages: 5 },
+  { timeoutMs: 50, maxResultBytes: 1024.25, maxPages: 5 },
+  { timeoutMs: 50, maxResultBytes: 1024, maxPages: 5.5 },
+]) {
+  test(`refuses construction with a non-positive or non-integer budgets field: ${JSON.stringify(badBudgets)}`, () => {
+    const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+    const createMemoryReplayStore = memoryReplayStoreFactory();
+
+    assert.throws(() =>
+      createBoundSourceRegistry({
+        mode: 'live',
+        bindings: [],
+        store: createMemoryReplayStore(),
+        clock: fixedClock('2026-09-24T00:00:00.000Z'),
+        budgets: badBudgets,
+      }),
+    );
+  });
+}
+
+test('accepts construction with a fully-specified, valid budgets object', () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+
+  assert.doesNotThrow(() =>
+    createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+      budgets: { timeoutMs: 5000, maxResultBytes: 1_000_000, maxPages: 10 },
     }),
   );
 });
@@ -1424,5 +1648,467 @@ test('record/replay is deterministic across a process restart: a recording made 
     replayed,
     recorded,
     'a fresh file-store instance, in a genuinely separate process, must replay the exact outcome that was recorded — including fetchedAt, which must be the RECORDED time, not anything the child\'s own (sentinel, far-future) clock could have produced',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — timeout budget, real timers                              */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'live: a source whose execute() never settles is refused timeout within the configured budget, using real timers',
+  { timeout: 5000 },
+  async () => {
+    const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+    const createMemoryReplayStore = memoryReplayStoreFactory();
+
+    const calls = [];
+    const hangingSource = {
+      describe: () => ({ adapterId: 'fixture-adapter', version: '1.0.0', operations: ['fetch-logs'] }),
+      check: async () => ({ status: 'ready' }),
+      execute: async (operation, input) => {
+        calls.push({ operation, input });
+        return new Promise(() => {}); // never settles
+      },
+    };
+
+    const registry = createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [{ sourceBindingId: 'binding-a', source: hangingSource, credentialRefId: null }],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+      budgets: { timeoutMs: 50, maxResultBytes: 1_000_000, maxPages: 100 },
+    });
+
+    const startedAt = Date.now();
+    const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(outcome.status, 'refused');
+    assert.equal(outcome.reason, 'timeout');
+    assert.equal(calls.length, 1);
+    assert.ok(
+      elapsedMs < 2000,
+      `execute() must resolve within a generous bound of the 50ms timeout budget; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'live: a source whose execute() settles ok AFTER the timeout budget is still refused timeout, not ok',
+  { timeout: 5000 },
+  async () => {
+    const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+    const createMemoryReplayStore = memoryReplayStoreFactory();
+
+    const lateSource = {
+      describe: () => ({ adapterId: 'fixture-adapter', version: '1.0.0', operations: ['fetch-logs'] }),
+      check: async () => ({ status: 'ready' }),
+      execute: async () => {
+        await new Promise((resolveAfterDelay) => setTimeout(resolveAfterDelay, 300));
+        return {
+          status: 'ok',
+          output: { lines: ['too late'] },
+          provenance: {
+            sourceBindingId: 'not-the-real-binding',
+            adapter: 'not-the-real-adapter@0.0.0',
+            credentialRefId: 'wrongcredentialplaceholder',
+            fetchedAt: '1970-01-01T00:00:00.000Z',
+            requestFingerprint: 'sha256:not-the-real-fingerprint',
+          },
+        };
+      },
+    };
+
+    const registry = createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [{ sourceBindingId: 'binding-a', source: lateSource, credentialRefId: null }],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+      budgets: { timeoutMs: 50, maxResultBytes: 1_000_000, maxPages: 100 },
+    });
+
+    const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+    assert.equal(outcome.status, 'refused');
+    assert.equal(outcome.reason, 'timeout');
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — result-size budget                                      */
+/* -------------------------------------------------------------------------- */
+
+test('live: an ok outcome whose output is exactly at maxResultBytes is ok, not refused', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const output = buildJsonObjectOfByteSize(64);
+  const source = buildOkSourceWithOutput(output);
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    budgets: { timeoutMs: 5000, maxResultBytes: 64, maxPages: 100 },
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(outcome.status, 'ok', 'exactly at the cap must still be ok, not refused');
+});
+
+test('live: an ok outcome whose output exceeds maxResultBytes by a single byte is refused budget_exceeded', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const output = buildJsonObjectOfByteSize(65);
+  const source = buildOkSourceWithOutput(output);
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    budgets: { timeoutMs: 5000, maxResultBytes: 64, maxPages: 100 },
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'budget_exceeded');
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — pagination budget passed to the adapter                  */
+/* -------------------------------------------------------------------------- */
+
+test('registry.execute passes { maxPages } to the adapter as execute\'s third, additive argument', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const source = buildOkSourceWithOutput({ lines: ['fixture output'] });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    budgets: { timeoutMs: 5000, maxResultBytes: 1_000_000, maxPages: 7 },
+  });
+
+  await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(source.calls.length, 1);
+  assert.deepEqual(
+    source.calls[0].budgetHints,
+    { maxPages: 7 },
+    'execute\'s third argument must be exactly { maxPages }, taken from the registry\'s configured budgets — nothing else',
+  );
+});
+
+test('an adapter that throws EvidenceSourceError(budget_exceeded) to signal it stopped at the page budget is refused budget_exceeded', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const error = new tools.EvidenceSourceError('stopped at the page budget', { reason: 'budget_exceeded' });
+  const source = buildThrowingSource({ error });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    budgets: { timeoutMs: 5000, maxResultBytes: 1_000_000, maxPages: 2 },
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'budget_exceeded');
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — replay never re-applies a budget                        */
+/* -------------------------------------------------------------------------- */
+
+test('replay does not re-check maxResultBytes: a recording made under a generous record-time budget still replays ok under a far stricter replay-time budget', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+  const largeOutput = buildJsonObjectOfByteSize(200);
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSourceWithOutput(largeOutput), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    budgets: { timeoutMs: 5000, maxResultBytes: 1_000_000, maxPages: 10 },
+  });
+  const recorded = await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(recorded.status, 'ok', 'setup: recording must succeed under the generous record-time budget');
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    budgets: { timeoutMs: 5000, maxResultBytes: 10, maxPages: 10 },
+  });
+  const replayed = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(
+    replayed.status,
+    'ok',
+    'replay must serve the recording as-is, never re-checking maxResultBytes against the REPLAYING budget',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — redactEvidenceOutput: pattern rows and near-misses       */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput replaces a GitHub-token-shaped string with [REDACTED], keeping surrounding text', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `token=${fixtureGithubToken} appeared in the log line`;
+  assert.equal(redactEvidenceOutput(input), 'token=[REDACTED] appeared in the log line');
+});
+
+test('redactEvidenceOutput leaves a GitHub-token-shaped string one character too short alone (near miss)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `token=${fixtureGithubTokenTooShort} appeared in the log line`;
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput replaces an AWS-access-key-id-shaped string with [REDACTED]', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `key id ${fixtureAwsAccessKeyId} was rejected`;
+  assert.equal(redactEvidenceOutput(input), 'key id [REDACTED] was rejected');
+});
+
+test('redactEvidenceOutput leaves an AWS-access-key-id-shaped string one character too short alone (near miss)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `key id ${fixtureAwsAccessKeyIdTooShort} was rejected`;
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput replaces a "Bearer <token>" credential in text with [REDACTED], dropping the token entirely', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `Authorization: ${fixtureBearerCredential}`;
+  assert.equal(redactEvidenceOutput(input), 'Authorization: [REDACTED]');
+});
+
+test('redactEvidenceOutput leaves a "Bearer <token>" text alone when the token is under 20 characters (near miss)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `Authorization: ${fixtureBearerCredentialTooShort}`;
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput replaces a PEM private-key header with [REDACTED]', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `key material: ${fixturePemHeader} follows`;
+  assert.equal(redactEvidenceOutput(input), 'key material: [REDACTED] follows');
+});
+
+test('redactEvidenceOutput leaves a non-private-key PEM header (a certificate) alone (near miss)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `key material: ${fixtureNonPrivatePemHeader} follows`;
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput redacts inline user:pass credentials in a URL, keeping the scheme and host', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `see https://${fixtureUrlCredentialPart}@example.com/path for details`;
+  assert.equal(redactEvidenceOutput(input), 'see https://[REDACTED]@example.com/path for details');
+});
+
+test('redactEvidenceOutput leaves a URL with no inline credentials alone (near miss)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = 'see https://example.com/path for details';
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput replaces a Slack-token-shaped string with [REDACTED]', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `webhook token ${fixtureSlackToken} leaked`;
+  assert.equal(redactEvidenceOutput(input), 'webhook token [REDACTED] leaked');
+});
+
+test('redactEvidenceOutput leaves a string with an unrecognised xox-letter alone (near miss: xoxq- is not one of a/b/p/r)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `webhook token ${fixtureSlackTokenWrongLetter} leaked`;
+  assert.equal(redactEvidenceOutput(input), input);
+});
+
+test('redactEvidenceOutput recurses into arrays and objects, keeps object keys, and leaves non-string values unchanged', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = {
+    id: 42,
+    ok: true,
+    nothing: null,
+    list: [1, 'plain text', fixtureGithubToken],
+    nested: { inner: fixtureGithubToken, count: 3 },
+  };
+
+  const output = redactEvidenceOutput(input);
+
+  assert.deepEqual(Object.keys(output).sort(), Object.keys(input).sort(), 'keys must be kept, in the same set');
+  assert.equal(output.id, 42);
+  assert.equal(output.ok, true);
+  assert.equal(output.nothing, null);
+  assert.equal(output.list[0], 1);
+  assert.equal(output.list[1], 'plain text');
+  assert.equal(output.list[2], '[REDACTED]');
+  assert.equal(output.nested.inner, '[REDACTED]');
+  assert.equal(output.nested.count, 3);
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — MAX_REDACTION_DEPTH: fail closed, bounded work           */
+/* -------------------------------------------------------------------------- */
+
+test('a credential nested strictly within MAX_REDACTION_DEPTH is still redacted normally', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const maxDepth = maxRedactionDepthFactory();
+
+  const levels = Math.max(1, maxDepth - 2);
+  let value = fixtureGithubToken;
+  for (let i = 0; i < levels; i += 1) {
+    value = [value];
+  }
+
+  const redacted = redactEvidenceOutput(value);
+
+  let cursor = redacted;
+  for (let i = 0; i < levels; i += 1) {
+    assert.ok(Array.isArray(cursor), `expected an array at nesting level ${i}, within the depth cap`);
+    cursor = cursor[0];
+  }
+  assert.equal(cursor, '[REDACTED]', 'a credential within the depth cap must still be redacted normally, not the depth sentinel');
+});
+
+test('a value nested beyond MAX_REDACTION_DEPTH is replaced with the fixed sentinel [REDACTED:depth], fail closed rather than recursing further', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const maxDepth = maxRedactionDepthFactory();
+
+  const levels = maxDepth + 5;
+  let value = 'deeply-nested-leaf-marker-never-a-credential';
+  for (let i = 0; i < levels; i += 1) {
+    value = [value];
+  }
+
+  const redacted = redactEvidenceOutput(value);
+
+  let cursor = redacted;
+  let steps = 0;
+  while (Array.isArray(cursor) && steps < levels) {
+    cursor = cursor[0];
+    steps += 1;
+  }
+
+  assert.equal(
+    cursor,
+    '[REDACTED:depth]',
+    'past the documented depth cap, redactEvidenceOutput must fail closed to a fixed sentinel rather than continuing to recurse indefinitely',
+  );
+});
+
+test('redactEvidenceOutput does not stack-overflow on input far past the depth cap (bounded work, invariants.md)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const maxDepth = maxRedactionDepthFactory();
+
+  const levels = maxDepth + 20000;
+  let value = 'leaf';
+  for (let i = 0; i < levels; i += 1) {
+    value = [value];
+  }
+
+  assert.doesNotThrow(() => redactEvidenceOutput(value));
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-100 slice c — the registry redacts BEFORE persistence and BEFORE      */
+/* returning the outcome to its caller                                       */
+/* -------------------------------------------------------------------------- */
+
+test('record mode redacts a credential in the output BEFORE store.set: neither the returned outcome nor the stored recording carries it', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+  const source = buildOkSourceWithOutput({ lines: [`leaked: ${fixtureGithubToken}`] });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const returned = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(returned.status, 'ok');
+  assert.equal(
+    JSON.stringify(returned).includes(fixtureGithubToken),
+    false,
+    'the outcome RETURNED to the caller in record mode must already be redacted',
+  );
+
+  const keys = await store.keys();
+  assert.equal(keys.length, 1);
+  const stored = await store.get(keys[0]);
+  assert.equal(
+    JSON.stringify(stored).includes(fixtureGithubToken),
+    false,
+    'the STORED recording must never carry the unredacted credential',
+  );
+  assert.ok(JSON.stringify(stored).includes('[REDACTED]'), 'the stored recording must carry the redaction marker in its place');
+});
+
+test('live mode also redacts the outcome returned to the caller (state and traces are downstream of it)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const source = buildOkSourceWithOutput({ lines: [`leaked: ${fixtureGithubToken}`] });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const returned = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(returned.status, 'ok');
+  assert.equal(JSON.stringify(returned).includes(fixtureGithubToken), false);
+});
+
+test('createFileReplayStore: a recorded credential is redacted before it ever reaches disk (read the file bytes)', async (t) => {
+  const dir = withScratchDir(t);
+  const createFileReplayStore = fileReplayStoreFactory();
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const filePath = join(dir, 'redacted.json');
+  const store = createFileReplayStore(filePath);
+  const source = buildOkSourceWithOutput({ lines: [`leaked: ${fixtureAwsAccessKeyId}`] });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  const bytes = readFileSync(filePath, 'utf8');
+  assert.equal(
+    bytes.includes(fixtureAwsAccessKeyId),
+    false,
+    'the on-disk recording must never contain the raw credential bytes',
+  );
+  assert.ok(bytes.includes('[REDACTED]'), 'the on-disk recording must show the redaction marker in its place');
+});
+
+test('bound-source-registry.ts no longer documents recordings as UNREDACTED (AIC-100 slice c adds redaction before persistence)', () => {
+  const sourcePath = resolve(projectRoot, 'packages/tools/src/bound-source-registry.ts');
+  const sourceText = readFileSync(sourcePath, 'utf8');
+  assert.equal(
+    sourceText.includes('UNREDACTED'),
+    false,
+    'slice c redacts before persistence — the module\'s own doc comments must no longer claim recordings are UNREDACTED',
   );
 });

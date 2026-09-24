@@ -43,6 +43,9 @@ import {
   createMemoryReplayStore,
   rekeyReplayRecordings,
   REPLAY_IDENTITY_VERSION,
+  DEFAULT_SOURCE_BUDGETS,
+  redactEvidenceOutput,
+  MAX_REDACTION_DEPTH,
 } from '@aic/tools';
 
 function acceptsBoundSourceRegistry(registry: BoundSourceRegistry): void {
@@ -120,3 +123,31 @@ void typeCheckRekey;
 
 const version: number = REPLAY_IDENTITY_VERSION;
 void version;
+
+/**
+ * AIC-100 slice c, three additive pins:
+ *
+ *   - `BoundSourceRegistryOptions` gains an optional `budgets` field, exactly
+ *     `{ timeoutMs: number; maxResultBytes: number; maxPages: number }`.
+ *   - `DEFAULT_SOURCE_BUDGETS` is exported with that same shape.
+ *   - `redactEvidenceOutput(value): unknown` and `MAX_REDACTION_DEPTH: number`
+ *     are exported.
+ */
+const defaultBudgets: { timeoutMs: number; maxResultBytes: number; maxPages: number } =
+  DEFAULT_SOURCE_BUDGETS;
+void defaultBudgets;
+
+const optionsWithBudgets: BoundSourceRegistryOptions = {
+  mode: 'live',
+  bindings: [{ sourceBindingId: 'binding-fixture', source: fakeSource, credentialRefId: null }],
+  store: memoryStore,
+  clock: () => new Date('2026-09-24T00:00:00.000Z'),
+  budgets: { timeoutMs: 1000, maxResultBytes: 1024, maxPages: 5 },
+};
+void optionsWithBudgets;
+
+const redactedValue: unknown = redactEvidenceOutput({ a: 1, b: 'two' });
+void redactedValue;
+
+const depthCap: number = MAX_REDACTION_DEPTH;
+void depthCap;
