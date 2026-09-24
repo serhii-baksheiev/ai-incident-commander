@@ -132,9 +132,9 @@ The repository separates:
 4. **one-shot hold-out** — final evidence for a candidate fingerprint;
 5. **LangSmith publication** — native run/evaluator evidence when explicitly requested.
 
-### Current benchmark direction
+### Four-arm benchmark
 
-The evaluation work is moving toward four arms:
+The live-model calibration lane (`npm run eval:live-model`) runs four arms over the same corpus, and the comparison was [preregistered](docs/evidence/preregistration/v0.2-four-arm.md) before any paid calibration run containing the naive arm:
 
 | Arm | Purpose |
 | --- | --- |
@@ -198,7 +198,7 @@ packages/tools            live + replay tool adapters
 packages/persistence      checkpoints, PostgreSQL app schema, durable run store
 packages/evals            benchmarks, evaluators, experiment lanes
 packages/observability    trace and run metadata
-datasets/scenarios        versioned replay fixtures
+datasets/scenarios        scenario notes (fixtures live in packages/evals)
 incident-lab              isolated live incident environment
 infra/postgres            PostgreSQL live-lane / CI support
 docs/decisions            architecture decision records
@@ -269,6 +269,12 @@ npm run eval:live-model
 ```
 
 The repeatable live-model command is for **calibration**, not hold-out tuning.
+
+The Oracle positive control needs no credential and refuses provider calls (`fetch`) while it runs; it scores answers projected from ground truth over the calibration partition only:
+
+```bash
+npm run eval:oracle
+```
 
 The one-shot final path is:
 
@@ -370,7 +376,7 @@ The UI design gate is intentionally late: backend/domain contracts should exist 
 | [Integration boundary](docs/decisions/integration-boundary.md) | Service × Environment integration model |
 | [Durable run execution](docs/decisions/durable-run-execution.md) | PostgreSQL ownership, fencing, committed execution, recovery |
 | [v0.2 exit gate](docs/v0.2-exit-gate.md) | Current v0.2 acceptance evidence and gate history |
-| [Evidence](docs/evidence) | Versioned calibration/final evaluation artifacts |
+| [Evidence](docs/evidence) | Versioned calibration, Oracle, preregistration, and final evaluation artifacts |
 | [Journal](journal/README.md) | Human-readable development history |
 | [PLAN.md](PLAN.md) | Standing execution/process conventions |
 
