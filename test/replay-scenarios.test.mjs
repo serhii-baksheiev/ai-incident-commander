@@ -150,6 +150,96 @@ test('preserves the five accepted v0.1 ground truths and replay fixtures', () =>
   }
 });
 
+/**
+ * AIC-119 slice 5 part A (owner ruling D1, item 6: "benchmark scenarios and
+ * ground truth will not be fitted to the new rule"). Every id
+ * `evals.REPLAY_SCENARIOS` carries today, and the sha256 of each scenario's
+ * own `JSON.stringify`, computed once from this tree and written here as a
+ * literal — not derived from the production module under test, so a change
+ * to any scenario's bytes (evidence, fixture, ground truth) shows up here
+ * whether or not it was made to fit a status-rules result. The five v0.1 ids
+ * and digests above are repeated verbatim; this row additionally freezes the
+ * five v0.2 gap scenarios the same way.
+ */
+const expectedAllScenarioIds = [
+  'bad-deployment',
+  'db-pool-exhaustion',
+  'false-alert',
+  'deployment-caused-incident-a',
+  'dependency-caused-incident-b',
+  'multiple-plausible-causes',
+  'transient-self-resolved',
+  'incomplete-evidence',
+  'challenge-changes-leader',
+  'challenge-keeps-leader',
+];
+
+const expectedAllScenarioDigests = {
+  'bad-deployment':
+    '5ee83c56c0527e103aa1e6162efb819977637088b253bc353d1eeddd64a59022',
+  'db-pool-exhaustion':
+    'cbb3f23d5cc11d055ca4b9965921ba7f8365aaeef0ca8f366e1ca74ec366077d',
+  'false-alert':
+    '4173e429605648642451c4d3781b9dfb6ccf689f79b56b8422d0b9d790a6a31b',
+  'deployment-caused-incident-a':
+    'd98c15e82be4a655e08db9d1f7c44167170e26b9170b44dad782a7b07dc3771c',
+  'dependency-caused-incident-b':
+    '8e85d4b902b28aa52c6a71e5597fff7ec954176fccc84da4836600b3bab0dc56',
+  'multiple-plausible-causes':
+    '68a9f6e9081a63cce1252b899826ce7057f6942fceb848260f46d6725ad64afa',
+  'transient-self-resolved':
+    '564adbb99eb7dfc94fddf5aa38518e38e801a15750e5150db97d9ba744882ed5',
+  'incomplete-evidence':
+    '9e97c71315054e9b5c33a9fad41b17787d2ae5afcc8b60a71a0e52ff8e6025fc',
+  'challenge-changes-leader':
+    '6ad30f17e44d3153ca402f8239a9488165084f4e9d5fe016980261db58d99357',
+  'challenge-keeps-leader':
+    '7b62cb99438288b0f74d8fbd6618927e4901515c3d618aa0fd531ed6c0f7455f',
+};
+
+test('freezes every v0.2 benchmark scenario byte for byte, with no id missing and none extra: a change is a new, dated, preregistered decision, never an edit', () => {
+  const scenarios = requireReplayScenarios();
+  const byId = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
+
+  assert.deepEqual(
+    [...byId.keys()].sort(),
+    [...expectedAllScenarioIds].sort(),
+    'the benchmark must name exactly the frozen scenario ids: no id missing, none extra',
+  );
+
+  for (const scenarioId of expectedAllScenarioIds) {
+    const scenario = byId.get(scenarioId);
+    const digest = createHash('sha256')
+      .update(JSON.stringify(scenario))
+      .digest('hex');
+    assert.equal(
+      digest,
+      expectedAllScenarioDigests[scenarioId],
+      `${scenarioId} changed bytes. A change to a benchmark scenario is a new, dated, preregistered decision (owner ruling D1, item 6), never a silent edit to fit a status-rules result`,
+    );
+  }
+});
+
+/**
+ * The structural ground-truth table the v0.3 evaluator reads
+ * (`packages/evals/src/structural-ground-truth.ts`), frozen the same way and
+ * for the same reason: owner ruling D1 item 6 requires that scenarios and
+ * ground truth are not fitted to the new status-rules table.
+ */
+const expectedStructuralGroundTruthDigest =
+  '12d681c3e0d2d6dfa9d808a9434503e6cbe27ab394f74d16b651acd2423d364a';
+
+test('freezes STRUCTURAL_GROUND_TRUTH byte for byte: a change is a new, dated, preregistered decision, never an edit to fit a status-rules result', () => {
+  const digest = createHash('sha256')
+    .update(JSON.stringify(evals.STRUCTURAL_GROUND_TRUTH))
+    .digest('hex');
+  assert.equal(
+    digest,
+    expectedStructuralGroundTruthDigest,
+    'STRUCTURAL_GROUND_TRUTH changed bytes. A change to the structural ground truth is a new, dated, preregistered decision (owner ruling D1, item 6), never a silent edit to fit a status-rules result',
+  );
+});
+
 test('expands the benchmark to at least ten unique and behavior-named cases', () => {
   const scenarios = requireReplayScenarios();
   const scenarioIds = scenarios.map(({ id }) => id);

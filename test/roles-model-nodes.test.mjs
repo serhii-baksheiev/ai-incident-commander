@@ -95,9 +95,18 @@ function requireExport(name) {
  * the version this module ships bumps with it — the same reasoning
  * `docs/evidence/preregistration/` records under a new dated file rather than
  * an edit to the v0.2 one.
+ *
+ * AIC-119 slice 5 (owner ruling D1, item 6): the prompt set changed again —
+ * `propose_conclusion`'s system prompt now also carries the generated
+ * status-rules definition sentences (`describeStatusRules`,
+ * `conclusion-role.test.mjs` › "propose_conclusion's system prompt contains
+ * every sentence describeStatusRules(STATUS_RULES[STATUS_RULES_VERSION])
+ * returns") — so this pin moves from `reference-roles-prompt-v0.3` to
+ * `reference-roles-prompt-v0.4`, the same version `conclusion-role.test.mjs`
+ * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4" pins.
  */
-test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.3', () => {
-  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.3');
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.4');
 });
 
 /**

@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
 import { NAIVE_PROMPT_VERSION, REFERENCE_MODEL_ID, REFERENCE_PROMPT_VERSION } from '@aic/roles';
 
@@ -145,7 +146,13 @@ const registrationDirectory = () =>
     .map((name) => readFileSync(join(dirname(PREREGISTRATION), name), 'utf8'))
     .join('\n');
 
-test('states the evaluator, ground-truth, prompt and model versions the code declares, and its run count', () => {
+/**
+ * AIC-119 slice 5 (owner ruling D1, item 6): the preregistration addendum
+ * names `corroborated`'s semantics against the status-rules version they were
+ * defined under, so `STATUS_RULES_VERSION` joins the versions every one of
+ * these documents together must name at least once.
+ */
+test('states the evaluator, ground-truth, prompt, status-rules and model versions the code declares, and its run count', () => {
   const body = registrationDirectory();
   for (const version of [
     evals.STRUCTURAL_EVALUATOR_VERSION,
@@ -153,6 +160,7 @@ test('states the evaluator, ground-truth, prompt and model versions the code dec
     REFERENCE_PROMPT_VERSION,
     NAIVE_PROMPT_VERSION,
     REFERENCE_MODEL_ID,
+    STATUS_RULES_VERSION,
   ]) {
     assert.ok(body.includes(`\`${version}\``), `the preregistration does not name ${version}`);
   }
