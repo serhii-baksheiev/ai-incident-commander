@@ -42,6 +42,7 @@ import test from 'node:test';
 import { INCIDENT_STATE_SCHEMA_VERSION, STATUS_RULES_VERSION } from '@aic/domain';
 import * as domain from '@aic/domain';
 import { createInvestigationGraph } from '@aic/graph';
+import * as persistence from '@aic/persistence';
 import * as roles from '@aic/roles';
 
 import { createFakeCommittedExecution } from './fixtures/fake-committed-execution.mjs';
@@ -419,3 +420,53 @@ test('records a distinct model.role exec key for every model call across generat
     'no model.role exec key may repeat across the run: a repeat would mean two different model calls sharing one committed slot',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* The checkpoint boundary: a replay's state comes back through the serde     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A resumed run hands a role the state the checkpointer restored, not the
+ * object the crashed call saw. The exec key and the inputFingerprint are both
+ * recomputed from it, and the fingerprint hashes a prompt that is already a
+ * serialized string — so if the restored state ever serialized differently,
+ * every legitimate replay would be refused as an integrity violation, and by
+ * decision 6 refused again on every retry. This row crosses that boundary
+ * through both checkpointers this repository builds.
+ */
+for (const roleCase of ROLE_CASES) {
+  test(`${roleCase.roleName}: the exec key and inputFingerprint survive the state's round trip through the checkpointer serde`, async () => {
+    const seen = [];
+    const recording = {
+      async committed(execKey, compute, options) {
+        seen.push({ execKey, inputFingerprint: options?.inputFingerprint });
+        return compute();
+      },
+    };
+    const node = roleCase.create({ port: countingPort(roleCase.completion), execution: recording });
+    const state = roleCase.buildState();
+    await roleCase.call(node, state);
+
+    const sqlite = persistence.createSqliteCheckpointer(':memory:');
+    const postgres = persistence.createPostgresCheckpointer('postgresql://aic@127.0.0.1:1/never-connected');
+    try {
+      for (const [name, saver] of [
+        ['sqlite', sqlite],
+        ['postgres', postgres],
+      ]) {
+        const [type, bytes] = await saver.serde.dumpsTyped(state);
+        const restored = await saver.serde.loadsTyped(type, bytes);
+        assert.notEqual(restored, state, 'the round trip must hand the role a new object, not the original');
+        await roleCase.call(node, restored);
+        assert.deepEqual(
+          seen.at(-1),
+          seen[0],
+          `${roleCase.roleName}: a state restored by the ${name} checkpointer's serde must yield the same exec key and inputFingerprint as the state the original call saw`,
+        );
+      }
+      assert.equal(seen.length, 3, 'the role must have been called on the original state and on both restored copies');
+    } finally {
+      await postgres.pool?.end?.();
+    }
+  });
+}
