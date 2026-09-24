@@ -20,13 +20,21 @@ import type { ToolResult } from './contracts.js';
  * existing, unmodified `projectToolResult`.
  */
 
-/** The five typed reasons an EvidenceSource may refuse a call, frozen. */
+/**
+ * The six typed reasons an EvidenceSource may refuse a call, frozen.
+ * `budget_exceeded` was added in AIC-100 slice c: an oversized or
+ * over-paged result is not an observation the investigation can use, and
+ * must never read as negative evidence. See
+ * test/evidence-source-contract.test.mjs › "publishes exactly the six typed
+ * refusal reasons, frozen (AIC-100 slice c adds budget_exceeded)".
+ */
 export const EVIDENCE_SOURCE_REFUSAL_REASONS = Object.freeze([
   'unavailable',
   'denied',
   'rate_limited',
   'timeout',
   'adapter_error',
+  'budget_exceeded',
 ] as const);
 
 export type EvidenceSourceRefusalReason =
@@ -80,8 +88,22 @@ export interface EvidenceSource<Output = unknown> {
    * `input` carries no credential material: credentials travel only as the
    * binding's `credentialRefId`. The input is fingerprinted into provenance
    * with an unsalted hash, so a secret in it would be recoverable by guessing.
+   *
+   * `budgetHints` is an additive third parameter (AIC-100 slice c): an
+   * adapter that ignores it keeps compiling and working unchanged (see
+   * test/fixtures/evidence-source-type-contract.ts's `fakeSource`, a
+   * two-parameter implementation, and `fakeSourceAcceptingBudgetHints`, a
+   * three-parameter one — both satisfy this interface). `BoundSourceRegistry`
+   * (`./bound-source-registry.ts`) is the only caller that populates it, with
+   * exactly `{ maxPages }` from its configured budgets — see
+   * test/bound-source-registry.test.mjs › "registry.execute passes
+   * { maxPages } to the adapter as execute's third, additive argument".
    */
-  execute(operation: string, input: unknown): Promise<EvidenceSourceOutcome<Output>>;
+  execute(
+    operation: string,
+    input: unknown,
+    budgetHints?: { readonly maxPages?: number },
+  ): Promise<EvidenceSourceOutcome<Output>>;
 }
 
 export interface EvidenceSourceErrorOptions extends ErrorOptions {
@@ -89,7 +111,7 @@ export interface EvidenceSourceErrorOptions extends ErrorOptions {
 }
 
 /**
- * Raised by an adapter to classify a failure into one of the five typed
+ * Raised by an adapter to classify a failure into one of the six typed
  * refusal reasons, mirroring `StaleOwnerError` / `ExecutionIntegrityViolation`
  * in `@aic/domain`'s `execution.ts`: a named `Error` subclass with a stable,
  * message-independent `code`, checked by `instanceof` and `.name`/`.code`,
@@ -111,7 +133,7 @@ export class EvidenceSourceError extends Error {
 }
 
 /**
- * Classifies a thrown value into one of the five typed refusal reasons. An
+ * Classifies a thrown value into one of the six typed refusal reasons. An
  * `EvidenceSourceError` keeps its own `reason`; anything else — a plain
  * `Error`, a non-Error thrown value — classifies as `adapter_error`. Only
  * `instanceof EvidenceSourceError` and its typed `.reason` are consulted. What
@@ -158,8 +180,13 @@ export function createRequestFingerprint(operation: string, input: unknown): str
  * `ToolResult` so `projectToolResult` keeps working unchanged: `ok` maps to
  * `ToolResult.ok` (an empty successful output stays `ok`, never a refusal);
  * `refused` with reason `unavailable` / `denied` / `rate_limited` / `timeout`
- * maps to `ToolResult.unavailable`, so the prediction becomes untestable
- * rather than reading as negative evidence; `refused` with reason
+ * / `budget_exceeded` maps to `ToolResult.unavailable`, so the prediction
+ * becomes untestable rather than reading as negative evidence (AIC-100 slice
+ * c adds `budget_exceeded` to this bucket — see
+ * test/evidence-source-contract.test.mjs › "evidenceSourceOutcomeToToolResult
+ * maps a refused(budget_exceeded) outcome to ToolResult unavailable, and
+ * through projectToolResult that becomes untestable with zero evidence —
+ * never negative evidence (AIC-100 slice c)"); `refused` with reason
  * `adapter_error` maps to `ToolResult.error`. The mapped reason/message
  * carries only the typed reason code, never a thrown error's own message
  * text. See test/evidence-source-contract.test.mjs › "a 403 (denied), a
@@ -182,10 +209,11 @@ export function evidenceSourceOutcomeToToolResult<Output>(
     case 'denied':
     case 'rate_limited':
     case 'timeout':
+    case 'budget_exceeded':
       return { status: 'unavailable', reason: outcome.reason };
     default: {
       // Compile-time: a new reason must be mapped above. Runtime (untyped JS or
-      // fixture JSON): a reason outside the five stays untestable, and its
+      // fixture JSON): a reason outside the six stays untestable, and its
       // unknown text is not echoed.
       const unmapped: never = outcome.reason;
       void unmapped;

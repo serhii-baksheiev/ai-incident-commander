@@ -88,6 +88,36 @@ const fakeSource: EvidenceSource = {
 
 acceptsEvidenceSource(fakeSource);
 
+/**
+ * AIC-100 slice c, two additive pins:
+ *
+ *   - `budget_exceeded` joins the refusal reasons `EvidenceSourceOutcome` and
+ *     `EvidenceSourceCheckResult` accept.
+ *   - `execute(operation, input)` gains an optional THIRD argument (the
+ *     registry's page-budget hint) — additive, so `fakeSource` above (a
+ *     two-parameter implementation) must keep compiling unchanged, and an
+ *     implementation that also accepts a third parameter must compile too.
+ */
+const fakeBudgetExceededOutcome: EvidenceSourceOutcome<{ lines: string[] }> = {
+  status: 'refused',
+  reason: 'budget_exceeded',
+  provenance: fakeProvenance,
+};
+void fakeBudgetExceededOutcome;
+
+const fakeBudgetExceededCheck: EvidenceSourceCheckResult = {
+  status: 'refused',
+  reason: 'budget_exceeded',
+};
+void fakeBudgetExceededCheck;
+
+const fakeSourceAcceptingBudgetHints: EvidenceSource = {
+  describe: () => fakeDescriptor,
+  check: async () => fakeReadyCheck,
+  execute: async (_operation, _input, _budgetHints) => fakeOkOutcome,
+};
+acceptsEvidenceSource(fakeSourceAcceptingBudgetHints);
+
 // Not vacuous: an object missing execute is refused, or the check above
 // would prove nothing about the shape and everything would pass regardless.
 const notASource = { describe: fakeSource.describe, check: fakeSource.check };

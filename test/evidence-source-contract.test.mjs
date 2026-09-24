@@ -23,6 +23,22 @@
  * touched here. Nothing in `packages/tools/live`, `packages/tools/replay`,
  * `replay-key.ts`, or any existing test is changed by this file.
  *
+ * ## AIC-100 slice c addendum (this file's own rows for the two pins slice c
+ * adds to THIS module, `evidence-source.ts` — budgets/redaction on
+ * `BoundSourceRegistry` itself are pinned in
+ * test/bound-source-registry.test.mjs instead):
+ *
+ *   - `EVIDENCE_SOURCE_REFUSAL_REASONS` gains a sixth reason,
+ *     `budget_exceeded`: an oversized or over-paged result is not an
+ *     observation the investigation can use, and it must never read as
+ *     negative evidence — so `evidenceSourceOutcomeToToolResult` maps it into
+ *     the same `unavailable` bucket as the other four untestable reasons,
+ *     never `error`. This is a deliberate, additive contract extension: the
+ *     row that used to pin exactly five reasons now pins exactly six.
+ *   - `execute(operation, input)` gains an optional third argument (pinned in
+ *     test/fixtures/evidence-source-type-contract.ts, not here): additive, so
+ *     an adapter that ignores it keeps compiling unchanged.
+ *
  * ## Design choices this file pins (the ticket names the shape, not every
  * internal detail — stated here rather than discovered mid-assertion)
  *
@@ -144,13 +160,14 @@ test('compiles the evidence-source type contract: an EvidenceSource-shaped liter
 /* EVIDENCE_SOURCE_REFUSAL_REASONS                                            */
 /* -------------------------------------------------------------------------- */
 
-test('publishes exactly the five typed refusal reasons, frozen', () => {
+test('publishes exactly the six typed refusal reasons, frozen (AIC-100 slice c adds budget_exceeded)', () => {
   assert.deepEqual(tools.EVIDENCE_SOURCE_REFUSAL_REASONS, [
     'unavailable',
     'denied',
     'rate_limited',
     'timeout',
     'adapter_error',
+    'budget_exceeded',
   ]);
   assert.equal(
     Object.isFrozen(tools.EVIDENCE_SOURCE_REFUSAL_REASONS),
@@ -280,7 +297,7 @@ function classifyEvidenceSourceFailureFactory() {
   return tools.classifyEvidenceSourceFailure;
 }
 
-for (const reason of ['unavailable', 'denied', 'rate_limited', 'timeout', 'adapter_error']) {
+for (const reason of ['unavailable', 'denied', 'rate_limited', 'timeout', 'adapter_error', 'budget_exceeded']) {
   test(`classifyEvidenceSourceFailure keeps an EvidenceSourceError's own reason (${reason})`, () => {
     const EvidenceSourceError = evidenceSourceErrorFactory();
     const classify = classifyEvidenceSourceFailureFactory();
@@ -376,7 +393,7 @@ test('evidenceSourceOutcomeToToolResult maps an ok outcome to ToolResult ok, car
   assert.deepEqual(empty, { status: 'ok', output: [] });
 });
 
-for (const reason of ['unavailable', 'denied', 'rate_limited', 'timeout']) {
+for (const reason of ['unavailable', 'denied', 'rate_limited', 'timeout', 'budget_exceeded']) {
   test(`evidenceSourceOutcomeToToolResult maps a refused(${reason}) outcome to ToolResult unavailable, never negative evidence`, () => {
     const evidenceSourceOutcomeToToolResult = evidenceSourceOutcomeToToolResultFactory();
     const result = evidenceSourceOutcomeToToolResult({
@@ -408,7 +425,33 @@ test('evidenceSourceOutcomeToToolResult maps a refused(adapter_error) outcome to
   assert.equal('output' in result, false);
 });
 
-test('an outcome whose reason is outside the five (only reachable from untyped JS or fixture JSON) still maps to a well-formed, untestable ToolResult, never a failed test, and never echoes the unknown string', () => {
+test('evidenceSourceOutcomeToToolResult maps a refused(budget_exceeded) outcome to ToolResult unavailable, and through projectToolResult that becomes untestable with zero evidence — never negative evidence (AIC-100 slice c)', () => {
+  const evidenceSourceOutcomeToToolResult = evidenceSourceOutcomeToToolResultFactory();
+  const result = evidenceSourceOutcomeToToolResult({
+    status: 'refused',
+    reason: 'budget_exceeded',
+    provenance: fixedProvenance(),
+  });
+
+  assert.equal(result.status, 'unavailable');
+  assert.equal(
+    result.reason,
+    'budget_exceeded',
+    'budget_exceeded must reach the ToolResult as its own reason, not merged into a different one',
+  );
+  assert.equal('output' in result, false);
+
+  const projection = tools.projectToolResult({ test: plannedTest, prediction: untestedPrediction, result });
+  assert.equal(projection.test.status, 'unavailable');
+  assert.equal(projection.prediction.status, 'untestable');
+  assert.deepEqual(
+    projection.evidence,
+    [],
+    'an oversized or over-paged result is not an observation the investigation can use, and must never read as negative evidence',
+  );
+});
+
+test('an outcome whose reason is outside the six (only reachable from untyped JS or fixture JSON) still maps to a well-formed, untestable ToolResult, never a failed test, and never echoes the unknown string', () => {
   const evidenceSourceOutcomeToToolResult = evidenceSourceOutcomeToToolResultFactory();
   const result = evidenceSourceOutcomeToToolResult({
     status: 'refused',

@@ -37,7 +37,10 @@ export {
   createFileReplayStore,
   createMemoryReplayStore,
   rekeyReplayRecordings,
+  DEFAULT_SOURCE_BUDGETS,
   REPLAY_IDENTITY_VERSION,
+  SAFE_ADAPTER_ID,
+  SAFE_ADAPTER_TOKEN,
 } from './bound-source-registry.js';
 export type {
   BoundSourceBinding,
@@ -45,4 +48,6 @@ export type {
   BoundSourceRegistry,
   BoundSourceRegistryOptions,
   ReplayStore,
+  SourceBudgets,
 } from './bound-source-registry.js';
+export { redactEvidenceOutput, MAX_REDACTION_DEPTH } from './redaction.js';
