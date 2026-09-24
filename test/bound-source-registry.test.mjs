@@ -3687,3 +3687,10 @@ test('redactEvidenceOutput skips a non-private -----END line between a private h
   const input = `lead\n${header}\nbodyone\n${certificateFooter}\nbodytwo\n${footer}\nTAIL`;
   assert.equal(redactEvidenceOutput(input), 'lead\n[REDACTED]\nTAIL');
 });
+
+test('redactEvidenceOutput skips a non-private -----BEGIN header that precedes a private one in the same string, and still redacts the private block (review round 6, code-reviewer advisory)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const certificate = ['-----BEGIN ', 'CERTIFICATE-----'].join('') + '\nMIIBcert\n' + ['-----END ', 'CERTIFICATE-----'].join('');
+  const privateBlock = ['-----BEGIN ', 'RSA PRIVATE KEY-----'].join('') + '\nbodyline\n' + ['-----END ', 'RSA PRIVATE KEY-----'].join('');
+  assert.equal(redactEvidenceOutput(`${certificate}\nbetween\n${privateBlock}\ntail`), `${certificate}\nbetween\n[REDACTED]\ntail`);
+});

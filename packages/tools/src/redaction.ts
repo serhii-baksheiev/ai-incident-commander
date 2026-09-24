@@ -53,9 +53,9 @@
  *   - a PEM private-key block: found by a plain forward STRING SEARCH, not a
  *     regex (see "The PEM pattern" below for why and the owner ruling that
  *     replaced the regex) — a `-----BEGIN ` + up to 64 `[A-Z0-9 ]` characters
- *     + `PRIVATE KEY-----` header, then EVERYTHING up to and including the
- *     next matching `-----END ` + up to 64 `[A-Z0-9 ]` characters +
- *     `PRIVATE KEY-----` footer is replaced with the single marker
+ *     + `PRIVATE KEY` + up to 16 more `[A-Z0-9 ]` characters + `-----` header
+ *     (so `PGP PRIVATE KEY BLOCK` is recognised), then EVERYTHING up to and
+ *     including the next `-----END ` footer of that same shape is replaced with the single marker
  *     `[REDACTED]`, whatever lies between the two; with no such footer
  *     anywhere after the header, everything from the header to the END OF
  *     THE STRING is redacted instead, fail closed rather than guessing where
@@ -88,8 +88,8 @@
  *     matches any of the six shapes' own character classes);
  *   - a PEM private-key block whose header departs from the exact armor form
  *     this module recognises: a lower- or mixed-case label, a tab instead of the
- *     space after `BEGIN`, or more than 64 label characters before `PRIVATE
- *     KEY` — the header is not recognised, so the fail-closed span never
+ *     space after `BEGIN`, more than 64 label characters before `PRIVATE KEY`,
+ *     or more than 16 after it — the header is not recognised, so the fail-closed span never
  *     starts and the whole block is left as-is;
  *   - a credential-shaped object KEY — only string VALUES are scanned; a key
  *     name that happens to look like a credential is left as-is (object keys
@@ -128,8 +128,9 @@
  * mis-parsed.
  *
  * What is redacted: from a `-----BEGIN ` + up to 64 `[A-Z0-9 ]` characters +
- * `PRIVATE KEY-----` header, EVERYTHING through the next matching
- * `-----END ` + up to 64 `[A-Z0-9 ]` characters + `PRIVATE KEY-----` footer —
+ * `PRIVATE KEY` + up to 16 more `[A-Z0-9 ]` characters + `-----` header,
+ * EVERYTHING through the next `-----END ` footer of that same shape (the
+ * footer's label is not compared with the header's) —
  * indentation, blank lines, `Proc-Type`/`DEK-Info`/any other header-shaped
  * line, per-line log prefixes, base64url characters, literal `-` or `:`
  * inside the span, none of it inspected — see
@@ -184,7 +185,9 @@
  * fail-closed ruling, 2026-09-25)" for two independent blocks in the same
  * string. A non-private PEM block — a certificate, a public key — never
  * matches the header check at all and is left untouched: see › "leaves a
- * non-private-key PEM header (a certificate) alone (near miss)".
+ * non-private-key PEM header (a certificate) alone (near miss)" and ›
+ * "redactEvidenceOutput leaves an RFC 4880 PUBLIC key block untouched (review
+ * round 5, the PGP label widening stays private-only)".
  *
  * The accepted over-redaction: a footer-less block consumes everything after
  * it, including unrelated text that happens to follow in the same string —
@@ -206,7 +209,11 @@
  * own bounded label, so each attempt costs a constant, never an input-sized
  * amount, to confirm it is a private-key
  * header/footer rather than some other PEM label. A non-matching hit (a
- * certificate header, a footer whose label is not `PRIVATE KEY` — see
+ * certificate header — see test/bound-source-registry.test.mjs ›
+ * "redactEvidenceOutput skips a non-private -----BEGIN header that precedes a
+ * private one in the same string, and still redacts the private block (review
+ * round 6, code-reviewer advisory)" — or a footer whose label is not
+ * `PRIVATE KEY` — see
  * test/bound-source-registry.test.mjs › "redactEvidenceOutput skips a
  * non-private -----END line between a private header and its real footer, and
  * redacts through the real footer (review round 5, code-reviewer blocker)")
@@ -319,8 +326,8 @@ const PEM_FOOTER_LITERAL = '-----END ';
  * Confirms, at an EXACT index found by `indexOf(PEM_HEADER_LITERAL, …)`, that
  * what follows is a private-key header rather than some other PEM label (a
  * certificate, a public key) — sticky (`y`), so it only ever tests the one
- * position it is pointed at, and length-bounded (`{0,64}`), so a match
- * attempt is O(1) regardless of input size.
+ * position it is pointed at, and length-bounded (`{0,64}` before `PRIVATE KEY`
+ * and `{0,16}` after it), so a match attempt is O(1) regardless of input size.
  */
 const PEM_HEADER_STICKY = /-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY[A-Z0-9 ]{0,16}-----/y;
 /** The footer equivalent of `PEM_HEADER_STICKY`, same shape and same bound. */
