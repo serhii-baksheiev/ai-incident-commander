@@ -43,3 +43,24 @@ export function naiveArm({ experimentId, port, config }) {
       async recordEvaluation() {},
     });
 }
+
+/**
+ * Publish the naive arm's experiment, or say why it was not published.
+ *
+ * Only a completed, reportable naive arm is published; anything else returns
+ * `absent` with the arm's own reason and publishes nothing. A refusal from
+ * `persist` propagates: a lane that swallowed it would report a publication
+ * that never happened.
+ * see lane-arms.test.mjs › "publishNaiveArm publishes a completed, reportable naive arm exactly once, with the given datasetName and the exact experiment object, and returns what persist resolved to"
+ */
+export async function publishNaiveArm({ laneReport, naiveExperiment, datasetName, persist }) {
+  const naive = laneReport.arms.naive;
+  if (naive.status === 'not-run') return { status: 'absent', absentReason: naive.reason };
+  if (naive.status === 'refused') return { status: 'absent', absentReason: naive.refusalReason };
+  if (naive.reportable !== true) return { status: 'absent', absentReason: naive.unreportableReason };
+  if (naiveExperiment === undefined) {
+    return { status: 'absent', absentReason: 'the naive arm produced no experiment to publish' };
+  }
+  const publication = await persist({ datasetName, experiment: naiveExperiment });
+  return { status: 'published', ...publication };
+}

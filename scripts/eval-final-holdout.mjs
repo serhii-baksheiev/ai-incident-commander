@@ -58,7 +58,7 @@ import {
 
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
-import { naiveArm, oracleArm } from './lane-arms.mjs';
+import { naiveArm, oracleArm, publishNaiveArm } from './lane-arms.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -243,6 +243,39 @@ function modelNodes(record, port) {
   };
 }
 
+/**
+ * The `--publish` step of the one-shot run: the model arm, then the naive arm,
+ * each decided on its own state.
+ *
+ * 🔴 An unreportable model arm is SKIPPED with its reason, not thrown. The
+ * sibling command throws, which is right for a diagnostic; here a throw would
+ * destroy the record — the one artifact the one-shot protocol exists to
+ * produce. Publishing the CONTROL arm instead would present harness-only
+ * results as model quality, which AIC-19 forbids. The naive arm is published
+ * or skipped on its own state, whatever the model arm did.
+ * see lane-arms.test.mjs › "publishHoldoutArms persists only the naive arm, and carries the model arms own reason as publicationSkipped, when the model arm is unreportable and the naive arm is reportable"
+ */
+export async function publishHoldoutArms({ laneReport, modelExperiment, naiveExperiment, headSha, persist }) {
+  let publication = null;
+  let publicationSkipped;
+  if (laneReport.arms.model.reportable !== true || modelExperiment === undefined) {
+    publicationSkipped =
+      laneReport.arms.model.unreportableReason ?? 'the model arm produced no experiment to publish';
+  } else {
+    publication = await persist({
+      datasetName: `aic-19-final-holdout-${headSha.slice(0, 12)}`,
+      experiment: modelExperiment,
+    });
+  }
+  const naivePublication = await publishNaiveArm({
+    laneReport,
+    naiveExperiment,
+    datasetName: `aic-19-final-holdout-naive-${headSha.slice(0, 12)}`,
+    persist,
+  });
+  return { publication, publicationSkipped, naivePublication };
+}
+
 async function main() {
   // 1. The credential first, so an unconfigured run creates no dataset, no
   //    project, no run and no record — the property the sibling command's
@@ -367,6 +400,8 @@ async function main() {
     return port;
   };
   let publicationSkipped;
+  let naiveExperiment;
+  let naivePublication;
 
   const report = await evals.runLiveModelLane({
     env,
@@ -399,8 +434,10 @@ async function main() {
       });
     },
     runOracleArm: oracleArm({ experimentId: `aic-19-oracle-${head.slice(0, 12)}` }),
+    // Captured for `publish`, like `modelExperiment` below.
     async runNaiveArm(plan) {
-      return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan);
+      return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan)
+        .then((experiment) => (naiveExperiment = experiment));
     },
     async runModelArm(plan) {
       const port = sharedPort();
@@ -417,28 +454,13 @@ async function main() {
     ...(flag('publish')
       ? {
           async publish(laneReport) {
-            // 🔴 Skipped, not thrown. The sibling command throws here, and that
-            // is right for a diagnostic: an unreportable arm must never reach
-            // LangSmith as a model-quality result. But this command's throw
-            // destroyed the RECORD — the one artifact the one-shot protocol
-            // exists to produce — and a run that measured something and then
-            // erased the measurement is the worst of the three outcomes.
-            //
-            // When the model arm refused there is also nothing to publish:
-            // `modelExperiment` is never assigned, because the assignment is
-            // the awaited call that threw. Publishing the CONTROL arm instead
-            // would be worse than publishing nothing — AIC-19 forbids
-            // presenting harness-only results as model judgement quality.
-            if (!laneReport.arms.model.reportable || modelExperiment === undefined) {
-              publicationSkipped =
-                laneReport.arms.model.unreportableReason ??
-                'the model arm produced no experiment to publish';
-              return;
-            }
-            publication = await observability.persistBenchmarkExperiment({
-              datasetName: `aic-19-final-holdout-${laneReport.headSha.slice(0, 12)}`,
-              experiment: modelExperiment,
-            });
+            ({ publication, publicationSkipped, naivePublication } = await publishHoldoutArms({
+              laneReport,
+              modelExperiment,
+              naiveExperiment,
+              headSha: laneReport.headSha,
+              persist: observability.persistBenchmarkExperiment,
+            }));
           },
         }
       : {}),
@@ -464,6 +486,14 @@ async function main() {
                 : 'the run was not asked to publish (--publish was not passed)'),
           }
         : { status: 'published', ...publication },
+    naivePublication:
+      naivePublication ??
+      {
+        status: 'absent',
+        absentReason: flag('publish')
+          ? 'the publish step did not run'
+          : 'the run was not asked to publish (--publish was not passed)',
+      },
     acceptance: [
       {
         requirement: 'final evidence names the exact candidate SHA',

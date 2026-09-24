@@ -53,11 +53,16 @@
  *                              lane still runs and still reports, and marks the
  *                              model arm unreportable: a metric that moved
  *                              cannot be attributed without a control baseline.
- *   --publish                  Send the model arm to LangSmith. Off by default,
- *                              so the lane produces local per-metric evidence
- *                              with no ingestion involved. An ingestion refusal
- *                              propagates and fails the command; it is never
- *                              reported as a completed publication.
+ *   --publish                  Send the model arm, and then the naive arm when
+ *                              it is reportable, to LangSmith; the output then
+ *                              carries `publication.naive` saying which happened
+ *                              and why (absent without --publish).
+ *                              see lane-arms.test.mjs › "publishLiveModelArms persists the model arm then the naive arm and returns the naive publication, when both are reportable"
+ *                              Off by default, so the lane produces local
+ *                              per-metric evidence with no ingestion involved.
+ *                              An ingestion refusal propagates and fails the
+ *                              command; it is never reported as a completed
+ *                              publication.
  *   --out <path>               Write the JSON report here as well as to stdout.
  *
  * 🔴 **What the control arm can and cannot catch — and it is less than it
@@ -98,7 +103,7 @@ import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { readControlBaseline } from './eval-final-holdout.mjs';
-import { naiveArm, oracleArm } from './lane-arms.mjs';
+import { naiveArm, oracleArm, publishNaiveArm } from './lane-arms.mjs';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -179,6 +184,33 @@ export function modelNodes(record, port) {
   };
 }
 
+/**
+ * The `--publish` step: the model arm, then the naive arm.
+ *
+ * An unreportable model arm is refused before anything is sent — this command
+ * is a diagnostic, so it fails loudly rather than publishing harness numbers as
+ * model quality. Not wrapped in a retry: an ingestion refusal fails the command.
+ * see lane-arms.test.mjs › "publishLiveModelArms rejects with the refusal message before any persist call, when the model arm is unreportable — even though the naive arm is reportable"
+ */
+export async function publishLiveModelArms({ laneReport, modelExperiment, naiveExperiment, headSha, persist }) {
+  if (!laneReport.arms.model.reportable) {
+    throw new Error(
+      `refusing to publish an unreportable model arm: ${laneReport.arms.model.unreportableReason}`,
+    );
+  }
+  await persist({
+    datasetName: `aic-94-live-model-${headSha.slice(0, 12)}`,
+    experiment: modelExperiment,
+  });
+  const naive = await publishNaiveArm({
+    laneReport,
+    naiveExperiment,
+    datasetName: `aic-94-live-model-naive-${headSha.slice(0, 12)}`,
+    persist,
+  });
+  return { naive };
+}
+
 async function main() {
   const config = resolveModelConfig(env);
   const ledger = createModelUsageLedger({
@@ -203,6 +235,8 @@ async function main() {
   // Captured so `publish` sends the experiment that ran rather than a summary
   // of it: the LangSmith record has to be the runs, not the report about them.
   let modelExperiment;
+  let naiveExperiment;
+  let naivePublication;
 
   // One port for both paid arms, so the naive and graph-model arms spend
   // through the same ledger and the same credential read.
@@ -238,12 +272,13 @@ async function main() {
       });
     },
     runOracleArm: oracleArm({ experimentId: `aic-94-oracle-${headSha().slice(0, 12)}` }),
+    // Captured for `publish`, like `modelExperiment` below.
     async runNaiveArm(plan) {
       return naiveArm({
         experimentId: `aic-94-naive-${headSha().slice(0, 12)}`,
         port: sharedPort(),
         config,
-      })(plan);
+      })(plan).then((experiment) => (naiveExperiment = experiment));
     },
     async runModelArm(plan) {
       // The credential's VALUE is read through `readModelCredential`, the same
@@ -277,23 +312,21 @@ async function main() {
     ...(flag('publish')
       ? {
           async publish(laneReport) {
-            // Deliberately not wrapped in a retry: an ingestion refusal must
-            // fail this command rather than be smoothed into a success.
-            if (!laneReport.arms.model.reportable) {
-              throw new Error(
-                `refusing to publish an unreportable model arm: ${laneReport.arms.model.unreportableReason}`,
-              );
-            }
-            await observability.persistBenchmarkExperiment({
-              datasetName: `aic-94-live-model-${laneReport.headSha.slice(0, 12)}`,
-              experiment: modelExperiment,
-            });
+            ({ naive: naivePublication } = await publishLiveModelArms({
+              laneReport,
+              modelExperiment,
+              naiveExperiment,
+              headSha: laneReport.headSha,
+              persist: observability.persistBenchmarkExperiment,
+            }));
           },
         }
       : {}),
   });
 
-  const serialized = `${JSON.stringify(report, null, 2)}\n`;
+  const output =
+    naivePublication === undefined ? report : { ...report, publication: { naive: naivePublication } };
+  const serialized = `${JSON.stringify(output, null, 2)}\n`;
   stdout.write(serialized);
   const outPath = option('out');
   if (outPath !== undefined) writeFileSync(outPath, serialized);

@@ -3,6 +3,10 @@
  * the two live-model scripts, and the committed control baseline covers every
  * axis the lane observes under v0.3.
  *
+ * AIC-117 slice d (bottom of this file): `publishNaiveArm`, the function that
+ * publishes the naive arm's own experiment under `--publish`, independently of
+ * whether the model arm published.
+ *
  * Rows that need `scripts/lane-arms.mjs` import it inside the row, so a broken
  * module fails those rows on their own account rather than the whole file.
  *
@@ -33,6 +37,8 @@ function requireExport(name) {
 }
 
 const HEAD_SHA = 'e'.repeat(40);
+/** The 12-char prefix both scripts derive their dataset names from. */
+const HEAD_SHA12 = HEAD_SHA.slice(0, 12);
 
 function fakeApiKey() {
   return ['sk', 'ant', 'test', '9'.repeat(24)].join('-');
@@ -323,4 +329,617 @@ test('the committed control baseline equals what the scripted control arm observ
       `over ${scenarioSet}, docs/evidence/control-baseline.json must equal what the scripted control arm observes under v0.3`,
     );
   }
+});
+
+/* -------------------------------------------------------------------------- */
+/* 5. publishNaiveArm — AIC-117 slice d                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A fake naive completion port, schema-valid and internally consistent — the
+ * same shape row 2 above already uses for `naiveArm`.
+ */
+function fakeNaivePort() {
+  return {
+    async complete() {
+      return {
+        text: JSON.stringify({
+          hypotheses: [],
+          assessments: [],
+          conclusion: { kind: 'inconclusive', causes: [] },
+          stopKind: 'ambiguous',
+        }),
+        modelId: 'fake-naive-model',
+        usage: { inputTokens: 10, outputTokens: 5 },
+      };
+    },
+  };
+}
+
+/**
+ * A whole lane, driven through the real `runLiveModelLane`, with a scripted
+ * (zero-score, deterministic) control and model arm and a caller-supplied
+ * naive arm — the shape `publishNaiveArm`'s rows below need on their input
+ * side. The control baseline defaults to the committed
+ * `docs/evidence/control-baseline.json` (through `readControlBaseline`, row 4
+ * above's own reader) so the scripted control arm never moves against it and
+ * the naive arm's `reportable` flag turns on ordinary completion — set
+ * `includeControlBaseline: false` for the row that needs the undeclared-
+ * baseline path instead.
+ */
+async function publishNaiveLane({ runNaiveArm, includeControlBaseline = true } = {}) {
+  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  async function scriptedGraphExperiment(experimentId, plan) {
+    return evals.runGraphBenchmarkExperiment({
+      experimentId,
+      scenarioSet: plan.scenarioSet,
+      runsPerScenario: plan.runsPerScenario,
+      metadata: plan.metadata,
+      createNodes: (record) => scriptedNodes(record),
+      async recordEvaluation() {},
+    });
+  }
+
+  return runLiveModelLane({
+    env: { [MODEL_API_KEY_VARIABLE]: fakeApiKey() },
+    scenarioSet: 'calibration',
+    experimentId: 'aic-117d-publish-naive',
+    headSha: HEAD_SHA,
+    metadata: v3Metadata,
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    async runControlArm(plan) {
+      return scriptedGraphExperiment('aic-117d-publish-naive-control', plan);
+    },
+    ...(runNaiveArm === undefined ? {} : { runNaiveArm }),
+    async runModelArm(plan) {
+      return scriptedGraphExperiment('aic-117d-publish-naive-model', plan);
+    },
+  });
+}
+
+/**
+ * The completed-and-reportable case both the "publishes" row and the
+ * "persist rejection propagates" row need: a real naive experiment, captured
+ * the way `eval-live-model.mjs` captures `modelExperiment` (assigned inside
+ * `runNaiveArm`, returned unchanged).
+ */
+async function completedReportableNaiveLane() {
+  const { naiveArm } = await import('../scripts/lane-arms.mjs');
+  const config = Object.freeze({ modelId: 'fake-naive-model', provider: 'anthropic' });
+
+  let naiveExperiment;
+  const report = await publishNaiveLane({
+    async runNaiveArm(plan) {
+      naiveExperiment = await naiveArm({
+        experimentId: 'aic-117d-publish-naive-naive',
+        port: fakeNaivePort(),
+        config,
+      })(plan);
+      return naiveExperiment;
+    },
+  });
+  return { report, naiveExperiment };
+}
+
+test('publishNaiveArm publishes a completed, reportable naive arm exactly once, with the given datasetName and the exact experiment object, and returns what persist resolved to', async () => {
+  const { publishNaiveArm } = await import('../scripts/lane-arms.mjs');
+  const { report, naiveExperiment } = await completedReportableNaiveLane();
+
+  // Pinned so a failure here points at the lane input rather than at
+  // publishNaiveArm: the row's whole premise is that the arm completed and
+  // was judged reportable before publishNaiveArm ever saw it.
+  assert.equal(report.arms.naive.status, 'completed');
+  assert.equal(report.arms.naive.reportable, true);
+
+  const calls = [];
+  async function persist(options) {
+    calls.push(options);
+    return { datasetId: 'd', projects: [], runIds: [] };
+  }
+
+  const result = await publishNaiveArm({
+    laneReport: report,
+    naiveExperiment,
+    datasetName: 'aic-117d-publish-naive-dataset',
+    persist,
+  });
+
+  assert.deepEqual(
+    calls,
+    [{ datasetName: 'aic-117d-publish-naive-dataset', experiment: naiveExperiment }],
+    'persist must be called exactly once, with exactly datasetName and experiment',
+  );
+  assert.deepEqual(result, { status: 'published', datasetId: 'd', projects: [], runIds: [] });
+});
+
+test('publishNaiveArm returns absent with the not-run reason and never calls persist, when the lane ran with no naive arm', async () => {
+  const { publishNaiveArm } = await import('../scripts/lane-arms.mjs');
+  const report = await publishNaiveLane();
+
+  // Pinned by four-arm-lane.test.mjs's own not-run row; restated here as a
+  // literal because this row's assertion on publishNaiveArm is only
+  // meaningful if the input really is the not-run shape.
+  assert.deepEqual(report.arms.naive, {
+    arm: 'naive',
+    status: 'not-run',
+    reason: 'the caller supplied no naive arm',
+  });
+
+  let persistCalls = 0;
+  const result = await publishNaiveArm({
+    laneReport: report,
+    naiveExperiment: undefined,
+    datasetName: 'unused',
+    async persist() {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(persistCalls, 0);
+  assert.deepEqual(result, { status: 'absent', absentReason: 'the caller supplied no naive arm' });
+});
+
+test('publishNaiveArm returns absent with the refusal reason and never calls persist, when the naive arm threw', async () => {
+  const { publishNaiveArm } = await import('../scripts/lane-arms.mjs');
+  const report = await publishNaiveLane({
+    async runNaiveArm() {
+      throw new Error('naive harness exploded');
+    },
+  });
+
+  assert.equal(report.arms.naive.status, 'refused');
+
+  let persistCalls = 0;
+  const result = await publishNaiveArm({
+    laneReport: report,
+    naiveExperiment: undefined,
+    datasetName: 'unused',
+    async persist() {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(persistCalls, 0);
+  assert.deepEqual(result, { status: 'absent', absentReason: 'naive harness exploded' });
+});
+
+test('publishNaiveArm returns absent with the unreportable reason and never calls persist, when the naive arm completed but no control baseline was declared', async () => {
+  const { publishNaiveArm } = await import('../scripts/lane-arms.mjs');
+  const { naiveArm } = await import('../scripts/lane-arms.mjs');
+  const config = Object.freeze({ modelId: 'fake-naive-model', provider: 'anthropic' });
+
+  let naiveExperiment;
+  const report = await publishNaiveLane({
+    includeControlBaseline: false,
+    async runNaiveArm(plan) {
+      naiveExperiment = await naiveArm({
+        experimentId: 'aic-117d-publish-naive-unreportable',
+        port: fakeNaivePort(),
+        config,
+      })(plan);
+      return naiveExperiment;
+    },
+  });
+
+  assert.equal(report.arms.naive.status, 'completed');
+  assert.equal(report.arms.naive.reportable, false);
+
+  let persistCalls = 0;
+  const result = await publishNaiveArm({
+    laneReport: report,
+    naiveExperiment,
+    datasetName: 'unused',
+    async persist() {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(persistCalls, 0);
+  assert.deepEqual(result, {
+    status: 'absent',
+    // Literal, pinned from packages/evals/src/live-model-lane.ts's own
+    // armReportable() — the undeclared-baseline branch.
+    absentReason:
+      'no control baseline was declared, so a metric that moved cannot be attributed to the model rather than to the harness',
+  });
+});
+
+test('publishNaiveArm returns absent with its own reason and never calls persist, when naiveExperiment is undefined despite a completed, reportable arm', async () => {
+  const { publishNaiveArm } = await import('../scripts/lane-arms.mjs');
+
+  // A minimal literal laneReport rather than one driven through
+  // runLiveModelLane: the lane never reports an arm completed+reportable
+  // without also having produced an experiment for it, so "completed,
+  // reportable, but naiveExperiment is undefined" is not a lane output — it is
+  // a caller-side capture bug (the script's own local variable never got
+  // assigned). publishNaiveArm still has to answer for it, so this branch is
+  // pinned as a literal rather than left unreachable.
+  const laneReport = {
+    arms: {
+      naive: { arm: 'naive', status: 'completed', reportable: true, metrics: {} },
+    },
+  };
+
+  let persistCalls = 0;
+  const result = await publishNaiveArm({
+    laneReport,
+    naiveExperiment: undefined,
+    datasetName: 'unused',
+    async persist() {
+      persistCalls += 1;
+    },
+  });
+
+  assert.equal(persistCalls, 0);
+  assert.deepEqual(result, {
+    status: 'absent',
+    absentReason: 'the naive arm produced no experiment to publish',
+  });
+});
+
+test('a persist rejection propagates out of publishNaiveArm rather than being turned into an absent result', async () => {
+  const { publishNaiveArm } = await import('../scripts/lane-arms.mjs');
+  const { report, naiveExperiment } = await completedReportableNaiveLane();
+  assert.equal(report.arms.naive.status, 'completed');
+  assert.equal(report.arms.naive.reportable, true);
+
+  const failure = new Error('LangSmith ingestion refused');
+  let persistCalls = 0;
+
+  await assert.rejects(
+    () =>
+      publishNaiveArm({
+        laneReport: report,
+        naiveExperiment,
+        datasetName: 'aic-117d-publish-naive-dataset',
+        async persist() {
+          persistCalls += 1;
+          throw failure;
+        },
+      }),
+    (error) => error === failure,
+  );
+  assert.equal(persistCalls, 1, 'a rejection must not be retried');
+});
+
+/* -------------------------------------------------------------------------- */
+/* 6. publishHoldoutArms / publishLiveModelArms — AIC-117 slice d, round 2    */
+/* -------------------------------------------------------------------------- */
+
+/** A model-arm experiment, scored the same deterministic way as the control. */
+async function scriptedModelExperimentFor(label, plan) {
+  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  return evals.runGraphBenchmarkExperiment({
+    experimentId: `aic-117d-publish-arms-${label}`,
+    scenarioSet: plan.scenarioSet,
+    runsPerScenario: plan.runsPerScenario,
+    metadata: plan.metadata,
+    createNodes: (record) => scriptedNodes(record),
+    async recordEvaluation() {},
+  });
+}
+
+/**
+ * A whole lane like `publishNaiveLane` above, but also letting the caller
+ * override the model arm — `publishHoldoutArms`/`publishLiveModelArms` need a
+ * laneReport where the model and naive arms diverge (one refused, the other
+ * completed and reportable), which `publishNaiveLane`'s fixed `runModelArm`
+ * cannot produce.
+ */
+async function fourArmLaneForPublish({ runModelArm, runNaiveArm, includeControlBaseline = true } = {}) {
+  const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  return runLiveModelLane({
+    env: { [MODEL_API_KEY_VARIABLE]: fakeApiKey() },
+    scenarioSet: 'calibration',
+    experimentId: 'aic-117d-publish-arms',
+    headSha: HEAD_SHA,
+    metadata: v3Metadata,
+    ...(includeControlBaseline ? { controlBaseline: readControlBaseline() } : {}),
+    async runControlArm(plan) {
+      return scriptedModelExperimentFor('control', plan);
+    },
+    ...(runNaiveArm === undefined ? {} : { runNaiveArm }),
+    async runModelArm(plan) {
+      if (runModelArm !== undefined) return runModelArm(plan);
+      return scriptedModelExperimentFor('model', plan);
+    },
+  });
+}
+
+/** A reportable naive arm, captured the way both scripts capture naiveExperiment. */
+function capturingNaiveArm(experimentId, assign) {
+  return async (plan) => {
+    const { naiveArm } = await import('../scripts/lane-arms.mjs');
+    const config = Object.freeze({ modelId: 'fake-naive-model', provider: 'anthropic' });
+    const experiment = await naiveArm({ experimentId, port: fakeNaivePort(), config })(plan);
+    assign(experiment);
+    return experiment;
+  };
+}
+
+test('publishHoldoutArms persists the model arm then the naive arm, in order, under their own dataset names and exact experiment objects, when both are reportable', async () => {
+  const { publishHoldoutArms } = await import('../scripts/eval-final-holdout.mjs');
+
+  let modelExperiment;
+  let naiveExperiment;
+  const report = await fourArmLaneForPublish({
+    async runModelArm(plan) {
+      modelExperiment = await scriptedModelExperimentFor('model-1', plan);
+      return modelExperiment;
+    },
+    runNaiveArm: capturingNaiveArm('aic-117d-publish-holdout-naive-1', (experiment) => (naiveExperiment = experiment)),
+  });
+
+  assert.equal(report.arms.model.reportable, true);
+  assert.equal(report.arms.naive.reportable, true);
+
+  const calls = [];
+  async function persist(options) {
+    calls.push(options);
+    return { datasetId: `d-${calls.length}`, projects: [], runIds: [] };
+  }
+
+  const result = await publishHoldoutArms({ laneReport: report, modelExperiment, naiveExperiment, headSha: HEAD_SHA, persist });
+
+  assert.deepEqual(
+    calls,
+    [
+      { datasetName: `aic-19-final-holdout-${HEAD_SHA12}`, experiment: modelExperiment },
+      { datasetName: `aic-19-final-holdout-naive-${HEAD_SHA12}`, experiment: naiveExperiment },
+    ],
+    'persist must be called for the model arm before the naive arm, each under its own dataset name and exact experiment object',
+  );
+  assert.deepEqual(result.publication, { datasetId: 'd-1', projects: [], runIds: [] });
+  assert.equal(result.publicationSkipped, undefined);
+  assert.deepEqual(result.naivePublication, { status: 'published', datasetId: 'd-2', projects: [], runIds: [] });
+});
+
+test('publishHoldoutArms persists only the naive arm, and carries the model arms own reason as publicationSkipped, when the model arm is unreportable and the naive arm is reportable', async () => {
+  const { publishHoldoutArms } = await import('../scripts/eval-final-holdout.mjs');
+
+  let naiveExperiment;
+  const report = await fourArmLaneForPublish({
+    async runModelArm() {
+      throw new Error('model harness exploded');
+    },
+    runNaiveArm: capturingNaiveArm('aic-117d-publish-holdout-naive-2', (experiment) => (naiveExperiment = experiment)),
+  });
+
+  assert.equal(report.arms.model.reportable, false);
+  assert.equal(report.arms.naive.reportable, true);
+
+  const calls = [];
+  async function persist(options) {
+    calls.push(options);
+    return { datasetId: 'd', projects: [], runIds: [] };
+  }
+
+  const result = await publishHoldoutArms({
+    laneReport: report,
+    modelExperiment: undefined,
+    naiveExperiment,
+    headSha: HEAD_SHA,
+    persist,
+  });
+
+  assert.deepEqual(
+    calls,
+    [{ datasetName: `aic-19-final-holdout-naive-${HEAD_SHA12}`, experiment: naiveExperiment }],
+    'independence: exactly one persist call, for the naive arm, though the model arm is unreportable',
+  );
+  assert.equal(result.publication, null);
+  assert.equal(result.publicationSkipped, report.arms.model.unreportableReason);
+  assert.deepEqual(result.naivePublication, { status: 'published', datasetId: 'd', projects: [], runIds: [] });
+});
+
+test('publishHoldoutArms persists only the model arm, and reports naivePublication absent with the refusal reason, when the naive arm refused', async () => {
+  const { publishHoldoutArms } = await import('../scripts/eval-final-holdout.mjs');
+
+  let modelExperiment;
+  const report = await fourArmLaneForPublish({
+    async runModelArm(plan) {
+      modelExperiment = await scriptedModelExperimentFor('model-3', plan);
+      return modelExperiment;
+    },
+    async runNaiveArm() {
+      throw new Error('naive harness exploded');
+    },
+  });
+
+  assert.equal(report.arms.model.reportable, true);
+  assert.equal(report.arms.naive.status, 'refused');
+
+  const calls = [];
+  async function persist(options) {
+    calls.push(options);
+    return { datasetId: 'd', projects: [], runIds: [] };
+  }
+
+  const result = await publishHoldoutArms({
+    laneReport: report,
+    modelExperiment,
+    naiveExperiment: undefined,
+    headSha: HEAD_SHA,
+    persist,
+  });
+
+  assert.deepEqual(
+    calls,
+    [{ datasetName: `aic-19-final-holdout-${HEAD_SHA12}`, experiment: modelExperiment }],
+    'exactly one persist call, for the model arm, though the naive arm refused',
+  );
+  assert.deepEqual(result.publication, { datasetId: 'd', projects: [], runIds: [] });
+  assert.equal(result.publicationSkipped, undefined);
+  assert.deepEqual(result.naivePublication, { status: 'absent', absentReason: 'naive harness exploded' });
+});
+
+test('publishLiveModelArms rejects with the refusal message before any persist call, when the model arm is unreportable — even though the naive arm is reportable', async () => {
+  const { publishLiveModelArms } = await import('../scripts/eval-live-model.mjs');
+
+  let naiveExperiment;
+  const report = await fourArmLaneForPublish({
+    async runModelArm() {
+      throw new Error('model harness exploded');
+    },
+    runNaiveArm: capturingNaiveArm('aic-117d-publish-live-naive-1', (experiment) => (naiveExperiment = experiment)),
+  });
+
+  assert.equal(report.arms.model.reportable, false);
+  assert.equal(report.arms.naive.reportable, true);
+
+  let persistCalls = 0;
+  await assert.rejects(
+    () =>
+      publishLiveModelArms({
+        laneReport: report,
+        modelExperiment: undefined,
+        naiveExperiment,
+        headSha: HEAD_SHA,
+        async persist() {
+          persistCalls += 1;
+          return { datasetId: 'd', projects: [], runIds: [] };
+        },
+      }),
+    (error) => error.message === `refusing to publish an unreportable model arm: ${report.arms.model.unreportableReason}`,
+  );
+  assert.equal(persistCalls, 0, 'not even the reportable naive arm may be published once the model arm is refused');
+});
+
+test('publishLiveModelArms persists the model arm then the naive arm and returns the naive publication, when both are reportable', async () => {
+  const { publishLiveModelArms } = await import('../scripts/eval-live-model.mjs');
+
+  let modelExperiment;
+  let naiveExperiment;
+  const report = await fourArmLaneForPublish({
+    async runModelArm(plan) {
+      modelExperiment = await scriptedModelExperimentFor('model-5', plan);
+      return modelExperiment;
+    },
+    runNaiveArm: capturingNaiveArm('aic-117d-publish-live-naive-2', (experiment) => (naiveExperiment = experiment)),
+  });
+
+  assert.equal(report.arms.model.reportable, true);
+  assert.equal(report.arms.naive.reportable, true);
+
+  const calls = [];
+  async function persist(options) {
+    calls.push(options);
+    return { datasetId: `d-${calls.length}`, projects: [], runIds: [] };
+  }
+
+  const result = await publishLiveModelArms({ laneReport: report, modelExperiment, naiveExperiment, headSha: HEAD_SHA, persist });
+
+  assert.deepEqual(
+    calls,
+    [
+      { datasetName: `aic-94-live-model-${HEAD_SHA12}`, experiment: modelExperiment },
+      { datasetName: `aic-94-live-model-naive-${HEAD_SHA12}`, experiment: naiveExperiment },
+    ],
+    'the model persist call must happen before the naive one',
+  );
+  assert.deepEqual(result, { naive: { status: 'published', datasetId: 'd-2', projects: [], runIds: [] } });
+});
+
+/**
+ * The text between the `{` immediately following the first occurrence of
+ * `marker` and its matching closing `}`, found by counting braces rather than
+ * slicing to EOF. Round-1 review (code-reviewer + security-scanner HOLD) found
+ * that an EOF slice from `flag('publish')` stayed green under three defects at
+ * once — dropping the naive-experiment capture, coupling the hold-out's naive
+ * publication to the model's, or hoisting the call out of the `--publish`
+ * path — because none of those moves the matched text outside an EOF slice.
+ * Brace-matched extraction narrows the audit to the one block each assertion
+ * below means to pin.
+ */
+function bracedBodyAfter(source, marker) {
+  // A string marker is matched literally; a RegExp marker is needed for
+  // `flag('publish') ? {`, which both scripts wrap across a line break.
+  const markerIndex = typeof marker === 'string' ? source.indexOf(marker) : source.search(marker);
+  assert.ok(markerIndex >= 0, `expected to find ${marker} in the source`);
+  const openIndex = source.indexOf('{', markerIndex);
+  assert.ok(openIndex >= 0, `expected an opening brace after ${marker}`);
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(openIndex + 1, i);
+    }
+  }
+  throw new Error(`unterminated brace body after ${JSON.stringify(marker)}`);
+}
+
+/**
+ * Narrowed replacement for the EOF-slicing row this file used to carry: the
+ * `publish(laneReport)` callback's own body (not everything after it) must
+ * call `publishLiveModelArms`, that callback must sit inside the
+ * `flag('publish') ? {` spread (not merely somewhere after it), and
+ * `runNaiveArm`'s own body must assign `naiveExperiment`.
+ */
+test('eval-live-model.mjs calls publishLiveModelArms inside the body of its publish(laneReport) callback, which sits inside the flag(\'publish\') spread, and runNaiveArm assigns naiveExperiment', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-live-model.mjs'), 'utf8');
+
+  const spreadBody = bracedBodyAfter(source, /flag\('publish'\)\s*\?\s*\{/);
+  assert.match(
+    spreadBody,
+    /async publish\(laneReport\)/,
+    "the publish(laneReport) callback must sit inside the flag('publish') ? { spread",
+  );
+
+  const publishBody = bracedBodyAfter(source, 'async publish(laneReport) {');
+  assert.match(
+    publishBody,
+    /publishLiveModelArms\(/,
+    'the body of publish(laneReport) must call publishLiveModelArms',
+  );
+
+  const naiveArmBody = bracedBodyAfter(source, 'async runNaiveArm(plan) {');
+  assert.match(
+    naiveArmBody,
+    /naiveExperiment\s*=/,
+    'the body of runNaiveArm must assign naiveExperiment',
+  );
+});
+
+/**
+ * Same shape as the row above, for the sibling command's own helper
+ * (`publishHoldoutArms`), plus the one field eval-final-holdout.mjs alone
+ * gains: `naivePublication` on the complete record — an existence check on the
+ * full source, not narrowed, because it names a field written outside
+ * `publish(laneReport)` entirely.
+ */
+test('eval-final-holdout.mjs calls publishHoldoutArms inside the body of its publish(laneReport) callback, which sits inside the flag(\'publish\') spread, runNaiveArm assigns naiveExperiment, and naivePublication reaches the complete record', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
+
+  const spreadBody = bracedBodyAfter(source, /flag\('publish'\)\s*\?\s*\{/);
+  assert.match(
+    spreadBody,
+    /async publish\(laneReport\)/,
+    "the publish(laneReport) callback must sit inside the flag('publish') ? { spread",
+  );
+
+  const publishBody = bracedBodyAfter(source, 'async publish(laneReport) {');
+  assert.match(
+    publishBody,
+    /publishHoldoutArms\(/,
+    'the body of publish(laneReport) must call publishHoldoutArms',
+  );
+
+  const naiveArmBody = bracedBodyAfter(source, 'async runNaiveArm(plan) {');
+  assert.match(
+    naiveArmBody,
+    /naiveExperiment\s*=/,
+    'the body of runNaiveArm must assign naiveExperiment',
+  );
+
+  assert.match(
+    source,
+    /naivePublication\s*:/,
+    'scripts/eval-final-holdout.mjs must write naivePublication into the complete record',
+  );
 });
