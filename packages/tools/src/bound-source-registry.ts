@@ -11,6 +11,7 @@ import type {
   EvidenceSourceOutcome,
   EvidenceSourceProvenance,
 } from './evidence-source.js';
+import { redactEvidenceOutput } from './redaction.js';
 
 /**
  * AIC-100, slice b: `BoundSourceRegistry` — the live/record/replay wrapper
@@ -24,13 +25,91 @@ import type {
  * file store's 0o600 mode, malformed/unparseable recordings, and __proto__
  * handling).
  *
+ * AIC-100, slice c adds budgets and redaction on top of the above (same
+ * file, see test/bound-source-registry.test.mjs's "AIC-100 slice c" sections):
+ * a `timeoutMs`/`maxResultBytes`/`maxPages` budget, validated at
+ * construction and defaulting to `DEFAULT_SOURCE_BUDGETS`; a real-timer
+ * timeout race around the adapter call in `live`/`record`; a result-size
+ * refusal (`budget_exceeded`) measured on an `ok` outcome's output; the
+ * `{ maxPages }` hint passed as `execute`'s additive third argument; and
+ * `redactEvidenceOutput` (`./redaction.js`) run over an `ok` outcome's output
+ * before it is stored in `record` mode and before it is returned to the
+ * caller in both `live` and `record`. `replay` never re-applies a budget: it
+ * serves whatever was recorded under the budget in force at record time,
+ * because the adapter is never called in replay at all and the stored
+ * output was already redacted when it was written.
+ *
+ * What this module redacts, stated exactly: only an `ok` outcome's `output`.
+ * A `refused` outcome's `reason` is always one of the six typed codes in
+ * `EVIDENCE_SOURCE_REFUSAL_REASONS` (never free text — see
+ * `./evidence-source.ts`'s `classifyEvidenceSourceFailure`), and provenance
+ * fields such as `sourceBindingId`/`adapter`/`credentialRefId` carry no
+ * adapter-supplied free text either, so neither needs this module's
+ * attention. A caller who invents a new field that DOES carry adapter free
+ * text (an `interactionId`-like note, a diagnostic message) is responsible
+ * for its own redaction — this module's contract is `output` only.
+ *
  * The module reads no ambient clock: every `fetchedAt` comes from the
  * injected `clock: () => Date` an options bag carries, never `Date.now()` or
- * `new Date()` called directly here.
+ * `new Date()` called directly here. The timeout race (slice c) DOES use a
+ * real `setTimeout`, deliberately: `.claude/rules/invariants.md`'s single
+ * "ambient clock" prohibition is about `fetchedAt`'s VALUE, not about
+ * whether real wall-clock time may ever elapse inside the module — see
+ * test/bound-source-registry.test.mjs's "AIC-100 slice c — timeout budget,
+ * real timers" section header, which pins real timers as the design choice.
  */
 
 /** The three modes a `BoundSourceRegistry` may run in — a closed union. */
 export type BoundSourceMode = 'live' | 'record' | 'replay';
+
+/**
+ * The three budgets a `BoundSourceRegistry` enforces around an adapter call
+ * in `live`/`record` mode (AIC-100 slice c). All three are positive
+ * integers, validated at construction — see `validateSourceBudgets` below
+ * and test/bound-source-registry.test.mjs's "AIC-100 slice c —
+ * DEFAULT_SOURCE_BUDGETS and budgets construction" section.
+ */
+export interface SourceBudgets {
+  readonly timeoutMs: number;
+  readonly maxResultBytes: number;
+  readonly maxPages: number;
+}
+
+/**
+ * The budgets a `BoundSourceRegistry` uses when its `budgets` option is
+ * omitted, or for any field a partial `budgets` option does not specify.
+ * Frozen, matching `EVIDENCE_SOURCE_REFUSAL_REASONS`'s own closed-registry
+ * convention. See test/bound-source-registry.test.mjs › "publishes
+ * DEFAULT_SOURCE_BUDGETS as a frozen object of three positive-integer
+ * fields".
+ */
+export const DEFAULT_SOURCE_BUDGETS: SourceBudgets = Object.freeze({
+  timeoutMs: 30_000,
+  maxResultBytes: 5_000_000,
+  maxPages: 50,
+});
+
+/**
+ * Merges a caller-supplied (possibly partial) `budgets` option over
+ * `DEFAULT_SOURCE_BUDGETS` and validates every field of the RESULT — so a
+ * field the caller omitted is checked as a default too, and a field the
+ * caller overrides is checked as what it actually is. Throws synchronously,
+ * the same way an unknown `mode` or a duplicate `sourceBindingId` already do.
+ * See test/bound-source-registry.test.mjs's "refuses construction with a
+ * non-positive or non-integer budgets field" rows.
+ */
+function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): SourceBudgets {
+  const merged: SourceBudgets = { ...DEFAULT_SOURCE_BUDGETS, ...budgets };
+  for (const key of ['timeoutMs', 'maxResultBytes', 'maxPages'] as const) {
+    const value = merged[key];
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(
+        `createBoundSourceRegistry: budgets.${key} must be a positive integer, got ${JSON.stringify(value)}`,
+      );
+    }
+  }
+  return merged;
+}
 
 /** One evidence source bound into a registry under a stable id. */
 export interface BoundSourceBinding {
@@ -52,6 +131,12 @@ export interface BoundSourceRegistryOptions {
   readonly bindings: readonly BoundSourceBinding[];
   readonly store: ReplayStore;
   readonly clock: () => Date;
+  /**
+   * Optional (AIC-100 slice c): a partial override of
+   * `DEFAULT_SOURCE_BUDGETS`, validated at construction. Never re-applied in
+   * `replay` mode — see this file's own module-level doc comment.
+   */
+  readonly budgets?: Partial<SourceBudgets>;
 }
 
 export interface BoundSourceRegistry {
@@ -171,10 +256,63 @@ function withRekeyedProvenanceAdapter(
  * The registry: the single writer of provenance in every mode. See the
  * test file's header for the exact per-mode behaviour this satisfies.
  */
+/**
+ * The outcome of racing an adapter's `execute()` against the configured
+ * `timeoutMs`, using a REAL `setTimeout` (never the injected `clock`, which
+ * stays reserved for `fetchedAt` — see this file's module-level doc
+ * comment). Whichever settles first wins; the loser's timer/promise is left
+ * to resolve on its own but is never awaited or allowed to affect the
+ * result — see test/bound-source-registry.test.mjs › "a source whose
+ * execute() settles ok AFTER the timeout budget is still refused timeout,
+ * not ok".
+ */
+type TimedExecuteResult =
+  | { readonly kind: 'settled'; readonly result: EvidenceSourceOutcome<unknown> }
+  | { readonly kind: 'rejected'; readonly error: unknown }
+  | { readonly kind: 'timeout' };
+
+function executeWithTimeout(
+  source: EvidenceSource,
+  operation: string,
+  input: unknown,
+  budgetHints: { readonly maxPages: number },
+  timeoutMs: number,
+): Promise<TimedExecuteResult> {
+  return new Promise((resolveRace) => {
+    let finished = false;
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      resolveRace({ kind: 'timeout' });
+    }, timeoutMs);
+
+    // Wrapped in Promise.resolve().then(...) so a SYNCHRONOUS throw from a
+    // non-async adapter's execute() becomes a rejection here too, rather than
+    // throwing out of this Promise executor.
+    Promise.resolve()
+      .then(() => source.execute(operation, input, budgetHints))
+      .then(
+        (result) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          resolveRace({ kind: 'settled', result });
+        },
+        (error: unknown) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          resolveRace({ kind: 'rejected', error });
+        },
+      );
+  });
+}
+
 export function createBoundSourceRegistry(
   options: BoundSourceRegistryOptions,
 ): BoundSourceRegistry {
   const { mode, bindings, store, clock } = options;
+  const budgets = validateSourceBudgets(options.budgets);
 
   if (!BOUND_SOURCE_MODES.includes(mode)) {
     throw new Error(`createBoundSourceRegistry: unknown mode ${JSON.stringify(mode)}`);
@@ -281,12 +419,47 @@ export function createBoundSourceRegistry(
 
       let outcome: EvidenceSourceOutcome<unknown>;
       try {
-        const result = await binding.source.execute(operation, input);
-        const fetchedAt = clock().toISOString();
-        outcome =
-          result.status === 'ok'
-            ? { status: 'ok', output: result.output, provenance: buildProvenance(fetchedAt) }
-            : { status: 'refused', reason: result.reason, provenance: buildProvenance(fetchedAt) };
+        const raced = await executeWithTimeout(
+          binding.source,
+          operation,
+          input,
+          { maxPages: budgets.maxPages },
+          budgets.timeoutMs,
+        );
+
+        if (raced.kind === 'timeout') {
+          outcome = {
+            status: 'refused',
+            reason: 'timeout',
+            provenance: buildProvenance(clock().toISOString()),
+          };
+        } else if (raced.kind === 'rejected') {
+          outcome = {
+            status: 'refused',
+            reason: classifyEvidenceSourceFailure(raced.error),
+            provenance: buildProvenance(clock().toISOString()),
+          };
+        } else {
+          const fetchedAt = clock().toISOString();
+          const result = raced.result;
+          if (result.status !== 'ok') {
+            outcome = { status: 'refused', reason: result.reason, provenance: buildProvenance(fetchedAt) };
+          } else {
+            // Result-size budget (AIC-100 slice c): measured on the
+            // adapter's RAW output, before redaction — see
+            // test/bound-source-registry.test.mjs's "AIC-100 slice c —
+            // result-size budget" section.
+            const resultBytes = Buffer.byteLength(JSON.stringify(result.output), 'utf8');
+            outcome =
+              resultBytes > budgets.maxResultBytes
+                ? { status: 'refused', reason: 'budget_exceeded', provenance: buildProvenance(fetchedAt) }
+                : {
+                    status: 'ok',
+                    output: redactEvidenceOutput(result.output),
+                    provenance: buildProvenance(fetchedAt),
+                  };
+          }
+        }
       } catch (error) {
         outcome = {
           status: 'refused',
@@ -296,10 +469,12 @@ export function createBoundSourceRegistry(
       }
 
       if (mode === 'record') {
-        // UNREDACTED: the stored recording is exactly the adapter's own
-        // output, verbatim, until AIC-100 slice c adds redaction — see
-        // test/bound-source-registry.test.mjs's header, "Review round 1 —
-        // security findings pinned here too".
+        // The stored recording is exactly the (already redacted, if `ok`)
+        // outcome returned to the caller above — see this file's
+        // module-level doc comment for what `redactEvidenceOutput` covers
+        // and test/bound-source-registry.test.mjs's "the registry redacts
+        // BEFORE persistence and BEFORE returning the outcome to its caller"
+        // block.
         const identity = buildReplayIdentity({ sourceBindingId, adapter, requestFingerprint });
         try {
           await store.set(identity, outcome);
@@ -372,12 +547,17 @@ function readRecordingsFile(path: string): StoredRecordings {
  *
  * Written atomically: a temp file in the same directory (so the rename below
  * is same-filesystem) is created with mode `0o600` — never world-readable,
- * because a recording is UNREDACTED adapter output until AIC-100 slice c
- * (security blocker 4) — and renamed over the target, so a reader never
- * observes a partially written file and no temp file is left behind once
- * `set()`/`delete()` returns. See test/bound-source-registry.test.mjs's
- * "creates its recordings file with mode 0o600" and "after a set(), no
- * temporary file is left beside the store …" rows.
+ * because a recording is adapter output kept beyond this process's own
+ * memory (security blocker 4) — and renamed over the target, so a reader
+ * never observes a partially written file and no temp file is left behind
+ * once `set()`/`delete()` returns. `0o600` stays in force even though
+ * AIC-100 slice c now redacts a recorded `ok` outcome's `output` before it
+ * ever reaches this function (see `createBoundSourceRegistry`'s `record`
+ * branch): a `refused` outcome's provenance and a caller who bypasses the
+ * registry are both still worth keeping owner-only. See
+ * test/bound-source-registry.test.mjs's "creates its recordings file with
+ * mode 0o600" and "after a set(), no temporary file is left beside the store
+ * …" rows.
  */
 function writeRecordingsFile(path: string, recordings: StoredRecordings): void {
   const sorted: StoredRecordings = Object.create(null) as StoredRecordings;
@@ -410,8 +590,11 @@ function writeRecordingsFile(path: string, recordings: StoredRecordings): void {
  * never called (see test/fixtures/bound-source-registry-type-contract.ts,
  * executed directly by node's bare test-file discovery) touches no file.
  *
- * UNREDACTED: every recording this store persists is exactly the adapter's
- * own output, verbatim — AIC-100 slice c adds redaction; this slice does not.
+ * This store persists exactly the outcome it is given by `set()`: for an
+ * `ok` outcome, `createBoundSourceRegistry`'s `record` mode already redacted
+ * `output` (AIC-100 slice c, `./redaction.ts`) before calling `set()`, so
+ * what lands on disk here is the same redacted value — this store itself
+ * performs no redaction of its own.
  */
 export function createFileReplayStore(path: string): ReplayStore {
   return {
