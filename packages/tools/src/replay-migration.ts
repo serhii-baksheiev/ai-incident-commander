@@ -1,50 +1,20 @@
 import { buildReplayIdentity } from './bound-source-registry.js';
 import { isReadOnlyToolId } from './contracts.js';
 import { createRequestFingerprint } from './evidence-source.js';
+import { INCIDENT_TOOL_ADAPTER_ID, INCIDENT_TOOL_ADAPTER_VERSION } from './incident-tool-source.js';
 import type { EvidenceSourceOutcome } from './evidence-source.js';
 import { REPLAY_FIXTURE_VERSION } from './replay-key.js';
 
 /**
- * AIC-100, slice d: `migrateReplayFixtureV1` — converts a legacy v1 replay
- * fixture (`packages/tools/replay/index.ts`'s own `ReplayFixture` shape) into
- * the v2 `BoundSourceRegistry` recordings shape, so a `ReplayToolAdapter`
- * built from a legacy fixture can run entirely on
- * `createBoundSourceRegistry`'s `replay` mode. See
- * test/replay-fixture-migration.test.mjs's header for the full set of design
- * pins this file satisfies: the fixed `aic.incident-tool@1` adapter identity,
- * `sourceBindingId === operation === toolId`, `credentialRefId: null`, every
- * legacy `ToolResult` carried WHOLE as the migrated recording's `ok` `output`
- * (never reinterpreted into a typed refusal reason), a non-`1` fixture
- * version refused synchronously, and a non-read-only tool id or an
- * unparseable key skipped rather than thrown.
+ * AIC-100, slice d: converts a legacy v1 replay fixture into the v2
+ * recordings `BoundSourceRegistry` replays. Design pins and edge cases:
+ * test/replay-fixture-migration.test.mjs.
  *
- * The v1 key shape it parses is exactly
- * `packages/tools/src/replay-key.ts`'s `createReplayFixtureKey`'s own:
- * `` `${REPLAY_FIXTURE_VERSION}:${JSON.stringify([toolId, canonicalSerializeToolInput(input)])}` ``.
- * `canonicalSerializeToolInput` is `JSON.stringify(canonicalJson(input))` —
- * already-canonical JSON text — so parsing it back with `JSON.parse` and
- * handing the result to `createRequestFingerprint` (which canonicalizes
- * again internally) produces the same fingerprint `createRequestFingerprint`
- * would compute directly on the original, non-canonicalized input: canonical
- * JSON is idempotent under `canonicalJson`. That equivalence is what lets a
- * v1 key built from a key-order-permuted input still migrate to the same v2
- * identity a direct fingerprint of the original input produces (see the test
- * file's row 3) and what lets `createIncidentToolSource`'s record-mode
- * registry key an entry identically to this module's own migration of the
- * matching v1 fixture (`test/legacy-adapters-on-registry.test.mjs`'s "a
- * record-mode registry over createIncidentToolSource produces the same
- * identity ..." row).
- *
- * `Object.keys(fixture.responses)` is processed in SORTED order, not
- * insertion order — so `skipped.keys`, the one field whose exact array order
- * would otherwise track the caller's own object literal, stays independent of
- * that order too (`recordings` is an object and already order-independent
- * under `assert.deepEqual`).
+ * Keys are processed in sorted order so `skipped.keys` does not depend on the
+ * caller's insertion order.
  */
 
-const MIGRATED_ADAPTER_ID = 'aic.incident-tool';
-const MIGRATED_ADAPTER_VERSION = '1';
-const MIGRATED_ADAPTER = `${MIGRATED_ADAPTER_ID}@${MIGRATED_ADAPTER_VERSION}`;
+const MIGRATED_ADAPTER = `${INCIDENT_TOOL_ADAPTER_ID}@${INCIDENT_TOOL_ADAPTER_VERSION}`;
 
 export interface LegacyReplayFixtureV1 {
   readonly version: unknown;

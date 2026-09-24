@@ -22,44 +22,16 @@ export interface ReplayFixture<Output = Evidence[]> {
   readonly responses: Readonly<Record<string, ToolResult<Output>>>;
 }
 
-/**
- * Fixed and never observed: `migrateReplayFixtureV1` requires a `fetchedAt`,
- * and the registry's own `replay` mode requires a `clock`, but `execute()`
- * below unwraps a registry hit down to the stored `ToolResult`'s own
- * `output`/`reason`/`message`, discarding every `EvidenceSourceOutcome`
- * `provenance` field (`fetchedAt` included) this migration/registry pair
- * builds along the way.
- */
+/** Provenance is discarded on unwrap, so this timestamp is never returned. */
 const MIGRATION_FETCHED_AT = '1970-01-01T00:00:00.000Z';
 
 /**
- * AIC-100, slice d: `ReplayToolAdapter` becomes a thin wrapper over
- * `createBoundSourceRegistry`'s `replay` mode. The legacy v1 fixture is
- * migrated ONCE, at construction, via `migrateReplayFixtureV1`
- * (`../src/replay-migration.ts`) into the v2 recordings shape the registry
- * reads; every one of `READ_ONLY_TOOL_REGISTRY`'s six tool ids is bound
- * through `createIncidentToolSource` (`../src/incident-tool-source.ts`)
- * wrapping a stub tool whose own `execute()` always throws — replay mode
- * never calls a binding's `source.execute()` at all, so that stub is never
- * reached; it exists only to give the registry a valid
- * `describe().adapterId`/`.version`/`.operations` to bind against.
- *
- * Every existing public signature and error string is kept exactly:
- * `unsupported replay fixture version: …` on construction,
- * `` `tool is not registered: ${toolId}` `` for a tool id outside the closed
- * read-only registry, `replay key generation failed` for an input
- * `createReplayFixtureKey` itself refuses (a circular object, a value
- * `canonicalJson` refuses, a getter that throws — this class still calls
- * `createReplayFixtureKey` itself for exactly this validation, BEFORE ever
- * consulting the registry, so the same failure surface fails the same way it
- * always did), and `replay response is not recorded` for a miss. A stored hit
- * is always the registry's `ok` outcome — `migrateReplayFixtureV1` carries
- * every legacy `ToolResult` (`ok`, `unavailable` or `error`) WHOLE as an `ok`
- * recording — so unwrapping `outcome.output` on any hit reproduces the exact
- * original `ToolResult` variant, redacted by the registry's own
- * `redactEvidenceOutput` pass on the way out. See
- * test/tool-registry-replay.test.mjs's and
- * test/legacy-adapters-on-registry.test.mjs's unmodified rows for both.
+ * AIC-100, slice d: a thin wrapper over `createBoundSourceRegistry`'s `replay`
+ * mode. The v1 fixture is migrated once, at construction, by
+ * `migrateReplayFixtureV1`; each read-only tool id is bound to a stub source
+ * that replay mode never executes. `createReplayFixtureKey` still runs first,
+ * so an input it refuses keeps its legacy error. The public signature and
+ * error strings are unchanged (test/tool-registry-replay.test.mjs).
  */
 export class ReplayToolAdapter<Output = Evidence[]> {
   readonly #registry: BoundSourceRegistry;

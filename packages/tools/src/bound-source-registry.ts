@@ -299,13 +299,7 @@ export const REPLAY_IDENTITY_VERSION = 2;
 
 const REPLAY_IDENTITY_PREFIX = `v${REPLAY_IDENTITY_VERSION}:`;
 
-/**
- * AIC-100, slice d: exported (this function was previously private to this
- * file) so `migrateReplayFixtureV1` (`./replay-migration.ts`) builds the
- * exact same v2 identity this registry itself builds — one implementation,
- * never a second copy (`.claude/rules/invariants.md`, "one mechanism, one
- * implementation"). See test/replay-fixture-migration.test.mjs's header.
- */
+/** Exported for `migrateReplayFixtureV1`, so both build the same identity. */
 export function buildReplayIdentity(parts: {
   readonly sourceBindingId: string;
   readonly adapter: string;
@@ -708,15 +702,8 @@ export function createBoundSourceRegistry(
 }
 
 /**
- * In-process `ReplayStore`: a plain `Map`, nothing persisted.
- *
- * AIC-100, slice d: `initial`, an ADDITIVE optional argument — a plain object
- * of `identity -> outcome` entries the store's `get()`/`keys()` see
- * immediately, with no prior `set()`. Existing callers that construct this
- * with no argument are unaffected: `initial` defaults to an empty object, so
- * the store starts empty exactly as before. See
- * test/legacy-adapters-on-registry.test.mjs › "createMemoryReplayStore(initial)
- * seeds get()/keys() from an initial recordings object, with no prior set()".
+ * In-process `ReplayStore`: a plain `Map`, nothing persisted, optionally
+ * seeded from `initial` (AIC-100 slice d).
  */
 export function createMemoryReplayStore(
   initial: Readonly<Record<string, EvidenceSourceOutcome<unknown>>> = {},
