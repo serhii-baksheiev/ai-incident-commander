@@ -49,10 +49,16 @@
  * kind of claim that reads as reassurance long after it stops holding.
  *
  * Flags:
- *   --control-baseline <path>  JSON `{ "<metric>": <mean>, … }`. Without it the
- *                              lane still runs and still reports, and marks the
- *                              model arm unreportable: a metric that moved
- *                              cannot be attributed without a control baseline.
+ *   --control-baseline <path>  JSON `{ "<metric>": <mean>, … }`. This
+ *                              command's own corpus is calibration, so its
+ *                              baseline is `docs/evidence/control-baseline-calibration.json`;
+ *                              `docs/evidence/control-baseline.json` is the
+ *                              final-evaluation corpus's baseline instead,
+ *                              read by `scripts/eval-final-holdout.mjs`.
+ *                              Without it the lane still runs and still
+ *                              reports, and marks the model arm unreportable:
+ *                              a metric that moved cannot be attributed
+ *                              without a control baseline.
  *   --publish                  Send the model arm, and then the naive arm when
  *                              it is reportable, to LangSmith; the output then
  *                              carries `publication.naive` saying which happened
@@ -66,18 +72,21 @@
  *   --out <path>               Write the JSON report here as well as to stdout.
  *
  * 🔴 **What the control arm can and cannot catch — and it is less than it
- * sounds.** It is the replay-backed lifecycle the regression suite runs, and
- * measured over the final-evaluation corpus it scores a single value of ZERO on
- * every metric it emits. Zero is the worst score for five of the six. So this
- * control arm catches a harness change that moves a metric UP, or that stops
- * emitting one — and it cannot catch one that pushes any metric further down,
- * because there is no further down. A `harness-regression` verdict from this
- * command means the first kind; its silence does not mean the second did not
- * happen.
+ * sounds.** It is the replay-backed lifecycle the regression suite runs, plus
+ * (AIC-119 slice 3) the canonical, state-driven `termination_check`. Over the
+ * final-evaluation corpus `termination_correctness` moved off the zero floor
+ * to 0.1; the other five metrics still sit at zero, which is their worst score
+ * except for `unsupported_claim_rate`, where zero is the best. So this control
+ * arm catches a harness change that moves one of those five metrics UP, or
+ * that stops emitting one — and, for those five, it cannot catch one that
+ * pushes a metric further down, because there is no further down. A
+ * `harness-regression` verdict from this command means the first kind; its
+ * silence does not mean the second did not happen. `termination_correctness`
+ * is off the floor, so this command's own regression detection covers it in
+ * both directions.
  *
- * An earlier version of this paragraph named two metrics as the exception,
- * which read as an exhaustive carve-out and was not one. The set is asserted
- * rather than counted here, so it cannot drift again:
+ * The set of metrics at the floor is asserted rather than counted here, so it
+ * cannot drift again:
  * see live-model-lane.test.mjs › "measures the harness zero that makes
  * evidence_coverage unreportable"
  *
@@ -99,6 +108,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
@@ -118,6 +128,24 @@ import {
 } from '@aic/roles';
 
 import { childEnv } from '../test/fixtures/child-env.mjs';
+
+const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+/**
+ * The calibration corpus's own committed control baseline — distinct from
+ * `readControlBaseline()`'s default `docs/evidence/control-baseline.json`,
+ * which is the final-evaluation baseline `scripts/eval-final-holdout.mjs`
+ * reads (AIC-119 slice 3: one file could no longer declare both corpora once
+ * the canonical termination node moved `termination_correctness` off zero for
+ * final-evaluation while calibration stayed at zero on every axis).
+ * see lane-arms.test.mjs › "the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra"
+ */
+export const CALIBRATION_CONTROL_BASELINE_PATH = join(
+  REPO_ROOT,
+  'docs',
+  'evidence',
+  'control-baseline-calibration.json',
+);
 
 function flag(name) {
   return argv.includes(`--${name}`);
@@ -146,7 +174,7 @@ function headSha() {
 }
 
 const baseMetadata = Object.freeze({
-  graphVersion: 'graph-v0.2',
+  graphVersion: 'graph-v0.3',
   promptVersion: REFERENCE_PROMPT_VERSION,
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,

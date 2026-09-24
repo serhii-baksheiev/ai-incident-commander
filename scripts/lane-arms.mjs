@@ -18,6 +18,7 @@
  */
 import * as evals from '@aic/evals';
 import { runOracleBenchmarkExperiment } from '@aic/evals/oracle';
+import { createDeriveHypothesisState, createStateTerminationCheck } from '@aic/graph';
 import {
   createModelChallengeHypothesis,
   createModelGenerateHypotheses,
@@ -29,17 +30,30 @@ import { NAIVE_PROMPT_VERSION, createModelNaiveInvestigation } from '@aic/roles/
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 
 /**
- * The deterministic arm: the replay-backed nodes, unchanged. The one
+ * The deterministic arm: the replay-backed nodes, plus the two canonical
+ * state-driven nodes AIC-119 slice 2 added (owner ruling D1) —
+ * `derive_hypothesis_state` and `termination_check`. The fixture's own copies
+ * of those two names are no-ops (`termination_check` always answers
+ * `sufficient`, `derive_hypothesis_state` always answers `{}`); wiring the
+ * canonical ones here is what lets the control arm and the model arm actually
+ * exercise state-driven termination rather than the fixture's constant.
+ * `modelNodes` inherits both, because it spreads `scriptedNodes`. The one
  * implementation both lane commands use, so the control arm and the model
  * arm's base nodes cannot drift apart.
  * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation"
+ * see lane-arms.test.mjs › "scriptedNodes(record) and modelNodes(record, port) both carry the canonical derive_hypothesis_state and termination_check nodes, proven by behaviour rather than identity or source text"
+ * see lane-arms.test.mjs › "scriptedNodes(record)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a sparse-evidence variant reaches a different one"
  *
  * ⚠ `replayBackedNodes` takes three arguments, and an earlier hold-out command
  * passed one. The crash came at the first record of the control arm, before any
  * model call, and it is why record `04cf86236c2f` is void.
  */
 export function scriptedNodes(record) {
-  return replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]]));
+  return {
+    ...replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]])),
+    derive_hypothesis_state: createDeriveHypothesisState(),
+    termination_check: createStateTerminationCheck(),
+  };
 }
 
 /**
