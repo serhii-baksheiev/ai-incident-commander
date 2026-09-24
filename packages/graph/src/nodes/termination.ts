@@ -78,6 +78,14 @@ export function createStateTerminationCheck() {
     const leader = leaderId as string;
     const r = control.challengeRounds;
 
+    // Every challenge-required decision below (T2, T3, T4) relies on the
+    // kernel to end the challenge loop: it turns the decision into `ambiguous`
+    // at MAX_CHALLENGE_ROUNDS and into `budget-exhausted` when the reserve is
+    // spent. Reusing this node outside createInvestigationGraph needs that
+    // bound supplied some other way.
+    // see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
+    // see state-termination.test.mjs › "through the real kernel: a challenge-required decision with no reserve left terminates budget-exhausted rather than challenging"
+
     // T2
     if (r === 0) {
       return { route: 'challenge-required', leaderId: leader };
@@ -87,11 +95,7 @@ export function createStateTerminationCheck() {
       COMPETING_STATUSES.has(standing.status),
     );
 
-    // T3. This node never ends the challenge loop itself: the kernel turns a
-    // challenge-required decision into `ambiguous` at MAX_CHALLENGE_ROUNDS and
-    // into `budget-exhausted` when the reserve is spent, so reusing the node
-    // outside createInvestigationGraph needs that bound supplied some other way.
-    // see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
+    // T3
     if (competing.length >= 2) {
       return { route: 'challenge-required', leaderId: leader };
     }
@@ -108,8 +112,10 @@ export function createStateTerminationCheck() {
       return { route: 'challenge-required', leaderId: leader };
     }
 
-    // T5. A sole member of COMPETING_STATUSES is always the leader: it
-    // outranks every non-member.
+    // T5. A sole member of COMPETING_STATUSES is always the leader, because
+    // COMPETING_STATUSES is the top of the standing rank (supported, then
+    // corroborated). A refinement of COMPETING_STATUSES that breaks that
+    // (AIC-122's decision point) must check the leader here again.
     if (competing.length === 1) {
       return { route: 'terminal', stopKind: 'sufficient', leaderId: leader };
     }
