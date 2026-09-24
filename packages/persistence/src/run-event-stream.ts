@@ -26,7 +26,7 @@ import { APPLICATION_SCHEMA } from './app-schema.js';
 
 /** `createRunEventStreamSource`'s own options. */
 export interface RunEventStreamSourceOptions {
-  /** `tail`'s poll interval when its own call does not specify one. Default 250ms, floored to `MIN_RUN_EVENT_POLL_INTERVAL_MS`. */
+  /** `tail`'s poll interval when its own call does not specify one. Default 250ms, bounded by `normalizePollIntervalMs` (the floor `MIN_RUN_EVENT_POLL_INTERVAL_MS`, and the timer limit). */
   readonly pollIntervalMs?: number;
   /** Bounds every poll `tail` issues internally (validated/clamped like `readAfter`'s own `limit`). Default `DEFAULT_READ_LIMIT`. */
   readonly pageSize?: number;
@@ -59,7 +59,7 @@ export const MAX_RUN_EVENT_READ_LIMIT = 1000;
 /**
  * The floor `tail` raises an unthrottled (0, negative or `NaN`)
  * `pollIntervalMs` to, bounding its poll rate (AIC-58 review round 1, finding
- * 4 — a security advisory: measured 176 queries/200ms with no floor). Kept
+ * 4 — a security advisory). Kept
  * `<= 20` so every existing row using `pollIntervalMs: 20` (the live suite's
  * convention) keeps behaving as an explicit, unfloored interval.
  */
@@ -80,10 +80,17 @@ function normalizeReadLimit(limit: number | undefined, ceiling: number): number 
   return Math.min(limit, ceiling);
 }
 
-/** Raises an unthrottled (`NaN`, negative, or below-floor) poll interval to `floor`. */
+/** The largest delay `setTimeout` honours; above it (or non-finite) it sleeps 1 ms instead. */
+const MAX_TIMER_DELAY_MS = 2147483647;
+
+/**
+ * Raises a non-finite, negative or below-floor poll interval to `floor`, and
+ * lowers one past `MAX_TIMER_DELAY_MS` to it, so `setTimeout` never receives a
+ * delay it would turn into a 1 ms sleep.
+ */
 function normalizePollIntervalMs(pollIntervalMs: number, floor: number): number {
-  if (Number.isNaN(pollIntervalMs) || pollIntervalMs < floor) return floor;
-  return pollIntervalMs;
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < floor) return floor;
+  return Math.min(pollIntervalMs, MAX_TIMER_DELAY_MS);
 }
 
 function toRunEvent(row: {
@@ -160,7 +167,7 @@ function sleepOrAbort(ms: number, signal: AbortSignal | undefined): Promise<void
  * a non-negative integer or its decimal string, defaulting to 0: a fresh,
  * never-reconnected client), yielding each newly committed event once, in
  * order, advancing its cursor as it goes, and sleeping `pollIntervalMs`
- * (floored to `MIN_RUN_EVENT_POLL_INTERVAL_MS`) between empty polls. Each
+ * (bounded by `normalizePollIntervalMs`) between empty polls. Each
  * poll is one bounded `readAfter` call, limited to `pageSize` — no unbounded
  * buffering, and a backlog larger than one page is paged rather than read in
  * a single unbounded poll. Ends promptly once `options.signal` aborts,

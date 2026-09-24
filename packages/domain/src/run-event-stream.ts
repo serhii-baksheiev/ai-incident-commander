@@ -51,7 +51,7 @@ export interface RunEventStreamSource {
 
 /**
  * Raised by `parseLastEventId` for any value that is not a non-negative
- * integer within `Number.MAX_SAFE_INTEGER`, whether given as a number or as
+ * integer within `MAX_RUN_EVENT_SEQ`, whether given as a number or as
  * its decimal string (mirroring `StaleOwnerError` / `ExecutionIntegrityViolation`
  * in `execution.ts`: a named, catchable `Error` subclass with a stable
  * `code`, never a bare `Error` or a return-a-sentinel shape). See
