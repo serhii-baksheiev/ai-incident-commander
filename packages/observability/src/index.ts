@@ -223,7 +223,27 @@ export interface PersistedBenchmarkEvaluation {
       >
     >
   >;
+  readonly predictionGap?: Readonly<Record<(typeof PERSISTED_PREDICTION_GAP_KEYS)[number], unknown>>;
 }
+
+/**
+ * The fields of the prediction-gap diagnostic (AIC-119 slice 4, owner ruling
+ * D1 item 7) a result may carry. It is published at `outputs.predictionGap`
+ * and never as feedback, because it is a diagnostic, not a metric.
+ * see persistence-four-arm.test.mjs › "publishes a declared predictionGap at outputs.predictionGap and as no feedback row"
+ */
+export const PERSISTED_PREDICTION_GAP_KEYS = [
+  'stopKind',
+  'leaderId',
+  'leaderStatus',
+  'highestStatus',
+  'leaderConfirmedPredictions',
+  'finalCorroborated',
+  'finalSupported',
+  'sufficientFromCorroborated',
+  'stalledLeaderLacksConfirmedPrediction',
+  'stalledOther',
+] as const;
 
 export interface PersistedBenchmarkExperiment {
   readonly records: readonly PersistedBenchmarkRecord[];
@@ -594,6 +614,32 @@ function requireNotApplicable(
 }
 
 /**
+ * The prediction-gap diagnostic a result declares, or nothing when it declares
+ * none. Read own-only; a field the diagnostic does not declare is refused by
+ * name, before anything is sent.
+ * see persistence-four-arm.test.mjs › "refuses a predictionGap carrying a key the diagnostic does not declare, before anything is sent"
+ */
+function requirePredictionGap(
+  result: PersistedBenchmarkEvaluation,
+): Readonly<Record<string, unknown>> | undefined {
+  const declared = ownValue(result, 'predictionGap');
+  if (declared === undefined) return undefined;
+  if (typeof declared !== 'object' || declared === null || Array.isArray(declared)) {
+    throw new Error('benchmark result predictionGap is not an object');
+  }
+  const known = new Set<string>(PERSISTED_PREDICTION_GAP_KEYS);
+  const projected: Record<string, unknown> = {};
+  for (const key of Object.keys(declared)) {
+    if (!known.has(key)) {
+      throw new Error(`benchmark result predictionGap names an unknown field: ${key}`);
+    }
+    const value = ownValue(declared, key);
+    if (value !== undefined) defineOwn(projected, key, value);
+  }
+  return projected;
+}
+
+/**
  * Projects resource evidence, or refuses it.
  *
  * Absent is not an error: every record written before this evidence existed
@@ -868,6 +914,7 @@ async function persistPreparedExperiment({
     const metrics = requireMetrics(rawResult as PersistedBenchmarkEvaluation);
     const resources = requireResourceEvidence(rawResult as PersistedBenchmarkEvaluation);
     const notApplicable = requireNotApplicable(rawResult as PersistedBenchmarkEvaluation);
+    const predictionGap = requirePredictionGap(rawResult as PersistedBenchmarkEvaluation);
     // Own-read, the same way `projectRunMetadata` reads this field further down
     // this function. This is the pairing input that decides whether the run measured
     // behaviour at all, so a `[[Get]]` here let an inherited version admit
@@ -908,6 +955,7 @@ async function persistPreparedExperiment({
         // run was not measured.
         ...(resources === undefined ? {} : { resources }),
         ...(notApplicable === undefined ? {} : { notApplicable }),
+        ...(predictionGap === undefined ? {} : { predictionGap }),
       },
       extra: {
         metadata: projectRunMetadata(record.metadata as PersistedBenchmarkRunMetadata),
