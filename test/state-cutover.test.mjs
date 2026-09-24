@@ -286,7 +286,7 @@ test('refuses a resume of a FINISHED v3 checkpoint that predates primaryScope, r
 
 /**
  * `assertPersistedStateVersion` checks `schemaVersion` and then
- * `statusRulesVersion` (`packages/graph/src/investigation.ts`). Nothing today
+ * `statusRulesVersion` (`packages/graph/src/investigation.ts`). No other row
  * exercises the second half of that guard — this row does, independently of
  * the `primaryScope` cutover above: only `control.statusRulesVersion` is
  * rewritten, so a failure here can only be about the status-rules branch.

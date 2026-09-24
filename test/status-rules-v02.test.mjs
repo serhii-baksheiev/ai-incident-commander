@@ -342,7 +342,7 @@ test('accepts corroborated as a hypothesis status, alongside the v0.1 statuses',
 });
 
 /**
- * `STATUS_RULES['v0.1']` is a literal copy of today's v0.1 table, written by
+ * `STATUS_RULES['v0.1']` is checked against a literal copy of the frozen v0.1 table, written by
  * hand here rather than derived from `BASELINE_STATUS_RULES` — so a change to
  * the production table that quietly narrows or widens v0.1 shows up as a
  * mismatch against an independent expectation, not as a comparison of the
