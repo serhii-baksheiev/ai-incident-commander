@@ -32,10 +32,10 @@
  * `.claude/scripts/lib/secrets.mjs`), used here to establish the premise
  * that a value really does read as that credential shape, independently of
  * whatever scope.ts ends up doing. `Bearer <token>` and
- * `scheme://user:pass@host` userinfo are not in that vocabulary (grep
- * `.claude/scripts/lib/secrets.mjs` for `Bearer` or `user:pass`; neither
- * appears), so those two are asserted directly, by the literal shape the
- * ruling names, with no second implementation to check them against.
+ * `scheme://user:pass@host` userinfo are neither one a `SECRET_VALUE_PATTERNS`
+ * family (`.claude/scripts/lib/secrets.mjs`), so those two are asserted
+ * directly, by the literal shape the ruling names, with no second
+ * implementation to check them against.
  *
  * Every credential-shaped value is assembled at runtime from parts, never
  * written out as one contiguous literal (`.claude/rules/autonomy.md`; see
@@ -638,7 +638,7 @@ test('every SECRET_VALUE_PATTERNS family is either mirrored by the correspondenc
   }
 });
 
-test('refuses a config value if and only if findSecretValues flags it, over a shared corpus of credential-shaped and benign values', () => {
+test('refuses a config value if and only if findSecretValues flags it, over the shared corpus of credential-shaped and benign values', () => {
   const corpus = [...secretFamilyCorpus().values(), ...benignConfigValues()];
   for (const value of corpus) {
     const flaggedBySecretsLib = findSecretValues(value).length > 0;
@@ -654,13 +654,35 @@ test('refuses a config value if and only if findSecretValues flags it, over a sh
 });
 
 /**
+ * States the limit `EXCLUDED_SECRET_FAMILIES` documents, from the missing
+ * side: `assigned-secret` is the one `SECRET_VALUE_PATTERNS` family the
+ * domain's copy does not mirror (see the comment above), so a value shaped
+ * like that family alone - a KEYWORD+SEPARATOR+VALUE construction, with no
+ * fixed-prefix literal anywhere in it - is accepted here even though
+ * `findSecretValues` flags it.
+ */
+test('states its limit: an assigned-secret shaped value such as password=<value> is accepted, because that family is excluded from the domain copy', () => {
+  const assignedSecretValue = ['password', '=', 'A1b2C3d4E5f6G7h8'].join('');
+  assert.ok(
+    findSecretValues(assignedSecretValue).length > 0,
+    `premise failed: findSecretValues did not recognise ${JSON.stringify(assignedSecretValue)} as assigned-secret-shaped`,
+  );
+  const candidate = githubBinding({ config: { owner: assignedSecretValue } });
+  assert.equal(
+    domain.SourceBindingSchema.safeParse(candidate).success,
+    true,
+    'an assigned-secret-shaped config value is accepted, because that family is excluded from the domain copy (EXCLUDED_SECRET_FAMILIES)',
+  );
+});
+
+/**
  * Keys (AIC-99 round-1 review, HOLD 3). Config keys are never screened for
  * being credential-shaped, and a refused key is echoed verbatim into
  * `issue.path` - which, serialized, leaks the credential into a hook
  * transcript, a CI log or a terminal scrollback exactly as
  * `.claude/scripts/lib/secrets.mjs`'s own header says a guard must not do.
  */
-test('refuses a credential-shaped config key, and never echoes the refused key into the reported issues', () => {
+test('refuses a ghp_-shaped config key for its own shape (the camelCase key pattern), and never echoes the refused key into the reported issues', () => {
   const ghpKey = ['ghp_', 'A'.repeat(20)].join('');
   const result = domain.SourceBindingSchema.safeParse(githubBinding({ config: { [ghpKey]: 'value' } }));
   assert.equal(result.success, false, 'a credential-shaped config key must be refused');
@@ -671,7 +693,7 @@ test('refuses a credential-shaped config key, and never echoes the refused key i
   );
 });
 
-test('refuses a config key that is itself slug-shaped but reads as a credential anywhere within it', () => {
+test('refuses a config key that is itself slug-shaped but reads as a credential anywhere within it, and never echoes the refused key into the reported issues', () => {
   const credentialShapedKey = ['a', 'ATATT3x', 'B'.repeat(20)].join('');
   assert.match(
     credentialShapedKey,
@@ -682,9 +704,12 @@ test('refuses a config key that is itself slug-shaped but reads as a credential 
     findSecretValues(credentialShapedKey).length > 0,
     `premise failed: findSecretValues did not recognise ${JSON.stringify(credentialShapedKey)} as credential-shaped`,
   );
-  assertRefusedForOwnShape(
-    domain.SourceBindingSchema.safeParse(githubBinding({ config: { [credentialShapedKey]: 'value' } })),
-    'a slug-shaped config key that reads as a credential anywhere within it must be refused',
+  const result = domain.SourceBindingSchema.safeParse(githubBinding({ config: { [credentialShapedKey]: 'value' } }));
+  assertRefusedForOwnShape(result, 'a slug-shaped config key that reads as a credential anywhere within it must be refused');
+  const serialized = JSON.stringify(result.error.issues);
+  assert.ok(
+    !serialized.includes(credentialShapedKey),
+    `the serialized issues must not carry the refused key ${JSON.stringify(credentialShapedKey)} verbatim`,
   );
 });
 
