@@ -386,7 +386,7 @@ export function createModelGenerateHypotheses({
         if (taken.has(hypothesis.id)) {
           throw new ModelRoleOutputError(
             role,
-            `proposed a hypothesis id the run already carries: ${hypothesis.id}`,
+            `proposed a hypothesis id the run already carries: ${quoteModelText(hypothesis.id)}`,
           );
         }
         taken.add(hypothesis.id);
