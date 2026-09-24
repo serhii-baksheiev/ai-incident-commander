@@ -39,6 +39,7 @@ import { MAX_CHALLENGE_ROUNDS, type TerminationDecision } from '../investigation
  * round) is not distinguished from no change at all. Detecting that would
  * need the challenge target stored in state, which is a schema change this
  * slice does not make (plan section 2c).
+ * see state-termination.test.mjs › "T4 limit: an earlier hypothesis that leads while a newer challenge alternative exists is read as no leadership change, so it is sufficient without another round"
  *
  * `COMPETING_STATUSES` is the decision point AIC-122 may refine (plan
  * section 2d): conservative here, it is exactly `{supported, corroborated}`
@@ -86,7 +87,11 @@ export function createStateTerminationCheck() {
       COMPETING_STATUSES.has(standing.status),
     );
 
-    // T3
+    // T3. This node never ends the challenge loop itself: the kernel turns a
+    // challenge-required decision into `ambiguous` at MAX_CHALLENGE_ROUNDS and
+    // into `budget-exhausted` when the reserve is spent, so reusing the node
+    // outside createInvestigationGraph needs that bound supplied some other way.
+    // see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
     if (competing.length >= 2) {
       return { route: 'challenge-required', leaderId: leader };
     }
@@ -103,8 +108,9 @@ export function createStateTerminationCheck() {
       return { route: 'challenge-required', leaderId: leader };
     }
 
-    // T5
-    if (competing.length === 1 && competing[0]?.id === leader) {
+    // T5. A sole member of COMPETING_STATUSES is always the leader: it
+    // outranks every non-member.
+    if (competing.length === 1) {
       return { route: 'terminal', stopKind: 'sufficient', leaderId: leader };
     }
 
