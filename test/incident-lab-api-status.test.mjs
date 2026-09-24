@@ -8,6 +8,9 @@ import test from 'node:test';
 
 import { childEnv } from './fixtures/child-env.mjs';
 
+const READINESS_DEADLINE_MS = 30_000;
+const PROBE_TIMEOUT_MS = 2_000;
+
 async function reserveFreePort() {
   const server = createServer();
   await new Promise((resolveListen, rejectListen) => {
@@ -58,21 +61,33 @@ async function startApiWithUnavailableDependencies(t) {
   });
 
   const baseUrl = `http://127.0.0.1:${port}`;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  // A wall-clock deadline, not an attempt count: a fixed 50 x 20 ms loop gave
+  // the child about one second to bind, so a child that is merely slow to
+  // start failed this row with no fault in the lab API. Each probe is bounded
+  // too, so the deadline in the failure message is one the loop enforces.
+  const deadline = Date.now() + READINESS_DEADLINE_MS;
+  let waitMs = 20;
+  while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       assert.fail(`lab API exited before readiness: ${stderr}`);
     }
     try {
       const response = await fetch(new URL('/control/reset', baseUrl), {
         method: 'POST',
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.min(PROBE_TIMEOUT_MS, deadline - Date.now())),
+        ),
       });
       if (response.ok) return { baseUrl };
     } catch {
       // The child has not bound its loopback socket yet.
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    await new Promise((resolveWait) => setTimeout(resolveWait, waitMs));
+    waitMs = Math.min(waitMs * 2, 250);
   }
-  assert.fail(`lab API did not become ready: ${stderr}`);
+  assert.fail(
+    `lab API did not become ready within ${READINESS_DEADLINE_MS} ms: ${stderr}`,
+  );
 }
 
 test('returns service unavailable when health dependencies cannot be reached', async (t) => {
