@@ -415,3 +415,78 @@ test('no lane script under scripts/ declares a temperature field in its run meta
     );
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-119 slice 4: the prediction-gap diagnostic is published as run output,  */
+/* never as feedback                                                          */
+/* -------------------------------------------------------------------------- */
+
+const PREDICTION_GAP = Object.freeze({
+  stopKind: 'stalled',
+  leaderId: 'h-1',
+  leaderStatus: 'corroborated',
+  highestStatus: 'corroborated',
+  leaderConfirmedPredictions: 0,
+  finalCorroborated: true,
+  finalSupported: false,
+  sufficientFromCorroborated: false,
+  stalledLeaderLacksConfirmedPrediction: true,
+  stalledOther: false,
+});
+
+function resultWithPredictionGap(predictionGap) {
+  const record = dependencyIncidentRecord();
+  const result = { ...evals.evaluateBenchmarkRecord({ record, outcome: behaviorPerfectOutcomeFor(record.scenario) }), predictionGap };
+  return { record, result };
+}
+
+test('publishes a declared predictionGap at outputs.predictionGap and as no feedback row', async () => {
+  const capture = capturingClient();
+  const { record, result } = resultWithPredictionGap(PREDICTION_GAP);
+
+  await observability.persistBenchmarkExperiment({
+    client: capture.client,
+    datasetName: uniqueDatasetName('prediction-gap-published'),
+    experiment: { records: [record], results: [result] },
+  });
+
+  const [run] = capture.runs;
+  assert.deepEqual(run.outputs.predictionGap, { ...PREDICTION_GAP });
+  const gapKeys = new Set(Object.keys(PREDICTION_GAP));
+  assert.equal(
+    capture.feedback.some(({ key }) => gapKeys.has(key) || key.startsWith('prediction')),
+    false,
+    'the prediction-gap diagnostic is never a metric, so it never becomes a feedback row',
+  );
+});
+
+test('publishes no outputs.predictionGap when the result declares none', async () => {
+  const capture = capturingClient();
+  const record = dependencyIncidentRecord();
+  const result = evals.evaluateBenchmarkRecord({ record, outcome: behaviorPerfectOutcomeFor(record.scenario) });
+
+  await observability.persistBenchmarkExperiment({
+    client: capture.client,
+    datasetName: uniqueDatasetName('prediction-gap-absent'),
+    experiment: { records: [record], results: [result] },
+  });
+
+  const [run] = capture.runs;
+  assert.equal(Object.hasOwn(run.outputs, 'predictionGap'), false);
+});
+
+test('refuses a predictionGap carrying a key the diagnostic does not declare, before anything is sent', async () => {
+  const capture = capturingClient();
+  const { record, result } = resultWithPredictionGap({ ...PREDICTION_GAP, composite: 0.9 });
+
+  await assert.rejects(
+    () =>
+      observability.persistBenchmarkExperiment({
+        client: capture.client,
+        datasetName: uniqueDatasetName('prediction-gap-unknown-key'),
+        experiment: { records: [record], results: [result] },
+      }),
+    /predictionGap names an unknown field: composite/,
+  );
+  assert.deepEqual(capture.runs, []);
+});

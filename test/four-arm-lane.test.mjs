@@ -212,8 +212,8 @@ test('still returns not-run oracle and naive arms, with model and control unchan
 
   assert.deepEqual(
     Object.keys(report.arms.control).sort(),
-    ['arm', 'metrics', 'movedMetrics', 'observedBaseline', 'status'],
-    'the control arm keeps its existing fields and gains status',
+    ['arm', 'metrics', 'movedMetrics', 'observedBaseline', 'predictionGapCounts', 'status'],
+    'the control arm keeps its existing fields and gains status and the prediction-gap counts (AIC-119 slice 4, a diagnostic, not a metric)',
   );
   assert.equal(
     report.arms.control.status,
