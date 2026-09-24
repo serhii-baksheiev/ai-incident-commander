@@ -1,19 +1,44 @@
 <div align="center">
-  <h1>AI Incident Commander</h1>
-  <p><strong>Evidence-driven, replayable incident investigation built around deterministic control.</strong></p>
-  <p>
-    Architecture frozen for v0.1 · TypeScript · LangGraph · LangChain · LangSmith
-  </p>
-  <p>
-    <a href="docs/incident-commander-architecture-v1.md">Architecture v1</a>
-  </p>
+
+# AI Incident Commander
+
+**Evidence-driven incident investigation with deterministic control, durable execution, and measurable model quality.**
+
+[![CI](https://github.com/serhii-baksheiev/ai-incident-commander/actions/workflows/ci.yml/badge.svg)](https://github.com/serhii-baksheiev/ai-incident-commander/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node](https://img.shields.io/badge/Node.js-%3E%3D22-43853D)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.x-3178C6)
+
+[Architecture](docs/incident-commander-architecture-v1.md) ·
+[Integration boundary](docs/decisions/integration-boundary.md) ·
+[Durable execution ADR](docs/decisions/durable-run-execution.md) ·
+[Evidence](docs/evidence) ·
+[Journal](journal/README.md)
+
 </div>
 
 ---
 
-AI Incident Commander is designed as a stateful investigation system for operational incidents. It forms competing hypotheses, derives falsifiable predictions, runs typed investigation tests, preserves raw evidence separately from interpretation, challenges its leading explanation, and stops through deterministic rules.
+AI Incident Commander (AIC) is a stateful investigation system for operational incidents.
 
-The goal is not an autonomous remediation swarm. The goal is a disciplined investigation kernel whose conclusions can be traced to evidence, resumed after interruption, replayed against fixed scenarios, and measured before changes are accepted.
+It does not ask an LLM to "solve the incident" in one opaque step. AIC keeps the control flow explicit: it forms competing hypotheses, derives falsifiable predictions, executes typed investigation tests, preserves raw evidence separately from interpretation, challenges the leading explanation, and stops through deterministic rules.
+
+> **The graph controls the investigation. The model supplies judgement. Evidence controls what can be claimed. Evals decide whether a change was an improvement.**
+
+## Why this exists
+
+Most agentic incident-response demos make it difficult to answer basic engineering questions:
+
+- Why did the system believe this root cause?
+- Which evidence actually supports it?
+- Did a retry repeat an external call?
+- Can the run survive a worker crash?
+- Did the new prompt really improve anything?
+- Is the model better because of the graph, or would one good prompt do just as well?
+
+AIC is built around those questions.
+
+The project intentionally favors **traceability, replayability, explicit failure modes, and measurable evidence** over autonomous "magic".
 
 ## Investigation loop
 
@@ -22,402 +47,342 @@ flowchart LR
     I[Incident] --> H[Competing hypotheses]
     H --> P[Testable predictions]
     P --> T[Typed investigation tests]
-    T --> E[Immutable evidence]
+    T --> E[Evidence]
     E --> A[Evidence assessment]
     A --> C{Challenge leader}
-    C -->|More evidence| P
+    C -->|Need more evidence| P
     C -->|Resolved or bounded| R[Evidence-linked conclusion]
 ```
 
-## Architectural thesis
+The model participates in semantic judgement. It does **not** own executable tools, persistence, budgets, worker ownership, or termination policy.
 
-> **The graph controls the investigation. The model supplies judgement. Evidence controls what can be claimed. Evals decide whether a change was an improvement.**
+## Architecture at a glance
 
-Four boundaries make that thesis concrete:
+```mermaid
+flowchart TB
+    CLI[CLI / future API] --> G[LangGraph investigation]
+    G --> D[Domain contracts]
+    G --> R[Model roles]
+    G --> T[Tool ports]
+    G --> P[Persistence]
 
-- **LangGraph owns orchestration** — state, routing, persistence, interruption, and recovery.
-- **LLM nodes return structured judgement** — they do not own executable tools.
-- **Deterministic nodes own side effects** — tool execution, evidence creation, budgets, challenge routing, and termination.
-- **Replayable evaluation gates change** — prompt, graph, and tool-semantic changes require evidence tied to the tested revision.
+    R --> M[Provider-neutral ModelPort]
+    T --> LIVE[Live adapters]
+    T --> REPLAY[Replay adapters]
 
-## v0.1 — Investigation Kernel
+    P --> CP[LangGraph checkpoints]
+    P --> RUNS[Durable runs / leases / fencing]
+    P --> NR[Committed node results]
+    P --> EV[Run events]
 
-| Capability | v0.1 commitment |
-| --- | --- |
-| Domain | Incident → Hypothesis → Prediction → Test → Trial → Evidence → Conclusion |
-| Tools | Read-only live adapters plus deterministic replay adapters |
-| Control | Mandatory challenge, bounded budgets, deterministic termination |
-| Recovery | Persistent checkpoints with duplicate-safe resume semantics |
-| Evaluation | Five replay scenarios, repeated runs, LangSmith experiments, mutation-verified gates |
-| Human input | Optional conclusion review through interrupt and resume |
-
-Deliberate non-goals for v0.1 include write actions, autonomous remediation, multi-agent swarms, RAG, long-term memory, production API/worker topology, and a production UI.
-
-## v0.2 benchmark policy
-
-The replay corpus contains ten scenarios. Eight are calibration cases available
-to prompt/model iteration; `incomplete-evidence` and
-`challenge-changes-leader` are the declared hold-out cases. Calibration and
-final-evaluation execution accept no caller-supplied scenario list: each derives
-its complete corpus from `BENCHMARK_SCENARIO_PARTITIONS`. Caller-selected sets
-must use the explicit `ad-hoc` mode, which carries neither calibration nor final
-completeness semantics. The original five v0.1 scenarios and their fifteen
-stable native example IDs remain the regression floor.
-
-Executable policy proof: `test/benchmark-evaluation.test.mjs` › "declares a
-complete non-overlapping calibration and hold-out policy before tuning", ›
-"keeps prompt and model iteration off hold-out cases even when they are passed
-accidentally", › "includes calibration and hold-out cases in the final
-evaluation plan", and › "executes every declared scenario through the
-final-evaluation benchmark path", › "rejects an implicit five-scenario mix
-containing hold-out before execution", and › "rejects a final-evaluation subset
-before execution". Preservation is pinned by
-`test/replay-scenarios.test.mjs` ›
-"preserves the five accepted v0.1 ground truths and replay fixtures" and
-`test/benchmark-evaluation.test.mjs` › "adds stable native identities without
-changing the fifteen accepted v0.1 examples".
-
-Benchmark execution callbacks receive `BenchmarkExecutionInput`, an explicit
-ground-truth-free projection containing only `experimentId`, `exampleId`,
-`runId`, `threadId`, `scenarioId`, the replay fixture, and versioned runtime
-metadata. They never receive the full
-`BenchmarkRecord` or `IncidentScenario`; those remain on the evaluator,
-regression-gate, persistence, and LangSmith dataset/evidence side. This is a
-source-level contract boundary, not a capability sandbox: code in the same
-process can still import the public replay corpus, but the execution callback
-cannot obtain evaluator expectations from its argument.
-
-Executable boundary proof: `test/behavior-evaluators.test.mjs` › "keeps
-scenario ground truth outside the investigation execution callback" and ›
-"graph benchmark keeps ground truth outside createNodes and records a challenge
-with no investigation change".
-
-Behavior-evaluator persistence is additive. Accepted v0.1 records without
-`evaluatorVersion` and `behaviorMetrics` remain readable. New records must
-declare both fields together, and unknown evaluator versions fail loudly.
-Executable compatibility proof: `test/behavior-evaluators.test.mjs` ›
-"persists accepted v0.1 records without behavior-evaluator fields", › "rejects
-behavior metrics when their evaluator version is absent", and › "rejects an
-explicitly unsupported persisted evaluator version".
-
-Resource-evidence persistence is additive on the same terms. A benchmark
-evaluation may carry a versioned resource object — one field per axis, no
-composite and no derived "recovery overhead". Records carrying none stay
-readable, which is what every accepted v0.1 record looks like; a **present**
-object at an unknown schema version, or missing a declared dimension, is refused
-before the run is created rather than dropped, because a dropped axis reads
-downstream as "spent nothing on that axis". Executable compatibility proof:
-`test/benchmark-resource-evidence.test.mjs` › "accepts a persisted v0.1
-evaluation that carries no resource evidence at all", › "refuses resource
-evidence at an unknown schema version before any run is created", and ›
-"refuses resource evidence missing ${field} before any run is created".
-
-## Reference model roles and the live evaluation lane
-
-Three investigation roles — `generate_hypotheses`,
-`interpret_residual_evidence` and `challenge_hypothesis` — have model-backed
-implementations in `packages/roles`, written against a provider-neutral
-`ModelPort`. The scripted nodes remain the path for every deterministic unit and
-regression test; the model-backed roles are used only by the live lane below.
-
-One reference provider and model are configured explicitly, through
-`ANTHROPIC_API_KEY` and the optional `AIC_REFERENCE_MODEL_ID` override.
-`resolveModelConfig` takes the environment as an argument and **never returns
-the credential**: it reports whether the lane can run and under which model, and
-the key is read once, at the executable edge — which holds because no workspace
-package reads the process environment at all, checked by
-`test/roles-boundary.test.mjs` › "keeps every process-environment read out of the
-workspace packages". No provider SDK is installed — the
-adapter issues one plain `fetch` with an injected transport, so the whole path
-is unit-testable with no network. The graph and domain layers stay
-provider-independent, and that is now mechanical on both sides: the
-`graph-and-domain-do-not-import-model-providers` rule in
-`dependency-cruiser.config.mjs` refuses the import, proven by
-`test/repository-scaffold.test.mjs` › "lint rejects a graph import of the model
-role package" and › "lint rejects a graph import of a provider sdk". The
-provider host and wire format live in exactly one file, held there by
-`test/roles-boundary.test.mjs` › "reaches the model provider from exactly one
-file in the workspace".
-
-```bash
-npm run eval:live-model
-npm run eval:live-model -- --control-baseline ./control-baseline.json --out ./lane-report.json
+    EVAL[Evaluation lanes] --> G
+    EVAL --> R
+    EVAL --> LS[LangSmith]
 ```
 
-> 🔴 **A real model HAS executed these roles in this repository, and the two
-> things that fact does not license are worth stating first.**
->
-> ⚠ **This block used to say the opposite** — "no model has ever executed these
-> roles", "no HTTP request has left this machine for a provider", "no
-> model-quality figure, token count or cost figure in this repository was
-> produced by a model". All three were true when written and all three are now
-> false: `docs/evidence/` holds seventeen committed live-model reports carrying
-> 237 provider calls, and `docs/evidence/final-evaluation/` holds eight one-shot hold-out
-> records.
->
-> The same disclosure was written in other files, each in different words.
-> **No count of them is given here, and no sweep is declared complete.** Every
-> pass that declared one was followed by a pass that found another copy, in
-> wording the previous grep had not searched for and once in a file no pass had
-> opened. A total stated here would be the same claim again, so none is stated.
->
-> Deciding whether a sentence asserts provider state is a judgement about
-> meaning, which `.claude/rules/invariants.md` puts in its "poor fit" column for
-> a mechanical check; the one narrow wording that IS decidable is kept out of the
-> gate document by `test/final-evaluation-command.test.mjs` ›
-> `keeps the phrase "is reachable" out of the gate document outside its provider block`,
-> whose own header records that six of seven measured wordings slip past it.
->
-> **So read provider state from `docs/evidence/`, not from a sentence.** Those
-> records carry the calls, and a stale comment cannot contradict a usage block.
->
-> Found by `code-reviewer` at the AIC-19 gate, in a file no diff had touched —
-> which is how a disclosure goes stale: nothing edits it, so nothing rechecks it.
->
-> **What still holds.** The SUITE executes no model: every test of this lane and
-> of the three roles drives an injected or fetch-stubbed port, and **no HTTP
-> request leaves this machine for a provider during `npm run check`**. A green
-> suite is therefore still not evidence that a real model's output satisfies the
-> domain schemas.
->
-> ⚠ That sentence is deliberately narrow. An earlier draft of it said `npm run
-> check` "makes no network call", which is false — `test/incident-lab-api-status.test.mjs`
-> starts a server on `127.0.0.1` and fetches it. The narrower claim is the one the
-> per-file stubs actually support, and it is the one the original disclosure made
-> before this rewrite widened it.
->
-> **What the evidence directory is for.** That evidence lives in committed records
-> instead, each naming its candidate, its corpus and its verdict — and the current
-> verdict on the hold-out is a REFUSAL, not a pass. `docs/v0.2-exit-gate.md` is
-> the reading of them, and its provider-access block is where that document
-> states whether the provider is reachable. ⚠ Not the only place in the
-> REPOSITORY — source and test headers describe provider access too, and keeping
-> them true is a review concern rather than a mechanism. An earlier draft claimed
-> exclusivity here and was wrong at seven sites.
+### Core boundaries
 
-The lane runs two arms over a corpus **the caller declares**, at one commit, in
-one process: a scripted control arm and a model arm that differ only in those
-three roles. `npm run eval:live-model` declares `calibration`, so it is
-repeatable and never reaches the hold-out; the `final-evaluation` corpus —
-calibration ∪ hold-out — has one caller, and that caller is the one-shot gate
-command. An omitted corpus is refused rather than defaulted.
+- **LangGraph owns orchestration state** — graph topology, routing, interruption, checkpoint/resume.
+- **Domain stays framework-free** — core contracts do not depend on LangGraph or model providers.
+- **Model roles return structured judgement** — provider access is behind a narrow `ModelPort`.
+- **Tools are typed and replayable** — live observations and deterministic replay share the same contract.
+- **External results can be committed before checkpoints** — replay reuses a committed result instead of calling the provider/tool twice.
+- **PostgreSQL coordinates durable execution** — runs, leases, fencing, recovery metadata, node results, and events share one transactional substrate.
+- **Evaluation is part of the architecture** — model/prompt/graph changes are accepted only with versioned evidence.
 
-⚠ This paragraph used to read "over the accepted hold-out corpus", and that was
-accurate: `scenarioSet` was a literal type with no alternative, so the
-repeatable diagnostic spent the one-shot hold-out every time it ran. Recorded
-rather than quietly reworded, because the sentence was true of a design that
-should not have been. They are reported separately and per metric, with no composite anywhere.
-If the control arm moves against its declared baseline, the regression is in the
-harness and the model arm's numbers are marked unreportable; with no declared
-baseline the model arm is unreportable for the same reason. The plan both arms
-run is bounded by a run cap; the model arm is bounded by a completion cap and an
-output-token cap as well, since it is the arm that holds the ledger. All three
-reach the report — held by `test/live-model-lane.test.mjs` › "emits every
-declared cap in the report a record is written from".
+## Durable execution
 
-🔴 **What the control arm can catch is narrower than "it moved".** Measured over
-the final-evaluation corpus, the replay-backed control scores a single value of
-**zero on every metric it emits**, and zero is the worst score for five of the
-six. So it detects a harness change that moves a metric **up**, or that stops
-emitting one — and it cannot detect one that pushes a metric further down,
-because there is no further down. Read a `harness-regression` verdict as covering
-the first direction only, and its absence as saying nothing about the second.
-The floor set is asserted rather than described: `test/live-model-lane.test.mjs`
-› "measures the harness zero that makes evidence_coverage unreportable".
+AIC treats a logical investigation run as durable state, not as a process.
 
-**What leaves the process.** When a credential is configured, the prompt carries
-the investigation state — the incident, hypotheses, predictions, evidence and
-assessments — to the configured provider's HTTPS endpoint. That is the only
-outbound destination **the lane itself** has; `--publish` adds a second, the
-LangSmith ingestion described under *LangSmith tracing* below. It lives in one
-file
-(`packages/roles/src/reference-model-port.ts`, held to one file by
-`test/roles-boundary.test.mjs` › "reaches the model provider from exactly one
-file in the workspace" and › "performs the provider request in the adapter and
-nowhere else"), and without a credential nothing leaves at all.
+The current durable execution design uses:
 
-Two things the lane deliberately does not do. It **withholds
-`evidence_coverage`** from both arms with the reason attached: the evaluator
-version the lane declares (`behavior-evaluators-v0.2`) compares a hand-written
-ground-truth predicate against an evidence statement as an exact fingerprint,
-so any graph-executed run scored under it scores zero for a harness reason
-rather than a model one — a pre-existing evaluator defect, filed separately, and
-publishing the zero would be exactly the confound this lane exists to prevent.
-And it **never retries a publication refusal**: LangSmith ingestion can refuse a
-write — an exhausted tenant quota is one way — and a refused publication fails
-the command rather than being smoothed into a success. Publication is opt-in; without `--publish` the
-lane produces its per-metric evidence locally with no ingestion at all.
+- `runs` with `queued / running / waiting_human / completed / failed`;
+- atomic `FOR UPDATE SKIP LOCKED` worker claims;
+- leases, heartbeats, bounded recovery, and fencing;
+- semantic `exec_key` values that do **not** include worker-attempt identity;
+- immutable committed `node_results`;
+- a `FencedCheckpointer` that rejects stale writes;
+- append-only run evidence/events.
 
-With no credential the command exits non-zero with a named
-`MissingModelCredentialError` and touches nothing — no dataset, no project, no
-run, no model call. Executable proof: `test/live-model-lane.test.mjs` ›
-"exits non-zero naming the variable when the command is run with no credential"
-and › "refuses the lane with the named variable and touches nothing when no
-credential is set".
+A crash after an external call but before the next checkpoint must not cause the same logical operation to run again.
 
-Run identity records what produced it: `modelId` and `modelProvider` are
-optional run-metadata fields, and `inputTokensUsed` / `outputTokensUsed` are
-optional resource axes at resource schema version 2. All four are optional
-because a run with no model has nothing to declare, and a published zero would
-be a measured-zero claim rather than an absent measurement. The correspondence
-between those types and the persistence allowlists is computed in both
-directions by `test/model-run-identity-correspondence.test.mjs`, because a field
-added to a type but not to an allowlist is dropped without a word.
+```text
+external call
+    ↓
+commit result under exec_key
+    ↓
+checkpoint catches up
+```
+
+On recovery, the same `exec_key` reuses the committed result.
+
+A deliberate re-observation is different: it creates a new logical operation and a new key.
+
+The design record is in [docs/decisions/durable-run-execution.md](docs/decisions/durable-run-execution.md). Its remaining architecture proof is the deterministic **T-4 race matrix** in AIC-57.
+
+## Evaluation philosophy
+
+AIC does not treat a green test suite as evidence that a model is good.
+
+The repository separates:
+
+1. **deterministic regression tests** — no real provider calls;
+2. **replay benchmark evaluation** — fixed scenarios and versioned ground truth;
+3. **live model evaluation** — real model judgement behind the provider-neutral role layer;
+4. **one-shot hold-out** — final evidence for a candidate fingerprint;
+5. **LangSmith publication** — native run/evaluator evidence when explicitly requested.
+
+### Current benchmark direction
+
+The evaluation work is moving toward four arms:
+
+| Arm | Purpose |
+| --- | --- |
+| Scripted control | Negative/control signal for harness regressions |
+| Oracle | Positive control proving an evaluator can reach its claimed optimum |
+| Naive | Same model, one prompt, same available telemetry, no graph |
+| Graph + model | The AIC architecture under test |
+
+The important comparison is:
+
+> **Does the graph make the same model perform better than a single prompt over the same telemetry?**
+
+Recent v0.2 repair work added:
+
+- an evaluator-side Oracle positive control;
+- structural evidence matching by stable evidence identity;
+- a closed, versioned root-cause taxonomy for comparable evaluation;
+- opaque benchmark incident IDs so scenario labels do not leak into prompts;
+- a naive single-prompt model role with no graph dependency.
+
+The accepted historical evaluator remains readable; new scoring semantics are versioned rather than silently rewriting old evidence.
+
+## Benchmark policy
+
+The replay corpus contains ten scenarios.
+
+- **8 calibration scenarios** are available for diagnosis and iteration.
+- **2 hold-out scenarios** are excluded from tuning.
+- Final hold-out execution is guarded by a **candidate fingerprint**.
+- A failed/consumed hold-out is not rerun merely to get a better result.
+- Metrics are reported individually; no composite score is allowed to hide a regression.
+
+Ground truth stays on the evaluator side. Benchmark execution callbacks receive a ground-truth-free projection rather than the full scenario record.
 
 ## Project status
 
+AIC is actively evolving beyond the original v0.1 kernel.
+
 | Area | Status |
 | --- | --- |
-| Architecture | **Frozen for v0.1 implementation** |
-| Repository and engineering guardrails | Scaffolded; Definition-of-Done command gate not configured |
-| Product implementation | Canonical domain contracts, a persistent SQLite checkpointer with a kill/resume spike, and a read-only tool registry with live and replay adapters implemented — see [`resumes the persisted run after process death without duplicate records or budget drift`](test/persistent-resume.test.mjs) and [`replays a recorded live response without invoking the live tool again`](test/tool-registry-replay.test.mjs) |
-| Scaffold milestone | AIC-2 — scaffold repository and enforce architecture boundaries |
-| Completed implementation milestone | AIC-4 — persistent checkpointer and kill/resume |
-| Completed implementation milestone | AIC-5 — read-only tool registry and live record / replay adapters |
+| v0.1 Investigation Kernel | Established baseline |
+| v0.2 Investigation Quality | Evidence repair / stronger model-vs-baseline evaluation in progress |
+| PostgreSQL persistence foundation | Implemented |
+| Durable run substrate | Implemented |
+| T-4 FencedCheckpointer proof | In progress |
+| Safe Operations | Next major product capability |
+| Knowledge / RAG | Planned after v0.3 gate |
+| Long-term memory | Conditional on a measured learning objective |
+| Production UI | Deferred to the v1 design gate |
 
-The architecture freeze means structural changes must be justified by benchmark evidence, an implementation constraint, or a failed invariant—not by another speculative design round.
+The v0.1 architecture is a frozen baseline. Later structural changes are expected to be justified by measured evidence, failed invariants, or implementation constraints.
 
-## Documentation
-
-| Document | Purpose |
-| --- | --- |
-| [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain contracts, graph topology, persistence, tools, evals, roadmap, and Definition of Done |
-| [Integration boundary](docs/decisions/integration-boundary.md) | How AIC connects to the systems it investigates in v0.3: a standalone service scoped by Service × Environment |
-| [Durable run execution](docs/decisions/durable-run-execution.md) | How a run survives worker crashes and takeovers: PostgreSQL leases and fencing, committed node results reused on replay (Proposed until AIC-57) |
-| [PLAN.md](PLAN.md) | Standing execution conventions and the journal pointer; the queue itself is whatever `.claude/queue.json` names, currently Jira |
-| [Journal](journal/README.md) | Human-readable run history and journal conventions |
-
-## Repository shape
+## Repository structure
 
 ```text
 apps/cli                  command-line entrypoint
 packages/domain           framework-free domain contracts
-packages/graph            LangGraph state, nodes, edges, and routing
-packages/roles            semantic roles, prompts, and the reference model port
-packages/tools            live and replay tool adapters
-packages/persistence      checkpointing, the aic_app schema and the durable run store
-packages/evals            deterministic and LangSmith evaluation gates
+packages/graph            LangGraph state, nodes, edges, routing
+packages/roles            semantic roles and provider-neutral model port
+packages/tools            live + replay tool adapters
+packages/persistence      checkpoints, PostgreSQL app schema, durable run store
+packages/evals            benchmarks, evaluators, experiment lanes
 packages/observability    trace and run metadata
 datasets/scenarios        versioned replay fixtures
 incident-lab              isolated live incident environment
-infra/postgres            PostgreSQL for the live lanes, locally and as CI's service container
+infra/postgres            PostgreSQL live-lane / CI support
+docs/decisions            architecture decision records
+docs/evidence             committed evaluation evidence
 ```
 
-The dependency direction is intentionally one-way: `domain` imports no LangChain or LangGraph code; graph and tools depend on the domain rather than the reverse. Dependency Cruiser checks the module graph, ESLint limits dynamic loading in `packages/domain`, and small deterministic checks cover the domain manifest and TypeScript configuration.
+Architecture boundaries are enforced with TypeScript, ESLint, Dependency Cruiser, and targeted mutation/non-vacuity tests.
 
-## LangSmith tracing
+## Quick start
 
-Tracing is **off by default**: the CLI sets no tracing flag the operator did not
-set, so an unconfigured shell produces no outbound call — see
-`test/langsmith-tracing.test.mjs` › "makes no outbound call when no tracing flag
-is set". Enable it per shell:
+Requirements:
+
+- Node.js **22+**
+- npm **10+**
+
+```bash
+git clone https://github.com/serhii-baksheiev/ai-incident-commander.git
+cd ai-incident-commander
+
+npm ci
+npm run check
+```
+
+`npm run check` runs:
+
+```text
+architecture lint
+→ TypeScript build
+→ full deterministic test suite
+```
+
+The normal test suite does not call the real model provider.
+
+### CLI
+
+```bash
+npm run build
+
+npm run cli -- --help
+npm run cli -- start --run-id demo --checkpoint ./checkpoints.sqlite
+npm run cli -- resume --run-id demo --checkpoint ./checkpoints.sqlite
+```
+
+### PostgreSQL live lane
+
+CI runs the bounded PostgreSQL lane automatically.
+
+For local work:
+
+```bash
+# Start PostgreSQL using infra/postgres/compose.yaml, then:
+npm run test:live-postgres
+```
+
+The CI service container is pinned by digest and uses loopback-only trust auth for the ephemeral test database.
+
+## Live model evaluation
+
+AIC's model-facing code uses a provider-neutral `ModelPort`. The reference adapter currently reads an Anthropic credential at the executable boundary.
+
+```bash
+export ANTHROPIC_API_KEY=<your key>
+
+# optional model override
+export AIC_REFERENCE_MODEL_ID=<model id>
+
+npm run eval:live-model
+```
+
+The repeatable live-model command is for **calibration**, not hold-out tuning.
+
+The one-shot final path is:
+
+```bash
+npm run eval:final-holdout
+```
+
+Do not use the final command as a connectivity probe.
+
+## LangSmith
+
+Tracing is off by default.
 
 ```bash
 export LANGSMITH_TRACING=true
-export LANGSMITH_API_KEY=<your key>          # or LANGCHAIN_API_KEY
+export LANGSMITH_API_KEY=<your key>
 export LANGSMITH_PROJECT=ai-incident-commander
 ```
 
-⚠ **EU-region accounts must also set the endpoint**, because the SDK's default
-host is the US one (`langsmith/dist/utils/profiles.js`, `DEFAULT_API_URL`):
+For EU workspaces:
 
 ```bash
 export LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
 ```
 
-If every call is refused on authorization, check the region before you suspect
-the key: a valid key against the wrong regional host fails the same way an
-invalid one does.
+Evaluation publication is opt-in. Local evaluation can run without publishing.
 
-**The flag vocabulary is the tracer's, not ours.** `LANGSMITH_TRACING_V2`,
-`LANGCHAIN_TRACING_V2`, `LANGSMITH_TRACING` and `LANGCHAIN_TRACING` all enable
-tracing, and only the exact value `true` does — matching
-`@langchain/core`'s `isTracingEnabled`. See › "enables tracing for every flag
-name the langchain tracer honours" and › "reports tracing disabled for a flag
-value the langchain tracer rejects". Reading a narrower set than the tracer
-would install the tracer while our key check stayed silent.
+When tracing is enabled, investigation state may contain incident data and evidence text. Treat enabling third-party tracing as an explicit data-handling decision.
 
-**What is guaranteed, exactly:** with a tracing flag on and no api key set, the
-run stops before any checkpoint is written — › "refuses to start when tracing is
-enabled without an api key", which asserts the exit status, the message, and
-that the checkpoint file was never created. That is the only delivery failure
-detected. A wrong-region endpoint or an unreachable host still produces a run
-that completes and reports success, because the tracer reports a rejected send
-as a warning rather than failing the run it was tracing. ⚠ Not because delivery
-is backgrounded — this CLI disables that (below); the run waits, and then
-succeeds anyway.
+## Safety and failure semantics
 
-Runs are named and tagged so traces are filterable: the root run is
-`aic-start` / `aic-resume` with tags `aic` and `aic-<command>`, and every graph
-step inherits those tags and the `runId` metadata — › "sends a root run named
-for the command whose tags and runId every graph step inherits". Because the
-process exits as soon as it prints its result, an enabled run also sets
-`LANGCHAIN_CALLBACKS_BACKGROUND=false` unless the operator set it, so delivery
-blocks on finalization instead of racing exit — › "blocks background trace
-delivery so a short-lived run cannot exit before it sends".
+AIC deliberately keeps several distinctions visible:
 
-**An unreachable endpoint stalls the run by at least the SDK's client timeout,**
-which defaults to `timeout_ms` 90 000 (`langsmith/dist/client.js`). How much
-longer depends on how the endpoint fails: a refused connection was observed at
-~88 s and a host that accepts and never answers at ~121 s. Nothing outside
-bounds it: `@langchain/core` constructs that client itself and passes no
-timeout. A timeout is not retried — `langsmith/dist/utils/async_caller.js`
-rethrows it out of the retry loop — so the stall is one timeout, not four. This
-happens with or without blocking delivery. If a traced run appears to hang,
-suspect the endpoint before the graph.
+- **unavailable tool ≠ negative evidence**
+- **replay ≠ re-observation**
+- **model refusal ≠ metric value 0**
+- **not applicable ≠ withheld**
+- **worker lease ≠ permission to commit after fencing authority is stale**
+- **checkpoint persistence ≠ exactly-once external execution**
+- **a plausible answer ≠ an evidence-supported conclusion**
 
-**`npm test` is insulated; a bare `node --test` is not.** The `npm test` script
-preloads `test/fixtures/no-ambient-tracing.mjs`, which clears the four tracer
-flags before any test module loads, and every spawned process is built from the
-allow-list in `test/fixtures/child-env.mjs`. Without them a developer with
-tracing exported wrote runs into their own workspace on every suite run. That it
-no longer happens **under `npm test`** is pinned by › "the preload clears every
-flag the langchain tracer reads" and › "runs the compiled CLI with no outbound
-call while the parent shell has tracing enabled".
+These distinctions are part of the product, not implementation trivia.
 
-CI is covered by the same preload, because the workflow runs the suite through
-`npm test` rather than invoking the runner directly — › "the CI step that runs
-the suite goes through npm test, not node --test" reads
-`.github/workflows/ci.yml` and refuses a step that would bypass it. That check
-matters on any runner whose environment carries tracing variables.
+## Roadmap
 
-⚠ What the preload does **not** clear is `LANGSMITH_API_KEY` itself. That is the
-right scope for flag-gated tracing — a key alone traces nothing — but a
-`langsmith` `Client` constructed directly reads the key with no flag involved.
-`createLangSmithClient()` is such a constructor, and it is what
-`persistBenchmarkExperiment(s)` falls back to when the options object carries no
-own `client` — so a call that omits it sends through a client holding whatever
-key the environment carries. It was a destructuring default until AIC-69; the
-operator-facing consequence is the same, and the mechanism is now an own read,
-so an INHERITED `client` no longer suppresses the fallback.
+### v0.1 — Investigation Kernel
 
-The api key reaches neither the process output nor the trace payload — ›
-"never prints the api key on stdout or stderr" and › "never sends the api key
-inside a trace payload". One operator caution the code cannot enforce: the SDK
-copies non-sensitive `LANGSMITH_*`/`LANGCHAIN_*` variables into run metadata,
-and `LANGSMITH_RUNS_ENDPOINTS` embeds api keys in its value while matching none
-of the SDK's sensitive-name patterns. Do not export it alongside tracing.
+- canonical investigation domain;
+- persistent checkpoint/resume;
+- read-only tools;
+- record/replay;
+- mandatory challenge;
+- deterministic termination;
+- reproducible evaluation.
 
-**A traced run transmits the whole graph state** — every trial input and every
-evidence record, including its `statement`. Today that is synthetic
-persistence-spike text; treat sending real incident content to a third party as
-a decision to take deliberately, not a side effect of turning tracing on.
+### v0.2 — Investigation Quality
 
-## Engineering workflow
+- larger benchmark;
+- reference-model roles;
+- richer evaluators;
+- hold-out policy;
+- Oracle + naive baseline work;
+- structural evaluation repair.
 
-Work is tracked in a private Jira project — the `AIC-<n>` identifiers in commits, pull requests and the journal are its issue keys — and delivered with strict Red–Green–Refactor TDD. Rig is present only as an engineering guardrail; LangGraph remains the sole owner of application orchestration.
+### v0.3 — Safe Operations
 
-From a clean checkout:
+- `ProposedAction`;
+- tool risk registry;
+- human approval;
+- idempotency;
+- revalidation before mutation;
+- `SAFE_WRITE`;
+- action outcome becomes Evidence.
 
-```bash
-npm ci
-npm run lint
-npm run build
-npm test
-npm run cli -- --help
-npm run cli -- start --run-id demo --checkpoint ./checkpoints.sqlite
-npm run cli -- resume --run-id demo --checkpoint ./checkpoints.sqlite
-```
+### v0.4 — Knowledge
+
+RAG over runbooks, ADRs, postmortems, and operational docs as an explicit controlled input.
+
+### v0.5 — Long-term Memory
+
+Conditional. Memory is added only if a concrete learning objective and leakage-safe evaluation justify it.
+
+### v1 — Production
+
+- production run service;
+- auth/RBAC;
+- resilience and operational policies;
+- production API;
+- deployment/DR;
+- investigation UI.
+
+The UI design gate is intentionally late: backend/domain contracts should exist before the product surface invents its own orchestration model.
+
+## Documentation
+
+| Document | Purpose |
+| --- | --- |
+| [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain, graph, tool, evaluation, and roadmap baseline |
+| [Integration boundary](docs/decisions/integration-boundary.md) | Service × Environment integration model |
+| [Durable run execution](docs/decisions/durable-run-execution.md) | PostgreSQL ownership, fencing, committed execution, recovery |
+| [v0.2 exit gate](docs/v0.2-exit-gate.md) | Current v0.2 acceptance evidence and gate history |
+| [Evidence](docs/evidence) | Versioned calibration/final evaluation artifacts |
+| [Journal](journal/README.md) | Human-readable development history |
+| [PLAN.md](PLAN.md) | Standing execution/process conventions |
+
+## Engineering principles
+
+- **Red → Green → Refactor**
+- Prefer deterministic contracts over prompt folklore.
+- Preserve old evidence; version changed semantics.
+- Prove load-bearing tests can actually fail.
+- Keep public CI safe for untrusted pull requests.
+- Avoid speculative infrastructure.
+- Let evidence reopen architecture decisions when necessary.
 
 ## License
 
