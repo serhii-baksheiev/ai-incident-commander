@@ -27,10 +27,7 @@ import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
 import { MissingModelCredentialError, MODEL_API_KEY_VARIABLE } from '@aic/roles';
 
-import {
-  benchmarkVersions,
-  replayBackedNodes,
-} from './fixtures/benchmark-experiment.mjs';
+import { benchmarkVersions } from './fixtures/benchmark-experiment.mjs';
 import { childEnv } from './fixtures/child-env.mjs';
 // Imported rather than described: the two arms are compared as objects below, and
 // a comparison that read this file's source instead would be a paraphrase of the
@@ -851,6 +848,7 @@ test('never hands the transport a credential the configuration did not validate'
  * just an assertion.
  */
 test('measures the harness zero that makes evidence_coverage unreportable', async () => {
+  const { scriptedNodes } = await import('../scripts/lane-arms.mjs');
   const experiment = await evals.runGraphBenchmarkExperiment({
     experimentId: 'aic-94-evidence-coverage-harness-probe',
     scenarioSet: 'final-evaluation',
@@ -859,12 +857,7 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
       ...benchmarkVersions,
       statusRulesVersion: STATUS_RULES_VERSION,
     },
-    createNodes: (record) =>
-      replayBackedNodes(
-        record,
-        new Map([[record.runId, []]]),
-        new Map([[record.runId, 0]]),
-      ),
+    createNodes: (record) => scriptedNodes(record),
     async recordEvaluation() {},
   });
 
@@ -911,6 +904,16 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
   // about the corpus and the scripted nodes, so it is asserted rather than
   // described — a metric that stops being at the floor reddens this row, which
   // is the day the prose has to be re-read.
+  //
+  // `termination_correctness` is the one axis this floor list excludes
+  // (AIC-119 slice 3): `scriptedNodes` wires the canonical, state-driven
+  // `termination_check`, and this row's own `interpret_residual_evidence`
+  // stays the fixture's no-op — no hypothesis is ever assessed — so every run
+  // reads T6 and stops `stalled`. Over the final-evaluation corpus that
+  // matches SOME scenarios' own expected stop kind and not others, so the
+  // metric scores both 0 and 1 rather than sitting at a single value. The
+  // other five metrics are unaffected by which termination node runs: their
+  // floor is unchanged.
   const floors = {};
   for (const result of experiment.results) {
     for (const [key, metric] of [
@@ -933,10 +936,9 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
       'evidence_coverage',
       'false_alert_correctness',
       'misleading_evidence_handling',
-      'termination_correctness',
       'unsupported_claim_rate',
     ],
-    'every metric the replay-backed control arm emits sits at a single score of zero — so the control arm is at the insensitive floor on all of them except unsupported_claim_rate, where zero is the perfect score',
+    'every metric the scripted control arm emits sits at a single score of zero except termination_correctness, which the canonical state-driven termination node moves off the floor — the control arm is at the insensitive floor on the remaining five, all of which except unsupported_claim_rate score zero as their WORST outcome',
   );
 });
 
