@@ -148,6 +148,37 @@ test("leaves revoking a removed CredentialRef's secret to AIC-46, undecided here
   );
 });
 
+/**
+ * AIC-99 slice b, round-1 review: the CredentialRef ownership row still
+ * reads "a SourceBinding refers to one read `CredentialRef`", which the
+ * owner's 2026-09-25 ruling supersedes - `credentialRefId` is nullable, for
+ * a credential-less adapter (`lab@1`). "at most one read" is the phrase
+ * this row pins; the ADR is edited to carry it.
+ */
+test('the CredentialRef ownership row allows a SourceBinding with no credential (a credential-less adapter, e.g. lab@1)', () => {
+  const ownership = section(readAdr(), 'Ownership').replace(/\s+/g, ' ');
+  assert.match(
+    ownership,
+    /a SourceBinding refers to at most one read `?CredentialRef`?/i,
+    'the CredentialRef row must say a SourceBinding refers to AT MOST ONE read CredentialRef, so a credential-less binding (AIC-99 slice b) is allowed by the row itself, not merely by omission',
+  );
+});
+
+/**
+ * AIC-99 slice b, round-1 review: the Trust-boundary provenance bullet lists
+ * `credentialRefId` among the fields every piece of Evidence must record,
+ * without saying what a credential-less SourceBinding (`lab@1`) records
+ * there.
+ */
+test('the Trust-boundary provenance bullet says credentialRefId is null for a credential-less SourceBinding', () => {
+  const trust = section(readAdr(), 'Trust boundary').replace(/\s+/g, ' ');
+  assert.match(
+    trust,
+    /`credentialRefId`[^.]*null[^.]*credential-less/i,
+    'the provenance bullet must say credentialRefId is null when the SourceBinding is credential-less (AIC-99 slice b)',
+  );
+});
+
 test('every Terminology type the registry declares is exported by @aic/domain as its Schema', () => {
   for (const schemaName of [
     'ServiceSchema',
