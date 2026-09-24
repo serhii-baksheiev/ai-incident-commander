@@ -55,6 +55,25 @@ export default {
       from: { path: '^packages/(?!persistence(?:/|$))' },
       to: { path: '(?:^|/)node_modules/pg(?:/|$)|^pg(?:/|$)' },
     },
+    {
+      name: 'oracle-arm-is-evaluator-side-only',
+      comment:
+        'AIC-113: the oracle positive control reads ground truth, which no investigating ' +
+        'arm may do. Nothing under packages/ may import it — neither by the @aic/evals/oracle ' +
+        'subpath nor by a relative path — so it stays reachable from evaluator scripts and ' +
+        'tests only.',
+      severity: 'error',
+      from: {
+        path: '^packages/',
+        pathNot: '^packages/evals/(?:src|dist)/oracle-arm\\.',
+      },
+      to: {
+        path:
+          '(?:^|/)packages/evals/(?:src|dist)/oracle-arm(?:\\.|$)|' +
+          '(?:^|/)node_modules/@aic/evals/(?:dist/)?oracle|' +
+          '^@aic/evals/oracle$',
+      },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
