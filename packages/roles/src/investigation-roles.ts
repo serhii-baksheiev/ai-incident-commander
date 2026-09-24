@@ -3,13 +3,18 @@ import { createHash } from 'node:crypto';
 import {
   buildExecKey,
   canonicalJson,
+  CauseClaimSchema,
+  conclusionViolation,
+  deriveHypothesisStatus,
   EvidenceAssessmentSchema,
   HypothesisSchema,
+  IncidentConclusionSchema,
   InvestigationTestSchema,
   type CommittedExecution,
   type EvidenceAssessment,
   type Hypothesis,
   type IncidentState,
+  type InvestigationStop,
   type InvestigationTest,
 } from '@aic/domain';
 import type { ChallengeResult, InvestigationNodeResult } from '@aic/graph';
@@ -23,13 +28,21 @@ import {
   parseJsonDocument,
   parseWith,
   refuseTruncated,
+  refuseUnknownKeys,
 } from './role-output.js';
 import type { ModelCompletion, ModelCompletionRequest, ModelPort } from './reference-model-port.js';
 import { ownValue } from './own-value.js';
 
 /**
- * Three investigation roles, backed by a reference model through a
- * provider-neutral port.
+ * Four investigation roles, backed by a reference model through a
+ * provider-neutral port: `generate_hypotheses`, `interpret_residual_evidence`
+ * and `challenge_hypothesis` build up the investigation, and
+ * `propose_conclusion` (AIC-119 slice D) composes the final conclusion the
+ * other three fed. All four share `completeOnce`'s exec-key path below, so a
+ * crash between the model call and the checkpoint replays the committed
+ * completion for any of them rather than asking the model again.
+ * see durable-model-replay.test.mjs › "propose_conclusion: crash between commit and checkpoint - replay reuses the committed result and calls the model exactly once in total"
+ * see durable-model-replay.test.mjs › "propose_conclusion: commits under buildExecKey('model.role', ...) built from the state's control fields, the role's own name and the prompt version in use"
  *
  * ## What this layer decides and what the model decides
  *
@@ -547,5 +560,185 @@ export function createModelChallengeHypothesis({
     }
 
     return { alternative, discriminatingTests };
+  };
+}
+
+/**
+ * `propose_conclusion`'s answer shape, as a schema the PROVIDER enforces
+ * (AIC-119 slice D). Derived from the domain schemas the same way the three
+ * schemas above are: every object is `additionalProperties: false`, `kind`'s
+ * enum comes from `IncidentConclusionSchema` and `mechanism`'s from the
+ * caller-supplied vocabulary, never restated by hand.
+ * see conclusion-role.test.mjs › "produces a 'root-cause' conclusion the domain schema accepts and declares the call it made"
+ */
+function proposeConclusionSchema(mechanisms: readonly string[]) {
+  return Object.freeze({
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: enumOf(IncidentConclusionSchema, 'kind') },
+      causes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            hypothesisId: { type: 'string' },
+            cause: {
+              type: 'object',
+              properties: {
+                component: { type: 'string' },
+                mechanism: { type: 'string', enum: [...mechanisms] },
+                trigger: { type: 'string' },
+              },
+              required: ['component', 'mechanism'],
+              additionalProperties: false,
+            },
+            evidenceIds: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['hypothesisId', 'cause', 'evidenceIds'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['kind', 'causes'],
+    additionalProperties: false,
+  });
+}
+
+// Derived from the domain schemas rather than restated, like naive-role.ts's
+// identical constants: a widened domain field must not be refused here as
+// though the model had invented it.
+const CONCLUSION_KEYS: ReadonlySet<string> = new Set(Object.keys(IncidentConclusionSchema.shape));
+const CAUSE_KEYS: ReadonlySet<string> = new Set(Object.keys(CauseClaimSchema.shape));
+const CAUSE_DESCRIPTION_KEYS: ReadonlySet<string> = new Set(
+  Object.keys(CauseClaimSchema.shape.cause.shape),
+);
+
+export interface ModelProposeConclusionOptions extends ModelRoleOptions {
+  /** The closed root-cause mechanism vocabulary a cause must be classified in. */
+  readonly mechanisms: readonly string[];
+}
+
+/**
+ * `propose_conclusion`, backed by the model (AIC-119 slice D): the
+ * evidence-constrained conclusion role that closes an investigation.
+ *
+ * Every value crosses the same gate a hand-composed conclusion would:
+ * `IncidentConclusionSchema`, the supplied mechanism vocabulary, and
+ * `conclusionViolation` (`@aic/domain`) — the rule `naive-role.ts`'s
+ * `requireCauseCount` and this role now both delegate to
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * There is no retry: a refused answer is the role's measured result, exactly
+ * like every other model-backed role here.
+ *
+ * Validation runs in this order, each failure a `ModelRoleOutputError`:
+ * (1) a truncated completion, (2) unparseable JSON, (3) an unknown key at
+ * any level, (4) an own-read rebuild that does not satisfy
+ * `IncidentConclusionSchema`, (5) a cause mechanism outside the supplied
+ * vocabulary, (6) `conclusionViolation`.
+ * see conclusion-role.test.mjs › "refuses a truncated completion as a truncation, not as malformed output (refusal 1)"
+ * see conclusion-role.test.mjs › "refuses an answer that carries no JSON document at all (refusal 2)"
+ * see conclusion-role.test.mjs › "refuses an unknown key on the top-level answer, on a cause, and on a cause description (refusal 3)"
+ * see conclusion-role.test.mjs › "refuses an answer the domain schema does not accept, once rebuilt from its own properties (refusal 4)"
+ * see conclusion-role.test.mjs › "refuses a cause mechanism outside the supplied vocabulary (refusal 5)"
+ * see conclusion-role.test.mjs › "refuses a cause naming a hypothesis the state does not carry, via conclusionViolation (refusal 6)"
+ *
+ * The prompt shows the model `describeState`'s usual projection, plus the
+ * mechanism vocabulary (worded exactly as `naive-role.ts` words it, so the
+ * v0.2 evaluation's two arms read the same sentence), `control.stopKind` and
+ * `control.challengeRounds` as context, and the derived status of every
+ * hypothesis — computed with `deriveHypothesisStatus` (`@aic/domain`), the
+ * same function the graph itself uses, so the model is shown the run's own
+ * read of its hypotheses rather than a second, competing one.
+ * see conclusion-role.test.mjs › "shows the model the mechanism vocabulary, exactly as naive-role's sentence reads, and the stop kind as context"
+ * see conclusion-role.test.mjs › "shows a different prompt when challengeRounds differs, so the round count reaches the model as context"
+ * see conclusion-role.test.mjs › "shows the derived status of every hypothesis, computed the same way deriveHypothesisStatus computes it"
+ */
+export function createModelProposeConclusion(
+  options: ModelProposeConclusionOptions,
+): (state: IncidentState) => Promise<InvestigationNodeResult> {
+  const { port, execution, mechanisms } = options;
+  const promptVersion = options.promptVersion ?? REFERENCE_PROMPT_VERSION;
+  const maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const role = 'propose_conclusion';
+  const vocabulary = Object.freeze([...mechanisms]);
+  const outputSchema = proposeConclusionSchema(vocabulary);
+
+  return async (state) => {
+    const hypothesisStatuses = state.hypotheses.map((hypothesis) => ({
+      id: hypothesis.id,
+      status: deriveHypothesisStatus({
+        hypothesisId: hypothesis.id,
+        predictions: state.predictions,
+        assessments: state.assessments,
+        evidence: state.evidence,
+      }),
+    }));
+
+    const completion = await completeOnce({ port, execution, promptVersion }, role, state, {
+      system: [
+        'You are an incident investigator composing the final conclusion from the investigation gathered so far.',
+        'A conclusion is root-cause (exactly one cause), multiple-causes (two or more), inconclusive or no-incident (no cause). Cite evidence only by the ids shown, and hypotheses only by ids shown.',
+        `Classify each cause's mechanism as one of: ${vocabulary.join(', ')}.`,
+        JSON_ONLY,
+      ].join('\n'),
+      prompt: [
+        `prompt-version: ${promptVersion}`,
+        `stop kind: ${state.control.stopKind ?? 'unknown'}`,
+        `challenge rounds so far: ${state.control.challengeRounds}`,
+        `derived hypothesis statuses: ${JSON.stringify(hypothesisStatuses)}`,
+        '',
+        describeState(state),
+      ].join('\n'),
+      maxOutputTokens,
+      outputSchema,
+    });
+
+    refuseTruncated(role, completion);
+    const document = parseJsonDocument(role, completion.text);
+
+    refuseUnknownKeys(role, document, CONCLUSION_KEYS, 'the conclusion');
+    const conclusion = parseWith(role, IncidentConclusionSchema, {
+      kind: ownValue(document, 'kind'),
+      causes: ownArray(role, document, 'causes').map((cause) => {
+        refuseUnknownKeys(role, cause, CAUSE_KEYS, 'a cause');
+        const claimed = ownValue(cause, 'cause');
+        refuseUnknownKeys(role, claimed, CAUSE_DESCRIPTION_KEYS, "a cause's description");
+        return {
+          hypothesisId: ownValue(cause, 'hypothesisId'),
+          // An own key even when absent, so the schema cannot read an
+          // inherited trigger through a key the rebuild left out.
+          cause: {
+            component: ownValue(claimed, 'component'),
+            mechanism: ownValue(claimed, 'mechanism'),
+            trigger: ownValue(claimed, 'trigger'),
+          },
+          evidenceIds: ownValue(cause, 'evidenceIds'),
+        };
+      }),
+    });
+    for (const { cause } of conclusion.causes) {
+      if (cause.trigger === undefined) delete (cause as { trigger?: string }).trigger;
+    }
+
+    for (const { cause } of conclusion.causes) {
+      if (!vocabulary.includes(cause.mechanism)) {
+        throw new ModelRoleOutputError(
+          role,
+          `a cause's mechanism is outside the supplied vocabulary: ${cause.mechanism}`,
+        );
+      }
+    }
+
+    const reason = conclusionViolation({
+      conclusion,
+      hypotheses: state.hypotheses,
+      evidence: state.evidence,
+      stopKind: state.control.stopKind as InvestigationStop,
+    });
+    if (reason !== undefined) {
+      throw new ModelRoleOutputError(role, reason);
+    }
+
+    return { conclusion, declaredLlmCalls: 1 };
   };
 }

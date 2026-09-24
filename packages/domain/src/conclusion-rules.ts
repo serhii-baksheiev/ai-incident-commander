@@ -29,11 +29,27 @@ function nameValue(value: string): string {
   return JSON.stringify(value.slice(0, NAME_TRUNCATE_LENGTH));
 }
 
+/** The four `kind` members `IncidentConclusionSchema` declares today. */
+const KNOWN_CONCLUSION_KINDS: ReadonlySet<string> = new Set([
+  'root-cause',
+  'multiple-causes',
+  'inconclusive',
+  'no-incident',
+]);
+
 /**
  * The cause-count rule alone: how many causes a conclusion of each `kind` may
  * name. Exported on its own because `naive-role.ts`'s `requireCauseCount`
  * enforced exactly this before this module existed, and must keep reporting
  * the identical text now that it delegates here.
+ *
+ * Default-deny on a `kind` outside the four the schema declares (AIC-119
+ * slice D hardening): this module's precondition is schema-parsed own data
+ * (see the module header), so a caller that skips `IncidentConclusionSchema.parse`
+ * is the only way an unrecognised `kind` reaches here, but a validation rule
+ * that fell through every `if` and returned `undefined` for it was
+ * default-ALLOW on an enum field regardless of how it was reached — the wrong
+ * direction for a refusal to fail in.
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a root-cause conclusion with exactly one cause is valid"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: an inconclusive conclusion naming one cause reports the exact naive-role text"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a no-incident conclusion naming two causes reports the exact naive-role text"
@@ -41,10 +57,15 @@ function nameValue(value: string): string {
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a root-cause conclusion naming two causes reports the exact naive-role text"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a multiple-causes conclusion naming zero causes reports the exact naive-role text"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a multiple-causes conclusion naming one cause reports the exact naive-role text"
+ * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a kind outside the four-member enum is refused, not silently accepted (default-deny)"
+ * see conclusion-rules.test.mjs › "conclusionViolation: a kind outside the four-member enum is refused rather than silently accepted (default-deny)"
  */
 export function conclusionCauseCountViolation(
   conclusion: IncidentConclusion,
 ): string | undefined {
+  if (!KNOWN_CONCLUSION_KINDS.has(conclusion.kind)) {
+    return `a conclusion names a kind this domain does not declare: ${nameValue(conclusion.kind)}`;
+  }
   const count = conclusion.causes.length;
   if ((conclusion.kind === 'no-incident' || conclusion.kind === 'inconclusive') && count !== 0) {
     return `a ${conclusion.kind} conclusion names no cause, and this one names ${count}`;
@@ -67,8 +88,10 @@ export interface ConclusionViolationInput {
 
 /**
  * The full conclusion rule: the first violation found, checked in order —
- * (1) cause count, (2) a hypothesisId named by two causes, (3) a
- * hypothesisId naming no given hypothesis, (4) a cause with no cited
+ * (1) cause count (which itself default-denies a `kind` outside the four
+ * `IncidentConclusionSchema` declares, delegated from
+ * `conclusionCauseCountViolation`), (2) a hypothesisId named by two causes,
+ * (3) a hypothesisId naming no given hypothesis, (4) a cause with no cited
  * evidence, (5) an evidenceId naming no given evidence, (6) `no-incident`
  * under `stopKind: 'tools-unavailable'`, which docs/incident-commander-architecture-v1.md
  * (section 8, rule 4) forbids: a run whose tools were unavailable never
