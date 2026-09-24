@@ -89,6 +89,19 @@ export default {
           '^@aic/evals(?:/|$)',
       },
     },
+    {
+      name: 'naive-role-does-not-import-the-graph',
+      comment:
+        'AIC-115: the naive single-prompt role is the no-graph baseline the graph arm is ' +
+        'measured against. It may not import the orchestration graph, directly or through ' +
+        'any module it imports.',
+      severity: 'error',
+      from: { path: '^packages/roles/(?:src|dist)/naive-role\\.' },
+      to: {
+        path: '(?:^|/)packages/graph(?:/|$)|(?:^|/)node_modules/@aic/graph(?:/|$)|^@aic/graph(?:/|$)',
+        reachable: true,
+      },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

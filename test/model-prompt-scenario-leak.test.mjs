@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import * as evals from '@aic/evals';
+import { createModelNaiveInvestigation } from '@aic/roles';
 
 import { modelNodes, scriptedNodes } from '../scripts/eval-live-model.mjs';
 import { benchmarkVersions } from './fixtures/benchmark-experiment.mjs';
@@ -277,4 +278,57 @@ test('keeps scenarioId as evaluation metadata', () => {
       'the fix must stop showing scenarioId to the model, not stop recording it as evaluation metadata',
     );
   }
+});
+
+/**
+ * The naive single-prompt role (AIC-115) reads the same fixture telemetry the
+ * graph arm replays. This row maps each scenario's fixture into the role's
+ * input HERE, independently of any runner, so the role is covered by the leak
+ * sweep on its own: every scenario, a fake port, every system and user prompt
+ * searched for every scenario id. A positive assertion that the opaque id IS in
+ * the prompt keeps the sweep from passing because nothing was shown at all.
+ */
+test('shows no REPLAY_SCENARIOS id in the naive role prompt, for every scenario', async () => {
+  const captured = [];
+  const port = {
+    async complete(request) {
+      captured.push(request);
+      return {
+        text: JSON.stringify({
+          hypotheses: [],
+          assessments: [],
+          conclusion: { kind: 'inconclusive', causes: [] },
+          stopKind: 'stalled',
+        }),
+        modelId: 'fake',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
+    },
+  };
+  const naive = createModelNaiveInvestigation({ port, mechanisms: ['m-one', 'm-two'] });
+
+  for (const scenario of evals.REPLAY_SCENARIOS) {
+    const incidentId = evals.opaqueIncidentId(`naive-leak-run-${scenario.id.length}-${captured.length}`);
+    const entries = scenario.fixture.entries.map(({ toolId, input, result }) => {
+      if (result.status === 'ok') return { status: 'ok', tool: toolId, input, evidence: result.output };
+      return result.status === 'unavailable'
+        ? { status: 'unavailable', tool: toolId, input, reason: result.reason }
+        : { status: 'error', tool: toolId, input, message: result.message };
+    });
+    const before = captured.length;
+    await naive({ incidentId, entries });
+    assert.equal(captured.length, before + 1, `the naive role must make exactly one call for ${scenario.id}`);
+    const request = captured[captured.length - 1];
+    assert.ok(request.prompt.includes(incidentId), `the naive prompt must carry the opaque incident id for ${scenario.id}`);
+    for (const scenarioId of ALL_SCENARIO_IDS) {
+      for (const [field, text] of [['system', request.system], ['prompt', request.prompt]]) {
+        assert.equal(
+          text.includes(scenarioId),
+          false,
+          `the naive role's ${field} for scenario ${scenario.id} carries REPLAY_SCENARIOS id "${scenarioId}"`,
+        );
+      }
+    }
+  }
+  assert.equal(captured.length, evals.REPLAY_SCENARIOS.length);
 });
