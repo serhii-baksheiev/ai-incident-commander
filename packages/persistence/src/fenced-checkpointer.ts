@@ -20,10 +20,10 @@ export interface CheckpointFence {
 
 export interface FencedCheckpointerOptions {
   /**
-   * Runs after the fence passed and before the inner saver writes — the seam
-   * AIC-57's race harness holds open to reorder a stale write against a new
-   * owner's. see fenced-checkpointer.live.mjs › "the barrier seam: beforeWrite
-   * holds a passing write open, and no checkpoint lands until it is released"
+   * Runs after the fence passed and before the inner saver writes: a seam for
+   * holding a passing write open. see fenced-checkpointer.live.mjs › "the
+   * barrier seam: beforeWrite holds a passing write open, and no checkpoint
+   * lands until it is released"
    */
   readonly beforeWrite?: () => Promise<void>;
 }
