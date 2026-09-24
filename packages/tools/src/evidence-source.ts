@@ -34,8 +34,9 @@ export type EvidenceSourceRefusalReason =
 
 /**
  * Provenance recorded with every EvidenceSource call, ok or refused: which
- * binding served it, which adapter build, which credential (if any), when it
- * was fetched, and a deterministic fingerprint of the request that was made.
+ * binding served it, which adapter build, the id of the binding's credential
+ * reference (never the secret's value or name; null when none), when it was
+ * fetched, and a deterministic fingerprint of the request that was made.
  */
 export interface EvidenceSourceProvenance {
   readonly sourceBindingId: string;
@@ -75,6 +76,11 @@ export interface EvidenceSourceDescriptor {
 export interface EvidenceSource<Output = unknown> {
   describe(): EvidenceSourceDescriptor;
   check(): Promise<EvidenceSourceCheckResult>;
+  /**
+   * `input` carries no credential material: credentials travel only as the
+   * binding's `credentialRefId`. The input is fingerprinted into provenance
+   * with an unsalted hash, so a secret in it would be recoverable by guessing.
+   */
   execute(operation: string, input: unknown): Promise<EvidenceSourceOutcome<Output>>;
 }
 
@@ -107,10 +113,10 @@ export class EvidenceSourceError extends Error {
 /**
  * Classifies a thrown value into one of the five typed refusal reasons. An
  * `EvidenceSourceError` keeps its own `reason`; anything else — a plain
- * `Error`, a non-Error thrown value — classifies as `adapter_error`. Never
- * reads the thrown value's `message`: only `instanceof EvidenceSourceError`
- * and its typed `.reason` field are consulted, so no upstream-echoed text can
- * leak into a serialized outcome through this path. See
+ * `Error`, a non-Error thrown value — classifies as `adapter_error`. Only
+ * `instanceof EvidenceSourceError` and its typed `.reason` are consulted. What
+ * the test pins is the consequence: no text from the thrown value reaches a
+ * serialized outcome. See
  * test/evidence-source-contract.test.mjs › "classifyEvidenceSourceFailure
  * never carries a thrown error's message text into a serialized outcome (no
  * secret leakage)".
@@ -135,7 +141,10 @@ export function classifyEvidenceSourceFailure(
  * test/evidence-source-contract.test.mjs › "createRequestFingerprint matches
  * an independently computed sha256 over the pinned canonical envelope (fixed
  * input, hand-built string — not canonicalJson called from the test)" for the
- * exact pinned wire format.
+ * exact pinned wire format. It throws what `canonicalJson` throws for a
+ * non-JSON input (a Date, a bigint, `undefined` inside an object, a cycle), so
+ * an adapter calls it inside its own try and classifies that as
+ * `adapter_error`.
  */
 export function createRequestFingerprint(operation: string, input: unknown): string {
   const canonicalEnvelope = JSON.stringify(canonicalJson({ input, operation }));
@@ -152,7 +161,11 @@ export function createRequestFingerprint(operation: string, input: unknown): str
  * rather than reading as negative evidence; `refused` with reason
  * `adapter_error` maps to `ToolResult.error`. The mapped reason/message
  * carries only the typed reason code, never a thrown error's own message
- * text.
+ * text. See test/evidence-source-contract.test.mjs › "a 403 (denied), a
+ * timeout and an empty successful result remain distinguishable through the
+ * real, unmodified projectToolResult (AIC-100 acceptance)". A new refusal
+ * reason is a compile error in the switch
+ * below until it is mapped.
  */
 export function evidenceSourceOutcomeToToolResult<Output>(
   outcome: EvidenceSourceOutcome<Output>,
@@ -161,9 +174,17 @@ export function evidenceSourceOutcomeToToolResult<Output>(
     return { status: 'ok', output: outcome.output };
   }
 
-  if (outcome.reason === 'adapter_error') {
-    return { status: 'error', message: outcome.reason };
+  switch (outcome.reason) {
+    case 'adapter_error':
+      return { status: 'error', message: outcome.reason };
+    case 'unavailable':
+    case 'denied':
+    case 'rate_limited':
+    case 'timeout':
+      return { status: 'unavailable', reason: outcome.reason };
+    default: {
+      const unmapped: never = outcome.reason;
+      return unmapped;
+    }
   }
-
-  return { status: 'unavailable', reason: outcome.reason };
 }
