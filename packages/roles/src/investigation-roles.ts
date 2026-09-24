@@ -1,7 +1,12 @@
+import { createHash } from 'node:crypto';
+
 import {
+  buildExecKey,
+  canonicalJson,
   EvidenceAssessmentSchema,
   HypothesisSchema,
   InvestigationTestSchema,
+  type CommittedExecution,
   type EvidenceAssessment,
   type Hypothesis,
   type IncidentState,
@@ -10,7 +15,7 @@ import {
 import type { ChallengeResult, InvestigationNodeResult } from '@aic/graph';
 
 import { ModelRoleOutputError } from './model-errors.js';
-import type { ModelCompletion, ModelPort } from './reference-model-port.js';
+import type { ModelCompletion, ModelCompletionRequest, ModelPort } from './reference-model-port.js';
 import { ownValue } from './own-value.js';
 
 /**
@@ -262,6 +267,14 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 16_000;
 
 export interface ModelRoleOptions {
   readonly port: ModelPort;
+  /**
+   * When given, each model call is one committed operation under the
+   * `model.role` exec key, so a run resumed after a crash between the commit
+   * and the checkpoint reuses the completion instead of asking the model again
+   * (docs/decisions/durable-run-execution.md, decisions 5-7). Without it the
+   * roles call the port directly, as before AIC-56.
+   */
+  readonly execution?: CommittedExecution;
   readonly promptVersion?: string;
   readonly maxOutputTokens?: number;
   /** The clock, injected so an assessment's `at` is decidable in a test. */
@@ -269,6 +282,45 @@ export interface ModelRoleOptions {
 }
 
 const JSON_ONLY = 'Answer with one JSON document and nothing else. No prose, no code fence.';
+
+/**
+ * One model call, committed when an execution port is given. The key is the
+ * call's position in the run — role, prompt version and the graph-owned
+ * counters — and the request's own fingerprint travels with it, so two
+ * different requests that ever land on one key are refused as an integrity
+ * violation rather than one silently answering the other.
+ *
+ * The key is sufficient only while every graph edge back into a model role
+ * moves one of `iterationsUsed`, `challengeRounds` or `resumeCount`; an edge
+ * that re-entered a role without moving one would give two calls one key and
+ * turn the second into a permanent integrity refusal. see
+ * durable-model-replay.test.mjs › "records a distinct model.role exec key for
+ * every model call across generate -> interpret -> challenge -> interpret, and
+ * no key ever repeats"
+ *
+ * The completion is committed before the role parses it, so a truncated or
+ * malformed answer is what later attempts replay for that key, and changing
+ * `maxOutputTokens` changes the request under the same key — an integrity
+ * refusal, not a retry.
+ */
+function completeOnce(
+  { port, execution, promptVersion }: { port: ModelPort; execution?: CommittedExecution; promptVersion: string },
+  role: string,
+  state: IncidentState,
+  request: ModelCompletionRequest,
+): Promise<ModelCompletion> {
+  if (execution === undefined) return port.complete(request);
+  const execKey = buildExecKey('model.role', {
+    runId: state.control.runId,
+    role,
+    promptVersion,
+    iterationsUsed: state.control.iterationsUsed,
+    challengeRounds: state.control.challengeRounds,
+    resumeCount: state.control.resumeCount,
+  });
+  const inputFingerprint = `sha256:${createHash('sha256').update(JSON.stringify(canonicalJson(request))).digest('hex')}`;
+  return execution.committed(execKey, () => port.complete(request), { inputFingerprint });
+}
 
 /**
  * Pull the JSON document out of a completion.
@@ -387,6 +439,7 @@ function describeState(state: IncidentState): string {
  */
 export function createModelGenerateHypotheses({
   port,
+  execution,
   promptVersion = REFERENCE_PROMPT_VERSION,
   maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
 }: ModelRoleOptions): (
@@ -394,7 +447,7 @@ export function createModelGenerateHypotheses({
 ) => Promise<InvestigationNodeResult> {
   const role = 'generate_hypotheses';
   return async (state) => {
-    const completion = await port.complete({
+    const completion = await completeOnce({ port, execution, promptVersion }, role, state, {
       system: [
         'You are an incident investigator proposing candidate explanations.',
         'Propose distinct, falsifiable causal hypotheses for the incident below.',
@@ -460,6 +513,7 @@ export function createModelGenerateHypotheses({
  */
 export function createModelInterpretResidualEvidence({
   port,
+  execution,
   promptVersion = REFERENCE_PROMPT_VERSION,
   maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
   at = () => new Date().toISOString(),
@@ -468,7 +522,7 @@ export function createModelInterpretResidualEvidence({
 ) => Promise<InvestigationNodeResult> {
   const role = 'interpret_residual_evidence';
   return async (state) => {
-    const completion = await port.complete({
+    const completion = await completeOnce({ port, execution, promptVersion }, role, state, {
       system: [
         'You are an incident investigator reading evidence against hypotheses.',
         'For each piece of evidence that bears on a hypothesis, state the effect and how strongly.',
@@ -543,6 +597,7 @@ export function createModelInterpretResidualEvidence({
  */
 export function createModelChallengeHypothesis({
   port,
+  execution,
   promptVersion = REFERENCE_PROMPT_VERSION,
   maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
 }: ModelRoleOptions): (
@@ -552,7 +607,7 @@ export function createModelChallengeHypothesis({
   const role = 'challenge_hypothesis';
   return async (state, leaderId) => {
     const leader = state.hypotheses.find(({ id }) => id === leaderId);
-    const completion = await port.complete({
+    const completion = await completeOnce({ port, execution, promptVersion }, role, state, {
       system: [
         'You are a red-team reviewer challenging the leading explanation of an incident.',
         'Propose ONE genuinely different alternative cause, and tests that discriminate between it and the leader.',
