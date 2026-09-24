@@ -50,16 +50,17 @@
  *   - a "Bearer <token>" credential (20+ token characters), where the WHOLE
  *     match — including the `Bearer ` prefix — is dropped, not just the
  *     token;
- *   - a PEM private-key block: the `-----BEGIN ... PRIVATE KEY-----` header
- *     (optional trailing horizontal whitespace and an optional, optionally
- *     indented RFC 1421 `Proc-Type`/`DEK-Info` header block tolerated before
- *     the body), then either a FOOTER-ANCHORED whole block — an indented or
- *     multi-line base64 body followed by a MANDATORY matching
- *     `-----END ... PRIVATE KEY-----` footer — or, when no such footer
- *     follows, a FOOTER-LESS block of nothing but base64 lines of 16+
- *     characters each; the WHOLE block is replaced, not just the header (see
- *     "the PEM pattern" below); a non-private PEM block such as a certificate
- *     is left alone;
+ *   - a PEM private-key block: found by a plain forward STRING SEARCH, not a
+ *     regex (see "The PEM pattern" below for why and the owner ruling that
+ *     replaced the regex) — a `-----BEGIN ` + up to 64 `[A-Z0-9 ]` characters
+ *     + `PRIVATE KEY-----` header, then EVERYTHING up to and including the
+ *     next matching `-----END ` + up to 64 `[A-Z0-9 ]` characters +
+ *     `PRIVATE KEY-----` footer is replaced with the single marker
+ *     `[REDACTED]`, whatever lies between the two; with no such footer
+ *     anywhere after the header, everything from the header to the END OF
+ *     THE STRING is redacted instead, fail closed rather than guessing where
+ *     the block ends. A non-private PEM block such as a certificate or
+ *     public key is left alone;
  *   - inline `user:pass` URL credentials for ANY scheme matching
  *     `[A-Za-z][A-Za-z0-9+.-]*://` in either case (not only `http(s)`, and not
  *     only lower-case), where the scheme and host are kept and only the
@@ -109,92 +110,109 @@
  * covering either case without an `i` flag, which would also affect every
  * other pattern sharing this same array.
  *
- * The PEM pattern is two alternatives, each a single non-backtracking run,
- * tried footer-anchored first and footer-less second: a literal header, then
- * ONE optional continuation group that only ever engages once an actual
- * newline is reached — optional trailing horizontal whitespace (`[ \t]*`) is
- * tolerated immediately before that newline, but is never consumed on its
- * own when no newline follows it, because the whole group's first mandatory
- * element (`[ \t]*\r?\n`) fails there and the surrounding `(?:...)?`
- * backtracks to zero width rather than leaving a partial match — this is what
- * keeps a header followed by plain trailing prose on the same line (see the
- * near-miss row pinning "key material: <header> follows") left with that
- * prose untouched, and is also what makes trailing whitespace before the
- * header's own newline no longer defeat the whole group (review round 2,
- * finding 3a). Once that gate is passed, zero or more RFC 1421 header lines
- * are consumed — restricted to the literal `Proc-Type:` or `DEK-Info:` labels
- * specifically, each optionally indented and ending in its own newline
- * (`(?:[ \t]*(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*`) — an ordinary
- * colon-bearing log line such as `"INFO: service healthy"` never matches this
- * loop, because neither literal label matches its own text (review round 3,
- * finding 4). What follows is ONE of two alternatives:
+ * The PEM pattern is a plain forward STRING SEARCH (`redactPemBlocks`,
+ * defined below, run once at the start of `redactString` before
+ * `CREDENTIAL_PATTERNS`), not a regex over the whole block — the owner's
+ * 2026-09-25 SUBTRACTION ruling that replaced it. Four review rounds each
+ * patched one gap in a header/footer regex (an RFC-1421-header-line loop, a
+ * body character class excluding `-`/`:`/space) and each fix opened a new
+ * leak the next round found — most recently a footer-less ENCRYPTED key whose
+ * RFC 1421 blank line defeated the base64-only fallback line class. Rather
+ * than write a fifth patch, the rule is now: whatever lies between a header
+ * and its footer is OPAQUE. It is never parsed, so it cannot be
+ * mis-parsed.
  *
- *   A) FOOTER-ANCHORED — a single greedy character class,
- *      `[A-Za-z0-9+/=\s]`, that tolerates whitespace (including further
- *      newlines and per-line indentation, so a YAML-block-scalar-indented
- *      body is still consumed in full — review round 3, findings 1 and 2)
- *      but EXCLUDES the literal characters `-` and `:`. Because the class
- *      excludes `-`, it always stops deterministically at the next `-----`
- *      (a real footer or another header) with no backtracking needed to find
- *      that boundary; a MANDATORY matching `-----END ... PRIVATE KEY-----`
- *      footer must follow immediately.
- *   B) FOOTER-LESS fallback, tried only once A fails to find a footer — zero
- *      or more (optionally indented) lines that are NOTHING BUT 16-or-more
- *      base64 characters, each ending in its own newline except optionally
- *      the last:
- *      `(?:[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*(?:\r?\n[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*)*)?`.
- *      A line containing a space, a colon, or fewer than 16 base64
- *      characters — including a short word like `"INFO"` or a colon-bearing
- *      log line — ends the match there instead of being partly consumed
- *      (review round 3, finding 4), which is also what makes the
- *      already-established footer-less row above keep the leading word of
- *      its own first followup line intact.
+ * What is redacted: from a `-----BEGIN ` + up to 64 `[A-Z0-9 ]` characters +
+ * `PRIVATE KEY-----` header, EVERYTHING through the next matching
+ * `-----END ` + up to 64 `[A-Z0-9 ]` characters + `PRIVATE KEY-----` footer —
+ * indentation, blank lines, `Proc-Type`/`DEK-Info`/any other header-shaped
+ * line, per-line log prefixes, base64url characters, literal `-` or `:`
+ * inside the span, none of it inspected — see
+ * test/bound-source-registry.test.mjs › "redacts the WHOLE PEM private-key
+ * block, including a multi-line base64 body — the body never survives
+ * anywhere in the output (review round 1, security blocker 1)", ›
+ * "redacts the WHOLE PEM block even when the header line carries trailing
+ * spaces and a tab before its own newline (review round 2, finding 3a)", ›
+ * "redacts an ENCRYPTED PEM block whose RFC 1421 Proc-Type/DEK-Info headers
+ * sit between the BEGIN header and the base64 body — no body line and no
+ * footer survive (review round 2, finding 3b)", › "redacts the WHOLE PEM
+ * block even when every continuation line is INDENTED, as inside a YAML
+ * block scalar — the surrounding document text survives (review round 3,
+ * finding 1)", › "redacts the WHOLE PEM block even when a body line carries a
+ * single TRAILING space — the following body line and the footer must not
+ * survive (review round 3, finding 2)", › "redacts an INDENTED ENCRYPTED PEM
+ * block: the base64 body, the footer, and the DEK-Info value all fail to
+ * survive when every continuation line is indented (review round 3, finding
+ * 3)", › "redactEvidenceOutput treats the whole header-to-footer span as
+ * opaque regardless of what lies between: a Content-Domain header line
+ * before the body no longer defeats redaction, and text after the footer
+ * survives (review round 4, owner fail-closed ruling, 2026-09-25)", › "…every
+ * line — including the header and footer lines themselves — carries a
+ * per-line ISO-timestamp log prefix …", › "…whose newlines are the
+ * two-character escaped sequence backslash-n … as found inside an
+ * escaped-JSON string …", and › "…whose body uses the base64url alphabet
+ * ('-' and '_' in place of '+' and '/') …" (all four review round 4, owner
+ * fail-closed ruling, 2026-09-25).
  *
- * Every quantified region here is either quantified once with nothing nested
- * inside it over the same characters, or — the header-line loop's `[ \t]*`
- * indent and `[^\r\n]*` line-content class — two classes that DO overlap on
- * letters but are separated by a mandatory literal label, so a
- * label-mismatched line costs at most one bounded backtrack over its own
- * indentation before the loop gives up, never nested inside another
- * repetition. Alternative A's body class and B's base64-line class are each a
- * single quantified region with nothing else competing for the same
- * characters: A's class and the footer's literal `-----` are disjoint (the
- * class excludes `-`), and B's base64 class and its own surrounding
- * `[ \t]*` are disjoint alphabets (base64 excludes space and tab), so control
- * passes from one to the other with no backtracking in either case — the
- * same bounded shape `.claude/scripts/lib/secrets.mjs` uses for its own
- * credential patterns (`.claude/rules/invariants.md`, "a guard that fails
- * open must do provably bounded work" — applied here to a redactor rather
- * than a hook, since this module runs on every recorded and returned outcome
- * rather than failing open on error). See test/bound-source-registry.test.mjs
- * › "redacts the WHOLE PEM private-key block, including a multi-line base64
- * body — the body never survives anywhere in the output (review round 1,
- * security blocker 1)", › "redacts the WHOLE PEM block even when the header
- * line carries trailing spaces and a tab before its own newline (review round
- * 2, finding 3a)", › "redacts an ENCRYPTED PEM block whose RFC 1421
- * Proc-Type/DEK-Info headers sit between the BEGIN header and the base64 body
- * — no body line and no footer survive (review round 2, finding 3b)", ›
- * "does not over-redact past a FOOTER-LESS PEM header: plain log lines with
- * spaces survive (review round 2, finding 3c: the body class must not
- * include a literal space)", › "redacts the WHOLE PEM block even when every
- * continuation line is INDENTED, as inside a YAML block scalar — the
- * surrounding document text survives (review round 3, finding 1)", › "redacts
- * the WHOLE PEM block even when a body line carries a single TRAILING space —
- * the following body line and the footer must not survive (review round 3,
- * finding 2)", › "redacts an INDENTED ENCRYPTED PEM block: the base64 body,
- * the footer, and the DEK-Info value all fail to survive when every
- * continuation line is indented (review round 3, finding 3)", and › "does not
- * treat an ordinary colon-bearing log line as an RFC 1421 header line after a
- * FOOTER-LESS PEM header: the lines survive exactly, leading level word
- * included (review round 3, finding 4)". The five PEM timing rows pinning
- * that none of the above reintroduces a quadratic pattern on 1 MiB of
- * adversarial input are, all in test/bound-source-registry.test.mjs and all
- * titled "(review round 3, PEM timing)": › "redactEvidenceOutput stays within
- * a bound on 1 MiB of repeated PEM headers with no footer …", › "…on a
- * footer-less PEM header followed by 1 MiB of base64 …", › "…on a PEM header
- * followed by 1 MiB of whitespace …", › "…on 1 MiB of \"Proc-Type: x\" lines
- * after a PEM header …", and › "…on a PEM header, ~1 MiB of base64 body, and
- * a footer …".
+ * With no matching footer anywhere after the header, EVERYTHING from the
+ * header to the END OF THE STRING is redacted instead — fail closed, because
+ * there is no footer to bound the span, rather than guessing at a body shape
+ * that (per the four rounds above) always turns out to have a counter-example
+ * — see test/bound-source-registry.test.mjs › "redacts a footer-less PEM
+ * header through the end of the string, fail closed: \"key material: \"
+ * survives, \" follows\" does not (owner fail-closed ruling, 2026-09-25 —
+ * supersedes the original same-line near-miss this row pinned)", › "…even
+ * when what follows is plain log text (… supersedes review round 2, finding
+ * 3c)", › "…even when what follows is ordinary colon-bearing log text (…
+ * supersedes review round 3, finding 4)", and › "record: a footer-less
+ * ENCRYPTED PEM key (Proc-Type/DEK-Info headers, the RFC 1421 blank line,
+ * then a base64 body, no footer) is fully redacted before it ever reaches
+ * the recordings file or the returned outcome (review round 4 — the
+ * footer-less-encrypted leak the owner's 2026-09-25 fail-closed ruling
+ * fixes)".
+ *
+ * What survives: the text before the header, and the text after the footer
+ * (when one was found) — see every "… and text after/before … survives" row
+ * cited above, plus › "redacts two PEM blocks independently when placed back
+ * to back with prose between them: both blocks are redacted separately, and
+ * the prose between and after them survives (review round 4, owner
+ * fail-closed ruling, 2026-09-25)" for two independent blocks in the same
+ * string. A non-private PEM block — a certificate, a public key — never
+ * matches the header check at all and is left untouched: see › "leaves a
+ * non-private-key PEM header (a certificate) alone (near miss)".
+ *
+ * The accepted over-redaction: a footer-less block consumes everything after
+ * it, including unrelated text that happens to follow in the same string —
+ * this is the fail-closed trade the owner's ruling explicitly accepts rather
+ * than parsing the span to tell a real body line from something else, which
+ * is exactly the parsing that kept being wrong. There is no test asserting a
+ * footer-less block stops short of the end of the string; the rows above
+ * assert the opposite.
+ *
+ * Bounded work: `redactPemBlocks` never backtracks. It walks the string once,
+ * forward only — `String.prototype.indexOf` to find each `-----BEGIN `/
+ * `-----END ` literal, then a STICKY, length-bounded regex
+ * (`/-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY-----/y` and the `-----END `
+ * equivalent) tested at that exact index to confirm it is a private-key
+ * header/footer rather than some other PEM label. A non-matching hit (a
+ * certificate header, a footer whose label is not `PRIVATE KEY`) advances the
+ * search by exactly one character and never revisits earlier ground; a
+ * matching header's footer search resumes the OUTER scan from the footer's
+ * own end (or the string's end, when none was found), so no byte of the
+ * input is scanned by more than a bounded, forward-only pass — the same
+ * "bounded, forward-only, no rescanning" shape
+ * `.claude/rules/invariants.md`'s "a guard that fails open must do provably
+ * bounded work" asks for, applied here to a redactor rather than a hook. The
+ * output is assembled as an array of slices joined once, never repeated
+ * string concatenation in a loop. See test/bound-source-registry.test.mjs ›
+ * "redactEvidenceOutput stays within a bound on 1 MiB of repeated PEM headers
+ * with no footer (review round 3, PEM timing)", › "…on a footer-less PEM
+ * header followed by 1 MiB of base64 …", › "…on a PEM header followed by 1
+ * MiB of whitespace …", › "…on 1 MiB of \"Proc-Type: x\" lines after a PEM
+ * header …", › "…on a PEM header, ~1 MiB of base64 body, and a footer …" (all
+ * five "review round 3, PEM timing"), and › "redactEvidenceOutput stays
+ * within a bound on 1 MiB of alternating PEM header/footer pairs, each
+ * independently redacted (review round 4, PEM timing)".
  *
  * `MAX_REDACTION_DEPTH` bounds recursion: the depth check happens BEFORE a
  * container's children are visited, so recursion never goes deeper than
@@ -222,15 +240,15 @@ const REDACTED = '[REDACTED]';
  * Most patterns here are a literal prefix plus at most one bounded character
  * class, the same shape `.claude/scripts/lib/secrets.mjs` uses for its own
  * credential patterns — bounded because a single quantified class cannot
- * backtrack against itself. The PEM and URL-credential patterns below carry
- * more than one quantified region each, so each of THEM is bounded a
- * different way instead — a leading lookbehind that prunes almost every
- * starting position for the URL pattern, and a mandatory-newline gate plus
- * disjoint, non-overlapping classes for the PEM pattern's two alternatives —
- * spelled out in this file's header comment, next to the timing rows in
- * test/bound-source-registry.test.mjs that measure each one: the URL
- * pattern's ReDoS rows (review round 2, finding 1) and the five PEM timing
- * rows this file's header comment names by test name (review round 3).
+ * backtrack against itself. The URL-credential pattern below carries more
+ * than one quantified region, so it is bounded a different way instead — a
+ * leading lookbehind that prunes almost every starting position — spelled out
+ * in this file's header comment, next to the timing rows in
+ * test/bound-source-registry.test.mjs that measure it (review round 2,
+ * finding 1). The PEM private-key block is no longer one of these regex
+ * entries at all: `redactPemBlocks`, below, is a plain string search run
+ * before this array, for the reasons this file's header comment states under
+ * "The PEM pattern is a plain forward STRING SEARCH".
  */
 interface CredentialPattern {
   readonly pattern: RegExp;
@@ -257,30 +275,6 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
     replacement: REDACTED,
   },
   {
-    // PEM private-key block: header, then ONE optional continuation group
-    // that only ever engages once an actual newline is reached (optional
-    // trailing horizontal whitespace — [ \t]* — is tolerated before that
-    // newline, but is never consumed on its own if no newline follows it,
-    // because the whole group backtracks to zero width when the mandatory
-    // `\r?\n` fails), then zero or more RFC 1421 header lines (`Proc-Type:`
-    // or `DEK-Info:` specifically, each optionally indented and ending in its
-    // own newline — never an arbitrary `word:` log line), then ONE of two
-    // alternatives, tried in order:
-    //   A) FOOTER-ANCHORED — a body class that tolerates whitespace
-    //      (including further newlines and indentation) but EXCLUDES '-' and
-    //      ':', so it always stops deterministically at the next '-----' or
-    //      colon, then a MANDATORY matching footer;
-    //   B) FOOTER-LESS fallback — zero or more (optionally indented) base64
-    //      lines of 16+ characters each, and nothing else: a line containing
-    //      a space, a colon, or fewer than 16 base64 characters ends the
-    //      match there rather than being partly consumed.
-    // See this file's header comment, "The PEM pattern is two alternatives,
-    // each a single non-backtracking run".
-    pattern:
-      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*\r?\n(?:[ \t]*(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n)*(?:[A-Za-z0-9+/=\s]*-----END [A-Z0-9 ]*PRIVATE KEY-----|(?:[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*(?:\r?\n[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*)*)?))?/g,
-    replacement: REDACTED,
-  },
-  {
     // Inline URL credentials, any scheme, either case: `scheme://user:pass@`
     // — only the credential part between `//` and `@` is replaced, keeping
     // the scheme (captured in group 1) and the host that follows `@`. The
@@ -290,9 +284,8 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
     // string — see this file's header comment, "the any-scheme URL pattern
     // is anchored" and test/bound-source-registry.test.mjs's ReDoS timing
     // rows (review round 2, finding 1). No `i` flag: the character classes
-    // spell out both cases explicitly, because the PEM pattern above shares
-    // this same `CREDENTIAL_PATTERNS` array and depends on case-sensitive
-    // matching of its own literal `BEGIN`/`END`/`PRIVATE KEY` text.
+    // spell out both cases explicitly, for symmetry with this array's other
+    // case-sensitive entries.
     pattern: /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]*@/g,
     replacement: `$1${REDACTED}@`,
   },
@@ -304,8 +297,94 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
   },
 ];
 
+/** The literal a PEM private-key header starts with — searched with `indexOf`, never a regex scan. */
+const PEM_HEADER_LITERAL = '-----BEGIN ';
+/** The literal a PEM private-key footer starts with — searched with `indexOf`, never a regex scan. */
+const PEM_FOOTER_LITERAL = '-----END ';
+/**
+ * Confirms, at an EXACT index found by `indexOf(PEM_HEADER_LITERAL, …)`, that
+ * what follows is a private-key header rather than some other PEM label (a
+ * certificate, a public key) — sticky (`y`), so it only ever tests the one
+ * position it is pointed at, and length-bounded (`{0,64}`), so a match
+ * attempt is O(1) regardless of input size.
+ */
+const PEM_HEADER_STICKY = /-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY-----/y;
+/** The footer equivalent of `PEM_HEADER_STICKY`, same shape and same bound. */
+const PEM_FOOTER_STICKY = /-----END [A-Z0-9 ]{0,64}PRIVATE KEY-----/y;
+
+/**
+ * Replaces every PEM private-key block in `value` with the single marker
+ * `[REDACTED]` — a plain forward string search, never a regex over the whole
+ * block. See this file's header comment, "The PEM pattern is a plain forward
+ * STRING SEARCH", for what is redacted, what survives, the accepted
+ * over-redaction and why this replaced a regex, each pointing at the test
+ * that pins it.
+ *
+ * The whole function is one forward pass: `cursor` is the start of the
+ * next-unwritten slice of `value`, and `searchFrom` is the next position to
+ * look for a header. A header hit whose sticky check fails advances
+ * `searchFrom` by exactly one character and is never revisited. A header
+ * whose sticky check succeeds starts its own, separate forward-only footer
+ * search from the header's own end; that footer search either finds a
+ * matching footer (and the outer scan resumes just past it) or exhausts the
+ * rest of the string (and the whole remainder is redacted, fail closed, with
+ * nothing left for the outer scan to do). Either way, no byte of `value` is
+ * ever re-scanned by a later iteration — the output is built as an array of
+ * slices joined once at the end, never repeated string concatenation.
+ */
+function redactPemBlocks(value: string): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  let searchFrom = 0;
+
+  for (;;) {
+    const headerHit = value.indexOf(PEM_HEADER_LITERAL, searchFrom);
+    if (headerHit === -1) {
+      break;
+    }
+    PEM_HEADER_STICKY.lastIndex = headerHit;
+    const headerMatch = PEM_HEADER_STICKY.exec(value);
+    if (!headerMatch) {
+      searchFrom = headerHit + 1;
+      continue;
+    }
+    const headerEnd = headerHit + headerMatch[0].length;
+
+    let footerSearchFrom = headerEnd;
+    let footerEnd = -1;
+    for (;;) {
+      const footerHit = value.indexOf(PEM_FOOTER_LITERAL, footerSearchFrom);
+      if (footerHit === -1) {
+        break;
+      }
+      PEM_FOOTER_STICKY.lastIndex = footerHit;
+      const footerMatch = PEM_FOOTER_STICKY.exec(value);
+      if (footerMatch) {
+        footerEnd = footerHit + footerMatch[0].length;
+        break;
+      }
+      footerSearchFrom = footerHit + 1;
+    }
+
+    parts.push(value.slice(cursor, headerHit), REDACTED);
+
+    if (footerEnd === -1) {
+      // Fail closed: no matching footer anywhere after this header — redact
+      // through the end of the string rather than guessing where the block
+      // ends.
+      cursor = value.length;
+      break;
+    }
+    cursor = footerEnd;
+    searchFrom = footerEnd;
+  }
+
+  parts.push(value.slice(cursor));
+  return parts.join('');
+}
+
 function redactString(value: string): string {
-  let result = value;
+  let result = redactPemBlocks(value);
   for (const { pattern, replacement } of CREDENTIAL_PATTERNS) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, replacement);
