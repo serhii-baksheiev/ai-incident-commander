@@ -149,3 +149,40 @@ export function parseWith<T>(
     throw new ModelRoleOutputError(role, (cause as Error).message);
   }
 }
+
+/** How many unknown keys a refusal names by hand, before it just counts the rest. */
+const NAMED_UNKNOWN_KEYS_CAP = 5;
+
+/**
+ * Refuse a value that carries an own key outside `allowed`.
+ *
+ * Shared by every role that rebuilds a model answer from its own properties
+ * and must refuse a key the answer shape does not declare rather than
+ * silently drop it (`naive-role.ts`'s conclusion, and `investigation-roles.ts`'s
+ * `propose_conclusion`, share this one rule per
+ * `.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * Moved here from `naive-role.ts` unchanged: same cap, same escaping, same
+ * texts, so a role that already depended on this wording keeps it verbatim.
+ * see naive-role.test.mjs › "refuses an unknown key on the conclusion, on a cause, and on a cause description"
+ * see conclusion-role.test.mjs › "refuses an unknown key on the top-level answer, on a cause, and on a cause description (refusal 3)"
+ */
+export function refuseUnknownKeys(
+  role: string,
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  where: string,
+): void {
+  if (value === null || typeof value !== 'object') return;
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length === 0) return;
+  // The keys are the model's own text: each is named escaped, and only the
+  // first few, so a hostile answer cannot shape or flood the message.
+  const named = unknown
+    .slice(0, NAMED_UNKNOWN_KEYS_CAP)
+    .map((key) => JSON.stringify(key.slice(0, 80)));
+  const rest = unknown.length - named.length;
+  throw new ModelRoleOutputError(
+    role,
+    `${where} carries keys the answer shape does not declare: ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
+  );
+}

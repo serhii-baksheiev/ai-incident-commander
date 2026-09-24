@@ -88,6 +88,9 @@ const initialState = () => ({
 
 const at = () => '2026-01-01T01:00:00.000Z';
 
+/** The closed root-cause mechanism vocabulary `propose_conclusion` is exercised with. */
+const CONCLUSION_MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
+
 /** A `ModelCompletion` carrying a scripted JSON document as its `text`. */
 function jsonCompletion(document) {
   return {
@@ -165,6 +168,37 @@ const ROLE_CASES = [
       alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
       discriminatingTests: [
         { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
+      ],
+    }),
+  },
+  {
+    // AIC-119 slice D: the fourth model role, evidence-constrained conclusion
+    // composition. `mechanisms` is required and has no analogue on the other
+    // three roles, so it is injected here via closure rather than added to
+    // every `roleCase.create(options)` call site above and below - those call
+    // sites are shared across all four roles and pass option sets (e.g. no
+    // `at`, or only `port`+`execution`) that were fixed before this role
+    // existed.
+    roleName: 'propose_conclusion',
+    create: (options) =>
+      roles.createModelProposeConclusion({ mechanisms: CONCLUSION_MECHANISMS, ...options }),
+    buildState: () => {
+      const state = initialState();
+      state.hypotheses = [
+        { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+      ];
+      state.control = { ...state.control, stopKind: 'sufficient' };
+      return state;
+    },
+    call: (node, state) => node(state),
+    completion: jsonCompletion({
+      kind: 'root-cause',
+      causes: [
+        {
+          hypothesisId: 'h-1',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+          evidenceIds: ['evidence-1'],
+        },
       ],
     }),
   },
@@ -418,6 +452,95 @@ test('records a distinct model.role exec key for every model call across generat
     new Set(recording.keys).size,
     recording.keys.length,
     'no model.role exec key may repeat across the run: a repeat would mean two different model calls sharing one committed slot',
+  );
+});
+
+/**
+ * AIC-119 slice D: the same scenario, one edge further - the graph's own
+ * `terminate` routes `route: 'terminal'` straight to `propose_conclusion`
+ * (`packages/graph/src/investigation.ts`), and after one challenge round
+ * (`challengeRounds` is then 1, not 0) a `'sufficient'` terminal decision no
+ * longer forces a second challenge, so this scenario already reaches
+ * `propose_conclusion` today - it is simply a no-op stub in the row above. A
+ * NEW row rather than editing the one above: that row's own title and its
+ * four-call assertion stay exactly as they are: it is what the previous slice
+ * pinned, so nothing about `propose_conclusion` should change what it means to
+ * describe a run of the first three roles alone.
+ */
+test('records a distinct model.role exec key for propose_conclusion too, one edge past the row above, and no key ever repeats', async () => {
+  const answers = [
+    jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+    jsonCompletion({ assessments: [] }),
+    jsonCompletion({
+      alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
+      discriminatingTests: [
+        { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
+      ],
+    }),
+    jsonCompletion({ assessments: [] }),
+    jsonCompletion({
+      kind: 'root-cause',
+      causes: [
+        {
+          hypothesisId: 'h-1',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+          evidenceIds: ['evidence-1'],
+        },
+      ],
+    }),
+  ];
+  const remaining = [...answers];
+  let portCalls = 0;
+  const port = {
+    async complete() {
+      portCalls += 1;
+      const next = remaining.shift();
+      assert.ok(next !== undefined, 'the scripted port ran out of answers: the scenario below asked for a sixth model call');
+      return next;
+    },
+  };
+  const recording = createRecordingExecution();
+
+  const nodes = Object.fromEntries(LIFECYCLE_NODES.map((name) => [name, async () => ({})]));
+  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({ port, execution: recording, at });
+  nodes.interpret_residual_evidence = roles.createModelInterpretResidualEvidence({
+    port,
+    execution: recording,
+    at,
+  });
+  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({ port, execution: recording, at });
+  nodes.propose_conclusion = roles.createModelProposeConclusion({
+    port,
+    execution: recording,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
+
+  let terminationCalls = 0;
+  nodes.termination_check = async (state) => {
+    terminationCalls += 1;
+    if (terminationCalls === 1) {
+      return { route: 'challenge-required', leaderId: state.hypotheses[0]?.id };
+    }
+    return { route: 'terminal', stopKind: 'sufficient' };
+  };
+
+  const graph = createInvestigationGraph({ nodes });
+  await graph.execute({ kind: 'start', state: initialState() });
+
+  assert.equal(
+    portCalls,
+    5,
+    'the scenario must reach exactly five model calls: generate, interpret (round 1), challenge, interpret (round 2), propose_conclusion',
+  );
+  assert.equal(
+    recording.keys.length,
+    portCalls,
+    'the counting port is the independent oracle: one exec key must be recorded per model call, no more and no fewer',
+  );
+  assert.equal(
+    new Set(recording.keys).size,
+    recording.keys.length,
+    'no model.role exec key may repeat across the run, including the propose_conclusion call this row adds',
   );
 });
 

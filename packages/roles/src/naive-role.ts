@@ -18,6 +18,7 @@ import {
   parseJsonDocument,
   parseWith,
   refuseTruncated,
+  refuseUnknownKeys,
 } from './role-output.js';
 
 /**
@@ -206,21 +207,6 @@ const CAUSE_DESCRIPTION_KEYS: ReadonlySet<string> = new Set(
   Object.keys(CauseClaimSchema.shape.cause.shape),
 );
 
-const NAMED_KEYS_CAP = 5;
-
-function refuseUnknownKeys(value: unknown, allowed: ReadonlySet<string>, where: string): void {
-  if (value === null || typeof value !== 'object') return;
-  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
-  if (unknown.length === 0) return;
-  // The keys are the model's own text: each is named escaped, and only the
-  // first few, so a hostile answer cannot shape or flood the message.
-  const named = unknown.slice(0, NAMED_KEYS_CAP).map((key) => JSON.stringify(key.slice(0, 80)));
-  const rest = unknown.length - named.length;
-  refuse(
-    `${where} carries keys the answer shape does not declare: ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
-  );
-}
-
 /**
  * Delegates to `@aic/domain`'s `conclusionCauseCountViolation` (AIC-119),
  * which the future graph conclusion role needs the same rule for. The text
@@ -304,13 +290,13 @@ export function createModelNaiveInvestigation(
     // see naive-role.test.mjs › "reads the conclusion only from what the answer owns, never from Object.prototype"
     // see naive-role.test.mjs › "refuses an unknown key on the conclusion, on a cause, and on a cause description"
     const declared = ownValue(document, 'conclusion');
-    refuseUnknownKeys(declared, CONCLUSION_KEYS, 'the conclusion');
+    refuseUnknownKeys(ROLE, declared, CONCLUSION_KEYS, 'the conclusion');
     const conclusion = parseWith(ROLE, IncidentConclusionSchema, {
       kind: ownValue(declared, 'kind'),
       causes: ownArray(ROLE, declared, 'causes').map((cause) => {
-        refuseUnknownKeys(cause, CAUSE_KEYS, 'a cause');
+        refuseUnknownKeys(ROLE, cause, CAUSE_KEYS, 'a cause');
         const claimed = ownValue(cause, 'cause');
-        refuseUnknownKeys(claimed, CAUSE_DESCRIPTION_KEYS, "a cause's description");
+        refuseUnknownKeys(ROLE, claimed, CAUSE_DESCRIPTION_KEYS, "a cause's description");
         return {
           hypothesisId: ownValue(cause, 'hypothesisId'),
           // An own key even when absent, so the schema cannot read an

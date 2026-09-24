@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import * as evals from '@aic/evals';
+import * as roles from '@aic/roles';
 import { createModelNaiveInvestigation } from '@aic/roles';
 
 import { modelNodes, scriptedNodes } from '../scripts/eval-live-model.mjs';
@@ -39,6 +40,11 @@ const ALL_SCENARIO_IDS = evals.REPLAY_SCENARIOS.map(({ id }) => id);
 function requireEvalsExport(name) {
   assert.ok(evals[name] !== undefined, `@aic/evals must export ${name}`);
   return evals[name];
+}
+
+function requireRolesExport(name) {
+  assert.ok(roles[name] !== undefined, `@aic/roles must export ${name}`);
+  return roles[name];
 }
 
 /**
@@ -393,4 +399,78 @@ test('shows no REPLAY_SCENARIOS id in any prompt when runNaiveBenchmarkExperimen
       'the naive prompt driven by runNaiveBenchmarkExperiment must carry an opaque incident id',
     );
   }
+});
+
+/**
+ * AIC-119 slice D: the fourth model role, `propose_conclusion`
+ * (`createModelProposeConclusion`, `packages/roles/src/investigation-roles.ts`),
+ * reads `describeState`, the exact prompt-building function the three
+ * MODEL_BACKED_ROLES above already share — so it inherits the same leak
+ * surface `describeState` has for `incident`. Wiring this role into
+ * `scripts/eval-live-model.mjs`'s `modelNodes` (and so into the
+ * `runGraphBenchmarkExperiment` sweep above) is AIC-119 slice E, out of scope
+ * here; this row instead drives the role directly, the same standalone shape
+ * "shows no REPLAY_SCENARIOS id in the naive role prompt, for every scenario"
+ * above already uses for the naive role, over the SAME real fixture evidence
+ * `REPLAY_SCENARIOS` carries — not hand-written evidence a scenario's own
+ * fixture would never actually contain.
+ */
+test('shows no REPLAY_SCENARIOS id in the propose_conclusion prompt, for every scenario', async () => {
+  const createModelProposeConclusion = requireRolesExport('createModelProposeConclusion');
+  const captured = [];
+  const port = {
+    async complete(request) {
+      captured.push(request);
+      return {
+        text: JSON.stringify({ kind: 'inconclusive', causes: [] }),
+        modelId: 'fake-model-under-test',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
+    },
+  };
+  const node = createModelProposeConclusion({ port, mechanisms: ['m-one', 'm-two'] });
+
+  for (const scenario of evals.REPLAY_SCENARIOS) {
+    const okEntry = scenario.fixture.entries.find((entry) => entry.result.status === 'ok');
+    const evidence = okEntry ? [...okEntry.result.output] : [];
+    const opaqueIncidentId = evals.opaqueIncidentId(
+      `conclusion-leak-run-${scenario.id.length}-${captured.length}`,
+    );
+    const state = {
+      incident: { id: opaqueIncidentId },
+      hypotheses: [
+        { id: 'h-1', statement: 'a candidate cause drawn from the fixture', createdBy: 'initial' },
+      ],
+      predictions: [],
+      tests: [],
+      trials: [],
+      evidence,
+      assessments: [],
+      control: { stopKind: 'sufficient', challengeRounds: 0 },
+    };
+
+    const before = captured.length;
+    await node(state);
+    assert.equal(
+      captured.length,
+      before + 1,
+      `propose_conclusion must make exactly one call for ${scenario.id}`,
+    );
+    const request = captured[captured.length - 1];
+    assert.ok(
+      request.prompt.includes(opaqueIncidentId),
+      `the propose_conclusion prompt must carry the opaque incident id for ${scenario.id}`,
+    );
+    for (const scenarioId of ALL_SCENARIO_IDS) {
+      for (const [field, text] of [['system', request.system], ['prompt', request.prompt]]) {
+        assert.equal(
+          text.includes(scenarioId),
+          false,
+          `propose_conclusion's ${field} for scenario ${scenario.id} carries REPLAY_SCENARIOS id "${scenarioId}"`,
+        );
+      }
+    }
+  }
+
+  assert.equal(captured.length, evals.REPLAY_SCENARIOS.length);
 });

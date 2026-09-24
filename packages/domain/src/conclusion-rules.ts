@@ -1,4 +1,10 @@
-import type { Evidence, Hypothesis, IncidentConclusion, InvestigationStop } from './contracts.js';
+import {
+  IncidentConclusionSchema,
+  type Evidence,
+  type Hypothesis,
+  type IncidentConclusion,
+  type InvestigationStop,
+} from './contracts.js';
 
 /**
  * The pure validation rule for a model-composed `IncidentConclusion`.
@@ -22,18 +28,42 @@ const NAME_TRUNCATE_LENGTH = 80;
  * Names a model-supplied value the same way `naive-role.ts`'s
  * `refuseUnknownKeys` names an unknown key: JSON-escaped, and truncated to 80
  * characters first, so a hostile value can neither inject text into the
- * reason nor make it unbounded.
+ * reason nor make it unbounded. Exported so every model role that names a
+ * model-supplied value in a refusal message shares this one implementation
+ * rather than restating `JSON.stringify(x.slice(0, 80))` by hand
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
  * see conclusion-rules.test.mjs › "conclusionViolation: a hostile fabricated hypothesisId (quotes, newline, 500 chars) is named escaped and truncated to 80 chars"
+ * see conclusion-rules.test.mjs › "quoteModelText: escapes a quote and a newline, and leaves a short value otherwise intact"
+ * see conclusion-rules.test.mjs › "quoteModelText: truncates to exactly 80 characters before escaping"
  */
-function nameValue(value: string): string {
+export function quoteModelText(value: string): string {
   return JSON.stringify(value.slice(0, NAME_TRUNCATE_LENGTH));
 }
+
+/**
+ * The `kind` members `IncidentConclusionSchema` declares, derived from the
+ * schema itself rather than restated by hand — a hand-written copy is the
+ * "one fact spelled two ways" case `.claude/rules/invariants.md` warns
+ * against, and the copy nobody is looking at is the one that drifts.
+ * see conclusion-rules.test.mjs › "conclusionCauseCountViolation accepts exactly the kinds IncidentConclusionSchema declares, in both directions"
+ */
+const KNOWN_CONCLUSION_KINDS: ReadonlySet<string> = new Set(
+  IncidentConclusionSchema.shape.kind.options,
+);
 
 /**
  * The cause-count rule alone: how many causes a conclusion of each `kind` may
  * name. Exported on its own because `naive-role.ts`'s `requireCauseCount`
  * enforced exactly this before this module existed, and must keep reporting
  * the identical text now that it delegates here.
+ *
+ * Default-deny on a `kind` outside the four the schema declares (AIC-119
+ * slice D hardening): this module's precondition is schema-parsed own data
+ * (see the module header), so a caller that skips `IncidentConclusionSchema.parse`
+ * is the only way an unrecognised `kind` reaches here, but a validation rule
+ * that fell through every `if` and returned `undefined` for it was
+ * default-ALLOW on an enum field regardless of how it was reached — the wrong
+ * direction for a refusal to fail in.
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a root-cause conclusion with exactly one cause is valid"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: an inconclusive conclusion naming one cause reports the exact naive-role text"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a no-incident conclusion naming two causes reports the exact naive-role text"
@@ -41,10 +71,15 @@ function nameValue(value: string): string {
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a root-cause conclusion naming two causes reports the exact naive-role text"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a multiple-causes conclusion naming zero causes reports the exact naive-role text"
  * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a multiple-causes conclusion naming one cause reports the exact naive-role text"
+ * see conclusion-rules.test.mjs › "conclusionCauseCountViolation: a kind outside the four-member enum is refused, not silently accepted (default-deny)"
+ * see conclusion-rules.test.mjs › "conclusionViolation: a kind outside the four-member enum is refused rather than silently accepted (default-deny)"
  */
 export function conclusionCauseCountViolation(
   conclusion: IncidentConclusion,
 ): string | undefined {
+  if (!KNOWN_CONCLUSION_KINDS.has(conclusion.kind)) {
+    return `a conclusion names a kind this domain does not declare: ${quoteModelText(conclusion.kind)}`;
+  }
   const count = conclusion.causes.length;
   if ((conclusion.kind === 'no-incident' || conclusion.kind === 'inconclusive') && count !== 0) {
     return `a ${conclusion.kind} conclusion names no cause, and this one names ${count}`;
@@ -67,8 +102,10 @@ export interface ConclusionViolationInput {
 
 /**
  * The full conclusion rule: the first violation found, checked in order —
- * (1) cause count, (2) a hypothesisId named by two causes, (3) a
- * hypothesisId naming no given hypothesis, (4) a cause with no cited
+ * (1) cause count (which itself default-denies a `kind` outside the four
+ * `IncidentConclusionSchema` declares, delegated from
+ * `conclusionCauseCountViolation`), (2) a hypothesisId named by two causes,
+ * (3) a hypothesisId naming no given hypothesis, (4) a cause with no cited
  * evidence, (5) an evidenceId naming no given evidence, (6) `no-incident`
  * under `stopKind: 'tools-unavailable'`, which docs/incident-commander-architecture-v1.md
  * (section 8, rule 4) forbids: a run whose tools were unavailable never
@@ -97,27 +134,27 @@ export function conclusionViolation({
   const seenHypothesisIds = new Set<string>();
   for (const cause of conclusion.causes) {
     if (seenHypothesisIds.has(cause.hypothesisId)) {
-      return `two causes name the same hypothesis ${nameValue(cause.hypothesisId)}`;
+      return `two causes name the same hypothesis ${quoteModelText(cause.hypothesisId)}`;
     }
     seenHypothesisIds.add(cause.hypothesisId);
   }
 
   for (const cause of conclusion.causes) {
     if (!hypothesisIds.has(cause.hypothesisId)) {
-      return `a cause names a hypothesis that was not given: ${nameValue(cause.hypothesisId)}`;
+      return `a cause names a hypothesis that was not given: ${quoteModelText(cause.hypothesisId)}`;
     }
   }
 
   for (const cause of conclusion.causes) {
     if (cause.evidenceIds.length === 0) {
-      return `a cause for hypothesis ${nameValue(cause.hypothesisId)} cites no evidence`;
+      return `a cause for hypothesis ${quoteModelText(cause.hypothesisId)} cites no evidence`;
     }
   }
 
   for (const cause of conclusion.causes) {
     for (const evidenceId of cause.evidenceIds) {
       if (!evidenceIds.has(evidenceId)) {
-        return `a cause cites evidence that was not given: ${nameValue(evidenceId)}`;
+        return `a cause cites evidence that was not given: ${quoteModelText(evidenceId)}`;
       }
     }
   }
