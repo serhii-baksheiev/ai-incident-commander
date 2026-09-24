@@ -101,12 +101,18 @@ function spawnWorker(args) {
   let stdout = '';
   let stderr = '';
   const messages = [];
+  // Every message ever received, never spliced: `waitForMessage` removes the
+  // one it waited for from `messages`, so a count over `messages` misses it.
+  const received = [];
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => (stdout += chunk));
   child.stderr.on('data', (chunk) => (stderr += chunk));
-  child.on('message', (message) => messages.push(message));
-  return { child, messages, diagnostics: () => `stdout:\n${stdout}\nstderr:\n${stderr}` };
+  child.on('message', (message) => {
+    messages.push(message);
+    received.push(message);
+  });
+  return { child, messages, received, diagnostics: () => `stdout:\n${stdout}\nstderr:\n${stderr}` };
 }
 
 function waitForMessage(worker, expectedType, timeoutMs = 20_000) {
@@ -189,7 +195,7 @@ function killIfAlive(worker) {
  * while this file was awaiting something else from the SAME worker.
  */
 function countExecuteInvestigationMessages(worker) {
-  return worker.messages.filter((message) => message?.type === 'inside-execute-investigation').length;
+  return worker.received.filter((message) => message?.type === 'inside-execute-investigation').length;
 }
 
 /* -------------------------------------------------------------------------- */
