@@ -102,8 +102,14 @@
  * ## Review round 1 — security findings pinned here too
  *
  *   - `createFileReplayStore` creates its file mode `0o600`, never
- *     world-readable, because record mode persists unredacted adapter output
- *     (security blocker 4).
+ *     world-readable — not because record mode persists unredacted adapter
+ *     output (AIC-100 slice c redacts an `ok` outcome's `output` before
+ *     `store.set`, see this file's own "AIC-100 slice c — redactEvidenceOutput"
+ *     section below), but because a `refused` outcome's provenance, and any
+ *     entry written by a caller that bypasses the registry's own redaction, are
+ *     both still worth keeping owner-only (security blocker 4; text corrected,
+ *     review round 2, matching `bound-source-registry.ts`'s own
+ *     `writeRecordingsFile` doc comment).
  *   - `execute()` in `replay` over a file that fails to parse as JSON
  *     resolves to a `refused`/`adapter_error` outcome — it never rejects —
  *     and the serialized outcome carries no text from the file (security
@@ -184,6 +190,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -2614,3 +2621,402 @@ test(
     );
   },
 );
+
+/* ============================================================================ */
+/* AIC-100 slice c — review round 2 findings (LAST gate round)                 */
+/*                                                                              */
+/* Six findings, both reviewers, on packages/tools/src/{redaction,             */
+/* bound-source-registry}.ts @ b14c52f:                                        */
+/*   1. ReDoS in the any-scheme URL pattern on a long run with no '://'.       */
+/*   2. The any-scheme URL pattern is case-sensitive: an UPPERCASE scheme is   */
+/*      not redacted at all.                                                  */
+/*   3. Three PEM gaps: (a) trailing whitespace before the header's own        */
+/*      newline stops the body/footer from being consumed at all; (b) an      */
+/*      RFC 1421 encrypted-PEM header (Proc-Type/DEK-Info) breaks the body     */
+/*      character class and leaves the real body and footer untouched; (c) a  */
+/*      FOOTER-LESS header over-redacts past itself into unrelated log text,  */
+/*      because the body class currently accepts a literal space.             */
+/*   4. The registry re-reads describe() on every execute() call instead of   */
+/*      snapshotting it once at construction, so a binding whose describe()   */
+/*      later returns a credential-shaped value poisons provenance.adapter.   */
+/*   5. SAFE_ADAPTER_ID/SAFE_ADAPTER_TOKEN carry no length bound.             */
+/*   6. A function, symbol, bigint or undefined value passes through          */
+/*      redactEvidenceOutput unchanged instead of failing closed like a       */
+/*      Buffer/Map/Set/Date/Error.                                           */
+/*                                                                              */
+/* All runtime-assembled credential-shaped fixtures below follow this file's  */
+/* own established convention (never one literal, per                        */
+/* .claude/scripts/lib/secrets.mjs's vocabulary).                             */
+/* ============================================================================ */
+
+/* -------------------------------------------------------------------------- */
+/* review round 2 fixtures                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A long run of lowercase scheme-like characters (hex digits, dots, dashes)
+ * that never contains the literal substring '://' — so the any-scheme URL
+ * pattern's own [a-z][a-z0-9+.-]* prefix is exercised at every starting
+ * position without ever finding the literal it needs, which is exactly the
+ * shape that makes an unanchored, unbounded-prefix regex quadratic. No '/'
+ * character appears anywhere in the alphabet below, so '://' cannot occur by
+ * construction — asserted below rather than merely claimed.
+ */
+function buildSchemeLikeRunWithNoUrlSeparator(totalChars) {
+  const alphabet = 'abcdef0123456789.-';
+  const repeated = alphabet.repeat(Math.ceil(totalChars / alphabet.length));
+  return repeated.slice(0, totalChars);
+}
+
+/**
+ * Inline URL credential parts using an UPPERCASE scheme (review round 2,
+ * finding 2). The credential-half value is assembled from parts, never one
+ * literal, so it stays under the guard's own assignment-length bound too.
+ */
+const fixtureUppercaseSchemeUrlCredentialUser = 'produser';
+const fixtureUppercaseSchemeUrlCredentialValue = ['prodpass9', 'fixture'].join('');
+const fixtureUppercaseSchemeUrlCredentialParts = [
+  'POSTGRES://',
+  fixtureUppercaseSchemeUrlCredentialUser,
+  ':',
+  fixtureUppercaseSchemeUrlCredentialValue,
+  '@db.prod.internal:5432/orders',
+];
+
+/** A PEM header followed by trailing spaces and a tab before its own newline (review round 2, finding 3a). */
+const fixturePemHeaderWithTrailingWhitespace = `${fixturePemHeader}  \t`;
+
+/**
+ * An RFC 1421 encrypted-PEM header block: 'Proc-Type' and 'DEK-Info' lines
+ * between the '-----BEGIN...' header and the base64 body, exactly the shape
+ * an encrypted private key carries (review round 2, finding 3b). Assembled
+ * from parts, even though none of these characters alone is credential-shaped.
+ */
+const fixtureEncryptedPemInfoLines = [
+  ['Proc-Type', ': 4,ENCRYPTED'].join(''),
+  ['DEK-Info', ': AES-256-CBC,', 'AB12CD34EF56'.repeat(3)].join(''),
+].join('\n');
+
+/** Plain-text log lines following a FOOTER-LESS PEM header (review round 2, finding 3c). */
+const fixtureFooterlessPemFollowupLogLines = '\nINFO service healthy\nINFO 200 OK\nINFO user alice succeeded';
+
+/**
+ * Like `buildOkSource`, but `describe()` returns a SAFE descriptor on its
+ * first call and an UNSAFE (credential-shaped) one on every call after that —
+ * pins that the registry snapshots describe() once, at construction, rather
+ * than re-reading it on every execute() (review round 2, finding 4).
+ */
+function buildSourceWithMutatingDescriptor({
+  adapterId = 'fixture-adapter',
+  safeVersion = '1.0.0',
+  unsafeVersion,
+  operations = ['fetch-logs'],
+}) {
+  let describeCallCount = 0;
+  const calls = [];
+  return {
+    calls,
+    describeCallCount: () => describeCallCount,
+    describe: () => {
+      describeCallCount += 1;
+      return { adapterId, version: describeCallCount === 1 ? safeVersion : unsafeVersion, operations };
+    },
+    check: async () => ({ status: 'ready' }),
+    execute: async (operation, input, budgetHints) => {
+      calls.push({ operation, input, budgetHints });
+      return {
+        status: 'ok',
+        output: { lines: ['fixture output'] },
+        // Deliberately foreign provenance, matching this file's other fixture
+        // sources — pins that the registry stays the single writer of
+        // provenance regardless of what describe() returns on a later call.
+        provenance: {
+          sourceBindingId: 'not-the-real-binding',
+          adapter: 'not-the-real-adapter@0.0.0',
+          credentialRefId: 'wrongcredentialplaceholder',
+          fetchedAt: '1970-01-01T00:00:00.000Z',
+          requestFingerprint: 'sha256:not-the-real-fingerprint',
+        },
+      };
+    },
+  };
+}
+
+/** 64- and 65-character safe-token-shaped strings (review round 2, finding 5: length bound). */
+const fixtureSafeToken64Chars = 'a'.repeat(64);
+const fixtureSafeToken65Chars = 'a'.repeat(65);
+
+/**
+ * Values that are neither a JSON-shaped container nor one of the already
+ * -pinned unsupported class instances, but which are still not a JSON leaf
+ * (string/number/boolean/null) — review round 2, finding 6.
+ */
+const UNSUPPORTED_NON_OBJECT_REDACTION_VALUE_ROWS = [
+  { label: 'a function', build: () => function fixtureUnsupportedFunction() {} },
+  { label: 'a symbol', build: () => Symbol('fixture-unsupported-symbol') },
+  { label: 'a bigint', build: () => 10n },
+  { label: 'undefined', build: () => undefined },
+];
+
+/* -------------------------------------------------------------------------- */
+/* finding 1 — ReDoS: the any-scheme URL pattern is quadratic on a long run   */
+/* with no '://'                                                              */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'redactEvidenceOutput completes within a bound on a 256 KiB run of scheme-like characters with no "://" substring (review round 2, finding 1: ReDoS)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const input = buildSchemeLikeRunWithNoUrlSeparator(256 * 1024);
+    assert.equal(input.includes('://'), false, 'setup: the fixture must contain no "://" substring at all');
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < 250,
+      `redactEvidenceOutput must stay near-linear on a long run with no scheme match; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'live: registry.execute redacts an 80 KB output built from the same scheme-like run within a bound (review round 2, finding 1: ReDoS)',
+  { timeout: 10_000 },
+  async () => {
+    const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+    const createMemoryReplayStore = memoryReplayStoreFactory();
+    const longRun = buildSchemeLikeRunWithNoUrlSeparator(80_000);
+    const source = buildOkSourceWithOutput({ lines: [longRun] });
+
+    const registry = createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    });
+
+    const startedAtMs = performance.now();
+    const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.equal(outcome.status, 'ok');
+    assert.ok(
+      elapsedMs < 1000,
+      `registry.execute must redact and return an 80 KB payload within a bound; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* finding 2 — the any-scheme URL pattern is case-sensitive: an UPPERCASE     */
+/* scheme is not redacted at all                                             */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts an UPPERCASE URL scheme exactly like the lowercase form (review round 2, finding 2: URL scheme case)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = fixtureUppercaseSchemeUrlCredentialParts.join('');
+  assert.equal(
+    redactEvidenceOutput(input),
+    'POSTGRES://[REDACTED]@db.prod.internal:5432/orders',
+  );
+});
+
+test('record: the credential half of an UPPERCASE-scheme URL is redacted before it ever reaches the recordings file (review round 2, finding 2)', async (t) => {
+  const dir = withScratchDir(t);
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createFileReplayStore = fileReplayStoreFactory();
+  const filePath = join(dir, 'uppercase-scheme-recordings.json');
+  const credentialText = fixtureUppercaseSchemeUrlCredentialParts.join('');
+  const source = buildOkSourceWithOutput({ lines: [`connection: ${credentialText}`] });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createFileReplayStore(filePath),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'ok');
+
+  const onDisk = readFileSync(filePath, 'utf8');
+  assert.equal(
+    onDisk.includes(fixtureUppercaseSchemeUrlCredentialValue),
+    false,
+    'the credential half of an UPPERCASE-scheme URL must never reach the recordings file',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 3a — trailing whitespace before the PEM header's own newline must  */
+/* not stop the body/footer from being consumed                              */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts the WHOLE PEM block even when the header line carries trailing spaces and a tab before its own newline (review round 2, finding 3a)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [
+    'key material:',
+    fixturePemHeaderWithTrailingWhitespace,
+    fixturePemBodyLine1,
+    fixturePemBodyLine2,
+    fixturePemFooter,
+    'end',
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the PEM body must never survive redaction just because the header line carried trailing whitespace',
+  );
+  assert.equal(
+    output.includes(fixturePemBodyLine2),
+    false,
+    'the PEM body must never survive redaction just because the header line carried trailing whitespace',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer must never survive redaction just because the header line carried trailing whitespace',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 3b — an RFC 1421 encrypted-PEM header (Proc-Type/DEK-Info) must    */
+/* not stop the real body and footer from being redacted                     */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts an ENCRYPTED PEM block whose RFC 1421 Proc-Type/DEK-Info headers sit between the BEGIN header and the base64 body — no body line and no footer survive (review round 2, finding 3b)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [
+    fixturePemHeader,
+    fixtureEncryptedPemInfoLines,
+    '',
+    fixturePemBodyLine1,
+    fixturePemFooter,
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the base64 body of an encrypted PEM block must never survive redaction',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer of an encrypted PEM block must never survive redaction',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 3c — over-redaction bound: a FOOTER-LESS header must not consume   */
+/* unrelated log text that follows it (the body class must not include a     */
+/* literal space)                                                            */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput does not over-redact past a FOOTER-LESS PEM header: plain log lines with spaces survive (review round 2, finding 3c: the body class must not include a literal space)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `${fixturePemHeader}${fixtureFooterlessPemFollowupLogLines}`;
+
+  const output = redactEvidenceOutput(input);
+
+  assert.ok(
+    output.includes('service healthy'),
+    `expected "service healthy" to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
+  );
+  assert.ok(
+    output.includes('200 OK'),
+    `expected "200 OK" to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
+  );
+  assert.ok(
+    output.includes('user alice succeeded'),
+    `expected "user alice succeeded" to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 4 — the registry snapshots describe() ONCE at construction         */
+/* -------------------------------------------------------------------------- */
+
+test('the registry reads describe() ONCE at construction and reuses that snapshot for every call: provenance.adapter stays the construction-time safe value even when describe() later returns a credential-shaped version, and describe() is called exactly once (review round 2, finding 4)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const source = buildSourceWithMutatingDescriptor({ safeVersion: '1.0.0', unsafeVersion: fixtureAwsAccessKeyId });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const first = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  const second = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(first.provenance.adapter, 'fixture-adapter@1.0.0');
+  assert.equal(
+    second.provenance.adapter,
+    'fixture-adapter@1.0.0',
+    'provenance.adapter must stay the construction-time SAFE snapshot even when describe() later returns a credential-shaped version',
+  );
+  assert.equal(
+    source.describeCallCount(),
+    1,
+    'describe() must be called exactly once per binding, at construction — never again on any later execute() call',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 5 — SAFE_ADAPTER_ID / SAFE_ADAPTER_TOKEN carry a length bound      */
+/* -------------------------------------------------------------------------- */
+
+test('SAFE_ADAPTER_TOKEN accepts a 64-character token and refuses a 65-character token (review round 2, finding 5: length bound)', () => {
+  const SAFE_ADAPTER_TOKEN = safeAdapterTokenFactory();
+  assert.equal(SAFE_ADAPTER_TOKEN.test(fixtureSafeToken64Chars), true, 'a 64-character token must still be accepted');
+  assert.equal(SAFE_ADAPTER_TOKEN.test(fixtureSafeToken65Chars), false, 'a 65-character token must be refused');
+});
+
+test('SAFE_ADAPTER_ID accepts a 64-character id and refuses a 65-character id (review round 2, finding 5: length bound)', () => {
+  assert.equal(tools.SAFE_ADAPTER_ID.test(fixtureSafeToken64Chars), true, 'a 64-character id must still be accepted');
+  assert.equal(tools.SAFE_ADAPTER_ID.test(fixtureSafeToken65Chars), false, 'a 65-character id must be refused');
+});
+
+test('construction refuses a describe().version that is 65 characters long, even though every character is an otherwise-safe token character (review round 2, finding 5)', () => {
+  assert.throws(() => constructWithDescriptor({ adapterId: 'fixture-adapter', version: fixtureSafeToken65Chars }));
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 6 — a function, symbol, bigint or undefined value fails CLOSED to  */
+/* the fixed sentinel, like the already-pinned unsupported class instances    */
+/* -------------------------------------------------------------------------- */
+
+for (const { label, build } of UNSUPPORTED_NON_OBJECT_REDACTION_VALUE_ROWS) {
+  test(`redactEvidenceOutput replaces ${label} anywhere in the walked value with the fixed sentinel [REDACTED:unsupported] — fail closed, kept as an own key rather than dropped (review round 2, finding 6)`, () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const value = build();
+
+    assert.equal(
+      redactEvidenceOutput(value),
+      '[REDACTED:unsupported]',
+      `${label} at the top level must fail closed to the fixed sentinel`,
+    );
+
+    const nested = { safe: 'kept', unsupported: value, list: [value] };
+    const output = redactEvidenceOutput(nested);
+
+    assert.equal(output.safe, 'kept', 'a plain object is still walked normally alongside an unsupported value');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(output, 'unsupported'),
+      true,
+      `an object property holding ${label} must be KEPT as an own key, replaced with the sentinel value — never dropped`,
+    );
+    assert.equal(output.unsupported, '[REDACTED:unsupported]');
+    assert.equal(output.list[0], '[REDACTED:unsupported]', 'arrays are still walked normally too');
+  });
+}
