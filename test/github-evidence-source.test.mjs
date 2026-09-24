@@ -235,6 +235,14 @@ test('construction refuses an apiBaseUrl carrying userinfo', () => {
 const fixtureLeakUsername = 'some' + 'one';
 const fixtureLeakPassword = 's3cret' + 'pw';
 
+// Both members below carry an explicit scheme, so the WHATWG parser reads
+// `url.protocol` off the literal `https:`/`http:` text and the userinfo lands
+// on `url.username`/`url.password` instead — the rows this loop drives guard
+// exactly that pair of properties. An apiBaseUrl that OMITS the scheme
+// entirely is a different parse outcome (the parser reads the userinfo
+// username itself back as `url.protocol`), and is guarded separately by
+// SCHEME_OMITTED_APIBASEURL_ROWS further down, against a credential landing
+// in `url.protocol` rather than in `url.username`/`url.password`.
 const USERINFO_APIBASEURL_SCHEMES = ['https', 'http'];
 
 for (const scheme of USERINFO_APIBASEURL_SCHEMES) {
@@ -261,7 +269,7 @@ for (const scheme of USERINFO_APIBASEURL_SCHEMES) {
   });
 }
 
-test('construction refuses a non-https, non-userinfo scheme (ftp) without needing to name a credential (the message may still name the scheme)', () => {
+test('construction refuses a non-https, non-userinfo scheme (ftp); naming an ordinary literal scheme like this one in the message is fine, because it is never a credential (unlike SCHEME_OMITTED_APIBASEURL_ROWS below, where the WHATWG parser reports a credential back as the "scheme")', () => {
   const createGithubEvidenceSource = githubEvidenceSourceFactory();
   assert.throws(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl: 'ftp://api.github.com' })));
 });
@@ -364,6 +372,62 @@ for (const { label, apiBaseUrl } of MALFORMED_USERINFO_APIBASEURL_ROWS) {
       [fixtureMalformedCredentialUsername, fixtureMalformedCredentialPassword],
       `malformed apiBaseUrl (${label})`,
     );
+  });
+}
+
+/**
+ * security-scanner (round 3, `packages/tools/src/github-source.ts:76`):
+ * `validateApiBaseUrl`'s scheme check reads `url.protocol` straight off
+ * whatever the WHATWG parser produced, without first confirming that `raw`
+ * actually carried an explicit `scheme://` at all. When it did not — a bare
+ * `<username>:<password>@host` with no scheme — the parser reads everything
+ * up to the first `:` as the scheme instead, so a credential-shaped username
+ * becomes `url.protocol`. The "must use https, got scheme …" message at that
+ * line then echoes `url.protocol` verbatim, so a caller who simply forgot
+ * `https://` in front of a token sees that same token thrown back at them.
+ *
+ * This is a distinct parse outcome from both tables above it: the plain
+ * userinfo rows supply an explicit `https`/`http` scheme, and the malformed
+ * rows build a `raw` the WHATWG parser refuses outright — neither one ever
+ * reaches the branch a missing scheme drives, where the username itself
+ * becomes `url.protocol`. Checked with `assertThrownNeverCarriesCredential`,
+ * the same helper the malformed-URL rows above use.
+ *
+ * The WHATWG parser also lower-cases whatever it reads back as `url.protocol`
+ * (`ab01234567ab...` stays as written; `AKIA...` would not), so the second
+ * row's forbidden list carries both the fixture's own case and its
+ * lower-cased form — the leak is the same credential either way.
+ */
+const fixtureSchemeOmittedGithubToken = 'ab01234567'.repeat(4);
+const fixtureSchemeOmittedAwsAccessKeyId = 'AKIA' + 'C9'.repeat(8);
+
+const SCHEME_OMITTED_APIBASEURL_ROWS = [
+  {
+    label: "a 40-character hex token in place of a scheme (GitHub's own x-oauth-basic userinfo form)",
+    apiBaseUrl: `${fixtureSchemeOmittedGithubToken}:x-oauth-basic@api.github.com`,
+    forbidden: [fixtureSchemeOmittedGithubToken],
+  },
+  {
+    label: 'an AWS-access-key-id-shaped username in place of a scheme',
+    apiBaseUrl: `${fixtureSchemeOmittedAwsAccessKeyId}:s3cretpw@s3.example.com`,
+    forbidden: [fixtureSchemeOmittedAwsAccessKeyId, fixtureSchemeOmittedAwsAccessKeyId.toLowerCase()],
+  },
+];
+
+for (const { label, apiBaseUrl, forbidden } of SCHEME_OMITTED_APIBASEURL_ROWS) {
+  test(`construction refuses a scheme-omitted apiBaseUrl (${label}) without the thrown error ever carrying the username the parser read back as the scheme`, () => {
+    const createGithubEvidenceSource = githubEvidenceSourceFactory();
+
+    let thrown;
+    assert.throws(
+      () => createGithubEvidenceSource(baseOptions({ apiBaseUrl })),
+      (error) => {
+        thrown = error;
+        return true;
+      },
+    );
+
+    assertThrownNeverCarriesCredential(thrown, forbidden, `scheme-omitted apiBaseUrl (${label})`);
   });
 }
 
