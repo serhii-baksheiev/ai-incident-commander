@@ -1,0 +1,23 @@
+{
+  "v2:[\"incident-lab\",\"lab@1\",\"sha256:5ddff50d9f8ddaf7d35338f315a2861893b6edd7e7b5f8f3ffaae1edc59d74d5\"]": {
+    "status": "ok",
+    "output": [
+      {
+        "id": "confirmation-deploy-v17",
+        "trialId": "trial-confirmation-deploy-v17",
+        "kind": "deploy",
+        "source": "deployments/payments",
+        "observedAt": "2026-08-26T15:00:00.000Z",
+        "statement": "payments-v17 completed five minutes before the first alert",
+        "rawRef": "replay://deployments/payments/confirmation-deploy-v17"
+      }
+    ],
+    "provenance": {
+      "sourceBindingId": "incident-lab",
+      "adapter": "lab@1",
+      "credentialRefId": null,
+      "fetchedAt": "2026-09-24T20:04:15.157Z",
+      "requestFingerprint": "sha256:5ddff50d9f8ddaf7d35338f315a2861893b6edd7e7b5f8f3ffaae1edc59d74d5"
+    }
+  }
+}
