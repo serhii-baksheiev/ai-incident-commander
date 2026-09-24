@@ -58,4 +58,6 @@ jobs:
       - name: Live PostgreSQL lane
         env:
           AIC_POSTGRES_URL: postgresql://aic@127.0.0.1:5432/aic
+          # The bounded regression; the stress run sets this to 2000 locally.
+          T4_REPETITIONS: '3'
         run: npm run test:live-postgres
