@@ -222,8 +222,8 @@ test('still returns not-run oracle and naive arms, with model and control unchan
   );
   assert.deepEqual(
     Object.keys(report.arms.model).sort(),
-    ['arm', 'metrics', 'model', 'reportable', 'status'],
-    'the model arm keeps every existing field and gains only status and model',
+    ['arm', 'metrics', 'model', 'predictionGapCounts', 'reportable', 'status'],
+    'the model arm keeps every existing field and gains status, model and the prediction-gap counts (AIC-119 slice 4, a diagnostic, not a metric)',
   );
   assert.equal(report.arms.model.status, 'completed');
 });
