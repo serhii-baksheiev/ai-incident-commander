@@ -1,8 +1,12 @@
 import { mkdir, open, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { createReplayFixtureKey } from '@aic/tools';
-import { LiveToolAdapter } from '@aic/tools/live';
+import {
+  createBoundSourceRegistry,
+  createLabEvidenceSource,
+  createMemoryReplayStore,
+  createReplayFixtureKey,
+} from '@aic/tools';
 import { REPLAY_FIXTURE_VERSION } from '@aic/tools/replay';
 
 import {
@@ -36,21 +40,6 @@ function requireScenario(scenarioId, scenarioVersion) {
   return scenario;
 }
 
-function createObservationTool(baseUrl, toolId) {
-  return {
-    id: toolId,
-    risk: 'read',
-    async execute(input) {
-      const query = new URLSearchParams(input);
-      const output = await requestJson(
-        baseUrl,
-        `/observations/${toolId}?${query.toString()}`,
-      );
-      return { status: 'ok', output };
-    },
-  };
-}
-
 function candidatePath(candidateDirectory, scenario) {
   return resolve(
     candidateDirectory,
@@ -58,19 +47,32 @@ function candidatePath(candidateDirectory, scenario) {
   );
 }
 
+function createLiveObservationRegistry(baseUrl) {
+  return createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [
+      {
+        sourceBindingId: 'incident-lab',
+        source: createLabEvidenceSource({ baseUrl }),
+        credentialRefId: null,
+        expectedAdapter: 'lab@1',
+      },
+    ],
+    store: createMemoryReplayStore(),
+    clock: () => new Date(),
+  });
+}
+
 async function buildCandidate({ baseUrl, scenario }) {
-  const adapter = new LiveToolAdapter(
-    [...new Set(scenario.observations.map(({ toolId }) => toolId))].map(
-      (toolId) => createObservationTool(baseUrl, toolId),
-    ),
-  );
+  const registry = createLiveObservationRegistry(baseUrl);
   const recordedCalls = [];
   const responses = {};
   for (const { toolId, input } of scenario.observations) {
-    const result = await adapter.execute(toolId, input);
-    if (result.status !== 'ok') {
-      throw new Error(`live observation failed for ${toolId}: ${result.status}`);
+    const outcome = await registry.execute('incident-lab', toolId, input);
+    if (outcome.status !== 'ok') {
+      throw new Error(`live observation failed for ${toolId}: ${outcome.reason}`);
     }
+    const result = { status: 'ok', output: outcome.output };
     recordedCalls.push({ toolId, input, result });
     responses[createReplayFixtureKey(toolId, input)] = result;
   }

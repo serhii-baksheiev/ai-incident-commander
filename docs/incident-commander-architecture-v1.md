@@ -498,7 +498,7 @@ ReplayToolAdapter
 fast benchmark/evals
 ```
 
-`ReplayToolAdapter` is the default for graph/prompt iteration. `LiveToolAdapter` validates real integrations and regenerates/validates fixtures periodically.
+`ReplayToolAdapter` is the default for graph/prompt iteration. Live integrations run as bound evidence sources; Incident Lab fixtures are regenerated through the `lab@1` source (`incident-lab/README.md`).
 
 ## 12. Scenario contract
 

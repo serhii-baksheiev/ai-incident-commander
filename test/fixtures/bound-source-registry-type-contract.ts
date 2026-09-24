@@ -110,6 +110,45 @@ const optionsMissingCredentialRefId: BoundSourceRegistryOptions = {
 };
 void optionsMissingCredentialRefId;
 
+/**
+ * AIC-98, slice a: `BoundSourceBinding` gains an OPTIONAL `expectedAdapter?:
+ * string` compatibility-handshake field (see
+ * test/bound-source-compatibility.test.mjs for its runtime behaviour). Pinned
+ * here at the type level: a well-formed string value type-checks, and a
+ * non-string value is refused. The expect-error sits on the line TypeScript
+ * reports: the property itself.
+ */
+const optionsWithExpectedAdapter: BoundSourceRegistryOptions = {
+  mode: 'live',
+  bindings: [
+    {
+      sourceBindingId: 'binding-fixture',
+      source: fakeSource,
+      credentialRefId: null,
+      expectedAdapter: 'fixture-adapter@1.0.0',
+    },
+  ],
+  store: memoryStore,
+  clock: () => new Date('2026-09-24T00:00:00.000Z'),
+};
+void optionsWithExpectedAdapter;
+
+const optionsWithNonStringExpectedAdapter: BoundSourceRegistryOptions = {
+  mode: 'live',
+  bindings: [
+    {
+      sourceBindingId: 'binding-fixture',
+      source: fakeSource,
+      credentialRefId: null,
+      // @ts-expect-error expectedAdapter must be a string, never a number
+      expectedAdapter: 42,
+    },
+  ],
+  store: memoryStore,
+  clock: () => new Date('2026-09-24T00:00:00.000Z'),
+};
+void optionsWithNonStringExpectedAdapter;
+
 async function typeCheckRekey(): Promise<void> {
   const migrated = await rekeyReplayRecordings(fileStore, {
     sourceBindingId: 'binding-fixture',

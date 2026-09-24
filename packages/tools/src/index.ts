@@ -52,5 +52,7 @@ export type {
 } from './bound-source-registry.js';
 export { redactEvidenceOutput, MAX_REDACTION_DEPTH } from './redaction.js';
 export { createIncidentToolSource } from './incident-tool-source.js';
+export { createLabEvidenceSource } from './lab-source.js';
+export type { LabEvidenceSourceOptions } from './lab-source.js';
 export { migrateReplayFixtureV1 } from './replay-migration.js';
 export type { LegacyReplayFixtureV1, MigratedReplayFixture } from './replay-migration.js';

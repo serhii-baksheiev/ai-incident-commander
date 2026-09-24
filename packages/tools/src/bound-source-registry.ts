@@ -254,6 +254,20 @@ export interface BoundSourceBinding {
   readonly sourceBindingId: string;
   readonly source: EvidenceSource;
   readonly credentialRefId: string | null;
+  /**
+   * AIC-98, slice a: an optional `` `${adapterId}@${version}` `` compatibility
+   * check, compared at construction against this binding's own construction-time
+   * `describe()` snapshot (never a fresh call). A mismatch throws synchronously,
+   * before any binding's `check()`/`execute()` ever runs — see
+   * test/bound-source-compatibility.test.mjs › "refuses construction when a
+   * binding's expectedAdapter names a different adapter@version than
+   * describe() reports (compatibility handshake, AIC-98 slice a)". Omitted:
+   * no check, so every pre-AIC-98 binding keeps working unchanged — see that
+   * file's › "constructs successfully when expectedAdapter is absent,
+   * keeping every pre-AIC-98 binding working unchanged (the field is
+   * additive)".
+   */
+  readonly expectedAdapter?: string;
 }
 
 /** A stored recording: get/set/keys/delete, all async. */
@@ -503,9 +517,21 @@ export function createBoundSourceRegistry(
     const descriptor = binding.source.describe();
     validateSafeAdapterField(binding.sourceBindingId, 'adapterId', descriptor.adapterId, SAFE_ADAPTER_ID);
     validateSafeAdapterField(binding.sourceBindingId, 'version', descriptor.version, SAFE_ADAPTER_TOKEN);
+    const adapter = `${descriptor.adapterId}@${descriptor.version}`;
+    // The compatibility handshake (AIC-98, slice a): compared against THIS
+    // construction-time snapshot, never a fresh describe() call, and before
+    // any binding's check()/execute() ever runs — see
+    // test/bound-source-compatibility.test.mjs › "refuses construction when a
+    // binding's expectedAdapter names a different adapter@version than
+    // describe() reports (compatibility handshake, AIC-98 slice a)".
+    if (binding.expectedAdapter !== undefined && binding.expectedAdapter !== adapter) {
+      throw new Error(
+        `createBoundSourceRegistry: binding ${JSON.stringify(binding.sourceBindingId)} expected adapter ${JSON.stringify(binding.expectedAdapter)}, got ${JSON.stringify(adapter)}`,
+      );
+    }
     bindingsById.set(binding.sourceBindingId, {
       binding,
-      adapter: `${descriptor.adapterId}@${descriptor.version}`,
+      adapter,
       // A frozen COPY, never the adapter's own array: `descriptor.operations`
       // is the adapter's live reference, and a later push onto that same
       // array must never widen this entry's allow-list retroactively. See
