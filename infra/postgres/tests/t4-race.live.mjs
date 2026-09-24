@@ -633,6 +633,10 @@ async function runOneRace(t, store, ordering) {
   const connectionString = requireConnectionString();
   const runId = `run-t4-${ordering}-${randomUUID()}`;
   await store.createRun({ runId, input: {} });
+  // Registered before anything below can throw, so a repetition that fails
+  // inside this function (S1 rep 579 failed at its sweep, here) still leaves
+  // no run behind for a later repetition's claimNext — see abandonLeftoverRun.
+  t.after(() => abandonLeftoverRun(store, runId));
   const testId = 't4-test';
   const tool = createAdversarialTool();
 
@@ -788,6 +792,10 @@ async function runS1Race(t, store) {
   const ordering = 'S1-released-before-B-claims';
   const runId = `run-t4-${ordering}-${randomUUID()}`;
   await store.createRun({ runId, input: {} });
+  // Registered before anything below can throw, so a repetition that fails
+  // inside this function (S1 rep 579 failed at its sweep, here) still leaves
+  // no run behind for a later repetition's claimNext — see abandonLeftoverRun.
+  t.after(() => abandonLeftoverRun(store, runId));
   const testId = 't4-test';
   const tool = createAdversarialTool();
 
@@ -1069,13 +1077,6 @@ test(
             ordering === 'S1-released-before-B-claims'
               ? await runS1Race(st, store)
               : await runOneRace(st, store, ordering);
-
-          // Per-repetition isolation (both the S1 and the S2-S6 path): if this
-          // repetition's own assertions below throw, its run must not be left
-          // `queued`/`running` for a LATER repetition's `claimNext`/
-          // `sweepExpired` to pick up instead of its own fresh run — see
-          // `abandonLeftoverRun`'s own header.
-          st.after(() => abandonLeftoverRun(store, runId));
 
           const expectedExecKey = domain.buildExecKey('tool.trial', { runId, testId, trialAttempt: 1 });
 
