@@ -111,9 +111,6 @@ import * as observability from '@aic/observability';
 import {
   MODEL_API_KEY_VARIABLE,
   REFERENCE_PROMPT_VERSION,
-  createModelChallengeHypothesis,
-  createModelGenerateHypotheses,
-  createModelInterpretResidualEvidence,
   createModelUsageLedger,
   createReferenceModelPort,
   readModelCredential,
@@ -170,19 +167,15 @@ export function scriptedNodes(record) {
 }
 
 /**
- * The model arm: the same nodes with the three roles swapped for model-backed
- * ones. `execute_investigation` still replays the recorded tool calls, so the
- * evidence both arms see is identical and the only difference is who reasoned
- * over it.
+ * The model arm: the same nodes with the four reasoning roles swapped for
+ * model-backed ones. Re-exported from `scripts/lane-arms.mjs`, the one
+ * implementation both live-model scripts wire (AIC-119 slice E,
+ * `.claude/rules/invariants.md` "one mechanism, one implementation") — an
+ * import here rather than a definition, so this command's own tests can keep
+ * reaching it as `../scripts/eval-live-model.mjs`'s own export.
+ * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach modelNodes from ./lane-arms.mjs, the single implementation"
  */
-export function modelNodes(record, port) {
-  return {
-    ...scriptedNodes(record),
-    generate_hypotheses: createModelGenerateHypotheses({ port }),
-    interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
-    challenge_hypothesis: createModelChallengeHypothesis({ port }),
-  };
-}
+export { modelNodes } from './lane-arms.mjs';
 
 /**
  * The `--publish` step: the model arm, then the naive arm.

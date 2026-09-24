@@ -56,9 +56,6 @@ import * as observability from '@aic/observability';
 import {
   MODEL_API_KEY_VARIABLE,
   REFERENCE_PROMPT_VERSION,
-  createModelChallengeHypothesis,
-  createModelGenerateHypotheses,
-  createModelInterpretResidualEvidence,
   createModelUsageLedger,
   createReferenceModelPort,
   readModelCredential,
@@ -68,7 +65,7 @@ import {
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
 import { writeRecordDurably, publishRecordedMeasurement } from './final-holdout-publication.mjs';
-import { naiveArm, oracleArm } from './lane-arms.mjs';
+import { modelNodes, naiveArm, oracleArm } from './lane-arms.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -242,15 +239,6 @@ function scriptedNodes(record) {
     new Map([[record.runId, []]]),
     new Map([[record.runId, 0]]),
   );
-}
-
-function modelNodes(record, port) {
-  return {
-    ...scriptedNodes(record),
-    generate_hypotheses: createModelGenerateHypotheses({ port }),
-    interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
-    challenge_hypothesis: createModelChallengeHypothesis({ port }),
-  };
 }
 
 /**

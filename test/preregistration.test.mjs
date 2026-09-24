@@ -47,7 +47,7 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
-  'v0.2-four-arm-supplement-1.md': 'sha256:PENDING-GREEN-STEP-REPLACE-WITH-REAL-DIGEST',
+  'v0.2-four-arm-supplement-1.md': 'sha256:e3b3e9751a2da8e74197b10b6bb50afa70c7f9e5e62899c2371aa1b5c1f27b85',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');

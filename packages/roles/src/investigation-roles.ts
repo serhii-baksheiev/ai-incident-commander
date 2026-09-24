@@ -227,8 +227,14 @@ const CHALLENGE_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-/** The prompt set this module ships, versioned so a run can record which it used. */
-export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.2' as const;
+/**
+ * The prompt set this module ships, versioned so a run can record which it
+ * used. AIC-119 slice E bumps this to v0.3: `propose_conclusion` is now wired
+ * into the graph arm (`scripts/lane-arms.mjs`'s `modelNodes`), and
+ * `interpret_residual_evidence`'s system prompt states the id contract below.
+ * see docs/evidence/preregistration/v0.2-four-arm-supplement-1.md
+ */
+export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.3' as const;
 
 export { DEFAULT_MAX_OUTPUT_TOKENS } from './role-output.js';
 
@@ -417,6 +423,11 @@ export function createModelInterpretResidualEvidence({
         'You are an incident investigator reading evidence against hypotheses.',
         'For each piece of evidence that bears on a hypothesis, state the effect and how strongly.',
         'Answer shape: {"assessments":[{"id":"<stable id>","evidenceId":"<id>","hypothesisId":"<id>","predictionId":"<id, optional>","effect":"supports|contradicts|neutral","strength":"high|medium|low","rationale":"<one sentence>"}]}',
+        // AIC-119 slice E: the model was never told this rule exists, and the
+        // refusal for a fabricated id already lands three rows below. Naming
+        // an evidenceId, hypothesisId or predictionId not shown in the state
+        // below is refused.
+        'Every assessment must name an evidenceId, hypothesisId and, if present, a predictionId shown in the state below; naming any other id is refused.',
         JSON_ONLY,
       ].join('\n'),
       prompt: `prompt-version: ${promptVersion}\n\n${describeState(state)}`,
@@ -729,6 +740,46 @@ export function createModelProposeConclusion(
       throw new Error(
         'propose_conclusion: state.control.stopKind is absent; terminate() must stamp it before routing to this role',
       );
+    }
+
+    // 🔴 AIC-119 slice E: an assessment naming evidence, a hypothesis, or a
+    // prediction the run does not carry is a STATE/HARNESS fault, not a model
+    // refusal — `interpret_residual_evidence` already validates this at write
+    // time (three rows above in `roles-model-nodes.test.mjs`), so an
+    // assessment failing this check here means it was written before that
+    // validation existed (a checkpoint resumed across the boundary #127 added).
+    // Checked before `deriveHypothesisStatus` and before any port call, for
+    // the same reason the `stopKind` guard above is: `deriveHypothesisStatus`
+    // (`packages/domain/src/evaluation.ts`) throws its own plain, UNESCAPED
+    // `Error` on exactly this condition, and asking the model to compose a
+    // conclusion the harness cannot even validate would spend a call on a run
+    // that was never going to get an answer through.
+    // see conclusion-role.test.mjs › "an assessment naming evidence the run does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id"
+    for (const assessment of state.assessments) {
+      if (!state.evidence.some(({ id }) => id === assessment.evidenceId)) {
+        throw new Error(
+          `propose_conclusion: state.assessments cites evidence the run does not carry: ${quoteModelText(assessment.evidenceId)}`,
+        );
+      }
+      if (!state.hypotheses.some(({ id }) => id === assessment.hypothesisId)) {
+        throw new Error(
+          `propose_conclusion: state.assessments names a hypothesis the run does not carry: ${quoteModelText(assessment.hypothesisId)}`,
+        );
+      }
+      if (
+        assessment.predictionId !== undefined &&
+        !state.predictions.some(
+          (prediction) =>
+            prediction.id === assessment.predictionId &&
+            prediction.hypothesisId === assessment.hypothesisId,
+        )
+      ) {
+        throw new Error(
+          `propose_conclusion: state.assessments names a predictionId that is not a prediction of hypothesis ${quoteModelText(
+            assessment.hypothesisId,
+          )}: ${quoteModelText(assessment.predictionId)}`,
+        );
+      }
     }
 
     const hypothesisStatuses = state.hypotheses.map((hypothesis) => ({
