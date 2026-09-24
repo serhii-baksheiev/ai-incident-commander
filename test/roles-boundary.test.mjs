@@ -83,7 +83,7 @@ test('keeps every provider reference out of the graph and domain packages', () =
 });
 
 /**
- * Outbound HTTP is an explicit, reviewed allow-list (AIC-98, 2026-09-25 owner
+ * Outbound HTTP is an explicit, reviewed allow-list (AIC-98, 2026-09-24 owner
  * ruling), not "whichever files this scanner happens to catch".
  *
  * The list started as a single adapter and the scanner's own two signals
@@ -103,6 +103,16 @@ test('keeps every provider reference out of the graph and domain packages', () =
  * "only a read outside a comment counts" convention used elsewhere in this
  * file (see the process-environment row above) — so the source is scanned
  * with comments stripped first.
+ *
+ * The scanner's own bound, stated so the assertion below claims no wider
+ * scope than this: `workspaceSources` walks `.ts` files under `packages/`
+ * only (see `sourceFiles` above), so `incident-lab/`'s own `.mjs` files — which
+ * also issue HTTP, outside `packages/` entirely — are outside what this row
+ * looks at. Within `packages/`, the two signals `issuesOutboundHttp` tests for
+ * are a `fetch(`/`fetch?.(` call, a `https?://` literal, and a direct
+ * `globalThis.fetch` reference — an outbound surface reached only through
+ * `import { fetch } from 'undici'`, `const { fetch } = globalThis`, or
+ * `node:http`/`node:https` is invisible to it.
  */
 const OUTBOUND_HTTP_FILES = [
   'packages/roles/src/reference-model-port.ts',
@@ -127,7 +137,7 @@ test('performs the provider request in the adapter and nowhere else', () => {
   assert.deepEqual(
     issuing.map((path) => path.slice(projectRoot.length + 1)),
     OUTBOUND_HTTP_FILES,
-    'these are the only files that issue outbound HTTP: the whole list a security review reads. A new one belongs here as a deliberate, reviewed addition to OUTBOUND_HTTP_FILES, never a silent fourth file the scanner happens to also catch',
+    'these are the only files under packages/**/*.ts that this scanner finds issuing outbound HTTP by a fetch(/globalThis.fetch call or a https?:// literal — see the comment above OUTBOUND_HTTP_FILES for what is outside that scope. A new file caught here belongs as a deliberate, reviewed addition to OUTBOUND_HTTP_FILES, never a silent fourth file the scanner happens to also catch',
   );
 });
 

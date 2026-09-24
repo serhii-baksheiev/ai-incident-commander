@@ -13,32 +13,39 @@
  * and `incident-lab/tests/*.live.mjs` are not: `npm test`'s default
  * discovery does not reach a `tests/` directory (plural) whose files are
  * named `*.live.mjs` rather than `*.test.mjs`, so this row never runs
- * without being asked for by name — see the proposed `test:live-github`
- * script in this repository's AIC-98 slice b report.
+ * without being asked for by name — see this repository's `test:live-github`
+ * script (package.json), which drives every `*.live.mjs` file under
+ * `packages/tools/tests/`.
  *
  * ## How to run it
  *
- *   AIC_GITHUB_TOKEN=<a fine-grained, read-only PAT for serhii-baksheiev/aic-github-fixture> \
+ *   AIC_GITHUB_TOKEN=<a fine-grained, read-only PAT for the fixture repo> \
+ *     AIC_GITHUB_FIXTURE_REPO=<owner>/<repo> \
  *     npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \
  *     --test packages/tools/tests/github-source.live.mjs
  *
  * The credential is a fine-grained GitHub personal access token scoped to
- * metadata/content READ on `serhii-baksheiev/aic-github-fixture` only — see
- * this repository's github-fixture-repo memory note for how it is
- * provisioned. It is read from the environment and never printed: every
- * assertion below is on shape or count, never on the raw credential value.
+ * metadata/content READ on the fixture repository only — see this
+ * repository's github-fixture-repo memory note for how it is provisioned,
+ * and for which `owner/repo` to pass through `AIC_GITHUB_FIXTURE_REPO`. Both
+ * the token and the repository are read from the environment rather than
+ * named here: the token because it is a credential, and the repository so
+ * this file names no private fixture repository in source, mirroring
+ * `infra/postgres/tests/run-store.live.mjs`'s own convention of reading its
+ * target from the environment rather than hardcoding it. The token is never
+ * printed: every assertion below is on shape or count, never on the raw
+ * credential value.
  *
  * ## The independent oracle
  *
  * "The fixture repository actually has at least two deployments" is not
  * asserted from anything this adapter computes about itself — it is a fact
- * about `serhii-baksheiev/aic-github-fixture`'s own history, fixed when the
- * fixture repository was provisioned (this repository's github-fixture-repo
- * memory note: 2 PRs, 2 production deployments). A regression that made
- * `list_deployments` return an empty array, or silently drop entries, would
- * fail this row precisely because the count is checked against that
- * independently known fact rather than against the adapter's own belief
- * about what it fetched.
+ * about the fixture repository's own history, fixed when it was provisioned
+ * (this repository's github-fixture-repo memory note: 2 PRs, 2 production
+ * deployments). A regression that made `list_deployments` return an empty
+ * array, or silently drop entries, is caught precisely because the count is
+ * checked against that independently known fact rather than against the
+ * adapter's own belief about what it fetched.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -52,12 +59,12 @@ import * as tools from '@aic/tools';
 // pattern) — the environment variable's OWN name is unaffected by this
 // choice, only the local binding that names it here.
 const PAT_ENV_VAR_NAME = 'AIC_GITHUB_TOKEN';
-const OWNER = 'serhii-baksheiev';
-const REPO = 'aic-github-fixture';
+const FIXTURE_REPO_ENV_VAR_NAME = 'AIC_GITHUB_FIXTURE_REPO';
 
-const START_THE_SUBSTRATE = `set ${PAT_ENV_VAR_NAME} to a fine-grained, read-only GitHub personal access token for ${OWNER}/${REPO}, e.g.
+const START_THE_SUBSTRATE = `set ${PAT_ENV_VAR_NAME} to a fine-grained, read-only GitHub personal access token, and ${FIXTURE_REPO_ENV_VAR_NAME} to the <owner>/<repo> it is scoped to, e.g.
 
-  ${PAT_ENV_VAR_NAME}=<pat> npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \\
+  ${PAT_ENV_VAR_NAME}=<pat> ${FIXTURE_REPO_ENV_VAR_NAME}=<owner>/<repo> \\
+    npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs \\
     --test packages/tools/tests/github-source.live.mjs
 
 This lane refuses rather than skipping: it is the only place AIC-98 slice b's
@@ -71,41 +78,55 @@ function requirePat() {
   return value;
 }
 
+const FIXTURE_REPO_PATTERN = /^([^/\s]+)\/([^/\s]+)$/;
+
+function requireFixtureRepo() {
+  const value = process.env[FIXTURE_REPO_ENV_VAR_NAME];
+  assert.equal(typeof value === 'string' && value.trim() !== '', true, START_THE_SUBSTRATE);
+  const match = FIXTURE_REPO_PATTERN.exec(value.trim());
+  assert.ok(
+    match,
+    `${FIXTURE_REPO_ENV_VAR_NAME} must be of the form <owner>/<repo>; got ${JSON.stringify(value)}. ${START_THE_SUBSTRATE}`,
+  );
+  return { owner: match[1], repo: match[2] };
+}
+
 function buildSource() {
   const pat = requirePat();
+  const { owner, repo } = requireFixtureRepo();
   assert.equal(
     typeof tools.createGithubEvidenceSource,
     'function',
     '@aic/tools must export createGithubEvidenceSource (AIC-98 slice b) for this live row to exercise',
   );
-  return tools.createGithubEvidenceSource({ owner: OWNER, repo: REPO, token: () => pat });
+  return { source: tools.createGithubEvidenceSource({ owner, repo, token: () => pat }), owner, repo };
 }
 
 test('check() reports ready against the real GitHub REST API for the read-only fixture credential', async () => {
-  const source = buildSource();
+  const { source, owner, repo } = buildSource();
 
   const result = await source.check();
 
   assert.deepEqual(
     result,
     { status: 'ready' },
-    `check() must report ready for a fine-grained, read-only credential on ${OWNER}/${REPO}; got ${JSON.stringify(result)}`,
+    `check() must report ready for a fine-grained, read-only credential on ${owner}/${repo}; got ${JSON.stringify(result)}`,
   );
 });
 
 test('list_deployments returns at least the two deployments the fixture repository is known to carry', async () => {
-  const source = buildSource();
+  const { source, owner, repo } = buildSource();
 
   const outcome = await source.execute('list_deployments', {});
 
   assert.equal(
     outcome.status,
     'ok',
-    `list_deployments must succeed against ${OWNER}/${REPO}; got ${JSON.stringify(outcome)}`,
+    `list_deployments must succeed against ${owner}/${repo}; got ${JSON.stringify(outcome)}`,
   );
   assert.ok(Array.isArray(outcome.output), 'list_deployments output must be an array');
   assert.ok(
     outcome.output.length >= 2,
-    `${OWNER}/${REPO} is provisioned with at least 2 deployments (this repository's github-fixture-repo memory note); got ${outcome.output.length}`,
+    `${owner}/${repo} is provisioned with at least 2 deployments (this repository's github-fixture-repo memory note); got ${outcome.output.length}`,
   );
 });

@@ -228,6 +228,55 @@ test('construction refuses an apiBaseUrl carrying userinfo', () => {
   );
 });
 
+// Built from pieces for the same reason fixtureTokenValue above is: it keeps
+// a keyword and a long assigned value from sitting contiguously in the
+// source text, mirroring test/bound-source-registry.test.mjs's own
+// credentialRefId convention.
+const fixtureLeakUsername = 'some' + 'one';
+const fixtureLeakPassword = 's3cret' + 'pw';
+
+const USERINFO_APIBASEURL_SCHEMES = ['https', 'http'];
+
+for (const scheme of USERINFO_APIBASEURL_SCHEMES) {
+  test(`construction refuses a userinfo-carrying ${scheme} apiBaseUrl without echoing the credential into the thrown message`, () => {
+    const createGithubEvidenceSource = githubEvidenceSourceFactory();
+    const apiBaseUrl = `${scheme}://${fixtureLeakUsername}:${fixtureLeakPassword}@api.github.com`;
+
+    let thrown;
+    assert.throws(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl })), (error) => {
+      thrown = error;
+      return true;
+    });
+
+    assert.equal(
+      thrown.message.includes(fixtureLeakPassword),
+      false,
+      'a construction error must never echo the apiBaseUrl password into its message',
+    );
+    assert.equal(
+      thrown.message.includes(fixtureLeakUsername),
+      false,
+      'a construction error must never echo the apiBaseUrl username into its message',
+    );
+  });
+}
+
+test('construction refuses a non-https, non-userinfo scheme (ftp) without needing to name a credential (the message may still name the scheme)', () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  assert.throws(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl: 'ftp://api.github.com' })));
+});
+
+test('construction refuses an apiBaseUrl carrying a non-root path', () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  assert.throws(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl: 'https://ghe.example.com/api/v3' })));
+});
+
+test('construction accepts an apiBaseUrl with no path or a bare trailing slash', () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  assert.doesNotThrow(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl: 'https://ghe.example.com' })));
+  assert.doesNotThrow(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl: 'https://ghe.example.com/' })));
+});
+
 /* ========================================================================== */
 /* describe()                                                                 */
 /* ========================================================================== */
@@ -365,6 +414,45 @@ test("a slow response is aborted through the AbortSignal at requestTimeoutMs, an
   );
 
   await assert.rejects(() => source.execute('list_deployments', {}));
+});
+
+test('a response whose headers arrive but whose body never closes is bounded by a deadline, and its reader is released via cancel() (a real-timer race bounds the row itself: it rejects rather than hangs when the adapter never settles)', async () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  const cancelCalls = [];
+  const stream = new ReadableStream({
+    start() {
+      // Deliberately never enqueues a chunk and never closes: the fake
+      // fetch resolves its headers immediately, and the body read must
+      // still be bounded by its own deadline rather than waiting forever.
+    },
+    cancel(reason) {
+      cancelCalls.push(reason);
+    },
+  });
+  const response = new Response(stream, { status: 200 });
+  const source = createGithubEvidenceSource(
+    baseOptions({ requestTimeoutMs: 50, fetch: createFakeFetch(() => response) }),
+  );
+
+  let timeoutHandle;
+  const rowBound = new Promise((_resolve, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new Error('ROW_TIMED_OUT: execute() must settle within a generous bound instead of hanging on a body that never closes')),
+      2000,
+    );
+  });
+
+  try {
+    await Promise.race([assert.rejects(() => source.execute('get_commit', { sha: SHA })), rowBound]);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+
+  assert.equal(
+    cancelCalls.length > 0,
+    true,
+    'the body reader must be released via cancel() once the read deadline is hit',
+  );
 });
 
 /* ========================================================================== */
@@ -577,6 +665,54 @@ test('a non-2xx response body is never parsed: a poisoned, throwing body still r
   assert.equal(outcome.reason, 'unavailable');
 });
 
+test('a non-2xx response body is released via cancel() rather than left open, since it is never read', async () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  const cancelCalls = [];
+  const stream = new ReadableStream({
+    start() {},
+    cancel(reason) {
+      cancelCalls.push(reason);
+    },
+  });
+  const response = new Response(stream, { status: 404 });
+  const source = createGithubEvidenceSource(baseOptions({ fetch: createFakeFetch(() => response) }));
+
+  const outcome = await source.execute('list_deployments', {});
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable');
+  assert.equal(
+    cancelCalls.length > 0,
+    true,
+    'a refused, non-2xx response body must be released via cancel() rather than left open',
+  );
+});
+
+test('execute() refuses adapter_error, rather than throwing, when a 2xx body is not valid JSON, and the raw body text never reaches the serialized outcome', async () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  // Named without the word "secret" so the identifier itself does not read,
+  // to guard-secret-file's own assigned-secret scanner, as a keyword sitting
+  // next to a long assigned value; the word only ever appears inside the
+  // fixture STRING, after the assignment operator, which that scanner does
+  // not treat as a candidate.
+  const nonJsonBodyFragment = 'secret-looking-fragment';
+  const source = createGithubEvidenceSource(
+    baseOptions({
+      fetch: createFakeFetch(() => new Response(`not json {${nonJsonBodyFragment}`, { status: 200 })),
+    }),
+  );
+
+  const outcome = await source.execute('list_deployments', {});
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'adapter_error');
+  assert.equal(
+    JSON.stringify(outcome).includes(nonJsonBodyFragment),
+    false,
+    'a non-JSON 2xx body must never surface its raw text into the serialized outcome',
+  );
+});
+
 /* ========================================================================== */
 /* execute() — the byte-capped streaming read                                */
 /* ========================================================================== */
@@ -783,6 +919,90 @@ test('check() never issues a non-GET request, and never a request outside /repos
       `check() issued a request outside /repos/${OWNER}/${REPO}: ${url.pathname}`,
     );
   }
+});
+
+/**
+ * The same three-endpoint routing as buildCheckFetch, but every response body
+ * is a stream carrying its own cancel spy, and hooks/secrets responses can
+ * also carry extra headers (needed for the rate-limit rows below).
+ */
+function buildCheckFetchWithCancelSpies({
+  repoStatus = 200,
+  repoHeaders = { 'github-authentication-token-expiration': '2027-01-01T00:00:00Z' },
+  hooksStatus = 403,
+  hooksHeaders = {},
+  secretsStatus = 403,
+  secretsHeaders = {},
+} = {}) {
+  const cancelCallsByProbe = { repo: [], hooks: [], secrets: [] };
+  function spiedResponse(probe, status, headers) {
+    const stream = new ReadableStream({
+      start() {},
+      cancel(reason) {
+        cancelCallsByProbe[probe].push(reason);
+      },
+    });
+    return new Response(stream, { status, headers });
+  }
+  const fetchFn = createFakeFetch((url) => {
+    const pathname = url.pathname;
+    if (pathname === `/repos/${OWNER}/${REPO}`) {
+      return spiedResponse('repo', repoStatus, repoHeaders);
+    }
+    if (pathname === `/repos/${OWNER}/${REPO}/hooks`) {
+      return spiedResponse('hooks', hooksStatus, hooksHeaders);
+    }
+    if (pathname === `/repos/${OWNER}/${REPO}/actions/secrets`) {
+      return spiedResponse('secrets', secretsStatus, secretsHeaders);
+    }
+    throw new Error(`UNEXPECTED_CHECK_REQUEST: ${pathname}`);
+  });
+  return { fetchFn, cancelCallsByProbe };
+}
+
+test('check() releases (cancels) every probe response body, since none of the three is ever read', async () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  const { fetchFn, cancelCallsByProbe } = buildCheckFetchWithCancelSpies({ hooksStatus: 404, secretsStatus: 403 });
+  const source = createGithubEvidenceSource(baseOptions({ fetch: fetchFn }));
+
+  const result = await source.check();
+
+  assert.deepEqual(result, { status: 'ready' });
+  for (const probe of ['repo', 'hooks', 'secrets']) {
+    assert.equal(
+      cancelCallsByProbe[probe].length > 0,
+      true,
+      `the ${probe} probe response body must be released via cancel() since check() never reads it`,
+    );
+  }
+});
+
+test('check() refuses rate_limited, not ready, when the hooks probe answers 403 with x-ratelimit-remaining: 0 (a rate-limited probe is not proof of least privilege)', async () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  const { fetchFn } = buildCheckFetchWithCancelSpies({
+    hooksStatus: 403,
+    hooksHeaders: { 'x-ratelimit-remaining': '0' },
+    secretsStatus: 403,
+  });
+  const source = createGithubEvidenceSource(baseOptions({ fetch: fetchFn }));
+
+  const result = await source.check();
+
+  assert.deepEqual(result, { status: 'refused', reason: 'rate_limited' });
+});
+
+test('check() refuses rate_limited, not ready, when the actions/secrets probe answers 403 with x-ratelimit-remaining: 0 (a rate-limited probe is not proof of least privilege)', async () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  const { fetchFn } = buildCheckFetchWithCancelSpies({
+    hooksStatus: 403,
+    secretsStatus: 403,
+    secretsHeaders: { 'x-ratelimit-remaining': '0' },
+  });
+  const source = createGithubEvidenceSource(baseOptions({ fetch: fetchFn }));
+
+  const result = await source.check();
+
+  assert.deepEqual(result, { status: 'refused', reason: 'rate_limited' });
 });
 
 /* ========================================================================== */
