@@ -3,24 +3,20 @@
  *
  * `quoteModelText` (`@aic/domain`, `packages/domain/src/conclusion-rules.ts`)
  * escapes and truncates a model-supplied value before it is named in a
- * refusal; `conclusion-rules.test.mjs` and `investigation-roles.ts`'s own
- * refusals already pin that for the sites that use it. This file pins the
- * sites that do not yet: eight `refuse(...)` calls in
- * `packages/roles/src/naive-role.ts` that interpolate a model-answer value
- * raw, one in `packages/roles/src/investigation-roles.ts`'s
- * `generate_hypotheses` (a duplicate of an id the run already carries, where
- * the run's own record can carry a hostile id and the model repeats it), and
- * three in `packages/domain/src/evaluation.ts`'s `deriveHypothesisStatus`.
+ * refusal. This file pins twelve refusal sites that name such a value: eight
+ * `refuse(...)` calls in `packages/roles/src/naive-role.ts`, one in
+ * `packages/roles/src/investigation-roles.ts`'s `generate_hypotheses` (a
+ * duplicate of an id the run already carries, where the run's own record can
+ * carry a hostile id and the model repeats it), and three in
+ * `packages/domain/src/evaluation.ts`'s `deriveHypothesisStatus`.
  *
  * The oracle is independent of `quoteModelText`: every row asserts, directly
  * against the thrown message, that it carries no raw newline and does not
- * carry the hostile value's run of 'x' characters whole (`quoteModelText`
- * truncates to 80 characters before escaping, so at most 62 of the 500 `x`s
- * in `HOSTILE` can survive — see the length arithmetic in
- * `derive-hypothesis-state.test.mjs`, whose `HOSTILE` and `assertEscapedRefusal`
- * this file's `HOSTILE` and per-site assertions copy the shape of). Each row
- * also pins the error's type and a stable prefix of its message, so a refusal
- * that escapes correctly but no longer says what was wrong cannot pass.
+ * carry the hostile value's run of 'x' characters whole (`/x{63,}/`, the same
+ * check `derive-hypothesis-state.test.mjs`'s `assertEscapedRefusal` makes,
+ * whose `HOSTILE` value this file copies). Each row also pins the error's type
+ * and a stable prefix of its message, so a refusal that escapes correctly but
+ * no longer says what was wrong cannot pass.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
