@@ -280,3 +280,29 @@ test('matchesRootCause fails closed on a case variant of the mechanism, because 
 test('matchesRootCause fails on an undefined claimed cause', () => {
   assert.equal(evals.matchesRootCause(inventoryApiTruth, undefined), false);
 });
+
+test('matchesRootCause fails closed when the truth itself names a mechanism outside the taxonomy', () => {
+  // Exact equality alone would pass this pair; only the membership check can
+  // refuse it, so this row is what pins the closed vocabulary.
+  const outside = { component: 'inventory-api', mechanism: 'mechanism-outside-the-taxonomy' };
+  assert.equal(evals.matchesRootCause(outside, { ...outside }), false);
+});
+
+test('every structural evidence id is the fixture item behind an accepted fingerprint of the same kind and source', () => {
+  for (const scenario of evals.REPLAY_SCENARIOS) {
+    const shownById = new Map(evals.shownEvidenceOf(scenario.fixture).map((item) => [item.id, item]));
+    const entry = evals.STRUCTURAL_GROUND_TRUTH[scenario.id];
+    for (const [ids, accepted] of [
+      [entry.expectedEvidenceIds, scenario.groundTruth.expectedEvidence],
+      [entry.misleadingEvidenceIds ?? [], scenario.groundTruth.misleadingEvidence ?? []],
+    ]) {
+      const acceptedKinds = accepted.map(({ kind, source }) => `${kind}|${source}`).sort();
+      const structuralKinds = ids.map((id) => {
+        const item = shownById.get(id);
+        assert.ok(item, `${scenario.id}: ${id} is not shown by its fixture`);
+        return `${item.kind}|${item.source}`;
+      }).sort();
+      assert.deepEqual(structuralKinds, acceptedKinds, `${scenario.id}: structural ids must pair with the accepted fingerprints by kind and source`);
+    }
+  }
+});

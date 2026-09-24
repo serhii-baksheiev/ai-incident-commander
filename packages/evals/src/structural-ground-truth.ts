@@ -145,7 +145,8 @@ function normalizedComponent(component: string): string {
  * accepted v0.1 prose included — fails closed, and there is no prose-similarity
  * fallback. Anything else a cause carries, such as its trigger, is not compared.
  * see structural-ground-truth.test.mjs › "matchesRootCause fails closed on the
- * accepted v0.1 prose mechanism for the same component"
+ * accepted v0.1 prose mechanism for the same component" and › "matchesRootCause
+ * fails closed when the truth itself names a mechanism outside the taxonomy"
  */
 export function matchesRootCause(truth: StructuralRootCause, claimed: unknown): boolean {
   if (claimed === null || typeof claimed !== 'object') return false;

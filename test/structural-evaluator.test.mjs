@@ -295,6 +295,37 @@ test('v0.3 false_alert_correctness scores incorrect-outcome on a conclusionKind 
   });
 });
 
+test('v0.3 does not count a contradiction of other evidence as reconciling the misleading item', () => {
+  const record = calibrationRecord('dependency-caused-incident-b', evals.STRUCTURAL_EVALUATOR_VERSION);
+  const outcome = depBOutcome({
+    evidenceAssessments: [
+      {
+        fingerprint: { kind: 'dependency', source: 'dependencies/payments', predicate: 'irrelevant under v0.3' },
+        evidenceId: 'inventory-api-pool-saturation',
+        hypothesisId: 'h1',
+        effect: 'contradicts',
+      },
+    ],
+  });
+  const result = evals.evaluateBenchmarkRecord({ record, outcome });
+  assert.equal(result.behaviorMetrics.misleading_evidence_handling.reason, 'misleading-evidence-not-reconciled');
+});
+
+test('evaluateBenchmarkRecord refuses an unknown evaluator version even on a scenario with no behavior metric', () => {
+  const record = calibrationRecord('bad-deployment', 'behavior-evaluators-v0.99');
+  const outcome = {
+    claims: [],
+    supportingEvidenceIds: [],
+    evidenceFingerprints: [],
+    stopKind: 'sufficient',
+    conclusionKind: 'root-cause',
+  };
+  assert.throws(
+    () => evals.evaluateBenchmarkRecord({ record, outcome }),
+    /evaluator version must be behavior-evaluators-v0\.2 or behavior-evaluators-v0\.3/,
+  );
+});
+
 test('evaluateBenchmarkRecord throws for a metadata evaluatorVersion neither v0.2 nor v0.3 names', () => {
   const record = calibrationRecord('false-alert', 'behavior-evaluators-v0.99');
   assert.throws(() => evals.evaluateBenchmarkRecord({ record, outcome: falseAlertOutcome() }));
@@ -695,6 +726,39 @@ test('v0.3 credits the graph arm for the expected evidence its conclusion cites'
   }));
   assert.equal(coverage.get('bad-deployment'), 1);
   assert.equal(coverage.get('dependency-caused-incident-b'), 1);
+});
+
+test('v0.3 does not credit the graph arm for citing evidence it never collected', async () => {
+  const dropped = 'checkout-invalid-database-endpoint';
+  const coverage = await graphCoverageByScenario((record) => {
+    const base = replayNodes(record);
+    return {
+      ...base,
+      async execute_investigation(state) {
+        const update = await base.execute_investigation(state);
+        return {
+          ...update,
+          ...(update.evidence === undefined ? {} : { evidence: update.evidence.filter(({ id }) => id !== dropped) }),
+          ...(update.trials === undefined
+            ? {}
+            : { trials: update.trials.map((trial) => ({ ...trial, evidenceIds: trial.evidenceIds.filter((id) => id !== dropped) })) }),
+        };
+      },
+      async propose_conclusion(state) {
+        return {
+          conclusion: {
+            kind: 'root-cause',
+            causes: [{
+              hypothesisId: state.hypotheses[0].id,
+              cause: { component: 'unused-here', mechanism: 'unused-here' },
+              evidenceIds: ['checkout-deploy-v42', dropped],
+            }],
+          },
+        };
+      },
+    };
+  });
+  assert.equal(coverage.get('bad-deployment'), 0.5, 'a cited id the run never collected must not be credited');
 });
 
 /* -------------------------------------------------------------------------- */

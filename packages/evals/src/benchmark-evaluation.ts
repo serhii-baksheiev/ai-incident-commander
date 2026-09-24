@@ -489,8 +489,8 @@ export function evaluateBenchmarkRecord({
   // Which evaluator scored this record is the record's own declaration, and an
   // undeclared or unknown version is refused rather than scored the default
   // way: two records with one version must mean one set of semantics.
-  // see structural-evaluator.test.mjs › "evaluateBenchmarkRecord throws for a
-  // metadata evaluatorVersion neither v0.2 nor v0.3 names"
+  // see structural-evaluator.test.mjs › "evaluateBenchmarkRecord refuses an
+  // unknown evaluator version even on a scenario with no behavior metric"
   const { evaluatorVersion } = record.metadata;
   if (evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION) {
     return evaluateStructuralRecord({ record, outcome, resources });
