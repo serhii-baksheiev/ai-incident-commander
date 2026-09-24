@@ -385,6 +385,24 @@ for (const [label, score] of [['NaN', Number.NaN], ['Infinity', Number.POSITIVE_
  * singular's next refusal fires before the fallback is constructed at all; the
  * plural's fires after construction and before the first outbound call, which
  * is why the tripwire above exists.
+ *
+ * AIC-120 round 2: `verifyPersistedBenchmarkReference` is the third entry
+ * point, and it reads its `client` slot with the untyped `ownValue` rather
+ * than `ownClient` — so an own ACCESSOR `client` reads as absent there today,
+ * and the call falls through to the LIVE default client exactly the way the
+ * other two used to. Its `baseOptions` carries no `reference` on purpose, so
+ * whichever client answer is in play, the very next own-read throws
+ * `nextRefusal` before any client method is ever called — same discipline as
+ * the other two rows, and the same reason the tripwire above never fires for
+ * any of them.
+ *
+ * `assertNoCapturedCalls` defaults to true and is `false` only for this third
+ * entry: `verifyPersistedBenchmarkReference` never calls a client method
+ * before the reference refusal fires, on the buggy reading of the slot AND
+ * the fixed one alike (the real client, not `capture.client`, is what a
+ * fallback would call anyway). Asserting `capture.calls` stays empty here
+ * would hold no matter which behaviour is under test, so it is skipped rather
+ * than kept as a check that cannot fail for the reason this file names.
  */
 const CLIENT_SLOT_ENTRY_POINTS = [
   {
@@ -399,11 +417,24 @@ const CLIENT_SLOT_ENTRY_POINTS = [
     baseOptions: () => ({ datasetName: '', experiments: [] }),
     persist: (options) => observability.persistBenchmarkExperiments(options),
   },
+  {
+    name: 'verifyPersistedBenchmarkReference',
+    nextRefusal: 'verify options must carry their own reference',
+    baseOptions: () => ({}),
+    persist: (options) => observability.verifyPersistedBenchmarkReference(options),
+    assertNoCapturedCalls: false,
+  },
 ];
 
 const ACCESSOR_REFUSAL = 'persist options carry a client that is not an own data property';
 
-for (const { name, nextRefusal, baseOptions, persist } of CLIENT_SLOT_ENTRY_POINTS) {
+for (const {
+  name,
+  nextRefusal,
+  baseOptions,
+  persist,
+  assertNoCapturedCalls = true,
+} of CLIENT_SLOT_ENTRY_POINTS) {
   test(`falls back to the default client when ${name} is given no client`, async () => {
     const options = baseOptions();
     assert.equal(
@@ -458,10 +489,12 @@ for (const { name, nextRefusal, baseOptions, persist } of CLIENT_SLOT_ENTRY_POIN
       ACCESSOR_REFUSAL,
       `a present client that cannot be read as an own data property is refused, never defaulted: treated as absent it sends the dataset, the examples, every run and every feedback of this benchmark to the LIVE workspace instead of to the client the caller passed (the accessor was read ${reads.length} times)`,
     );
-    assert.deepEqual(
-      capture.calls.map(({ method }) => method),
-      [],
-      'and nothing may be published through the accessor’s own client either: the refusal is the answer, not a redirect',
-    );
+    if (assertNoCapturedCalls) {
+      assert.deepEqual(
+        capture.calls.map(({ method }) => method),
+        [],
+        'and nothing may be published through the accessor’s own client either: the refusal is the answer, not a redirect',
+      );
+    }
   });
 }

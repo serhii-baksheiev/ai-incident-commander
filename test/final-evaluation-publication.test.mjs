@@ -39,9 +39,19 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { pid } from 'node:process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -642,6 +652,39 @@ test('verifyPersistedBenchmarkReference rejects naming the count, when a run id 
   );
 });
 
+/**
+ * AIC-120 round 2: the read-back dataset's own `id` is read and returned, but
+ * never compared with the `datasetId` the caller asked to verify. A workspace
+ * whose `readDataset` answers with a real dataset — just not the one this
+ * reference names — reads today as a clean verification, exactly the
+ * wrong-workspace failure this function's own header exists to catch.
+ */
+test('verifyPersistedBenchmarkReference rejects when the read-back dataset id disagrees with the requested datasetId', async () => {
+  const verify = requireFunction(observability, 'verifyPersistedBenchmarkReference', '@aic/observability');
+  const reference = {
+    datasetId: 'd1',
+    datasetName: 'aic-120-verify-dataset-mismatch',
+    projects: [{ experimentId: 'e1', projectId: 'p1' }],
+    exampleIds: ['ex1'],
+    runIds: ['r1'],
+  };
+  const client = fakeReadbackClient({
+    // The workspace answers a dataset object for the requested id, but the
+    // object's OWN id names a different dataset — the shape a wrong-region
+    // endpoint or a stale readback client could plausibly produce.
+    datasets: { d1: { id: 'd1-from-a-different-workspace' } },
+    projects: { p1: { id: 'p1' } },
+    runsByProject: { p1: [{ id: 'r1' }] },
+    examplesByDataset: { d1: [{ id: 'ex1' }] },
+  });
+
+  await assert.rejects(
+    () => verify({ client, reference }),
+    (error) => error instanceof Error && /d1-from-a-different-workspace/.test(error.message) && /d1/.test(error.message),
+    'a read-back dataset whose own id disagrees with the requested datasetId must be refused, naming both ids: today the function returns whatever id came back with no comparison at all',
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* 5. Orchestration primitives — scripts/final-holdout-publication.mjs       */
 /* -------------------------------------------------------------------------- */
@@ -658,6 +701,42 @@ test('writeRecordDurably writes pretty-printed JSON with a trailing newline, lea
   assert.equal(raw, `${JSON.stringify(body, null, 2)}\n`);
 
   assert.deepEqual(readdirSync(dir), ['record.json'], 'no <path>.tmp-<pid> file may survive the write');
+});
+
+/**
+ * AIC-120 round 2: `writeRecordDurably` opens its temp file with the plain
+ * `'w'` flag, which has no `O_EXCL`/`O_NOFOLLOW` and so follows a pre-created
+ * symlink at that exact path. An attacker (or a leftover temp file from a
+ * killed prior run, replaced by a symlink) who plants
+ * `<path>.tmp-<pid>` pointing at an arbitrary file gets that file overwritten
+ * with the new record, and then renamed into place at `path` — the write
+ * lands wherever the symlink pointed, never where the caller asked.
+ */
+test('writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched', async (t) => {
+  const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
+  const dir = tempDir(t, 'aic-120-write-symlink-');
+  const path = join(dir, 'record.json');
+  const targetPath = join(dir, 'attacker-target.json');
+  const targetContents = 'untouched\n';
+  writeFileSync(targetPath, targetContents);
+  const tmpPath = `${path}.tmp-${pid}`;
+  symlinkSync(targetPath, tmpPath);
+
+  await assert.rejects(
+    () => writeRecordDurably(path, { hello: 'world' }),
+    'a pre-created symlink at the temp path must be refused, not followed: opening it with a plain "w" flag writes through the link to whatever it points at',
+  );
+
+  assert.equal(
+    readFileSync(targetPath, 'utf8'),
+    targetContents,
+    'the symlink target must be left exactly as it was: today the write follows the link and overwrites it with the new record',
+  );
+  assert.equal(
+    existsSync(path),
+    false,
+    'the refusal must happen before the rename, so the caller-visible path never receives the attacker-controlled content',
+  );
 });
 
 test('writeRecordDurably atomically replaces a prior file rather than appending to it', async (t) => {
@@ -953,6 +1032,23 @@ test("T3: execute runs exactly once, and a counting fake naive port used inside 
 /* -------------------------------------------------------------------------- */
 
 test('T4: publishOnly succeeds with no model provider credential in the environment', async (t) => {
+  // The row controls its own environment rather than trusting whatever the
+  // process was invoked with: delete the model API key variable for the
+  // duration of this test, restore whatever was there (present or absent)
+  // afterward, and assert the deletion actually took before relying on it —
+  // a title this test does not itself enforce is not a claim this row proves.
+  const hadKey = Object.hasOwn(process.env, MODEL_API_KEY_VARIABLE);
+  const previousValue = process.env[MODEL_API_KEY_VARIABLE];
+  delete process.env[MODEL_API_KEY_VARIABLE];
+  t.after(() => {
+    if (hadKey) process.env[MODEL_API_KEY_VARIABLE] = previousValue;
+  });
+  assert.equal(
+    Object.hasOwn(process.env, MODEL_API_KEY_VARIABLE),
+    false,
+    `this row must control its own environment, or its title ("with no model provider credential in the environment") is not what it tested — ${MODEL_API_KEY_VARIABLE} must be absent from the moment this line runs`,
+  );
+
   const { publishOnly } = await import('../scripts/publish-final-holdout.mjs');
   const dir = tempDir(t, 'aic-120-t4-');
   const { fingerprint, basename } = freshFingerprint();
@@ -978,6 +1074,11 @@ test('T4: publishOnly succeeds with no model provider credential in the environm
     newAttemptId: counterAttemptId('t4'),
   });
 
+  assert.equal(
+    Object.hasOwn(process.env, MODEL_API_KEY_VARIABLE),
+    false,
+    'the credential must still be absent after publishOnly ran: if anything in the call chain needed it, either it would have thrown by now or it read one that leaked in from elsewhere',
+  );
   assert.equal(result.summary.satisfied, true);
 });
 
@@ -1203,6 +1304,157 @@ test('T10: persist succeeds but verify rejects — the arm logs readback-failed 
   assert.equal(secondPersistCalls, 0, 'a retry after readback-failed must not create a new dataset: it verifies the one already created');
   assert.equal(verifyCalls, 1);
   assert.equal(second.summary.arms.model.state, 'verified');
+});
+
+/* -------------------------------------------------------------------------- */
+/* 8b. Dataset naming and attempt mode — pinned against an independent oracle */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * AIC-120 round 2: `publishRecordedMeasurement`'s dataset name is an inline
+ * template literal with no exported name any test called — replacing it with
+ * a constant left every existing row in this file green, because none of them
+ * reads the `datasetName` a `persist` call actually received. This row does,
+ * and the expected names are computed here from the record's own
+ * `candidate.headSha`, independently of the production module rather than by
+ * reading back whatever `publishRecordedMeasurement` just built.
+ * see test/lane-arms.test.mjs, "6. publishHoldoutArms / publishLiveModelArms"
+ * header, for where this pin now lives relative to the deleted rows it closes
+ * a gap `planHoldoutPublication`'s own rows never covered.
+ */
+test('publishOnly persists each required arm under a dataset name built from the record’s own head SHA and attempt number, and a retry after ingestion-failed bumps the suffix', async (t) => {
+  const { publishOnly } = await import('../scripts/publish-final-holdout.mjs');
+  const dir = tempDir(t, 'aic-120-dataset-name-');
+  const { fingerprint, basename } = freshFingerprint();
+  const modelExperiment = distinctExperiment('aic-120-dataset-name-model');
+  const naiveExperiment = distinctExperiment('aic-120-dataset-name-naive');
+  const publicationPlan = { model: { required: true }, naive: { required: true } };
+  const record = completeRecordFor({
+    fingerprint,
+    measurementId: randomUUID(),
+    modelExperiment,
+    naiveExperiment,
+    publicationPlan,
+  });
+  const recordPath = join(dir, basename);
+  writeJson(recordPath, record);
+
+  const headSha12 = record.candidate.headSha.slice(0, 12);
+  assert.equal(
+    headSha12,
+    HEAD_SHA12,
+    'the fixture’s own headSha must be the one this row computes the expected name from',
+  );
+
+  const firstAttemptDatasetNames = [];
+  async function alwaysFail(options) {
+    firstAttemptDatasetNames.push(options.datasetName);
+    throw new Error('ingestion refused');
+  }
+
+  await publishOnly({
+    recordPath,
+    persist: alwaysFail,
+    verify: verifyEchoingReference,
+    now: () => 'T1',
+    newAttemptId: counterAttemptId('dataset-name-first'),
+  });
+
+  assert.deepEqual(
+    firstAttemptDatasetNames.sort(),
+    [`aic-19-final-holdout-model-${headSha12}-a1`, `aic-19-final-holdout-naive-${headSha12}-a1`].sort(),
+    'the first attempt for each arm must persist under a dataset name naming the arm, the record’s own head SHA, and attempt number 1 — computed here, not read back from what production just did',
+  );
+
+  const secondAttemptDatasetNames = [];
+  async function alwaysFailAgain(options) {
+    secondAttemptDatasetNames.push(options.datasetName);
+    throw new Error('ingestion refused again');
+  }
+
+  await publishOnly({
+    recordPath,
+    persist: alwaysFailAgain,
+    verify: verifyEchoingReference,
+    now: () => 'T2',
+    newAttemptId: counterAttemptId('dataset-name-second'),
+  });
+
+  assert.deepEqual(
+    secondAttemptDatasetNames.sort(),
+    [`aic-19-final-holdout-model-${headSha12}-a2`, `aic-19-final-holdout-naive-${headSha12}-a2`].sort(),
+    'a retry after an ingestion-failed attempt must persist under a dataset name suffixed -a2, so it can never collide with the half-created dataset the first attempt may have left behind',
+  );
+});
+
+/**
+ * AIC-120 round 2: nothing pinned the `mode` a publication attempt is written
+ * with, so mutating `completeHoldout`'s literal `'with-measurement'` into
+ * `'publication-only'` (or the reverse in `publishOnly`) survives the suite
+ * unnoticed.
+ */
+test('completeHoldout writes each publication attempt with mode "with-measurement", and a later publishOnly retry writes "publication-only"', async (t) => {
+  const { completeHoldout } = await import('../scripts/eval-final-holdout.mjs');
+  const { publishOnly } = await import('../scripts/publish-final-holdout.mjs');
+  const { attemptLogPath, readPublicationAttempts } = await import('../scripts/final-holdout-publication.mjs');
+  const dir = tempDir(t, 'aic-120-mode-pin-');
+  const { fingerprint, basename } = freshFingerprint();
+  const recordPath = join(dir, basename);
+  const base = claimedBaseFor(fingerprint, randomUUID());
+
+  async function execute() {
+    const { report, modelExperiment, naiveExperiment } = await fourArmLaneCapturing();
+    return { report, experiments: { model: modelExperiment, naive: naiveExperiment } };
+  }
+
+  await completeHoldout({
+    path: recordPath,
+    base,
+    publishRequested: true,
+    execute,
+    async persist() {
+      throw new Error('ingestion refused');
+    },
+    async verify() {
+      throw new Error('must not be called: persist already failed for every arm');
+    },
+    now: () => 'T1',
+    newAttemptId: counterAttemptId('mode-pin-first'),
+  });
+
+  const firstAttempts = await readPublicationAttempts(attemptLogPath(recordPath));
+  assert.ok(
+    firstAttempts.length > 0,
+    'completeHoldout must have logged at least one attempt, or this row proves nothing about its mode',
+  );
+  assert.deepEqual(
+    firstAttempts.map((attempt) => attempt.mode),
+    firstAttempts.map(() => 'with-measurement'),
+    'every attempt completeHoldout writes must carry mode "with-measurement", literally',
+  );
+
+  const retryResult = await publishOnly({
+    recordPath,
+    async persist() {
+      return sampleReference();
+    },
+    verify: verifyEchoingReference,
+    now: () => 'T2',
+    newAttemptId: counterAttemptId('mode-pin-retry'),
+  });
+
+  const allAttempts = await readPublicationAttempts(attemptLogPath(recordPath));
+  const retryAttempts = allAttempts.slice(firstAttempts.length);
+  assert.ok(
+    retryAttempts.length > 0,
+    'the publishOnly retry must have logged at least one new attempt, or this row proves nothing about its mode',
+  );
+  assert.deepEqual(
+    retryAttempts.map((attempt) => attempt.mode),
+    retryAttempts.map(() => 'publication-only'),
+    'every attempt publishOnly writes must carry mode "publication-only", literally — the same field, read the same way, disagreeing only in which command wrote it',
+  );
+  assert.equal(retryResult.summary.satisfied, true);
 });
 
 /* -------------------------------------------------------------------------- */
