@@ -127,7 +127,7 @@ decision 11 requires: one tool call in total, one committed node result
 produced by the first attempt, a completed run with the same result and
 product snapshot across repetitions, and a recorded `checkpoint_fork` for the
 stale attempt. The command is in that file's header. The TAP transcripts are
-not committed: each is about 20 MB.
+not committed.
 
 **Measured.** The file prints two series:
 
