@@ -325,10 +325,12 @@ test('conclusionViolation: a hostile fabricated hypothesisId (quotes, newline, 5
   const reason = violation({ conclusion, hypotheses: HYPOTHESES, evidence: EVIDENCE, stopKind: 'sufficient' });
 
   assert.ok(reason !== undefined, 'a fabricated hypothesisId must still be refused when it is hostile input');
+  // The first 80 characters of the fixture hold exactly 62 x's, so a run of 63
+  // or more can only come from the part truncation must drop.
   assert.doesNotMatch(
     reason,
-    /line-two-x{10}/,
-    'a raw, unescaped fragment of the hostile id must not reach the reason verbatim',
+    /x{63,}/,
+    'the id must be truncated to 80 characters: nothing past them may reach the reason',
   );
   // Escaped the same way naive-role's refuseUnknownKeys names keys:
   // JSON.stringify(name.slice(0, 80)).
