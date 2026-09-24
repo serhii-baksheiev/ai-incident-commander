@@ -274,23 +274,23 @@ test(
   },
 );
 
-test('publishes separate CLI start and resume command contracts', () => {
+test('publishes separate CLI start and resume command contracts under aic dev spike', () => {
   for (const command of ['start', 'resume']) {
-    const args = [cliPath, command, '--help'];
+    const args = [cliPath, 'dev', 'spike', command, '--help'];
     const result = spawnSync(process.execPath, args, {
       cwd: projectRoot,
       encoding: 'utf8',
       env: childEnv(),
     });
     assert.equal(result.status, 0, commandDiagnostics(args, result));
-    assert.match(result.stdout, new RegExp(`Usage: aic ${command}(?:\\s|$)`));
+    assert.match(result.stdout, new RegExp(`Usage: aic dev spike ${command}(?:\\s|$)`));
     assert.match(result.stdout, /--run-id(?:\s|$)/);
     assert.match(result.stdout, /--checkpoint(?:\s|$)/);
   }
 });
 
 test(
-  'starts and resumes the same persisted run through the compiled CLI',
+  'starts and resumes the same persisted run through the compiled CLI, under aic dev spike',
   { timeout: 20_000 },
   async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-cli-persistent-resume-'));
@@ -302,6 +302,8 @@ test(
       for (const command of ['start', 'resume']) {
         const args = [
           cliPath,
+          'dev',
+          'spike',
           command,
           '--run-id',
           runId,
