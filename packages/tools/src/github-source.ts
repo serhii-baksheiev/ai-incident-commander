@@ -65,7 +65,13 @@ function validateOwnerOrRepo(value: string, label: 'owner' | 'repo'): string {
  * message carrying no part of `raw` at all.
  */
 function validateApiBaseUrl(raw: string): URL {
-  const url = new URL(raw);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // A fresh Error, never Node's own ERR_INVALID_URL: that one carries raw on `.input`.
+    throw new Error('createGithubEvidenceSource: apiBaseUrl is not a valid URL');
+  }
   if (url.protocol !== 'https:') {
     throw new Error(`createGithubEvidenceSource: apiBaseUrl must use https, got scheme ${JSON.stringify(url.protocol.replace(/:$/, ''))}`);
   }
@@ -73,7 +79,7 @@ function validateApiBaseUrl(raw: string): URL {
     throw new Error('createGithubEvidenceSource: apiBaseUrl must not carry userinfo');
   }
   if ((url.pathname !== '/' && url.pathname !== '') || url.search !== '' || url.hash !== '') {
-    throw new Error(`createGithubEvidenceSource: apiBaseUrl must be root-only (no path, query or fragment), got pathname ${JSON.stringify(url.pathname)}`);
+    throw new Error('createGithubEvidenceSource: apiBaseUrl must be root-only (no path, query or fragment)');
   }
   return url;
 }
@@ -451,10 +457,24 @@ export function createGithubEvidenceSource(options: GithubEvidenceSourceOptions)
 
       const hooksUrl = new URL(`/repos/${owner}/${repo}/hooks`, apiBaseUrl);
       const secretsUrl = new URL(`/repos/${owner}/${repo}/actions/secrets`, apiBaseUrl);
-      const [hooksRequest, secretsRequest] = await Promise.all([
+      const [hooksOutcome, secretsOutcome] = await Promise.allSettled([
         performRequest(hooksUrl),
         performRequest(secretsUrl),
       ]);
+      // Release whichever probe resolved before rethrowing the other's rejection.
+      if (hooksOutcome.status === 'rejected' || secretsOutcome.status === 'rejected') {
+        if (hooksOutcome.status === 'fulfilled') {
+          await releaseBody(hooksOutcome.value.response);
+          hooksOutcome.value.release();
+        }
+        if (secretsOutcome.status === 'fulfilled') {
+          await releaseBody(secretsOutcome.value.response);
+          secretsOutcome.value.release();
+        }
+        throw (hooksOutcome.status === 'rejected' ? hooksOutcome.reason : (secretsOutcome as PromiseRejectedResult).reason);
+      }
+      const hooksRequest = hooksOutcome.value;
+      const secretsRequest = secretsOutcome.value;
       const hooksResponse = hooksRequest.response;
       const secretsResponse = secretsRequest.response;
 
