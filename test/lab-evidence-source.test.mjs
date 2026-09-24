@@ -230,6 +230,10 @@ const REFUSAL_STATUS_ROWS = [
   { status: 404, reason: 'unavailable' },
   { status: 500, reason: 'unavailable' },
   { status: 503, reason: 'unavailable' },
+  // A 400 is a request-shape defect (the caller/adapter built a bad request),
+  // never "the lab is unavailable" — advisory, code-reviewer round 1: keep
+  // 404 -> unavailable, but 400 must map to adapter_error instead.
+  { status: 400, reason: 'adapter_error' },
 ];
 
 for (const { status, reason } of REFUSAL_STATUS_ROWS) {
@@ -389,6 +393,26 @@ test('through the registry, a 403 (denied) and a 404 (unavailable) stay distingu
   assert.deepEqual([denied.status, denied.reason], ['refused', 'denied']);
   assert.deepEqual([unavailable.status, unavailable.reason], ['refused', 'unavailable']);
   assert.deepEqual([emptyOk.status, emptyOk.output], ['ok', {}]);
+});
+
+test('through the registry, a 400 (request-shape defect) refuses adapter_error, not unavailable', async () => {
+  const createLabEvidenceSource = labEvidenceSourceFactory();
+  const source = createLabEvidenceSource({
+    baseUrl: 'http://127.0.0.1:9999',
+    fetch: createFakeFetch(() =>
+      fakeResponse({ status: 400, body: { error: 'malformed observation request' } }),
+    ),
+  });
+  const registry = bindLabSource(source);
+
+  const outcome = await registry.execute('incident-lab', 'deployments', {});
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(
+    outcome.reason,
+    'adapter_error',
+    'a 400 is a request-shape defect, not "the lab is unavailable" (advisory, code-reviewer round 1)',
+  );
 });
 
 test('through the registry, a rejected fetch classifies as adapter_error, and the raw error text never reaches the serialized outcome', async () => {
