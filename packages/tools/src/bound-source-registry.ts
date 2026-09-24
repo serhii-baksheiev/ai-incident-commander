@@ -62,6 +62,23 @@ import { redactEvidenceOutput } from './redaction.js';
  *     not, matching the separator `` `${adapterId}@${version}` `` uses in
  *     `provenance.adapter`.
  *
+ * Review round 2 on slice c added three more findings this file now satisfies
+ * (test/bound-source-registry.test.mjs's "AIC-100 slice c — review round 2
+ * findings" block; the other three are `./redaction.ts`'s own, see that
+ * file's header):
+ *   - `describe()` is called exactly ONCE per binding, at construction —
+ *     never again on any later `execute()` call. The validated `adapterId`/
+ *     `version` and the `operations` list are captured into a
+ *     `BoundSourceEntry` snapshot right there, so a binding whose `describe()`
+ *     later starts returning something else (including a credential-shaped
+ *     value) can never poison `provenance.adapter` or reopen the
+ *     safe-token/redaction check on a later call (review round 2, finding 4).
+ *     See `BoundSourceEntry`'s own doc comment below.
+ *   - `SAFE_ADAPTER_ID`/`SAFE_ADAPTER_TOKEN` both cap their input at 64
+ *     characters (review round 2, finding 5) — see those two exports' own
+ *     doc comments for the exact shape and why `version` refuses `:` for a
+ *     narrower reason than `adapterId` permits it.
+ *
  * `replay` never re-applies a budget: it serves whatever was recorded under
  * the budget in force at record time, because the adapter is never called in
  * replay at all.
@@ -82,7 +99,8 @@ import { redactEvidenceOutput } from './redaction.js';
  *   - every `EvidenceSourceProvenance` field is BUILT BY THE REGISTRY, never
  *     copied from an adapter's own (possibly foreign) provenance:
  *     `sourceBindingId` is the caller's argument; `adapter` is
- *     `` `${adapterId}@${version}` `` from the CURRENT binding's `describe()`,
+ *     `` `${adapterId}@${version}` `` from the binding's construction-time
+ *     `describe()` SNAPSHOT (review round 2, finding 4 — never a fresh call),
  *     validated at construction as above; `credentialRefId` is the CURRENT
  *     binding's own value; `fetchedAt` is `clock().toISOString()` in
  *     `live`/`record`, or the RECORDED value on a replay hit;
@@ -165,22 +183,34 @@ function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): Sou
 /**
  * The safe-token pattern a binding's `describe().version` must match before
  * it is trusted in `provenance.adapter` (`` `${adapterId}@${version}` ``):
- * letters, digits, `.`, `_` and `-` only — no `:` (the separator `adapterId`
- * alone is allowed to carry, see `SAFE_ADAPTER_ID` below), no `@` (the
- * `adapterId@version` separator itself) and no whitespace. Matching this
+ * an alphanumeric first character (so an all-punctuation string never
+ * matches at all), then up to 63 more characters from letters, digits, `.`,
+ * `_` and `-` — 64 characters total, bounded rather than unbounded (review
+ * round 2, finding 5). No `:` — the string `adapterId@version` in
+ * `provenance.adapter` is itself separated by `@`, not `:`, so a `:` inside
+ * `version` would not collide with that separator; it is refused anyway
+ * because, unlike `adapterId` (see `SAFE_ADAPTER_ID` below, whose own
+ * colon-collision regression rows genuinely need one), no existing behaviour
+ * here needs `version` to carry a `:`, so its character set is kept as narrow
+ * as the two patterns can differ by — exactly one character, `:`, and nothing
+ * else. No `@` (the `adapterId@version` separator itself) and no whitespace.
+ * Matching this
  * pattern is necessary but not sufficient: `validateSafeAdapterField` below
  * also requires the value to survive `redactEvidenceOutput` unchanged, because
  * an all-alphanumeric credential (an AWS access-key id) passes this
  * character-class check while still being credential-shaped (review round 1,
  * code-reviewer blocker 6; review round 2). See
  * test/bound-source-registry.test.mjs's "SAFE_ADAPTER_TOKEN" and
- * "construction refuses a version that is a credential shape" rows.
+ * "construction refuses a version that is a credential shape" rows, and its
+ * "SAFE_ADAPTER_TOKEN accepts a 64-character token and refuses a
+ * 65-character token" row (review round 2, finding 5).
  */
-export const SAFE_ADAPTER_TOKEN = /^[A-Za-z0-9._-]+$/;
+export const SAFE_ADAPTER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
  * The safe-token pattern a binding's `describe().adapterId` must match: the
- * same character set as `SAFE_ADAPTER_TOKEN` plus `:` — deliberately more
+ * same shape as `SAFE_ADAPTER_TOKEN` (an alphanumeric first character, 64
+ * characters total) plus `:` in the allowed set — deliberately more
  * permissive than `version`, because this file's own replay-identity design
  * (and its colon-collision regression rows) constructs an `adapterId` such as
  * `'b:c'` on purpose. Still refuses `@` (the `adapterId@version` separator)
@@ -188,9 +218,11 @@ export const SAFE_ADAPTER_TOKEN = /^[A-Za-z0-9._-]+$/;
  * own: `validateSafeAdapterField` also requires the value to survive
  * `redactEvidenceOutput` unchanged. See
  * test/bound-source-registry.test.mjs's "SAFE_ADAPTER_ID" and "construction
- * accepts adapterId \"b:c\"" rows (review round 2).
+ * accepts adapterId \"b:c\"" rows (review round 2), and its "SAFE_ADAPTER_ID
+ * accepts a 64-character id and refuses a 65-character id" row (review round
+ * 2, finding 5).
  */
-export const SAFE_ADAPTER_ID = /^[A-Za-z0-9._:-]+$/;
+export const SAFE_ADAPTER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 /**
  * Refuses (synchronously, at construction) a `describe()` field that either
@@ -428,6 +460,22 @@ function executeWithTimeout(
   });
 }
 
+/**
+ * What construction snapshots from a binding's `describe()`, once, and
+ * `execute()` reuses forever after: the binding itself (for `.source` and
+ * `.credentialRefId`), the pre-built `` `${adapterId}@${version}` `` string
+ * `provenance.adapter` always uses, and the `operations` list `execute()`
+ * checks the requested operation against. See `createBoundSourceRegistry`'s
+ * construction loop below and test/bound-source-registry.test.mjs › "the
+ * registry reads describe() ONCE at construction and reuses that snapshot for
+ * every call … (review round 2, finding 4)".
+ */
+interface BoundSourceEntry {
+  readonly binding: BoundSourceBinding;
+  readonly adapter: string;
+  readonly operations: readonly string[];
+}
+
 export function createBoundSourceRegistry(
   options: BoundSourceRegistryOptions,
 ): BoundSourceRegistry {
@@ -438,17 +486,27 @@ export function createBoundSourceRegistry(
     throw new Error(`createBoundSourceRegistry: unknown mode ${JSON.stringify(mode)}`);
   }
 
-  const bindingsById = new Map<string, BoundSourceBinding>();
+  const bindingsById = new Map<string, BoundSourceEntry>();
   for (const binding of bindings) {
     if (bindingsById.has(binding.sourceBindingId)) {
       throw new Error(
         `createBoundSourceRegistry: duplicate sourceBindingId ${binding.sourceBindingId}`,
       );
     }
+    // describe() is called exactly once per binding, right here, and never
+    // again — the validated adapterId/version and the operations list are
+    // captured into this entry's own snapshot below, so a binding whose
+    // describe() later returns something different (including a
+    // credential-shaped value) can never poison a later execute() call
+    // (review round 2, finding 4).
     const descriptor = binding.source.describe();
     validateSafeAdapterField(binding.sourceBindingId, 'adapterId', descriptor.adapterId, SAFE_ADAPTER_ID);
     validateSafeAdapterField(binding.sourceBindingId, 'version', descriptor.version, SAFE_ADAPTER_TOKEN);
-    bindingsById.set(binding.sourceBindingId, binding);
+    bindingsById.set(binding.sourceBindingId, {
+      binding,
+      adapter: `${descriptor.adapterId}@${descriptor.version}`,
+      operations: descriptor.operations,
+    });
   }
 
   return {
@@ -461,9 +519,9 @@ export function createBoundSourceRegistry(
         fingerprintFailed = true;
       }
 
-      const binding = bindingsById.get(sourceBindingId);
+      const entry = bindingsById.get(sourceBindingId);
 
-      if (!binding) {
+      if (!entry) {
         const provenance: EvidenceSourceProvenance = {
           sourceBindingId,
           adapter: '',
@@ -474,8 +532,10 @@ export function createBoundSourceRegistry(
         return { status: 'refused', reason: 'unavailable', provenance };
       }
 
-      const descriptor = binding.source.describe();
-      const adapter = `${descriptor.adapterId}@${descriptor.version}`;
+      // adapter and the binding itself come from the construction-time
+      // snapshot, never from a fresh describe() call — see BoundSourceEntry's
+      // own doc comment (review round 2, finding 4).
+      const { binding, adapter } = entry;
       const credentialRefId = binding.credentialRefId;
 
       const buildProvenance = (fetchedAt: string): EvidenceSourceProvenance => ({
@@ -538,7 +598,7 @@ export function createBoundSourceRegistry(
       }
 
       // live and record share this path from here.
-      if (!descriptor.operations.includes(operation)) {
+      if (!entry.operations.includes(operation)) {
         return {
           status: 'refused',
           reason: 'unavailable',

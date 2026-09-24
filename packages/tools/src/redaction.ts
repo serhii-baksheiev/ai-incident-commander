@@ -11,15 +11,19 @@
  * or `null` — replacing a credential-shaped SUBSTRING inside a string with
  * `[REDACTED]` in place; a string, number, boolean or `null` leaf is otherwise
  * left alone (a string is scanned; the other three pass through unchanged).
- * Anything that is NOT one of those two container shapes — a `Buffer`, `Map`,
- * `Set`, `Date`, `Error`, or any other class instance — fails CLOSED to the
- * fixed sentinel `'[REDACTED:unsupported]'` rather than being walked as if it
- * were a plain object (which would either silently expose a `Buffer`'s bytes
- * as numeric-string keys, or silently collapse a `Map`/`Set`/`Date`/`Error` to
- * `{}`, since none of those have their own state on ordinary enumerable
- * properties). See test/bound-source-registry.test.mjs's `for` loop over
- * `UNSUPPORTED_REDACTION_VALUE_ROWS` (review round 1, security + code-reviewer
- * blocker 3). An own key literally named `'__proto__'` (the shape
+ * Every other value fails CLOSED to the fixed sentinel
+ * `'[REDACTED:unsupported]'` rather than being walked as if it were a plain
+ * object or passed through unchanged: a `Buffer`, `Map`, `Set`, `Date`,
+ * `Error`, or any other class instance (walking one of those as a plain
+ * object would either silently expose a `Buffer`'s bytes as numeric-string
+ * keys, or silently collapse a `Map`/`Set`/`Date`/`Error` to `{}`, since none
+ * of those have their own state on ordinary enumerable properties — see
+ * test/bound-source-registry.test.mjs's `for` loop over
+ * `UNSUPPORTED_REDACTION_VALUE_ROWS`, review round 1, security +
+ * code-reviewer blocker 3), and a `function`, `symbol`, `bigint` or
+ * `undefined` value, none of which is a JSON leaf either (see the `for` loop
+ * over `UNSUPPORTED_NON_OBJECT_REDACTION_VALUE_ROWS`, review round 2, finding
+ * 6). An own key literally named `'__proto__'` (the shape
  * `JSON.parse` produces for that text, as opposed to the object-literal syntax
  * `{ __proto__: x }`, which reassigns the real prototype at construction time
  * instead) is preserved as an ordinary own data property of the walked
@@ -46,14 +50,17 @@
  *   - a "Bearer <token>" credential (20+ token characters), where the WHOLE
  *     match — including the `Bearer ` prefix — is dropped, not just the
  *     token;
- *   - a PEM private-key block: the `-----BEGIN ... PRIVATE KEY-----` header,
- *     an optional multi-line base64 body immediately following it on a new
- *     line, and an optional matching `-----END ... PRIVATE KEY-----` footer —
- *     the WHOLE block is replaced, not just the header (see "the PEM pattern"
- *     below); a non-private PEM block such as a certificate is left alone;
+ *   - a PEM private-key block: the `-----BEGIN ... PRIVATE KEY-----` header
+ *     (optional trailing horizontal whitespace and an optional RFC 1421
+ *     `Proc-Type`/`DEK-Info` header block tolerated before the body), an
+ *     optional multi-line base64 body, and an optional matching
+ *     `-----END ... PRIVATE KEY-----` footer — the WHOLE block is replaced,
+ *     not just the header (see "the PEM pattern" below); a non-private PEM
+ *     block such as a certificate is left alone;
  *   - inline `user:pass` URL credentials for ANY scheme matching
- *     `[a-z][a-z0-9+.-]*://` (not only `http(s)`), where the scheme and host
- *     are kept and only the credential part between `//` and `@` is replaced;
+ *     `[A-Za-z][A-Za-z0-9+.-]*://` in either case (not only `http(s)`, and not
+ *     only lower-case), where the scheme and host are kept and only the
+ *     credential part between `//` and `@` is replaced;
  *   - a Slack bot/user/app/legacy-workspace token shape (`xox[abpr]-...`).
  *
  * What this does NOT catch — stated exactly, because a redactor's own limits
@@ -80,24 +87,66 @@
  *     are never rewritten by this module, only preserved or, for an
  *     unsupported container, replaced in bulk).
  *
+ * The URL-credential pattern is anchored, not scanned from every position:
+ * `(?<![A-Za-z0-9+.-])` is a negative lookbehind that refuses to even start
+ * matching at a position whose preceding character is itself scheme-shaped —
+ * which is exactly the position an unanchored `[A-Za-z][A-Za-z0-9+.-]*` would
+ * otherwise re-attempt at every offset of a long scheme-like run, the
+ * quadratic shape review round 2's finding 1 measured. On a string built
+ * entirely from scheme-shaped characters (see
+ * `buildSchemeLikeRunWithNoUrlSeparator` in the test file), the lookbehind
+ * fails at every position except the very first, so the expensive scan is
+ * attempted once rather than once per character — see
+ * test/bound-source-registry.test.mjs › "redactEvidenceOutput completes
+ * within a bound on a 256 KiB run of scheme-like characters with no \"://\"
+ * substring (review round 2, finding 1: ReDoS)" and › "live: registry.execute
+ * redacts an 80 KB output built from the same scheme-like run within a bound
+ * (review round 2, finding 1: ReDoS)". The scheme itself is matched by two
+ * single, non-nested character classes (`[A-Za-z]` then `[A-Za-z0-9+.-]*`),
+ * covering either case without an `i` flag, which would also affect every
+ * other pattern sharing this same array.
+ *
  * The PEM pattern is a single, non-backtracking run: a literal header, then
- * an OPTIONAL body group that only engages when a newline immediately follows
- * the header (so a header followed by plain trailing prose on the same line —
- * see the near-miss row pinning "key material: <header> follows" — is left
- * with that prose untouched), and inside that body group one greedy character
- * class over `[A-Za-z0-9+/=\s]` consumes the base64 lines in ONE linear pass,
- * then an OPTIONAL literal footer. Each of the three quantified regions
- * (`\r?\n`, the body's own greedy class, and the footer's own internal
- * `[A-Z0-9 ]*`) is quantified once and none of them wraps another quantified
- * group, so there is no repetition-inside-repetition for the engine to
- * backtrack across — the same bounded shape
- * `.claude/scripts/lib/secrets.mjs` uses for its own credential patterns
- * (`.claude/rules/invariants.md`, "a guard that fails open must do provably
- * bounded work" — applied here to a redactor rather than a hook, since this
- * module runs on every recorded and returned outcome rather than failing open
- * on error). See test/bound-source-registry.test.mjs › "redacts the WHOLE PEM
- * private-key block, including a multi-line base64 body — the body never
- * survives anywhere in the output (review round 1, security blocker 1)".
+ * ONE optional continuation group that only ever engages once an actual
+ * newline is reached — optional trailing horizontal whitespace (`[ \t]*`) is
+ * tolerated immediately before that newline, but is never consumed on its
+ * own when no newline follows it, because the whole group's first mandatory
+ * element (`[ \t]*\r?\n`) fails there and the surrounding `(?:...)?`
+ * backtracks to zero width rather than leaving a partial match — this is what
+ * keeps a header followed by plain trailing prose on the same line (see the
+ * near-miss row pinning "key material: <header> follows") left with that
+ * prose untouched, and is also what makes trailing whitespace before the
+ * header's own newline no longer defeat the whole group (review round 2,
+ * finding 3a). Once that gate is passed, zero or more RFC 1421
+ * `Proc-Type`/`DEK-Info` header lines are consumed, each ending in its own
+ * newline (`(?:[A-Za-z-]+:[^\r\n]*\r?\n)*`, review round 2, finding 3b), then
+ * one optional blank-line newline, then the base64 body — a single greedy
+ * character class, `[A-Za-z0-9+/=\r\n]`, that deliberately excludes a literal
+ * space so a FOOTER-LESS header cannot consume past itself into unrelated log
+ * text that contains spaces (review round 2, finding 3c) — then an OPTIONAL
+ * literal footer. Every quantified region here (the gate's `\r?\n`, the
+ * header-line loop, the body's own greedy class, and the footer's own
+ * internal `[A-Z0-9 ]*`) is quantified once, and none of them wraps another
+ * quantified region over the SAME characters — the header-line loop's two
+ * classes (`[A-Za-z-]+` and `[^\r\n]*`) do overlap on letters, so a
+ * colon-free run of letters can cost one bounded backtrack over that run
+ * before the loop gives up and the body class takes over, but that cost is
+ * paid at most once per PEM header, never nested inside another repetition —
+ * the same bounded shape `.claude/scripts/lib/secrets.mjs` uses for its own
+ * credential patterns (`.claude/rules/invariants.md`, "a guard that fails
+ * open must do provably bounded work" — applied here to a redactor rather
+ * than a hook, since this module runs on every recorded and returned outcome
+ * rather than failing open on error). See test/bound-source-registry.test.mjs
+ * › "redacts the WHOLE PEM private-key block, including a multi-line base64
+ * body — the body never survives anywhere in the output (review round 1,
+ * security blocker 1)", › "redacts the WHOLE PEM block even when the header
+ * line carries trailing spaces and a tab before its own newline (review round
+ * 2, finding 3a)", › "redacts an ENCRYPTED PEM block whose RFC 1421
+ * Proc-Type/DEK-Info headers sit between the BEGIN header and the base64 body
+ * — no body line and no footer survive (review round 2, finding 3b)", and ›
+ * "does not over-redact past a FOOTER-LESS PEM header: plain log lines with
+ * spaces survive (review round 2, finding 3c: the body class must not
+ * include a literal space)".
  *
  * `MAX_REDACTION_DEPTH` bounds recursion: the depth check happens BEFORE a
  * container's children are visited, so recursion never goes deeper than
@@ -122,9 +171,17 @@ const UNSUPPORTED_SENTINEL = '[REDACTED:unsupported]';
 const REDACTED = '[REDACTED]';
 
 /**
- * Each pattern is a literal prefix plus at most one bounded character class —
- * the same shape `.claude/scripts/lib/secrets.mjs` uses for its own
- * credential patterns, so none of these can backtrack catastrophically.
+ * Most patterns here are a literal prefix plus at most one bounded character
+ * class, the same shape `.claude/scripts/lib/secrets.mjs` uses for its own
+ * credential patterns — bounded because a single quantified class cannot
+ * backtrack against itself. The PEM and URL-credential patterns below carry
+ * more than one quantified region each, so each of THEM is bounded a
+ * different way instead — a leading lookbehind that prunes almost every
+ * starting position for the URL pattern, and a mandatory-newline gate plus
+ * non-overlapping classes for the PEM pattern — spelled out in this file's
+ * header comment, next to the timing rows in
+ * test/bound-source-registry.test.mjs that measure each one (review round 2,
+ * findings 1 and 3).
  */
 interface CredentialPattern {
   readonly pattern: RegExp;
@@ -151,19 +208,36 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
     replacement: REDACTED,
   },
   {
-    // PEM private-key block: header, optional newline-led base64 body (one
-    // greedy, non-nested character class), optional matching footer — see
-    // this file's header comment, "The PEM pattern is a single,
-    // non-backtracking run".
+    // PEM private-key block: header, then ONE optional continuation group
+    // that only ever engages once an actual newline is reached (optional
+    // trailing horizontal whitespace — [ \t]* — is tolerated before that
+    // newline, but is never consumed on its own if no newline follows it,
+    // because the whole group backtracks to zero width when the mandatory
+    // `\r?\n` fails), then zero or more RFC 1421 header lines
+    // (`Proc-Type`/`DEK-Info`, each ending in its own newline), then one
+    // optional blank-line newline, then the base64 body — a character class
+    // WITHOUT a literal space, so a footer-less header cannot over-redact
+    // into unrelated log text — then an optional matching footer. See this
+    // file's header comment, "The PEM pattern is a single, non-backtracking
+    // run".
     pattern:
-      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n[A-Za-z0-9+/=\s]*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?/g,
+      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[ \t]*\r?\n(?:[A-Za-z-]+:[^\r\n]*\r?\n)*\r?\n?[A-Za-z0-9+/=\r\n]*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?/g,
     replacement: REDACTED,
   },
   {
-    // Inline URL credentials, any scheme: `scheme://user:pass@` — only the
-    // credential part between `//` and `@` is replaced, keeping the scheme
-    // (captured in group 1) and the host that follows `@`.
-    pattern: /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]*@/g,
+    // Inline URL credentials, any scheme, either case: `scheme://user:pass@`
+    // — only the credential part between `//` and `@` is replaced, keeping
+    // the scheme (captured in group 1) and the host that follows `@`. The
+    // leading `(?<![A-Za-z0-9+.-])` lookbehind anchors the scheme's start so
+    // the engine only ever attempts the `[A-Za-z][A-Za-z0-9+.-]*` scan from a
+    // genuine scheme boundary rather than from every position in the
+    // string — see this file's header comment, "the any-scheme URL pattern
+    // is anchored" and test/bound-source-registry.test.mjs's ReDoS timing
+    // rows (review round 2, finding 1). No `i` flag: the character classes
+    // spell out both cases explicitly, because the PEM pattern above shares
+    // this same `CREDENTIAL_PATTERNS` array and depends on case-sensitive
+    // matching of its own literal `BEGIN`/`END`/`PRIVATE KEY` text.
+    pattern: /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]*@/g,
     replacement: `$1${REDACTED}@`,
   },
   {
@@ -238,25 +312,29 @@ function redactAtDepth(value: unknown, depth: number): unknown {
   if (isPlainObject(value)) {
     return buildRedactedObject(value, depth);
   }
-  if (value !== null && typeof value === 'object') {
-    // A Buffer, Map, Set, Date, Error, or any other class instance: fails
-    // CLOSED to a fixed sentinel rather than being walked as a plain object —
-    // see this file's header comment (review round 1, security +
-    // code-reviewer blocker 3).
-    return UNSUPPORTED_SENTINEL;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    return value;
   }
-  return value;
+  // Everything else fails CLOSED to a fixed sentinel rather than passing
+  // through unchanged or being walked as a plain object: a Buffer, Map, Set,
+  // Date, Error or any other class instance (review round 1, security +
+  // code-reviewer blocker 3), and a function, symbol, bigint or `undefined`
+  // (review round 2, finding 6) — none of these is a JSON-shaped container or
+  // a JSON leaf, so none of them is safe to pass through or walk as-is. See
+  // this file's header comment.
+  return UNSUPPORTED_SENTINEL;
 }
 
 /**
  * Pure, deep, bounded redaction over a value built only from JSON-shaped
  * containers: arrays and plain objects are walked (keys are kept, non-string
  * leaves are left alone), and a credential-shaped substring inside a string
- * is replaced with `[REDACTED]` in place. Anything else — a `Buffer`, `Map`,
- * `Set`, `Date`, `Error`, or other class instance, anywhere in the walk —
- * fails closed to `[REDACTED:unsupported]`. See this file's header for the
- * six recognised credential shapes, what this module does NOT catch, and the
- * depth-cap fail-closed behaviour.
+ * is replaced with `[REDACTED]` in place. Anything else, anywhere in the
+ * walk — a `Buffer`, `Map`, `Set`, `Date`, `Error` or other class instance, or
+ * a `function`, `symbol`, `bigint` or `undefined` value — fails closed to
+ * `[REDACTED:unsupported]`. See this file's header for the six recognised
+ * credential shapes, what this module does NOT catch, and the depth-cap
+ * fail-closed behaviour.
  */
 export function redactEvidenceOutput(value: unknown): unknown {
   return redactAtDepth(value, 0);
