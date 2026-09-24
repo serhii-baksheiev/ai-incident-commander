@@ -277,6 +277,117 @@ test('construction accepts an apiBaseUrl with no path or a bare trailing slash',
   assert.doesNotThrow(() => createGithubEvidenceSource(baseOptions({ apiBaseUrl: 'https://ghe.example.com/' })));
 });
 
+/**
+ * `validateApiBaseUrl`'s own credential-free checks (scheme, then userinfo)
+ * all run against a `URL` object it already has — but the very first line of
+ * that function is `new URL(raw)`, unguarded. When `raw` is malformed enough
+ * that the WHATWG URL parser itself refuses it, that call throws Node's own
+ * `TypeError` (`code: 'ERR_INVALID_URL'`) straight out of construction,
+ * before any of validateApiBaseUrl's own message-shaping runs — and that
+ * built-in error carries the entire raw string, userinfo included, on an
+ * ENUMERABLE own property named `input`. That property is what makes this
+ * row observable in more places than `.message`: a bare `JSON.stringify()`
+ * already walks own enumerable properties, so it reproduces the leak with no
+ * replacer needed at all.
+ *
+ * Checked here, and required to be clean on every one of them: `.message`,
+ * `String(error)`, `JSON.stringify(error)`, and
+ * `JSON.stringify(error, Object.getOwnPropertyNames(error))` (which would
+ * also catch a leak sitting on a NON-enumerable property, had the error
+ * carried one) — plus the same four views of `.cause`, on the rows where a
+ * `.cause` is present at all.
+ */
+const fixtureMalformedCredentialUsername = 'some' + 'one2';
+const fixtureMalformedCredentialPassword = 's3cret' + 'pw3';
+
+function assertThrownNeverCarriesCredential(thrown, forbiddenValues, context) {
+  const views = [
+    ['error.message', thrown.message],
+    ['String(error)', String(thrown)],
+    ['JSON.stringify(error)', JSON.stringify(thrown)],
+    [
+      'JSON.stringify(error, Object.getOwnPropertyNames(error))',
+      JSON.stringify(thrown, Object.getOwnPropertyNames(thrown)),
+    ],
+  ];
+  if (thrown.cause !== undefined) {
+    const cause = thrown.cause;
+    const causeOwnProps = typeof cause === 'object' && cause !== null ? Object.getOwnPropertyNames(cause) : undefined;
+    views.push(['String(error.cause)', String(cause)]);
+    views.push(['JSON.stringify(error.cause)', JSON.stringify(cause)]);
+    views.push([
+      'JSON.stringify(error.cause, Object.getOwnPropertyNames(error.cause))',
+      causeOwnProps ? JSON.stringify(cause, causeOwnProps) : JSON.stringify(cause),
+    ]);
+  }
+  for (const [viewLabel, haystack] of views) {
+    for (const forbidden of forbiddenValues) {
+      assert.equal(
+        typeof haystack === 'string' && haystack.includes(forbidden),
+        false,
+        `${context}: ${viewLabel} must never carry ${JSON.stringify(forbidden)}`,
+      );
+    }
+  }
+}
+
+// Both rows below were checked by hand against Node's own URL parser before
+// being pinned here (`new URL(raw)` throws ERR_INVALID_URL for each, with
+// the raw string on `.input`) — per this row's own instructions, a malformed
+// shape that the parser accepts instead has no place in this table.
+const MALFORMED_USERINFO_APIBASEURL_ROWS = [
+  {
+    label: 'a space inside the scheme (the WHATWG URL parser refuses "ht tp:" outright)',
+    apiBaseUrl: `ht tp://${fixtureMalformedCredentialUsername}:${fixtureMalformedCredentialPassword}@api.github.com`,
+  },
+  {
+    label: 'userinfo followed by an empty authority (no host after the "@")',
+    apiBaseUrl: `https://${fixtureMalformedCredentialUsername}:${fixtureMalformedCredentialPassword}@`,
+  },
+];
+
+for (const { label, apiBaseUrl } of MALFORMED_USERINFO_APIBASEURL_ROWS) {
+  test(`construction refuses a malformed, unparseable userinfo-carrying apiBaseUrl (${label}) without the thrown error carrying the credential anywhere observable`, () => {
+    const createGithubEvidenceSource = githubEvidenceSourceFactory();
+
+    let thrown;
+    assert.throws(
+      () => createGithubEvidenceSource(baseOptions({ apiBaseUrl })),
+      (error) => {
+        thrown = error;
+        return true;
+      },
+    );
+
+    assertThrownNeverCarriesCredential(
+      thrown,
+      [fixtureMalformedCredentialUsername, fixtureMalformedCredentialPassword],
+      `malformed apiBaseUrl (${label})`,
+    );
+  });
+}
+
+test('construction refuses a non-root apiBaseUrl without echoing the offending path into the thrown message', () => {
+  const createGithubEvidenceSource = githubEvidenceSourceFactory();
+  const marker = 'path' + 'leakmarker7';
+  const apiBaseUrl = `https://ghe.example.com/tok-${marker}/api/v3`;
+
+  let thrown;
+  assert.throws(
+    () => createGithubEvidenceSource(baseOptions({ apiBaseUrl })),
+    (error) => {
+      thrown = error;
+      return true;
+    },
+  );
+
+  assert.equal(
+    thrown.message.includes(marker),
+    false,
+    'the root-only refusal message must never echo a path segment back to the caller',
+  );
+});
+
 /* ========================================================================== */
 /* describe()                                                                 */
 /* ========================================================================== */
@@ -1004,6 +1115,166 @@ test('check() refuses rate_limited, not ready, when the actions/secrets probe an
 
   assert.deepEqual(result, { status: 'refused', reason: 'rate_limited' });
 });
+
+/**
+ * Advisory (code-reviewer, round 2): check()'s two least-privilege probes run
+ * as `Promise.all([performRequest(hooksUrl), performRequest(secretsUrl)])`.
+ * `performRequest` clears its OWN deadline timer on the branch where its own
+ * `fetchFn` call rejects — but when `Promise.all` rejects because one of the
+ * two probes rejects, it does so as soon as that one settles, and never waits
+ * on the other. The other probe's `performRequest` call still resolves on its
+ * own schedule, handing back a `PerformedRequest` whose response body and
+ * deadline timer are released only by the lines in `check()` right after the
+ * `await Promise.all(...)` — lines a rejection there skips entirely. So the
+ * OTHER (resolved) probe's response body is never cancelled and its deadline
+ * timer is never cleared.
+ *
+ * What this pins, on both resolution orders (the rejecting probe settling
+ * first, and settling second — `Promise.all` rejects on the FIRST settled
+ * rejection regardless of position, so both orders exercise the same code
+ * path, but only a real interleaving proves it rather than assuming it):
+ *
+ *   - check() mirrors what `Promise.all` does for a rejected probe: it
+ *     propagates the rejection outward rather than translating it into a
+ *     `{ status: 'refused', ... }` outcome the way a non-2xx status is
+ *     translated — there is no branch that would turn it into anything else.
+ *   - the RESOLVED probe's response body `cancel()` must still have been
+ *     called.
+ *   - every deadline timer `performRequest` armed (a plain `setTimeout`, per
+ *     the comment above `performRequest`) must have a matching `clearTimeout`
+ *     — checked by wrapping `setTimeout`/`clearTimeout` for the duration of
+ *     this one `check()` call only, restored in `finally` either way, so this
+ *     row alone can see a leak without affecting any other row's real timers.
+ *   - check() itself settles well under `requestTimeoutMs`, so a fix that
+ *     accidentally waited out the leaked timer before releasing would show up
+ *     here as a slow row rather than passing silently.
+ *
+ * Delay is by microtask tick count (`afterMicrotaskTicks`), never a real
+ * timer, so the setTimeout/clearTimeout wrapper below counts only the
+ * deadline timers `performRequest` itself arms — not this fixture's own
+ * ordering mechanism.
+ */
+function afterMicrotaskTicks(times) {
+  let chain = Promise.resolve();
+  for (let i = 0; i < times; i += 1) {
+    chain = chain.then(() => {});
+  }
+  return chain;
+}
+
+function buildCheckFetchWithOneRejectingProbe({ rejectingProbe, rejectTicks, resolveTicks }) {
+  const cancelCallsByProbe = { hooks: [], secrets: [] };
+  function spiedResponse(probe, status, headers) {
+    const stream = new ReadableStream({
+      start() {},
+      cancel(reason) {
+        cancelCallsByProbe[probe].push(reason);
+      },
+    });
+    return new Response(stream, { status, headers });
+  }
+  const fetchFn = createFakeFetch(async (url) => {
+    const pathname = url.pathname;
+    if (pathname === `/repos/${OWNER}/${REPO}`) {
+      return jsonResponse({
+        status: 200,
+        headers: { 'github-authentication-token-expiration': '2027-01-01T00:00:00Z' },
+        body: { id: 1 },
+      });
+    }
+    if (pathname === `/repos/${OWNER}/${REPO}/hooks`) {
+      if (rejectingProbe === 'hooks') {
+        await afterMicrotaskTicks(rejectTicks);
+        throw new Error('FAKE_HOOKS_PROBE_NETWORK_FAILURE');
+      }
+      await afterMicrotaskTicks(resolveTicks);
+      return spiedResponse('hooks', 403, {});
+    }
+    if (pathname === `/repos/${OWNER}/${REPO}/actions/secrets`) {
+      if (rejectingProbe === 'secrets') {
+        await afterMicrotaskTicks(rejectTicks);
+        throw new Error('FAKE_SECRETS_PROBE_NETWORK_FAILURE');
+      }
+      await afterMicrotaskTicks(resolveTicks);
+      return spiedResponse('secrets', 403, {});
+    }
+    throw new Error(`UNEXPECTED_CHECK_REQUEST: ${pathname}`);
+  });
+  return { fetchFn, cancelCallsByProbe };
+}
+
+const CHECK_ONE_REJECTING_PROBE_ROWS = [
+  {
+    label: 'the hooks probe rejects and settles FIRST; the secrets probe resolves later',
+    rejectingProbe: 'hooks',
+    resolvedProbe: 'secrets',
+    rejectTicks: 1,
+    resolveTicks: 4,
+  },
+  {
+    label: 'the secrets probe rejects and settles SECOND; the hooks probe resolves first',
+    rejectingProbe: 'secrets',
+    resolvedProbe: 'hooks',
+    rejectTicks: 4,
+    resolveTicks: 1,
+  },
+];
+
+for (const { label, rejectingProbe, resolvedProbe, rejectTicks, resolveTicks } of CHECK_ONE_REJECTING_PROBE_ROWS) {
+  test(`check() releases the resolved probe's body (and clears its deadline timer) when the other probe's fetch rejects (${label})`, async () => {
+    const createGithubEvidenceSource = githubEvidenceSourceFactory();
+    const requestTimeoutMs = 200;
+    const { fetchFn, cancelCallsByProbe } = buildCheckFetchWithOneRejectingProbe({
+      rejectingProbe,
+      rejectTicks,
+      resolveTicks,
+    });
+    const source = createGithubEvidenceSource(baseOptions({ fetch: fetchFn, requestTimeoutMs }));
+
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    let armedTimers = 0;
+    let clearedTimers = 0;
+    globalThis.setTimeout = (...args) => {
+      armedTimers += 1;
+      return realSetTimeout(...args);
+    };
+    globalThis.clearTimeout = (...args) => {
+      clearedTimers += 1;
+      return realClearTimeout(...args);
+    };
+
+    let elapsedMs;
+    try {
+      const startedAt = Date.now();
+      // check() mirrors Promise.all's own behaviour on a rejected probe: it
+      // propagates the rejection rather than resolving to a refused outcome.
+      await assert.rejects(() => source.check());
+      elapsedMs = Date.now() - startedAt;
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+
+    assert.equal(
+      elapsedMs < requestTimeoutMs,
+      true,
+      `check() took ${elapsedMs}ms against a requestTimeoutMs of ${requestTimeoutMs}ms — a row this slow would mean something waited out a leaked deadline timer instead of releasing it`,
+    );
+
+    assert.equal(
+      cancelCallsByProbe[resolvedProbe].length > 0,
+      true,
+      `the ${resolvedProbe} probe resolved before the ${rejectingProbe} probe rejected; its response body must still be released via cancel() rather than left open when Promise.all rejects on the other probe`,
+    );
+
+    assert.equal(
+      clearedTimers >= armedTimers,
+      true,
+      `every deadline timer performRequest arms must be cleared even when one probe's fetch rejects (armed ${armedTimers}, cleared ${clearedTimers})`,
+    );
+  });
+}
 
 /* ========================================================================== */
 /* Through the registry (live mode, fake fetch, fixed clock)                 */

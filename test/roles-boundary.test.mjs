@@ -108,8 +108,8 @@ test('keeps every provider reference out of the graph and domain packages', () =
  * scope than this: `workspaceSources` walks `.ts` files under `packages/`
  * only (see `sourceFiles` above), so `incident-lab/`'s own `.mjs` files — which
  * also issue HTTP, outside `packages/` entirely — are outside what this row
- * looks at. Within `packages/`, the two signals `issuesOutboundHttp` tests for
- * are a `fetch(`/`fetch?.(` call, a `https?://` literal, and a direct
+ * looks at. Within `packages/`, the three signals `issuesOutboundHttp` tests
+ * for are a `fetch(`/`fetch?.(` call, a `https?://` literal, and a direct
  * `globalThis.fetch` reference — an outbound surface reached only through
  * `import { fetch } from 'undici'`, `const { fetch } = globalThis`, or
  * `node:http`/`node:https` is invisible to it.
