@@ -55,12 +55,65 @@ export const EnvironmentSchema = z.strictObject({
   name: SlugSchema,
 });
 
+/**
+ * Adapter-specific config key: a slug-like camelCase word (`baseUrl`,
+ * `owner`, `repo`). The domain does not know which keys a given adapter
+ * expects - that catalog is a later slice (packages/tools/src/lab-source.ts,
+ * github-source.ts). This only bounds the SHAPE every adapter's config must
+ * fit.
+ */
+const ConfigKeySchema = z.string().regex(/^[a-z][a-zA-Z0-9]{0,63}$/);
+
+/**
+ * Credential-shaped patterns a config value must never carry - a config
+ * value travels with the SourceBinding record itself, never through the
+ * CredentialRef indirection, so anything that reads as a live credential is
+ * refused here rather than accepted and left to leak downstream. Every
+ * pattern below is anchored and unquantified-inside-a-quantifier (no nested
+ * repetition), so this predicate is O(length) per pattern with no
+ * backtracking blowup.
+ *
+ * Limit, stated rather than left to be found: this is a fixed, small
+ * vocabulary (GitHub PAT, AWS access key, Slack token, a Bearer-prefixed
+ * value, `scheme://user:pass@` userinfo) - not an entropy analyser. A
+ * credential shaped some other way passes; a placeholder that happens to
+ * match one of these shapes is refused. See
+ * registry-names-and-config.test.mjs for the corpus this is checked against.
+ */
+const SECRET_SHAPE_PATTERNS = [
+  /^ghp_/,
+  /^github_pat_/,
+  /^AKIA/,
+  /^xox[baprs]-/,
+  /^Bearer /,
+  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/@]*:[^/@]*@/,
+];
+
+const looksLikeSecret = (value: string) => SECRET_SHAPE_PATTERNS.some((pattern) => pattern.test(value));
+
+/**
+ * A per-adapter config object. Bounded at sixteen keys, each a slug-like
+ * name, each value a non-empty string of at most 512 characters that does
+ * not read as a credential (see `looksLikeSecret` above). What each adapter
+ * actually requires is validated by the adapter catalog in a later slice -
+ * this schema only enforces the shape every adapter's config must fit.
+ */
+const SourceBindingConfigSchema = z
+  .record(ConfigKeySchema, z.string().min(1).max(512))
+  .refine((config) => Object.keys(config).length <= 16, 'a SourceBinding config carries at most sixteen keys')
+  .refine(
+    (config) => Object.values(config).every((value) => !looksLikeSecret(value)),
+    'a SourceBinding config value must not be shaped like a credential',
+  );
+
 export const SourceBindingSchema = z.strictObject({
   id: RegistryIdSchema,
   environmentId: RegistryIdSchema,
   adapterId: nonEmptyString(200),
   adapterVersion: nonEmptyString(200),
-  credentialRefId: RegistryIdSchema,
+  name: SlugSchema,
+  config: SourceBindingConfigSchema,
+  credentialRefId: RegistryIdSchema.nullable(),
 });
 
 /**
@@ -84,6 +137,7 @@ export const CredentialRefSchema = z.strictObject({
   id: RegistryIdSchema,
   environmentId: RegistryIdSchema,
   access: z.enum(['read', 'write']),
+  name: SlugSchema,
   secretName: SecretNameSchema,
 });
 
@@ -157,6 +211,7 @@ export const RegistrySnapshotSchema = z
       list.push(ref);
       refsByEnvironment.set(ref.environmentId, list);
     });
+    const credentialRefNamesByEnvironment = new Map<string, Set<string>>();
     registry.credentialRefs.forEach((ref, index) => {
       if (!environmentById.has(ref.environmentId))
         issue(ctx, 'CredentialRef.environmentId does not name a known Environment', [
@@ -164,6 +219,10 @@ export const RegistrySnapshotSchema = z
           index,
           'environmentId',
         ]);
+      const names = credentialRefNamesByEnvironment.get(ref.environmentId) ?? new Set<string>();
+      if (names.has(ref.name)) issue(ctx, 'duplicate CredentialRef name within one Environment', ['credentialRefs', index, 'name']);
+      names.add(ref.name);
+      credentialRefNamesByEnvironment.set(ref.environmentId, names);
       // Scoped to one Environment on purpose: a read reference in `staging` and
       // a write reference in `production` may name the same backend secret,
       // because each Environment's credentials are separate records. See
@@ -179,6 +238,7 @@ export const RegistrySnapshotSchema = z
         );
     });
 
+    const sourceBindingNamesByEnvironment = new Map<string, Set<string>>();
     registry.sourceBindings.forEach((binding, index) => {
       if (!environmentById.has(binding.environmentId))
         issue(ctx, 'SourceBinding.environmentId does not name a known Environment', [
@@ -186,6 +246,14 @@ export const RegistrySnapshotSchema = z
           index,
           'environmentId',
         ]);
+      const names = sourceBindingNamesByEnvironment.get(binding.environmentId) ?? new Set<string>();
+      if (names.has(binding.name)) issue(ctx, 'duplicate SourceBinding name within one Environment', ['sourceBindings', index, 'name']);
+      names.add(binding.name);
+      sourceBindingNamesByEnvironment.set(binding.environmentId, names);
+
+      // A null credentialRefId names a credential-less adapter (e.g. lab@1)
+      // and skips the credential checks below entirely.
+      if (binding.credentialRefId === null) return;
       const credential = credentialRefById.get(binding.credentialRefId);
       if (!credential) {
         issue(ctx, 'SourceBinding.credentialRefId does not name a known CredentialRef', [
