@@ -82,6 +82,8 @@ carry?**
     not a flaky test. If it happens, this record stays Proposed and only the
     exclusion primitive is reopened — and the first fallback evaluated is a
     put-scoped lock around checkpoint writes, not the run-scoped advisory lock.
+    *(Since AIC-57: the matrix passed, so this fallback was not opened — see
+    "T-4 verdict (AIC-57)" below.)*
 12. **Integrity events are observable, never silently repaired.** Lease
     acquisition, renewal, expiry and takeover; a stale or fenced commit
     rejected; a committed result reused; recovery and resume; a replay
@@ -128,7 +130,7 @@ repetition checks for one tool call in total, one committed node result
 produced by the first attempt, a completed run, and a recorded
 `checkpoint_fork` for the stale attempt. After all repetitions, the normalized
 result and the product snapshot's core fields must be identical across every
-repetition. The event sequence is checked run by run and is not compared
+ordering and repetition. The event sequence is checked run by run and is not compared
 across runs. The command is in that file's header. The TAP transcripts are
 not committed.
 
@@ -161,8 +163,8 @@ after each repetition (#108).
   `node_result.reused` event. The matrix accepts both event shapes and does
   not count how many repetitions took each (`normalizeSnapshotEvents` in the
   harness). Reuse after a takeover is pinned outside the matrix, by
-  run-write-context.live.mjs › "a replay after a takeover must still not call
-  compute again: the committed result is reused, not recomputed by the new
+  run-write-context.live.mjs › "replay does not call compute again — in the
+  same context, and again after sweep+reclaim hands the run to a new
   attempt".
 - **`putWrites` timing.** The window is sampled for `put` only.
 - **A failed recheck.** If the post-write recheck fails for any reason other

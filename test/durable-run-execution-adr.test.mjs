@@ -40,7 +40,8 @@ test('is Accepted on AIC-57\'s T-4 verdict, and names the tickets built against 
 });
 
 /**
- * AIC-57 records its verdict in this record (Consequences). The row pins the
+ * AIC-57 records its verdict in this record, in its own "T-4 verdict
+ * (AIC-57)" section, as the Consequences section asks. The row pins the
  * parts a reader needs to re-run it and to know what it does not cover: the
  * stress command, the orderings, both measured series the harness prints, and
  * the one exclusion the matrix does not itself pin — the pre-write fence,
