@@ -86,6 +86,11 @@
  *     string value, never joins sibling strings before scanning;
  *   - a credential that is itself base64-wrapped (encoded so it no longer
  *     matches any of the six shapes' own character classes);
+ *   - a PEM private-key block whose header departs from the exact armor form
+ *     this module recognises: a lower- or mixed-case label, a tab instead of the
+ *     space after `BEGIN`, or more than 64 label characters before `PRIVATE
+ *     KEY` — the header is not recognised, so the fail-closed span never
+ *     starts and the whole block is left as-is;
  *   - a credential-shaped object KEY — only string VALUES are scanned; a key
  *     name that happens to look like a credential is left as-is (object keys
  *     are never rewritten by this module, only preserved or, for an
@@ -189,14 +194,23 @@
  * footer-less block stops short of the end of the string; the rows above
  * assert the opposite.
  *
- * Bounded work: `redactPemBlocks` never backtracks. It walks the string once,
- * forward only — `String.prototype.indexOf` to find each `-----BEGIN `/
- * `-----END ` literal, then a STICKY, length-bounded regex
- * (`/-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY-----/y` and the `-----END `
- * equivalent) tested at that exact index to confirm it is a private-key
+ * Bounded work: `redactPemBlocks` walks the string once, forward only —
+ * `String.prototype.indexOf` to find each `-----BEGIN `/`-----END ` literal,
+ * then a STICKY, length-bounded regex
+ * (`/-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY[A-Z0-9 ]{0,16}-----/y` and the
+ * `-----END ` equivalent; the trailing class admits the RFC 4880 label
+ * `PGP PRIVATE KEY BLOCK` — see test/bound-source-registry.test.mjs ›
+ * "redactEvidenceOutput redacts an RFC 4880 armored secret key (-----BEGIN PGP
+ * PRIVATE KEY BLOCK-----) header through its footer (review round 5, security
+ * blocker)") tested at that exact index; that regex may backtrack within its
+ * own bounded label, so each attempt costs a constant, never an input-sized
+ * amount, to confirm it is a private-key
  * header/footer rather than some other PEM label. A non-matching hit (a
- * certificate header, a footer whose label is not `PRIVATE KEY`) advances the
- * search by exactly one character and never revisits earlier ground; a
+ * certificate header, a footer whose label is not `PRIVATE KEY` — see
+ * test/bound-source-registry.test.mjs › "redactEvidenceOutput skips a
+ * non-private -----END line between a private header and its real footer, and
+ * redacts through the real footer (review round 5, code-reviewer blocker)")
+ * advances the search by exactly one character and never revisits earlier ground; a
  * matching header's footer search resumes the OUTER scan from the footer's
  * own end (or the string's end, when none was found), so no byte of the
  * input is scanned by more than a bounded, forward-only pass — the same
@@ -308,9 +322,9 @@ const PEM_FOOTER_LITERAL = '-----END ';
  * position it is pointed at, and length-bounded (`{0,64}`), so a match
  * attempt is O(1) regardless of input size.
  */
-const PEM_HEADER_STICKY = /-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY-----/y;
+const PEM_HEADER_STICKY = /-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY[A-Z0-9 ]{0,16}-----/y;
 /** The footer equivalent of `PEM_HEADER_STICKY`, same shape and same bound. */
-const PEM_FOOTER_STICKY = /-----END [A-Z0-9 ]{0,64}PRIVATE KEY-----/y;
+const PEM_FOOTER_STICKY = /-----END [A-Z0-9 ]{0,64}PRIVATE KEY[A-Z0-9 ]{0,16}-----/y;
 
 /**
  * Replaces every PEM private-key block in `value` with the single marker
