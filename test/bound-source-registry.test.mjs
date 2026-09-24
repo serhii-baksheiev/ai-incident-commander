@@ -1908,10 +1908,20 @@ test('redactEvidenceOutput leaves a "Bearer <token>" text alone when the token i
   assert.equal(redactEvidenceOutput(input), input);
 });
 
-test('redactEvidenceOutput replaces a PEM private-key header with [REDACTED]', () => {
+// Rewritten under the owner's fail-closed ruling, 2026-09-25: after four
+// review rounds in which each PEM-regex fix on the header/footer gap opened a
+// new leak (round 1's same-line near-miss below was the ORIGINAL shape of
+// this row — it once pinned that " follows" survived on the header's own
+// line), the owner chose SUBTRACTION over a fifth regex patch — see this
+// file's "review round 4" block further down for the contract this row now
+// pins: a footer-less PEM header redacts EVERYTHING from the header to the
+// END OF THE STRING, fail closed, because there is no footer to bound it.
+// The prefix "key material: " still survives; " follows" no longer does,
+// because it is text AFTER a footer-less header, not text before one.
+test('redactEvidenceOutput redacts a footer-less PEM header through the end of the string, fail closed: "key material: " survives, " follows" does not (owner fail-closed ruling, 2026-09-25 — supersedes the original same-line near-miss this row pinned)', () => {
   const redactEvidenceOutput = redactEvidenceOutputFactory();
   const input = `key material: ${fixturePemHeader} follows`;
-  assert.equal(redactEvidenceOutput(input), 'key material: [REDACTED] follows');
+  assert.equal(redactEvidenceOutput(input), 'key material: [REDACTED]');
 });
 
 test('redactEvidenceOutput leaves a non-private-key PEM header (a certificate) alone (near miss)', () => {
@@ -2920,23 +2930,27 @@ test('redactEvidenceOutput redacts an ENCRYPTED PEM block whose RFC 1421 Proc-Ty
 /* literal space)                                                            */
 /* -------------------------------------------------------------------------- */
 
-test('redactEvidenceOutput does not over-redact past a FOOTER-LESS PEM header: plain log lines with spaces survive (review round 2, finding 3c: the body class must not include a literal space)', () => {
+// Rewritten under the owner's fail-closed ruling, 2026-09-25 (see the "review
+// round 4" block further down): this row used to pin that plain log lines
+// FOLLOWING a footer-less PEM header survived untouched, on the theory that a
+// tighter body character class could tell a base64 line from a log line. That
+// theory is exactly what round 3's finding 4 (below, also rewritten) went on
+// to falsify for colon-bearing lines, so the owner replaced per-line body
+// parsing with subtraction: a footer-less header has no footer to bound it,
+// so it now redacts through the END OF THE STRING, fail closed, and nothing
+// after it — log lines included — is expected to survive. This input has no
+// text before the header either, so the whole string collapses to the single
+// redaction marker.
+test('redactEvidenceOutput redacts a footer-less PEM header through the end of the string, fail closed, even when what follows is plain log text (owner fail-closed ruling, 2026-09-25 — supersedes review round 2, finding 3c)', () => {
   const redactEvidenceOutput = redactEvidenceOutputFactory();
   const input = `${fixturePemHeader}${fixtureFooterlessPemFollowupLogLines}`;
 
   const output = redactEvidenceOutput(input);
 
-  assert.ok(
-    output.includes('INFO service healthy'),
-    `expected "INFO service healthy" — the leading level word must survive too, it is eaten today (review round 3, finding 4) — to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
-  );
-  assert.ok(
-    output.includes('200 OK'),
-    `expected "200 OK" to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
-  );
-  assert.ok(
-    output.includes('user alice succeeded'),
-    `expected "user alice succeeded" to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
+  assert.equal(
+    output,
+    '[REDACTED]',
+    `expected the whole footer-less block (header through end of string) to collapse to the single redaction marker; got ${JSON.stringify(output)}`,
   );
 });
 
@@ -3197,23 +3211,27 @@ test('redactEvidenceOutput redacts an INDENTED ENCRYPTED PEM block: the base64 b
 /* must never be treated as an RFC 1421 header line                          */
 /* -------------------------------------------------------------------------- */
 
-test('redactEvidenceOutput does not treat an ordinary colon-bearing log line as an RFC 1421 header line after a FOOTER-LESS PEM header: the lines survive exactly, leading level word included (review round 3, finding 4)', () => {
+// Rewritten under the owner's fail-closed ruling, 2026-09-25 (see the "review
+// round 4" block further down). This row is what forced the ruling: this
+// finding's OWN fix — restricting the header-line loop to real RFC 1421
+// labels — was round 3's answer to round 2 finding 3c's leak, and it was
+// itself a fourth regex patch on the same header/footer gap. Rather than
+// write a fifth, the owner replaced the per-line parsing entirely with
+// subtraction: a footer-less header has no footer to bound it, so it now
+// redacts through the END OF THE STRING, fail closed — the colon-bearing log
+// lines below no longer survive, any more than the plain ones in the
+// superseded round-2 row above do. This input has no text before the header
+// either, so the whole string collapses to the single redaction marker.
+test('redactEvidenceOutput redacts a footer-less PEM header through the end of the string, fail closed, even when what follows is ordinary colon-bearing log text (owner fail-closed ruling, 2026-09-25 — supersedes review round 3, finding 4)', () => {
   const redactEvidenceOutput = redactEvidenceOutputFactory();
   const input = `${fixturePemHeader}${fixtureFooterlessPemColonLogLines}`;
 
   const output = redactEvidenceOutput(input);
 
-  assert.ok(
-    output.includes('INFO: service healthy'),
-    `expected "INFO: service healthy" to survive redaction of a footer-less PEM header exactly; got ${JSON.stringify(output)}`,
-  );
-  assert.ok(
-    output.includes('ERROR: connection refused'),
-    `expected "ERROR: connection refused" to survive redaction of a footer-less PEM header exactly; got ${JSON.stringify(output)}`,
-  );
-  assert.ok(
-    output.includes('WARN: retry'),
-    `expected "WARN: retry" to survive redaction of a footer-less PEM header exactly; got ${JSON.stringify(output)}`,
+  assert.equal(
+    output,
+    '[REDACTED]',
+    `expected the whole footer-less block (header through end of string) to collapse to the single redaction marker; got ${JSON.stringify(output)}`,
   );
 });
 
@@ -3358,3 +3376,285 @@ test('a later push onto the adapter\'s own describe().operations array does not 
     'a push onto the adapter\'s own operations array after construction must never widen the registry\'s allow-list',
   );
 });
+
+/* ============================================================================ */
+/* AIC-100 slice c — review round 4: the owner's fail-closed ruling on the     */
+/* PEM pattern (SUBTRACTION), 2026-09-25                                       */
+/*                                                                              */
+/* Four review rounds each fixed one gap in the header/footer PEM REGEX by     */
+/* adding to it, and each fix opened a new leak in the same regex — round 2's  */
+/* finding 3c (over-redaction past a footer-less header) was answered by       */
+/* tightening the header-line loop to real RFC 1421 labels, and round 3's      */
+/* finding 4 (an ordinary colon-bearing log line wrongly treated as a header   */
+/* line) showed that tightening was itself wrong. On 2026-09-25 the owner      */
+/* ruled the fix is SUBTRACTION, not a fifth patch: replace the PEM regex with */
+/* a plain string-search, fail-closed rule —                                  */
+/*   - a header is '-----BEGIN ' + a label of up to 64 [A-Z0-9 ] characters +  */
+/*     'PRIVATE KEY-----'; a label not ending in PRIVATE KEY (CERTIFICATE,     */
+/*     PUBLIC KEY) is untouched;                                              */
+/*   - from the header, everything up to and including the NEXT matching      */
+/*     '-----END ' + label + 'PRIVATE KEY-----' footer is replaced by         */
+/*     '[REDACTED]', regardless of what lies between — indentation, blank     */
+/*     lines, Proc-Type/DEK-Info/Content-Domain lines, per-line log prefixes, */
+/*     base64url, colons, dashes;                                             */
+/*   - with no such footer, everything from the header to the END OF THE      */
+/*     STRING is replaced instead — fail closed, over-redaction accepted;     */
+/*   - text before the header, and after the footer, survives.               */
+/*                                                                              */
+/* This block therefore does two things at once: it REWRITES three existing   */
+/* rows above whose pinned expectation was the old regex's per-line-parsing   */
+/* behaviour rather than this contract (the round-1 same-line near-miss, the  */
+/* round-2 finding 3c footer-less-log-lines row, and the round-3 finding-4    */
+/* colon-bearing-log-lines row — each now says so in its own name and a       */
+/* comment dated 2026-09-25), and it adds the seven new rows below pinning    */
+/* the contract's remaining, previously untested corners.                     */
+/* ============================================================================ */
+
+/* -------------------------------------------------------------------------- */
+/* review round 4 fixtures — assembled at runtime, per                        */
+/* .claude/scripts/lib/secrets.mjs's vocabulary and this file's own           */
+/* established convention                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A non-Proc-Type/DEK-Info RFC-1421-shaped header line ('Content-Domain:
+ * RFC822'), used to pin that the new contract treats the header-to-footer
+ * span as opaque regardless of what lines sit inside it — unlike the old
+ * regex's header-line loop, which only tolerated two specific labels.
+ */
+const fixtureContentDomainLine = ['Content-Domain', ': RFC822'].join('');
+
+/**
+ * A base64url-alphabet body line ('-' and '_' in place of '+' and '/'), the
+ * shape produced by some tools' PEM-adjacent encodings. The old regex's body
+ * character class excluded both characters entirely.
+ */
+const fixtureBase64UrlBodyLine = ['QWERTY_1234-abcdEFGH', '_5678-ZYXWVU_9876'].join('');
+
+/**
+ * A per-line ISO-8601 timestamp log prefix, the shape a log aggregator adds
+ * to every line of a multi-line message it forwards — including, if a key
+ * ever leaked into one, the header and footer lines themselves.
+ */
+const fixtureIsoTimestampPrefix = ['2026-09-25T00', ':00:00.000Z '].join('');
+
+/* -------------------------------------------------------------------------- */
+/* 1 — the round-4 leak itself: a footer-less ENCRYPTED PEM key with the RFC   */
+/* 1421 blank line, exercised through registry.execute in record mode with a  */
+/* file store                                                                 */
+/* -------------------------------------------------------------------------- */
+
+test('record: a footer-less ENCRYPTED PEM key (Proc-Type/DEK-Info headers, the RFC 1421 blank line, then a base64 body, no footer) is fully redacted before it ever reaches the recordings file or the returned outcome (review round 4 — the footer-less-encrypted leak the owner\'s 2026-09-25 fail-closed ruling fixes)', async (t) => {
+  const dir = withScratchDir(t);
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createFileReplayStore = fileReplayStoreFactory();
+  const filePath = join(dir, 'footerless-encrypted-recordings.json');
+  const bodyText = [
+    fixturePemHeader,
+    fixtureEncryptedPemInfoLines,
+    '',
+    fixturePemBodyLine1,
+    fixturePemBodyLine2,
+  ].join('\n');
+  const source = buildOkSourceWithOutput({ lines: [bodyText] });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createFileReplayStore(filePath),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'ok');
+  assert.equal(
+    JSON.stringify(outcome).includes(fixturePemBodyLine1),
+    false,
+    'the returned outcome must never carry a footer-less encrypted PEM body line',
+  );
+  assert.equal(
+    JSON.stringify(outcome).includes(fixturePemBodyLine2),
+    false,
+    'the returned outcome must never carry a footer-less encrypted PEM body line',
+  );
+
+  const onDisk = readFileSync(filePath, 'utf8');
+  assert.equal(
+    onDisk.includes(fixturePemBodyLine1),
+    false,
+    'the recordings file must never carry a footer-less encrypted PEM body line — the RFC 1421 blank line before the body defeated the old footer-less base64-line fallback (the round-4 leak)',
+  );
+  assert.equal(
+    onDisk.includes(fixturePemBodyLine2),
+    false,
+    'the recordings file must never carry a footer-less encrypted PEM body line',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 2 — a Content-Domain header line (not Proc-Type/DEK-Info) before the body  */
+/* no longer matters: the whole header-to-footer span is opaque              */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput treats the whole header-to-footer span as opaque regardless of what lies between: a Content-Domain header line before the body no longer defeats redaction, and text after the footer survives (review round 4, owner fail-closed ruling, 2026-09-25)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const suffix = ' tail text survives';
+  const input = [fixturePemHeader, fixtureContentDomainLine, fixturePemBodyLine1, fixturePemFooter].join('\n') + suffix;
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixtureContentDomainLine),
+    false,
+    'a Content-Domain header line inside the block must never survive redaction',
+  );
+  assert.equal(output.includes(fixturePemBodyLine1), false, 'the body must never survive redaction');
+  assert.equal(output.includes(fixturePemFooter), false, 'the footer must never survive redaction as a dangling literal');
+  assert.ok(output.includes('tail text survives'), 'text after the footer must survive');
+  assert.ok(output.includes('[REDACTED]'), 'the block must be replaced with the redaction marker');
+});
+
+/* -------------------------------------------------------------------------- */
+/* 3 — every line, including the header and footer lines themselves, carries  */
+/* a per-line ISO-timestamp log prefix                                       */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts a PEM block whose every line — including the header and footer lines themselves — carries a per-line ISO-timestamp log prefix: no body line survives, and the text before the first prefixed header line survives (review round 4, owner fail-closed ruling, 2026-09-25)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const prefix = fixtureIsoTimestampPrefix;
+  const input = [
+    `${prefix}service starting`,
+    `${prefix}${fixturePemHeader}`,
+    `${prefix}${fixturePemBodyLine1}`,
+    `${prefix}${fixturePemFooter}`,
+    `${prefix}service ready`,
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.ok(
+    output.includes(`${prefix}service starting`),
+    'text before the first prefixed header line must survive exactly',
+  );
+  assert.ok(
+    output.includes(`${prefix}[REDACTED]`),
+    'the timestamp prefix on the header\'s own line must survive — only the header itself starts the redacted span',
+  );
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'no body line may survive, even prefixed by its own per-line timestamp',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer must never survive, even prefixed by its own per-line timestamp',
+  );
+  assert.ok(
+    output.includes(`${prefix}service ready`),
+    'text after the footer line must survive exactly, including its own timestamp prefix',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 4 — a key inside an escaped-JSON string: newlines are the two-character    */
+/* sequence backslash-n, never a real newline character                      */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts a PEM block whose newlines are the two-character escaped sequence backslash-n, as found inside an escaped-JSON string, rather than real newline characters: no body character survives, and text before the header survives (review round 4, owner fail-closed ruling, 2026-09-25)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const escapedNewline = '\\n';
+  const prefix = 'before text ';
+  const input = [prefix, fixturePemHeader, escapedNewline, fixturePemBodyLine1, escapedNewline, fixturePemFooter].join('');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.ok(output.startsWith(prefix), 'text before the header must survive exactly');
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the body must never survive redaction just because it is separated from the header and footer by the two-character escaped sequence backslash-n instead of a real newline',
+  );
+  assert.equal(output.includes(fixturePemFooter), false, 'the footer must never survive redaction as a dangling literal');
+  assert.ok(output.includes('[REDACTED]'), 'the block must be replaced with the redaction marker');
+});
+
+/* -------------------------------------------------------------------------- */
+/* 5 — a base64url-alphabet body ('-' and '_' in place of '+' and '/')        */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts a PEM block whose body uses the base64url alphabet (\'-\' and \'_\' in place of \'+\' and \'/\'): no body character run survives, and text after the footer survives (review round 4, owner fail-closed ruling, 2026-09-25)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const suffix = ' tail text survives';
+  const input = [fixturePemHeader, fixtureBase64UrlBodyLine, fixturePemFooter].join('\n') + suffix;
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixtureBase64UrlBodyLine),
+    false,
+    'a base64url-alphabet body must never survive redaction just because it uses \'-\' and \'_\' instead of \'+\' and \'/\'',
+  );
+  assert.equal(output.includes(fixturePemFooter), false, 'the footer must never survive redaction as a dangling literal');
+  assert.ok(output.includes('tail text survives'), 'text after the footer must survive');
+  assert.ok(output.includes('[REDACTED]'), 'the block must be replaced with the redaction marker');
+});
+
+/* -------------------------------------------------------------------------- */
+/* 6 — two PEM keys back to back with prose between them: each is redacted    */
+/* independently, and the prose between and after them survives              */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts two PEM blocks independently when placed back to back with prose between them: both blocks are redacted separately, and the prose between and after them survives (review round 4, owner fail-closed ruling, 2026-09-25)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [
+    fixturePemHeader,
+    fixturePemBodyLine1,
+    fixturePemFooter,
+    'middle prose',
+    fixturePemHeader,
+    fixturePemBodyLine2,
+    fixturePemFooter,
+    'tail',
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(output.includes(fixturePemBodyLine1), false, 'the first PEM body must never survive redaction');
+  assert.equal(output.includes(fixturePemBodyLine2), false, 'the second PEM body must never survive redaction');
+  assert.ok(output.includes('middle prose'), 'the prose between the two PEM blocks must survive');
+  assert.ok(output.includes('tail'), 'the prose after the second PEM block must survive');
+  const redactionMarkerCount = output.split('[REDACTED]').length - 1;
+  assert.equal(
+    redactionMarkerCount,
+    2,
+    `expected exactly two independent redaction markers, one per PEM block, with "middle prose" surviving between them; got ${redactionMarkerCount} in ${JSON.stringify(output)}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 7 — timing: 1 MiB of alternating header/footer pairs must stay bounded     */
+/* under the new contract's per-occurrence footer search (the existing       */
+/* "1 MiB of repeated PEM headers with no footer" row above, review round 3,  */
+/* PEM timing, already covers the footer-less half of this — kept, not       */
+/* duplicated)                                                                */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'redactEvidenceOutput stays within a bound on 1 MiB of alternating PEM header/footer pairs, each independently redacted (review round 4, PEM timing)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const pairUnit = `${fixturePemHeader}\n${fixturePemBodyLine1}\n${fixturePemFooter}\n`;
+    const input = buildRepeatedTextOfLength(pairUnit, ONE_MIB_CHARS);
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < PEM_TIMING_BOUND_MS,
+      `redactEvidenceOutput must stay under ${PEM_TIMING_BOUND_MS}ms on 1 MiB of alternating PEM header/footer pairs; took ${elapsedMs}ms`,
+    );
+  },
+);
