@@ -261,3 +261,19 @@ test('reports a field an allowlist carries that the type does not declare', () =
     { droppedByTheAllowlist: [], publishedWithNoDeclaration: ['modelId'] },
   );
 });
+
+/**
+ * AIC-119 slice 4: the prediction-gap diagnostic's fields, as the benchmark
+ * layer declares them (`PredictionGap`) and as the persistence projection
+ * publishes them (`PERSISTED_PREDICTION_GAP_KEYS`), in both directions.
+ */
+test('publishes exactly the prediction-gap fields the benchmark layer declares', () => {
+  const declared = interfaceMembers(parse('packages/evals/src/prediction-gap.ts'), 'PredictionGap');
+  const published = stringArrayConst(observability, 'PERSISTED_PREDICTION_GAP_KEYS');
+
+  assert.ok(declared.includes('stalledLeaderLacksConfirmedPrediction'));
+  assert.deepEqual(correspondence(declared, published), {
+    droppedByTheAllowlist: [],
+    publishedWithNoDeclaration: [],
+  });
+});
