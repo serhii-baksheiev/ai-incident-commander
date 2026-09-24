@@ -58,7 +58,7 @@ import {
 
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
-import { naiveArm, oracleArm } from './lane-arms.mjs';
+import { naiveArm, oracleArm, publishNaiveArm } from './lane-arms.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -367,6 +367,8 @@ async function main() {
     return port;
   };
   let publicationSkipped;
+  let naiveExperiment;
+  let naivePublication;
 
   const report = await evals.runLiveModelLane({
     env,
@@ -399,8 +401,10 @@ async function main() {
       });
     },
     runOracleArm: oracleArm({ experimentId: `aic-19-oracle-${head.slice(0, 12)}` }),
+    // Captured for `publish`, like `modelExperiment` below.
     async runNaiveArm(plan) {
-      return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan);
+      return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan)
+        .then((experiment) => (naiveExperiment = experiment));
     },
     async runModelArm(plan) {
       const port = sharedPort();
@@ -433,11 +437,19 @@ async function main() {
               publicationSkipped =
                 laneReport.arms.model.unreportableReason ??
                 'the model arm produced no experiment to publish';
-              return;
+            } else {
+              publication = await observability.persistBenchmarkExperiment({
+                datasetName: `aic-19-final-holdout-${laneReport.headSha.slice(0, 12)}`,
+                experiment: modelExperiment,
+              });
             }
-            publication = await observability.persistBenchmarkExperiment({
-              datasetName: `aic-19-final-holdout-${laneReport.headSha.slice(0, 12)}`,
-              experiment: modelExperiment,
+            // Decided independently of the model arm: the naive baseline is
+            // published or skipped on its own state.
+            naivePublication = await publishNaiveArm({
+              laneReport,
+              naiveExperiment,
+              datasetName: `aic-19-final-holdout-naive-${laneReport.headSha.slice(0, 12)}`,
+              persist: observability.persistBenchmarkExperiment,
             });
           },
         }
@@ -464,6 +476,14 @@ async function main() {
                 : 'the run was not asked to publish (--publish was not passed)'),
           }
         : { status: 'published', ...publication },
+    naivePublication:
+      naivePublication ??
+      {
+        status: 'absent',
+        absentReason: flag('publish')
+          ? 'the publish step did not run'
+          : 'the run was not asked to publish (--publish was not passed)',
+      },
     acceptance: [
       {
         requirement: 'final evidence names the exact candidate SHA',
