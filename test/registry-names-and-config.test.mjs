@@ -71,6 +71,8 @@ import * as domain from '@aic/domain';
 
 import { findSecretValues, SECRET_VALUE_PATTERNS } from '../.claude/scripts/lib/secrets.mjs';
 
+import { childEnv } from './fixtures/child-env.mjs';
+
 const serviceA = randomUUID();
 const serviceB = randomUUID();
 const environmentA = randomUUID();
@@ -466,6 +468,7 @@ function timedParseInChildProcess(config, { killAfterMs = CHILD_PROCESS_KILL_AFT
     encoding: 'utf8',
     input: JSON.stringify(candidate),
     maxBuffer: 8 * 1024 * 1024,
+    env: childEnv(),
   });
   if (outcome.error || outcome.signal || !outcome.stdout) return { timedOut: true, killAfterMs };
   return { timedOut: false, ...JSON.parse(outcome.stdout) };
