@@ -1077,3 +1077,34 @@ test('the README neither links the runner guide nor lists a self-hosted runner',
     'README.md must not advertise a self-hosted runner: CI runs on GitHub-hosted runners',
   );
 });
+
+/**
+ * AIC-57 asks for a bounded CI regression of the T-4 race matrix, and the
+ * durable-run substrate's live rows (claims, fences, replay, retention) were
+ * until now proved only on a developer's machine. The live PostgreSQL lane runs
+ * in CI after the suite, against a PostgreSQL service container that mirrors
+ * `infra/postgres/compose.yaml` — same image line, trust auth on loopback, no
+ * password, so the job still needs no secret (see the rule above).
+ */
+test('runs the live PostgreSQL lane after the suite, against a service pinned by digest and bound to loopback', () => {
+  const workflow = readWorkflow();
+  const scripts = extractRunScripts(workflow);
+  const suite = scripts.indexOf('npm test');
+  const live = scripts.indexOf('npm run test:live-postgres');
+  assert.ok(suite >= 0 && live > suite, 'CI must run `npm run test:live-postgres` as its own step after `npm test`');
+
+  const composeImage = readFileSync(resolve(projectRoot, 'infra/postgres/compose.yaml'), 'utf8').match(/image:\s*(\S+)/)[1];
+  const serviceImage = workflow.match(/services:\s*\n\s+postgres:\s*\n\s+image:\s*(\S+)/)?.[1];
+  assert.ok(serviceImage, 'the job must declare a `postgres` service container');
+  assert.match(serviceImage, /@sha256:[0-9a-f]{64}$/, 'the service image must be pinned by digest, like every action is pinned by SHA');
+  assert.equal(serviceImage.split('@')[0], composeImage, 'the CI service must run the image the local compose lane runs');
+
+  assert.match(workflow, /POSTGRES_HOST_AUTH_METHOD:\s*trust/, 'the service trusts local connections, as the compose lane does');
+  assert.doesNotMatch(workflow, /POSTGRES_PASSWORD/, 'no password: the job carries no credential at all');
+  assert.match(workflow, /-\s*['"]?127\.0\.0\.1:5432:5432['"]?/, 'the service port is published on loopback only');
+  assert.match(
+    workflow,
+    /AIC_POSTGRES_URL:\s*postgresql:\/\/aic@127\.0\.0\.1:5432\/aic\b/,
+    'the live step reaches the service through a passwordless loopback URL',
+  );
+});
