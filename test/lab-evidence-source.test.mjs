@@ -38,8 +38,8 @@
  *       returns (`packages/tools/src/bound-source-registry.ts`'s own module
  *       doc comment); the provenance CONTENT is pinned only through the
  *       registry rows below.
- *     - 401 or 403 -> refused `denied`; 429 -> refused `rate_limited`; 404 or
- *       5xx -> refused `unavailable`.
+ *     - 400 -> refused `adapter_error`; 401 or 403 -> refused `denied`;
+ *       429 -> refused `rate_limited`; 404 or 5xx -> refused `unavailable`.
  *     - An operation outside `describe().operations` -> refused
  *       `unavailable` WITHOUT any fetch call.
  *     - A rejected fetch (network error) PROPAGATES AS A THROW — the adapter

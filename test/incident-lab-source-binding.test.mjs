@@ -1,28 +1,14 @@
 /**
  * AIC-98, slice a: "Incident Lab live scenarios use a SourceBinding rather
  * than ad-hoc injected tools." `incident-lab/src/scenario-candidates.mjs`
- * currently builds an ad-hoc observation tool inline (`createObservationTool`)
- * and wraps it in `LiveToolAdapter` (`@aic/tools/live`). This slice routes
- * those observations through `createBoundSourceRegistry`
- * (`packages/tools/src/bound-source-registry.ts`) with one binding of the
- * new `createLabEvidenceSource` (`packages/tools/src/evidence-source.ts` /
- * test/lab-evidence-source.test.mjs), `sourceBindingId: 'incident-lab'`,
- * `expectedAdapter: 'lab@1'`, `credentialRefId: null`.
+ * routes observations through `createBoundSourceRegistry` with one binding of
+ * `createLabEvidenceSource` (`packages/tools/src/lab-source.ts`):
+ * `sourceBindingId: 'incident-lab'`, `expectedAdapter: 'lab@1'`,
+ * `credentialRefId: null`.
  *
- * Pinned here by SOURCE INSPECTION rather than a Docker-backed behavioural
- * run, per the owner-approved plan for this slice: this file reads
- * `incident-lab/src/scenario-candidates.mjs`'s own text and asserts the
- * import/definition shape the refactor must land in. A behavioural row
- * distinguishing the two implementations would need to pin the exact wording
- * `buildCandidate`'s failure branch throws on a refused observation, which
- * the ticket does not specify (see this run's report for why: tracing the
- * CURRENT code path shows `LiveToolAdapter` already collapses every HTTP
- * failure through `BoundSourceRegistry`'s own `classifyEvidenceSourceFailure`
- * into a fixed `adapter_error` message today, so a row asserting "the raw
- * upstream body text never leaks" would already be green under the
- * pre-refactor code — it would not discriminate the two implementations
- * without inventing the new failure-message text as an API decision this
- * file has no license to make).
+ * The first four rows pin that shape by source inspection; the last row runs
+ * `recordScenarioCandidate` against a loopback fake lab server and pins the
+ * recorded behaviour.
  */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
