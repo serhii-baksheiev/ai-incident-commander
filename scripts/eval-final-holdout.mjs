@@ -62,10 +62,9 @@ import {
   resolveModelConfig,
 } from '@aic/roles';
 
-import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
 import { writeRecordDurably, publishRecordedMeasurement } from './final-holdout-publication.mjs';
-import { modelNodes, naiveArm, oracleArm } from './lane-arms.mjs';
+import { modelNodes, naiveArm, oracleArm, scriptedNodes } from './lane-arms.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -223,22 +222,6 @@ export function readControlBaseline(path = CONTROL_BASELINE_PATH) {
     );
   }
   return declared;
-}
-
-/**
- * The replay-backed lifecycle, with the two per-run maps it needs.
- *
- * ⚠ `replayBackedNodes` takes three arguments, and the first version of this
- * file passed one. The crash was `Cannot read properties of undefined (reading
- * 'get')` at the first record of the control arm — before any model call and
- * before any publication — and it is why record `04cf86236c2f` is void.
- */
-function scriptedNodes(record) {
-  return replayBackedNodes(
-    record,
-    new Map([[record.runId, []]]),
-    new Map([[record.runId, 0]]),
-  );
 }
 
 /**

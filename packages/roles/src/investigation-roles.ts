@@ -749,9 +749,11 @@ export function createModelProposeConclusion(
     // assessment failing this check here means it was written before that
     // validation existed (a checkpoint resumed across the boundary #127 added).
     // Checked before `deriveHypothesisStatus` and before any port call, for
-    // the same reason the `stopKind` guard above is: `deriveHypothesisStatus`
+    // the same reason the `stopKind` guard above is. For an unknown evidenceId
+    // or a prediction outside its hypothesis, `deriveHypothesisStatus`
     // (`packages/domain/src/evaluation.ts`) throws its own plain, UNESCAPED
-    // `Error` on exactly this condition, and asking the model to compose a
+    // `Error`; an unknown hypothesisId it would silently filter out, so that
+    // branch is a refusal of its own rather than a pre-emption. Asking the model to compose a
     // conclusion the harness cannot even validate would spend a call on a run
     // that was never going to get an answer through.
     // see conclusion-role.test.mjs › "an assessment naming evidence the run does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id"

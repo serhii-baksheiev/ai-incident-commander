@@ -28,8 +28,17 @@ import { NAIVE_PROMPT_VERSION, createModelNaiveInvestigation } from '@aic/roles/
 
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 
-/** The deterministic arm: the replay-backed nodes, unchanged. */
-function scriptedNodes(record) {
+/**
+ * The deterministic arm: the replay-backed nodes, unchanged. The one
+ * implementation both lane commands use, so the control arm and the model
+ * arm's base nodes cannot drift apart.
+ * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation"
+ *
+ * ⚠ `replayBackedNodes` takes three arguments, and an earlier hold-out command
+ * passed one. The crash came at the first record of the control arm, before any
+ * model call, and it is why record `04cf86236c2f` is void.
+ */
+export function scriptedNodes(record) {
   return replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]]));
 }
 
