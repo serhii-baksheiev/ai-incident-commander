@@ -271,6 +271,7 @@ const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'assertCheckpointerSchemaVersion',
   'createFencedCheckpointer',
   'createPostgresCheckpointer',
+  'createRunEventStreamSource',
   'createRunStore',
   'createSqliteCheckpointer',
   'openRunWriteContext',
