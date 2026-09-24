@@ -266,6 +266,32 @@ test('a metric named in notApplicable produces no feedback row', async () => {
   );
 });
 
+test('refuses a result that both scores a behavior metric and declares it not applicable', async () => {
+  const capture = capturingClient();
+  const record = dependencyIncidentRecord();
+  const scored = evals.evaluateBenchmarkRecord({
+    record,
+    outcome: behaviorPerfectOutcomeFor(record.scenario),
+  });
+  // Hand-built: evaluateBenchmarkRecord never produces this pair, so the
+  // contradiction is forged here to pin the refusal at the publishing layer.
+  const contradictory = {
+    ...scored,
+    notApplicable: { misleading_evidence_handling: 'declared not applicable while also scored' },
+  };
+
+  await assert.rejects(
+    () => observability.persistBenchmarkExperiment({
+      client: capture.client,
+      datasetName: uniqueDatasetName('not-applicable-and-scored'),
+      experiment: { records: [record], results: [contradictory] },
+    }),
+    /misleading_evidence_handling/,
+    'a metric cannot be both scored and not applicable: the refusal names it',
+  );
+  assert.equal(capture.runs.length, 0, 'no run may be created before the refusal');
+});
+
 test('refuses notApplicable naming a key that is not a behavior metric', async () => {
   const capture = capturingClient();
   const { experiment } = singleRecordExperiment((result) => ({

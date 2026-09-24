@@ -562,14 +562,16 @@ toolMode: live | replay
 knowledgeSetVersion
 memoryEnabled
 humanReview
-temperature
+temperature (only when a role sends one; none does today)
 seed (where supported)
 docsAvailable (when relevant)
 ```
 
 The versioned metadata projection is pinned by
 `test/benchmark-evaluation.test.mjs` › "allowlists outbound run metadata and
-omits undefined optional fields".
+omits undefined optional fields". A run that declares no temperature publishes
+no temperature key: `test/persistence-four-arm.test.mjs` › "publishes no temperature key when the run metadata declares none". No role sends a
+temperature: `test/naive-role.test.mjs` › "sends no temperature field, so the naive arm samples exactly as the graph arm does".
 
 Baseline status rules are fixed **before** the first experiment and versioned.
 

@@ -506,7 +506,7 @@ function requireMetrics(
   result: PersistedBenchmarkEvaluation,
 ): Record<
   (typeof PERSISTED_METRIC_KEYS)[number],
-  Readonly<{ key: string; score: number }>
+  Readonly<{ key: string; score: number; claimCount?: number }>
 > {
   // The CONTAINER is read own-only too, not just the metrics inside it: a result
   // that never declared `metrics` would otherwise pick up an inherited object
@@ -882,6 +882,13 @@ async function persistPreparedExperiment({
         ? declaredEvaluatorVersion
         : undefined,
     );
+    // A metric is either scored or not applicable, never both.
+    // see persistence-four-arm.test.mjs › "refuses a result that both scores a behavior metric and declares it not applicable"
+    for (const key of Object.keys(notApplicable ?? {})) {
+      if (Object.hasOwn(behaviorMetrics, key)) {
+        throw new Error(`benchmark result both scores and declares not applicable: ${key}`);
+      }
+    }
 
     await client.createRun({
       id: record.runId,
