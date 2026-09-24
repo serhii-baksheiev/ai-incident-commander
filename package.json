@@ -28,6 +28,7 @@
     "pretest": "npm run build",
     "test": "node --import ./test/fixtures/no-ambient-tracing.mjs --test",
     "test:live-lab": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs --test --test-concurrency=1 incident-lab/tests/*.live.mjs",
+    "test:live-github": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs --test --test-concurrency=1 packages/tools/tests/*.live.mjs",
     "test:live-postgres": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs --test --test-concurrency=1 infra/postgres/tests/*.live.mjs",
     "live-lab:regenerate": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs incident-lab/bin/regenerate.mjs",
     "live-lab:validate-candidates": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs incident-lab/bin/validate-candidates.mjs",
