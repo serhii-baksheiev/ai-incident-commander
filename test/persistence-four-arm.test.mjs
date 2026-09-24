@@ -1,14 +1,12 @@
 /**
- * AIC-117 slice c, sections 1-3 of the contract
- * (`.claude/runs/20260924-v02-evidence-repair/aic117c-spec.md`): what the
- * four-arm lane's own measurements add to a published evaluation, and one
- * axis the reference provider forbids.
+ * AIC-117 (slice c): what the four-arm lane's own measurements add to a
+ * published evaluation, and one axis the reference provider forbids.
  *
  * Three shapes, each pinned independently of the others:
- *   - `claimCount` on the `unsupported_claim_rate` metric (spec section 1);
- *   - `notApplicable` at the top of a published evaluation (spec section 2);
+ *   - `claimCount` on the `unsupported_claim_rate` metric;
+ *   - `notApplicable` at the top of a published evaluation;
  *   - `temperature` moving from a required run-metadata field to an optional
- *     one, because the reference provider rejects it (spec section 3).
+ *     one, because the reference provider rejects it.
  *
  * `capturingClient` and `singleRecordExperiment` are the shared fixtures every
  * sibling persistence test file uses — see `test/persist-boundary-refusals.test.mjs`
@@ -27,7 +25,7 @@
  * rather than reaching a workspace.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test, { afterEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -401,4 +399,19 @@ test('scripts/eval-live-model.mjs no longer declares a temperature field in its 
       '(naive-role.test.mjs › "sends no temperature field, so the naive arm samples exactly as the graph arm does"); ' +
       'this script must not declare one in its run metadata',
   );
+});
+
+test('no lane script under scripts/ declares a temperature field in its run metadata', () => {
+  const lanes = readdirSync(resolve(projectRoot, 'scripts'))
+    .filter((name) => /^eval-.*\.mjs$/.test(name) || name === 'lane-arms.mjs')
+    .map((name) => `scripts/${name}`);
+  assert.ok(lanes.includes('scripts/eval-oracle.mjs'), 'the lane scripts must be found, or this row checks nothing');
+  for (const relativePath of lanes) {
+    const source = readFileSync(resolve(projectRoot, relativePath), 'utf8');
+    assert.doesNotMatch(
+      source,
+      /\btemperature\s*:/,
+      `${relativePath} must not declare a temperature: no role sends one, and the oracle arm runs no model at all`,
+    );
+  }
 });

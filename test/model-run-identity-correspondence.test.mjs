@@ -200,7 +200,7 @@ test('reads resource evidence at the version the benchmark writes', () => {
 });
 
 /**
- * AIC-117 slice c, spec section 4: the persisted evaluation shape corresponds
+ * AIC-117 (slice c): the persisted evaluation shape corresponds
  * to what the benchmark layer's own `BenchmarkEvaluation` declares — in both
  * directions, on the same `correspondence` helper and the same two generic
  * mutation-proof rows above prove for every other pair in this file.
@@ -220,8 +220,8 @@ test('carries every declared benchmark-evaluation field in the persisted evaluat
  * so its full declared shape is the union of both interfaces' own members —
  * the same reasoning `BenchmarkRunMetadata extends BenchmarkVersions` gets
  * above. The persisted side is a literal rather than a read off
- * `packages/observability/src/index.ts`: the spec names the shape a published
- * `unsupported_claim_rate` metric must carry (`key`, `score`, `claimCount`)
+ * `packages/observability/src/index.ts`: this row states the shape a published
+ * `unsupported_claim_rate` metric carries (`key`, `score`, `claimCount`)
  * directly, so the expectation here is the contract, not a second read of the
  * projection this file's other rows already hold to allowlists.
  */
