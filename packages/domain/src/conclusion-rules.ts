@@ -165,3 +165,41 @@ export function conclusionViolation({
 
   return undefined;
 }
+
+/**
+ * The first assessment reference the investigation does not hold, as a reason
+ * naming the offending id escaped, or `undefined` when every assessment names
+ * evidence, a hypothesis, and (when present) a prediction of that same
+ * hypothesis that the state carries. The graph's `derive_hypothesis_state`
+ * refuses on it; an unknown hypothesis is the case status derivation would
+ * otherwise skip silently, because it filters assessments by hypothesis.
+ * see derive-hypothesis-state.test.mjs › "derive_hypothesis_state refuses an assessment naming a hypothesis the state does not carry, which status derivation alone would skip"
+ */
+export function assessmentReferenceViolation(
+  state: Readonly<{
+    hypotheses: readonly { id: string }[];
+    predictions: readonly { id: string; hypothesisId: string }[];
+    evidence: readonly { id: string }[];
+    assessments: readonly { evidenceId: string; hypothesisId: string; predictionId?: string }[];
+  }>,
+): string | undefined {
+  const evidenceIds = new Set(state.evidence.map(({ id }) => id));
+  const hypothesisIds = new Set(state.hypotheses.map(({ id }) => id));
+  for (const assessment of state.assessments) {
+    if (!evidenceIds.has(assessment.evidenceId)) {
+      return `an assessment names evidence the investigation does not hold: ${quoteModelText(assessment.evidenceId)}`;
+    }
+    if (!hypothesisIds.has(assessment.hypothesisId)) {
+      return `an assessment names a hypothesis the investigation does not hold: ${quoteModelText(assessment.hypothesisId)}`;
+    }
+    if (
+      assessment.predictionId !== undefined &&
+      !state.predictions.some(
+        ({ id, hypothesisId }) => id === assessment.predictionId && hypothesisId === assessment.hypothesisId,
+      )
+    ) {
+      return `an assessment names a prediction that is not one of ${quoteModelText(assessment.hypothesisId)}'s: ${quoteModelText(assessment.predictionId)}`;
+    }
+  }
+  return undefined;
+}
