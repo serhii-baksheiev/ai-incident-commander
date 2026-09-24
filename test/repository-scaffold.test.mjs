@@ -249,7 +249,7 @@ test('scaffolds every v0.1 repository area without an agents product package', (
   );
 });
 
-test('publishes one clean-install, lint, build, test, and CLI command contract', () => {
+test('publishes one clean-install, check, build, and CLI command contract, with check running lint, build and test', () => {
   const manifest = rootManifest();
   const readme = readRequired(resolve(projectRoot, 'README.md'), 'the root README must exist');
 
@@ -273,7 +273,11 @@ test('publishes one clean-install, lint, build, test, and CLI command contract',
     assert.notEqual(manifest.scripts[script].trim(), '', `${script} must execute a command`);
   }
 
-  for (const command of ['npm ci', 'npm run lint', 'npm run build', 'npm test', 'npm run cli']) {
+  // The README documents `npm run check` as the one lint, build and test command,
+  // so the manifest must keep `check` running exactly those three, in that order.
+  assert.equal(manifest.scripts?.check, 'npm run lint && npm run build && npm test');
+
+  for (const command of ['npm ci', 'npm run check', 'npm run build', 'npm run cli']) {
     assert.match(
       readme,
       new RegExp(`(?:^|\\n)\\s*${command.replaceAll(' ', '\\s+')}(?:\\s|$)`, 'm'),

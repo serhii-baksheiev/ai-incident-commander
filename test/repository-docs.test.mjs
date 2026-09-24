@@ -22,39 +22,20 @@ test('links the root README to the canonical architecture brief', () => {
   assert.match(readme, /\[Architecture v1\]\(docs\/incident-commander-architecture-v1\.md\)/);
 });
 
-test('records the persistent checkpointer milestone', () => {
+test('states the stateful-investigation thesis and the persistence and durable-run status', () => {
   const readme = readFileSync(readmePath, 'utf8');
-  assert.match(readme, /AI Incident Commander is designed as a stateful investigation system/);
-  assert.match(
-    readme,
-    /\| Product implementation \| [^|\n]*canonical domain contracts[^|\n]*persistent SQLite checkpointer[^|\n]*kill\/resume spike[^|\n]*\|/i,
-  );
-  const milestoneRow = readme.match(
-    /^\| Completed implementation milestone \| \[?AIC-4\b[^|\n]*persistent[^|\n]*checkpointer[^|\n]*kill\/resume[^|\n]*\|$/im,
-  );
-  assert.notEqual(milestoneRow, null, 'the AIC-4 milestone row must remain, with its id and title');
-  assert.doesNotMatch(
-    milestoneRow[0],
-    /atlassian\.net/i,
-    'the AIC-4 milestone row must not link the private issue-tracker site',
-  );
+  assert.match(readme, /AI Incident Commander \(AIC\) is a stateful investigation system/);
+  assert.match(readme, /^\| PostgreSQL persistence foundation \| Implemented \|$/m);
+  assert.match(readme, /^\| Durable run substrate \| Implemented \|$/m);
 });
 
-test('records the independently implemented AIC-5 read-only live and replay milestone', () => {
+test('names the live and replay tool adapters in the repository structure', () => {
   const readme = readFileSync(readmePath, 'utf8');
-  assert.match(
-    readme,
-    /\| Product implementation \| (?=[^|\n]*read-only tool registry)(?=[^|\n]*live)(?=[^|\n]*replay)[^|\n]*implemented[^|\n]*\|/i,
-  );
-  const milestoneRow = readme.match(
-    /^\| [^|\n]*(?:completed|implemented)[^|\n]*milestone[^|\n]* \| \[?AIC-5\b[^|\n]*read-only[^|\n]*(?:record\s*\/\s*replay|live[^|\n]*replay)[^|\n]*\|$/im,
-  );
-  assert.notEqual(milestoneRow, null, 'the AIC-5 milestone row must remain, with its id and title');
-  assert.doesNotMatch(
-    milestoneRow[0],
-    /atlassian\.net/i,
-    'the AIC-5 milestone row must not link the private issue-tracker site',
-  );
+  assert.match(readme, /^packages\/tools\s+live \+ replay tool adapters$/m);
+});
+
+test('links no private issue-tracker site from the root README', () => {
+  assert.doesNotMatch(readFileSync(readmePath, 'utf8'), /atlassian\.net/i);
 });
 
 test('records the latest Jira adapter stop without claiming the issue', () => {
