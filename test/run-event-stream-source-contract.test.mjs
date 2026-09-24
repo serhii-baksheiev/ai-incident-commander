@@ -422,6 +422,45 @@ test(
   },
 );
 
+/**
+ * AIC-58 review round 2 (security-scanner advisory): the floor alone bounded
+ * the poll rate from below only. `setTimeout` treats any delay above
+ * 2147483647 ms (and a non-finite one) as 1 ms, so a pollIntervalMs of
+ * Infinity or past that limit looped almost unthrottled. The same bound as the
+ * floor rows applies to those values too.
+ */
+test(
+  'tail given Infinity or a pollIntervalMs past setTimeout\'s 2147483647 ms limit is still bounded, never treated as a 1 ms sleep',
+  { timeout: 10_000 },
+  async () => {
+    const floor = minRunEventPollIntervalFactory();
+
+    for (const pollIntervalMs of [Number.POSITIVE_INFINITY, 2147483648, 1e12]) {
+      const stub = stubEmptyPool();
+      const source = createRunEventStreamSourceFactory()(stub.pool);
+      const controller = new AbortController();
+      const windowMs = 150;
+      const drain = (async () => {
+        for await (const _event of source.tail('run-unthrottled-3', { lastEventId: 0, pollIntervalMs, signal: controller.signal })) {
+          // the stub pool never returns a row, so this body never runs
+        }
+      })();
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, windowMs);
+      });
+      controller.abort();
+      await drain;
+
+      const bound = Math.ceil(windowMs / floor) + 5;
+      assert.ok(
+        stub.calls.length <= bound,
+        `tail({ pollIntervalMs: ${pollIntervalMs} }) issued ${stub.calls.length} queries in ${windowMs}ms; expected at most ${bound} — setTimeout must never see a delay it would turn into 1ms`,
+      );
+    }
+  },
+);
+
 test(
   'tail given a negative or NaN pollIntervalMs is also raised to MIN_RUN_EVENT_POLL_INTERVAL_MS, the same as 0',
   { timeout: 10_000 },
