@@ -32,3 +32,17 @@ export type {
   EvidenceSourceProvenance,
   EvidenceSourceRefusalReason,
 } from './evidence-source.js';
+export {
+  createBoundSourceRegistry,
+  createFileReplayStore,
+  createMemoryReplayStore,
+  rekeyReplayRecordings,
+  REPLAY_IDENTITY_VERSION,
+} from './bound-source-registry.js';
+export type {
+  BoundSourceBinding,
+  BoundSourceMode,
+  BoundSourceRegistry,
+  BoundSourceRegistryOptions,
+  ReplayStore,
+} from './bound-source-registry.js';

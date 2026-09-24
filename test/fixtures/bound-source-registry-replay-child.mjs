@@ -24,6 +24,15 @@ import {
 } from './bound-source-registry-fixture-source.mjs';
 
 const [, , filePath, sourceBindingId, credentialRefIdRaw] = process.argv;
+
+// `npm test` runs bare `node --test`, which auto-discovers every file under
+// test/ — including this one, with no argv. Exit quietly rather than touch
+// the filesystem or throw on undefined arguments; the real invocation always
+// passes all three (see test/bound-source-registry.test.mjs's spawnSync call).
+if (filePath === undefined || sourceBindingId === undefined) {
+  process.exit(0);
+}
+
 const credentialRefId = credentialRefIdRaw === '' ? null : credentialRefIdRaw;
 
 const registry = createBoundSourceRegistry({
