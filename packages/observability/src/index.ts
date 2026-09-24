@@ -94,8 +94,14 @@ const PERSISTED_OPTIONAL_METADATA_KEYS = [
   'modelProvider',
 ] as const satisfies readonly (keyof PersistedBenchmarkRunMetadata)[];
 
-const PERSISTED_BEHAVIOR_EVALUATOR_VERSION =
-  'behavior-evaluators-v0.2' as const;
+// The evaluator versions a record may declare: the accepted one and the
+// structural one (AIC-105). A second spelling of the versions @aic/evals
+// defines, because this package does not import evals; the persistence rows in
+// structural-evaluator.test.mjs publish a record under each and refuse any other.
+const PERSISTED_BEHAVIOR_EVALUATOR_VERSIONS: ReadonlySet<string> = new Set([
+  'behavior-evaluators-v0.2',
+  'behavior-evaluators-v0.3',
+]);
 
 const PERSISTED_BEHAVIOR_METRIC_REASONS = new Set([
   'passed',
@@ -464,7 +470,10 @@ function projectRunMetadata(
   const declaredEvaluatorVersion = ownValue(metadata, 'evaluatorVersion');
   if (
     declaredEvaluatorVersion !== undefined &&
-    declaredEvaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
+    !(
+      typeof declaredEvaluatorVersion === 'string' &&
+      PERSISTED_BEHAVIOR_EVALUATOR_VERSIONS.has(declaredEvaluatorVersion)
+    )
   ) {
     throw new Error('benchmark evaluator version is not supported');
   }
@@ -682,9 +691,12 @@ function requireBehaviorMetrics(
     if (!declaredKeys.has(key) || ownValue(inbound, 'key') !== key) {
       throw new Error(`benchmark result has unknown behavior metric: ${key}`);
     }
+    // The metric's own version must be the record's, and a known one: a v0.3
+    // metric inside a record that declares v0.2 is two semantics under one name.
     if (
-      evaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION ||
-      metricEvaluatorVersion !== PERSISTED_BEHAVIOR_EVALUATOR_VERSION
+      evaluatorVersion === undefined ||
+      !PERSISTED_BEHAVIOR_EVALUATOR_VERSIONS.has(evaluatorVersion) ||
+      metricEvaluatorVersion !== evaluatorVersion
     ) {
       throw new Error(`behavior metric evaluator version mismatch: ${key}`);
     }

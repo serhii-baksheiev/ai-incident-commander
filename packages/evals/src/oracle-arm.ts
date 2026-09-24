@@ -7,7 +7,12 @@ import {
   runBenchmarkExperiment,
   type BenchmarkExperiment,
 } from './benchmark-evaluation.js';
-import type { ChallengeEffectObservation } from './behavior-evaluators.js';
+import {
+  BEHAVIOR_EVALUATOR_VERSION,
+  STRUCTURAL_EVALUATOR_VERSION,
+  type ChallengeEffectObservation,
+} from './behavior-evaluators.js';
+import { structuralGroundTruthFor } from './structural-ground-truth.js';
 import {
   REPLAY_SCENARIOS,
   type EvidenceFingerprint,
@@ -36,10 +41,12 @@ import {
  * It answers in the same `ArmAnswer` shape a non-graph model arm answers in,
  * and may cite evidence only by the ids the fixture shows, exactly as a model
  * arm may. So it identifies an evidence item as expected or misleading only
- * through what the ground truth says about that item — today, a fingerprint
- * that equals the item's `{kind, source, statement}` — and where the ground
- * truth names no item that way, the oracle can cite nothing. That is the
- * measurement, not a defect of the oracle.
+ * through what the ground truth says about that item. Under
+ * `behavior-evaluators-v0.2` that is a fingerprint equal to the item's
+ * `{kind, source, statement}`, and where the ground truth names no item that
+ * way the oracle can cite nothing — that is the measurement, not a defect of
+ * the oracle. Under `behavior-evaluators-v0.3` it is the item's id in
+ * `STRUCTURAL_GROUND_TRUTH`.
  * see oracle-positive-control.test.mjs › "oracleAnswerFor identifies no
  * evidence for bad-deployment, because no fixture statement equals the
  * ground-truth predicate"
@@ -77,49 +84,95 @@ function identifiedEvidenceIds(
     .map(({ id }) => id);
 }
 
-export function oracleAnswerFor(scenario: IncidentScenario): Readonly<{
+/**
+ * The ground truth an answer projects, in the vocabulary the named evaluator
+ * version scores: the accepted fields for `behavior-evaluators-v0.2` (evidence
+ * identified by fingerprint, the accepted root-cause prose), the structural
+ * table for `behavior-evaluators-v0.3` (evidence by id, the structural cause).
+ */
+function projectedTruth(scenario: IncidentScenario, evaluatorVersion: string) {
+  const { groundTruth } = scenario;
+  if (evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION) {
+    const truth = structuralGroundTruthFor(scenario.id);
+    return {
+      expectedIds: [...truth.expectedEvidenceIds],
+      misleadingIds: [...(truth.misleadingEvidenceIds ?? [])],
+      rootCause: truth.rootCause === undefined ? undefined : { ...truth.rootCause },
+      // Only the structural version gives a scenario without a root cause a way
+      // to be credited with its expected evidence, so only it references them.
+      referenceWithoutRootCause: true,
+    };
+  }
+  if (evaluatorVersion !== BEHAVIOR_EVALUATOR_VERSION) {
+    throw new Error(`the oracle projects no ground truth for evaluator version ${evaluatorVersion}`);
+  }
+  return {
+    expectedIds: identifiedEvidenceIds(scenario, groundTruth.expectedEvidence),
+    misleadingIds: identifiedEvidenceIds(scenario, groundTruth.misleadingEvidence ?? []),
+    rootCause: groundTruth.rootCause === undefined ? undefined : { ...groundTruth.rootCause },
+    referenceWithoutRootCause: false,
+  };
+}
+
+const NO_ROOT_CAUSE_HYPOTHESIS_ID = 'oracle-reading';
+
+export function oracleAnswerFor(
+  scenario: IncidentScenario,
+  evaluatorVersion: string = BEHAVIOR_EVALUATOR_VERSION,
+): Readonly<{
   answer: ArmAnswer;
   challengeEffect?: ChallengeEffectObservation;
 }> {
   const { groundTruth } = scenario;
-  const expectedIds = identifiedEvidenceIds(scenario, groundTruth.expectedEvidence);
-  const misleadingIds = identifiedEvidenceIds(
-    scenario,
-    groundTruth.misleadingEvidence ?? [],
-  );
-  const { rootCause } = groundTruth;
+  const { expectedIds, misleadingIds, rootCause, referenceWithoutRootCause } =
+    projectedTruth(scenario, evaluatorVersion);
   const leaderChanges = groundTruth.expectedLeaderChangeAfterChallenge;
 
-  const hypotheses =
-    rootCause === undefined
-      ? []
-      : [
-          ...(leaderChanges === true
-            ? [{ id: INITIAL_LEADER_HYPOTHESIS_ID, statement: 'the leader before the challenge' }]
-            : []),
-          {
-            id: ROOT_CAUSE_HYPOTHESIS_ID,
-            statement: `${rootCause.component}: ${rootCause.mechanism}`,
-          },
-        ];
+  let hypotheses: ArmAnswer['hypotheses'];
+  let assessments: ArmAnswer['assessments'];
+  if (rootCause !== undefined) {
+    hypotheses = [
+      ...(leaderChanges === true
+        ? [{ id: INITIAL_LEADER_HYPOTHESIS_ID, statement: 'the leader before the challenge' }]
+        : []),
+      {
+        id: ROOT_CAUSE_HYPOTHESIS_ID,
+        statement: `${rootCause.component}: ${rootCause.mechanism}`,
+      },
+    ];
+    assessments = [
+      ...expectedIds.map((evidenceId) => ({
+        evidenceId,
+        hypothesisId: ROOT_CAUSE_HYPOTHESIS_ID,
+        effect: 'supports' as const,
+      })),
+      ...misleadingIds.map((evidenceId) => ({
+        evidenceId,
+        hypothesisId: ROOT_CAUSE_HYPOTHESIS_ID,
+        effect: 'contradicts' as const,
+      })),
+    ];
+  } else if (referenceWithoutRootCause) {
+    // No cause to attach the expected evidence to, so one reading references
+    // it: evidence against an incident for a false alarm, for it otherwise.
+    const effect =
+      groundTruth.expectedConclusionKind === 'no-incident'
+        ? ('contradicts' as const)
+        : ('supports' as const);
+    hypotheses = [{ id: NO_ROOT_CAUSE_HYPOTHESIS_ID, statement: 'what the evidence says about an incident' }];
+    assessments = expectedIds.map((evidenceId) => ({
+      evidenceId,
+      hypothesisId: NO_ROOT_CAUSE_HYPOTHESIS_ID,
+      effect,
+    }));
+  } else {
+    hypotheses = [];
+    assessments = [];
+  }
 
   const answer: ArmAnswer = {
     hypotheses,
-    assessments:
-      rootCause === undefined
-        ? []
-        : [
-            ...expectedIds.map((evidenceId) => ({
-              evidenceId,
-              hypothesisId: ROOT_CAUSE_HYPOTHESIS_ID,
-              effect: 'supports' as const,
-            })),
-            ...misleadingIds.map((evidenceId) => ({
-              evidenceId,
-              hypothesisId: ROOT_CAUSE_HYPOTHESIS_ID,
-              effect: 'contradicts' as const,
-            })),
-          ],
+    assessments,
     conclusion: {
       kind: groundTruth.expectedConclusionKind,
       causes:
@@ -127,7 +180,7 @@ export function oracleAnswerFor(scenario: IncidentScenario): Readonly<{
           ? []
           : [{
               hypothesisId: ROOT_CAUSE_HYPOTHESIS_ID,
-              cause: { ...rootCause },
+              cause: rootCause,
               evidenceIds: expectedIds,
             }],
     },
@@ -179,7 +232,10 @@ export async function runOracleBenchmarkExperiment(
       if (scenario === undefined) {
         throw new Error(`the oracle has no ground truth for scenario ${input.scenarioId}`);
       }
-      const { answer, challengeEffect } = oracleAnswerFor(scenario);
+      const { answer, challengeEffect } = oracleAnswerFor(
+        scenario,
+        input.metadata.evaluatorVersion,
+      );
       return outcomeFromArmAnswer({
         answer,
         fixture: input.fixture,

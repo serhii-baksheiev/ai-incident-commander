@@ -16,9 +16,14 @@ import {
 } from '@aic/graph';
 
 import {
+  BEHAVIOR_EVALUATOR_VERSION,
+  STRUCTURAL_EVALUATOR_VERSION,
   evaluateChallengeEffect,
   evaluateFalseAlertOutcome,
   evaluateMisleadingEvidenceHandling,
+  evaluateStructuralChallengeEffect,
+  evaluateStructuralFalseAlertOutcome,
+  evaluateStructuralMisleadingEvidenceHandling,
   type BehaviorMetric,
   type ChallengeEffectObservation,
   type EvidenceAssessmentObservation,
@@ -36,6 +41,7 @@ import {
   parseBenchmarkBudgetPolicy,
   type BenchmarkBudgetPolicy,
 } from './budget-policy.js';
+import { structuralGroundTruthFor } from './structural-ground-truth.js';
 
 export const BENCHMARK_METRIC_KEYS = [
   'unsupported_claim_rate',
@@ -116,6 +122,12 @@ export interface BenchmarkOutcome {
   readonly claims: readonly Readonly<{ evidenceIds: readonly string[] }>[];
   readonly supportingEvidenceIds: readonly string[];
   readonly evidenceFingerprints: readonly EvidenceFingerprint[];
+  /**
+   * The ids of the evidence the run REFERENCED — cited by a cause or assessed —
+   * which is what the structural evaluator counts as investigated. Absent reads
+   * as none: a run is not credited for evidence it only collected or was shown.
+   */
+  readonly referencedEvidenceIds?: readonly string[];
   readonly stopKind: InvestigationStop;
   readonly conclusionKind: IncidentConclusion['kind'];
   readonly rootCause?: RootCause;
@@ -474,6 +486,20 @@ export function evaluateBenchmarkRecord({
   outcome: BenchmarkOutcome;
   resources?: BenchmarkResourceEvidence;
 }>): BenchmarkEvaluation {
+  // Which evaluator scored this record is the record's own declaration, and an
+  // undeclared or unknown version is refused rather than scored the default
+  // way: two records with one version must mean one set of semantics.
+  // see structural-evaluator.test.mjs › "evaluateBenchmarkRecord refuses an
+  // unknown evaluator version even on a scenario with no behavior metric"
+  const { evaluatorVersion } = record.metadata;
+  if (evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION) {
+    return evaluateStructuralRecord({ record, outcome, resources });
+  }
+  if (evaluatorVersion !== BEHAVIOR_EVALUATOR_VERSION) {
+    throw new Error(
+      `evaluator version must be ${BEHAVIOR_EVALUATOR_VERSION} or ${STRUCTURAL_EVALUATOR_VERSION}`,
+    );
+  }
   const unsupportedClaimRate = evaluateUnsupportedClaimRate(outcome);
   const evidenceCoverage = evaluateEvidenceCoverage({
     expectedFingerprints: record.scenario.groundTruth.expectedEvidence,
@@ -502,14 +528,7 @@ export function evaluateBenchmarkRecord({
    */
   const recordBehaviorMetric = (
     metric: NonNullable<BehaviorMetrics[keyof BehaviorMetrics]>,
-  ): void => {
-    Object.defineProperty(behaviorMetrics, metric.key, {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: metric,
-    });
-  };
+  ): void => defineBehaviorMetric(behaviorMetrics, metric);
   const { groundTruth } = record.scenario;
 
   if (
@@ -567,6 +586,102 @@ export function evaluateBenchmarkRecord({
     behaviorMetrics,
     // Omitted entirely when nothing measured this run — which is what every
     // v0.1 record looks like, and what the generic path must keep looking like.
+    ...(resources === undefined ? {} : { resources }),
+  };
+}
+
+function defineBehaviorMetric(
+  behaviorMetrics: BehaviorMetrics,
+  metric: NonNullable<BehaviorMetrics[keyof BehaviorMetrics]>,
+): void {
+  Object.defineProperty(behaviorMetrics, metric.key, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: metric,
+  });
+}
+
+/**
+ * The structural evaluator (`behavior-evaluators-v0.3`, AIC-105): the same six
+ * metrics, with evidence matched by the ids the run REFERENCED against
+ * `STRUCTURAL_GROUND_TRUTH`, and the root cause matched structurally. Which
+ * metrics apply to a scenario is still decided by its accepted ground truth, so
+ * the two versions score the same set of metrics on every scenario.
+ */
+function evaluateStructuralRecord({
+  record,
+  outcome,
+  resources,
+}: Readonly<{
+  record: BenchmarkRecord;
+  outcome: BenchmarkOutcome;
+  resources?: BenchmarkResourceEvidence;
+}>): BenchmarkEvaluation {
+  const { groundTruth } = record.scenario;
+  const truth = structuralGroundTruthFor(record.scenario.id);
+  const referenced = new Set(outcome.referencedEvidenceIds ?? []);
+  const unsupportedClaimRate = evaluateUnsupportedClaimRate(outcome);
+  const evidenceCoverage: BenchmarkMetric<'evidence_coverage'> = {
+    key: 'evidence_coverage',
+    score:
+      truth.expectedEvidenceIds.length === 0
+        ? 1
+        : truth.expectedEvidenceIds.filter((id) => referenced.has(id)).length /
+          truth.expectedEvidenceIds.length,
+  };
+  const terminationCorrectness = evaluateTerminationCorrectness({
+    expectedStopKind: groundTruth.expectedStopKind,
+    expectedConclusionKind: groundTruth.expectedConclusionKind,
+    stopKind: outcome.stopKind,
+    conclusionKind: outcome.conclusionKind,
+  });
+
+  const behaviorMetrics: BehaviorMetrics = {};
+  if (groundTruth.rootCause !== undefined && groundTruth.misleadingEvidence !== undefined) {
+    defineBehaviorMetric(
+      behaviorMetrics,
+      evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }),
+    );
+  }
+  if (groundTruth.expectedConclusionKind === 'no-incident') {
+    defineBehaviorMetric(
+      behaviorMetrics,
+      evaluateStructuralFalseAlertOutcome({
+        truth,
+        expectedStopKind: groundTruth.expectedStopKind,
+        expectedConclusionKind: groundTruth.expectedConclusionKind,
+        outcome,
+      }),
+    );
+  }
+  if (groundTruth.expectedLeaderChangeAfterChallenge !== undefined) {
+    defineBehaviorMetric(
+      behaviorMetrics,
+      evaluateStructuralChallengeEffect({
+        groundTruth: {
+          expectedLeaderChangeAfterChallenge: groundTruth.expectedLeaderChangeAfterChallenge,
+        },
+        outcome: outcome.challengeEffect ?? {
+          challengeNodeExecuted: false,
+          challengeInvocationCount: 0,
+          executedDiscriminatingTrialCount: 0,
+        },
+      }),
+    );
+  }
+
+  return {
+    experimentId: record.experimentId,
+    exampleId: record.exampleId,
+    runId: record.runId,
+    actualStopKind: outcome.stopKind,
+    metrics: {
+      [unsupportedClaimRate.key]: unsupportedClaimRate,
+      [evidenceCoverage.key]: evidenceCoverage,
+      [terminationCorrectness.key]: terminationCorrectness,
+    },
+    behaviorMetrics,
     ...(resources === undefined ? {} : { resources }),
   };
 }
@@ -724,6 +839,17 @@ function outcomeFromGraphState(
 
   const observedEvidenceIds = new Set(state.evidence.map(({ id }) => id));
   const evidenceById = new Map(state.evidence.map((item) => [item.id, item]));
+  // What the run referenced, as opposed to what it collected: the graph replays
+  // every fixture entry, so collection alone would credit every run with every
+  // item. Causes first, then assessments, deduplicated in first-reference order.
+  const referencedEvidenceIds = [
+    ...new Set(
+      [
+        ...state.conclusion.causes.flatMap(({ evidenceIds }) => evidenceIds),
+        ...state.assessments.map(({ evidenceId }) => evidenceId),
+      ].filter((evidenceId) => observedEvidenceIds.has(evidenceId)),
+    ),
+  ];
   return {
     claims: state.conclusion.causes.map(({ evidenceIds }) => ({ evidenceIds })),
     supportingEvidenceIds: state.conclusion.causes.flatMap(({ evidenceIds }) =>
@@ -734,6 +860,7 @@ function outcomeFromGraphState(
       source,
       predicate: statement,
     })),
+    referencedEvidenceIds,
     stopKind: state.control.stopKind,
     conclusionKind: state.conclusion.kind,
     rootCause: state.conclusion.causes[0]?.cause,
@@ -748,6 +875,7 @@ function outcomeFromGraphState(
               source: evidence.source,
               predicate: evidence.statement,
             },
+            evidenceId: evidence.id,
             hypothesisId: assessment.hypothesisId,
             effect: assessment.effect,
           }];

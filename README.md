@@ -237,9 +237,10 @@ file in the workspace" and › "performs the provider request in the adapter and
 nowhere else"), and without a credential nothing leaves at all.
 
 Two things the lane deliberately does not do. It **withholds
-`evidence_coverage`** from both arms with the reason attached: that evaluator
-compares a hand-written ground-truth predicate against an evidence statement as
-an exact fingerprint, so any graph-executed run scores zero for a harness reason
+`evidence_coverage`** from both arms with the reason attached: the evaluator
+version the lane declares (`behavior-evaluators-v0.2`) compares a hand-written
+ground-truth predicate against an evidence statement as an exact fingerprint,
+so any graph-executed run scored under it scores zero for a harness reason
 rather than a model one — a pre-existing evaluator defect, filed separately, and
 publishing the zero would be exactly the confound this lane exists to prevent.
 And it **never retries a publication refusal**: LangSmith ingestion can refuse a

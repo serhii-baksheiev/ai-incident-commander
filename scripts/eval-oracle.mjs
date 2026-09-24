@@ -35,12 +35,28 @@ import { ORACLE_ARM, oracleAnswerFor, runOracleBenchmarkExperiment } from '@aic/
 
 const RUNS_PER_SCENARIO = 3;
 
-const metadata = Object.freeze({
+/**
+ * `--evaluator-version <id>` picks the evaluator the oracle is scored by — and
+ * the ground-truth vocabulary it projects. Without it, the accepted
+ * `behavior-evaluators-v0.2`, so the first measurement stays reproducible.
+ */
+function evaluatorVersionFromArgs() {
+  const index = argv.indexOf('--evaluator-version');
+  if (index < 0) return evals.BEHAVIOR_EVALUATOR_VERSION;
+  const value = argv[index + 1];
+  // A flag given without a value is refused rather than read as the default,
+  // or a mistyped command would print a v0.2 report under a v0.3 request.
+  if (value !== evals.BEHAVIOR_EVALUATOR_VERSION && value !== evals.STRUCTURAL_EVALUATOR_VERSION) {
+    throw new Error(`--evaluator-version needs ${evals.BEHAVIOR_EVALUATOR_VERSION} or ${evals.STRUCTURAL_EVALUATOR_VERSION}`);
+  }
+  return value;
+}
+
+const baseMetadata = Object.freeze({
   graphVersion: 'none-oracle',
   promptVersion: 'none-oracle',
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,
-  evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
   toolMode: 'replay',
   knowledgeSetVersion: 'knowledge-none-v0.1',
   memoryEnabled: false,
@@ -77,7 +93,8 @@ export function reachesBestOf(scenarios, bestValues) {
   return reachesBest;
 }
 
-export async function buildOracleReport() {
+export async function buildOracleReport(evaluatorVersion = evals.BEHAVIOR_EVALUATOR_VERSION) {
+  const metadata = { ...baseMetadata, evaluatorVersion };
   let providerCalls = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = () => {
@@ -115,7 +132,7 @@ export async function buildOracleReport() {
         throw new Error(`${scenarioId}: the oracle's runs disagree, which a deterministic arm cannot do`);
       }
     }
-    const { answer } = oracleAnswerFor(scenariosById.get(scenarioId));
+    const { answer } = oracleAnswerFor(scenariosById.get(scenarioId), evaluatorVersion);
     return {
       scenarioId,
       claimCount: answer.conclusion.causes.length,
@@ -126,7 +143,7 @@ export async function buildOracleReport() {
   const reachesBest = reachesBestOf(scenarios, evals.METRIC_BEST_VALUES);
 
   return {
-    evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
+    evaluatorVersion,
     partition: 'calibration',
     arm: { ...ORACLE_ARM },
     providerCalls,
@@ -155,7 +172,8 @@ const invokedDirectly = () => {
 };
 
 if (invokedDirectly()) {
-  buildOracleReport()
+  Promise.resolve()
+    .then(() => buildOracleReport(evaluatorVersionFromArgs()))
     .then((report) => stdout.write(`${JSON.stringify(report, null, 2)}\n`))
     .catch((error) => {
       stderr.write(`${error.name}: ${error.message}\n`);

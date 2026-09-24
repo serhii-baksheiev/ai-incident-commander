@@ -152,12 +152,14 @@ export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 800_000;
 /**
  * The metric this lane refuses to publish as model quality, and why.
  *
+ * Under `behavior-evaluators-v0.2`, the version both lane scripts still declare,
  * `evaluateEvidenceCoverage` compares an exact `[kind, source, predicate]`
  * triple, where the expected `predicate` is hand-written ground-truth prose and
  * the observed one is a fixture evidence `statement`. Those two strings are
- * never equal in this corpus, so ANY graph-executed run scores
- * `evidence_coverage = 0` for a harness reason that has nothing to do with the
- * model. Publishing that zero beside model metrics would be exactly the
+ * never equal in this corpus, so ANY graph-executed run scored under that
+ * version scores `evidence_coverage = 0` for a harness reason that has nothing
+ * to do with the model. (`behavior-evaluators-v0.3` matches by evidence id
+ * instead; the lane does not declare it yet.) Publishing that zero beside model metrics would be exactly the
  * harness-vs-model confound this lane exists to prevent, so it is withheld from
  * BOTH arms with the reason attached.
  *
