@@ -347,3 +347,78 @@ test('LiveToolAdapter never reaches the tool for a non-JSON input containing a B
   assert.equal(calls, 0, 'a non-JSON input must never reach the tool');
   assert.deepEqual(result, { status: 'error', message: 'tool execution failed' });
 });
+
+/* -------------------------------------------------------------------------- */
+/* review round 1 — both adapters unwrap outcome.output as ToolResult         */
+/* unchecked, and LiveToolAdapter's zero-option constructor default budgets   */
+/* -------------------------------------------------------------------------- */
+
+test('ReplayToolAdapter refuses "replay response is not recorded" when a v1 fixture entry for a valid key is null, rather than returning the unwrapped null (code-reviewer round 1: unchecked outcome.output unwrap)', async () => {
+  const toolId = 'logs';
+  const input = { service: 'checkout' };
+  const key = tools.createReplayFixtureKey(toolId, input);
+  const adapter = new ReplayToolAdapter({ version: 1, responses: { [key]: null } });
+
+  const result = await adapter.execute(toolId, input);
+
+  assert.deepStrictEqual(result, { status: 'unavailable', reason: 'replay response is not recorded' });
+});
+
+test('ReplayToolAdapter refuses "replay response is not recorded" when a v1 fixture entry for a valid key is a bare string, not a ToolResult-shaped value (code-reviewer round 1)', async () => {
+  const toolId = 'logs';
+  const input = { service: 'checkout' };
+  const key = tools.createReplayFixtureKey(toolId, input);
+  const adapter = new ReplayToolAdapter({ version: 1, responses: { [key]: 'nope' } });
+
+  const result = await adapter.execute(toolId, input);
+
+  assert.deepStrictEqual(result, { status: 'unavailable', reason: 'replay response is not recorded' });
+});
+
+test('ReplayToolAdapter refuses "replay response is not recorded" when a v1 fixture entry for a valid key is an object whose status is not a recognised ToolResult status (code-reviewer round 1)', async () => {
+  const toolId = 'logs';
+  const input = { service: 'checkout' };
+  const key = tools.createReplayFixtureKey(toolId, input);
+  const adapter = new ReplayToolAdapter({ version: 1, responses: { [key]: { status: 'bogus' } } });
+
+  const result = await adapter.execute(toolId, input);
+
+  assert.deepStrictEqual(result, { status: 'unavailable', reason: 'replay response is not recorded' });
+});
+
+test('LiveToolAdapter reports the existing generic execution-failure message when the wrapped tool resolves a class instance instead of a ToolResult, rather than returning it unwrapped (code-reviewer round 1)', async () => {
+  class NotAToolResult {
+    constructor() {
+      this.status = 'ok';
+      this.output = [];
+    }
+  }
+  const adapter = new LiveToolAdapter([
+    { id: 'logs', risk: 'read', execute: async () => new NotAToolResult() },
+  ]);
+
+  const result = await adapter.execute('logs', { service: 'checkout' });
+
+  assert.deepStrictEqual(result, { status: 'error', message: 'tool execution failed' });
+});
+
+test('LiveToolAdapter reports the existing generic execution-failure message when the wrapped tool resolves null instead of a ToolResult, rather than returning it unwrapped (code-reviewer round 1)', async () => {
+  const adapter = new LiveToolAdapter([
+    { id: 'logs', risk: 'read', execute: async () => null },
+  ]);
+
+  const result = await adapter.execute('logs', { service: 'checkout' });
+
+  assert.deepStrictEqual(result, { status: 'error', message: 'tool execution failed' });
+});
+
+test('LiveToolAdapter constructed with NO second (options) argument is still bound by DEFAULT_SOURCE_BUDGETS: an ok result whose serialized size exceeds maxResultBytes is refused budget_exceeded (code-reviewer round 1)', async () => {
+  const oversized = 'x'.repeat(tools.DEFAULT_SOURCE_BUDGETS.maxResultBytes + 1);
+  const adapter = new LiveToolAdapter([
+    { id: 'logs', risk: 'read', execute: async () => ({ status: 'ok', output: oversized }) },
+  ]);
+
+  const result = await adapter.execute('logs', { service: 'checkout' });
+
+  assert.deepStrictEqual(result, { status: 'unavailable', reason: 'budget_exceeded' });
+});
