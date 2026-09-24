@@ -519,7 +519,7 @@ test('never returns need-more-evidence over the T0-T6 matrix constructed above',
  * a T3 or T5 decision still fires on the same states either way. What DOES
  * change is WHICH hypothesis termination names as leader when a corroborated
  * hypothesis and a genuinely supported one are both in `S`: rank order
- * (supported over corroborated) breaks that tie today. A status table where
+ * (supported over corroborated) breaks that tie. A status table where
  * the two collapse into the same word would leave only state order to break
  * it, silently naming the wrong hypothesis for a T3 challenge target or a T5
  * sufficient leader - termination is NOT fully agnostic to this mutation.
