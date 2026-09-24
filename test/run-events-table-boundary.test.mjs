@@ -82,8 +82,13 @@ test('within packages/persistence/src, only app-schema.ts, run-write-context.ts,
   );
 
   const WRITE_STATEMENT = /\b(INSERT\s+INTO|UPDATE)\b[^;]*\brun_events\b/is;
+  // Comments are removed before this scan (not before the naming row above):
+  // app-schema.ts's doc comment says a module "never issues an UPDATE" two
+  // lines before it mentions run_events, and a scan over prose read that as
+  // a write. The write question is about statements, so it reads code only.
+  const codeOnly = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const writingFiles = namingFiles.filter((file) =>
-    WRITE_STATEMENT.test(readFileSync(join(PERSISTENCE_SRC, file), 'utf8')),
+    WRITE_STATEMENT.test(codeOnly(readFileSync(join(PERSISTENCE_SRC, file), 'utf8'))),
   );
 
   assert.deepEqual(
