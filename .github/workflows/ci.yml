@@ -16,7 +16,24 @@ jobs:
   checks:
     name: checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    # The live PostgreSQL lane (the durable-run substrate and AIC-57's bounded
+    # T-4 race matrix) runs against this service: the image the local compose
+    # lane runs, pinned by digest, trust auth on loopback, no credential.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_USER: aic
+          POSTGRES_DB: aic
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready --username aic --dbname aic"
+          --health-interval 1s
+          --health-timeout 2s
+          --health-retries 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -37,3 +54,10 @@ jobs:
 
       - name: Full test suite
         run: npm test
+
+      - name: Live PostgreSQL lane
+        env:
+          AIC_POSTGRES_URL: postgresql://aic@127.0.0.1:5432/aic
+          # The bounded regression; the stress run sets this to 2000 locally.
+          T4_REPETITIONS: '3'
+        run: npm run test:live-postgres
