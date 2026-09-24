@@ -151,19 +151,18 @@ const looksLikeCredential = (value: string) =>
  * Bounded by construction, not by the length of anything it is handed - each
  * ceiling is checked before the work it would otherwise cost is done:
  *
- *   1. more than sixteen keys refuses the whole config without reading a
- *      single key or value - registry-names-and-config.test.mjs › "screens
- *      one thousand keys of 600-character values in under 250ms, and still
- *      refuses the binding";
+ *   1. more than sixteen keys refuses the whole config before any key or
+ *      value is screened (only the own key names are listed first) -
+ *      registry-names-and-config.test.mjs › "screens one thousand keys of
+ *      600-character values in under 250ms, and still refuses the binding";
  *   2. a key is judged by `CONFIG_KEY_PATTERN`, anchored at both ends and
  *      capped at sixty-four characters by its own quantifier, so a key of
  *      any length costs at most sixty-four characters of work;
- *   3. a value's credential screen reads at most `MAX_CONFIG_VALUE_LENGTH`
- *      characters of it, whatever its actual length, before the value's own
- *      length ceiling is even checked - › "screens a single 1 MiB config
- *      value in under 250ms, and still refuses the binding", › "screens
- *      sixteen keys of 40,004-character userinfo-shaped values in under
- *      250ms, and still refuses the binding".
+ *   3. a value longer than `MAX_CONFIG_VALUE_LENGTH` is refused by that
+ *      ceiling before the credential screen runs, so the screen only ever
+ *      sees at most that many characters - › "refuses a config value one
+ *      character past the 512-character ceiling", › "screens a single 1 MiB
+ *      config value in under 250ms, and still refuses the binding".
  *
  * Keys are read via `Reflect.ownKeys` on the raw input before anything else
  * touches it, so a `__proto__` own property (as `JSON.parse` produces one) is
