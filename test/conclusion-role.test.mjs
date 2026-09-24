@@ -21,6 +21,7 @@ import test from 'node:test';
 import {
   IncidentConclusionSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
+  STATUS_RULES,
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as roles from '@aic/roles';
@@ -967,4 +968,246 @@ test('copies the mechanism vocabulary at creation time, so a mechanism added to 
     'a mechanism added to the caller array after the node was created must still be refused: the vocabulary is copied at creation time',
     /mechanism/i,
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-119 slice 5 part C (owner ruling D1): the model is told what the       */
+/* hypothesis statuses it is shown MEAN, generated from STATUS_RULES rather   */
+/* than left implicit. `propose_conclusion` already sends `derived hypothesis */
+/* statuses: {...}`, including the word `corroborated`, with no definition of */
+/* any status anywhere in the prompt.                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `describeStatusRules(table)` turns a status-rules table
+ * (`STATUS_RULES['v0.2']`, `packages/domain/src/status-rules.ts`) into one
+ * definition sentence per status named in `table.hypothesis.statuses`, keyed
+ * by status name so "no missing, none extra" is a key-set comparison rather
+ * than a length count that could hide a duplicate.
+ */
+function requireDescribeStatusRules() {
+  assert.equal(
+    typeof roles.describeStatusRules,
+    'function',
+    '@aic/roles must export describeStatusRules(table)',
+  );
+  return roles.describeStatusRules;
+}
+
+test('describeStatusRules names exactly the statuses the table declares: no status missing, none extra', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const table = STATUS_RULES['v0.2'];
+
+  const sentences = describeStatusRules(table);
+
+  assert.deepEqual(
+    Object.keys(sentences).sort(),
+    [...table.hypothesis.statuses].sort(),
+    'describeStatusRules must return one entry per status the table declares, with no status missing and none extra',
+  );
+  for (const status of table.hypothesis.statuses) {
+    assert.equal(
+      typeof sentences[status],
+      'string',
+      `the ${status} entry must be a sentence string`,
+    );
+    assert.ok(
+      sentences[status].length > 0,
+      `the ${status} entry must not be an empty sentence`,
+    );
+  }
+});
+
+/**
+ * The corroborated and supported sentences must carry the table's own
+ * numbers and strengths, not a hand-written paraphrase that could drift from
+ * `STATUS_RULES` the day the rule changes. Read from the table (so a future
+ * rule edit re-derives the expectation) AND checked against one literal,
+ * hand-written pattern per fact (`/\b2\b/`, `/confirmed prediction/`), so the
+ * row cannot be satisfied purely by describeStatusRules and this test reading
+ * the same table and agreeing by construction — an independent check on the
+ * two numbers this rule is built from (`.claude/rules/invariants.md`,
+ * "independent-oracle invariant").
+ */
+test('the corroborated and supported sentences carry the table\'s own numbers and strengths', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const table = STATUS_RULES['v0.2'];
+  const sentences = describeStatusRules(table);
+
+  const corroboratedRule = table.hypothesis.rules.corroborated;
+  const supportedRule = table.hypothesis.rules.supported;
+
+  // Read from the table.
+  assert.match(
+    sentences.corroborated,
+    new RegExp(`\\b${corroboratedRule.minimumIndependentSupports}\\b`),
+    'the corroborated sentence must carry minimumIndependentSupports from the table',
+  );
+  assert.match(
+    sentences.corroborated,
+    new RegExp(`\\b${corroboratedRule.maximumConfirmedPredictions}\\b`),
+    'the corroborated sentence must carry maximumConfirmedPredictions from the table',
+  );
+  for (const strength of corroboratedRule.supportStrengths) {
+    assert.match(
+      sentences.corroborated,
+      new RegExp(strength, 'i'),
+      `the corroborated sentence must name the ${strength} support strength`,
+    );
+  }
+  assert.match(
+    sentences.supported,
+    new RegExp(`\\b${supportedRule.minimumConfirmedPredictions}\\b`),
+    'the supported sentence must carry minimumConfirmedPredictions from the table',
+  );
+
+  // Hand-written literals, independent of the table read above: this pins
+  // the v0.2 numbers this rule is actually built from (owner ruling D1,
+  // item 1), so the row is not satisfied merely by production and this test
+  // reading the same table and agreeing by construction.
+  assert.match(sentences.corroborated, /\b2\b/, 'corroborated requires 2 independent supports (owner ruling D1, item 1)');
+  assert.match(sentences.corroborated, /\b0\b/, 'corroborated requires 0 confirmed predictions (owner ruling D1, item 1)');
+  assert.match(sentences.supported, /confirmed prediction/i, 'supported requires a confirmed prediction (owner ruling D1, item 2)');
+  assert.match(sentences.supported, /\b1\b/, 'supported requires at least 1 confirmed prediction (owner ruling D1, item 2)');
+});
+
+/**
+ * Every earlier status must be ruled out before a later one is reached, so the
+ * precedence clause joins them with "and", never "or".
+ */
+test('the precedence clause says every earlier status has been ruled out, joined with and', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const sentences = describeStatusRules(STATUS_RULES['v0.2']);
+
+  assert.match(sentences.corroborated, /'rejected', 'weakened' and 'supported' have already been ruled out/);
+  assert.doesNotMatch(sentences.corroborated, /'weakened' or 'supported'/);
+});
+
+/**
+ * `deriveHypothesisStatus` rejects on a contradicting assessment that names a
+ * prediction with the rule's status and whose evidence has the rule's
+ * reliability (packages/domain/src/evaluation.ts, `isRejected`). The sentence
+ * says that, not "a contradicted prediction".
+ */
+test('the rejected sentence names a contradicting assessment tied to a refuted prediction, from evidence at high reliability', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const sentences = describeStatusRules(STATUS_RULES['v0.2']);
+
+  assert.match(sentences.rejected, /a contradicting assessment tied to a prediction with status 'refuted'/);
+  assert.match(sentences.rejected, /evidence at reliability 'high'/);
+});
+
+test('describeStatusRules refuses a status the table lists without a precedence position or without a rule', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const base = STATUS_RULES['v0.2'].hypothesis;
+
+  assert.throws(
+    () => describeStatusRules({ hypothesis: { ...base, statuses: [...base.statuses, 'orphan'], rules: { ...base.rules, orphan: { fallback: true } } } }),
+    /status 'orphan' has no place in the precedence order/,
+  );
+  assert.throws(
+    () => describeStatusRules({ hypothesis: { ...base, statuses: [...base.statuses, 'bare'], precedence: [...base.precedence, 'bare'] } }),
+    /status 'bare' has no rule/,
+  );
+});
+
+/**
+ * The corroborated sentence quotes the corroborated rule's own copy of the
+ * support requirements. `deriveHypothesisStatus` evaluates corroborated with
+ * the SUPPORTED rule's copy (packages/domain/src/evaluation.ts, the shared
+ * corroboration shape) and reads only `maximumConfirmedPredictions` off the
+ * corroborated rule. The two copies must therefore stay equal in every table,
+ * or the prompt would describe a rule the derivation does not apply.
+ */
+test("in every STATUS_RULES table, corroborated's support requirements equal supported's, which are the ones deriveHypothesisStatus applies to both", () => {
+  for (const [version, table] of Object.entries(STATUS_RULES)) {
+    const { corroborated, supported } = table.hypothesis.rules;
+    if (corroborated === undefined) continue;
+    for (const field of ['minimumIndependentSupports', 'independenceKey', 'supportStrengths', 'forbiddenContradictionStrengths']) {
+      assert.deepEqual(
+        corroborated[field],
+        supported[field],
+        `${version}: corroborated.${field} must equal supported.${field}, the copy the derivation reads`,
+      );
+    }
+  }
+});
+
+/**
+ * Proves the sentence is GENERATED from the table, not a hand-written string
+ * that happens to mention the right numbers today: a mutated copy of the
+ * table with a different `minimumIndependentSupports` must produce a
+ * different corroborated sentence, carrying the mutated number.
+ */
+test('a mutated table (minimumIndependentSupports 3) yields a different corroborated sentence containing 3, proving the text is generated', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const table = STATUS_RULES['v0.2'];
+  const original = describeStatusRules(table);
+
+  const mutatedTable = {
+    ...table,
+    hypothesis: {
+      ...table.hypothesis,
+      rules: {
+        ...table.hypothesis.rules,
+        corroborated: {
+          ...table.hypothesis.rules.corroborated,
+          minimumIndependentSupports: 3,
+        },
+      },
+    },
+  };
+  const mutated = describeStatusRules(mutatedTable);
+
+  assert.notEqual(
+    mutated.corroborated,
+    original.corroborated,
+    'a mutated minimumIndependentSupports must change the generated corroborated sentence',
+  );
+  assert.match(
+    mutated.corroborated,
+    /\b3\b/,
+    'the mutated corroborated sentence must carry the mutated number, 3',
+  );
+});
+
+/**
+ * `propose_conclusion`'s system prompt must include every definition
+ * sentence `describeStatusRules` produces for the live table
+ * (`STATUS_RULES[STATUS_RULES_VERSION]`) — otherwise the model is shown
+ * `derived hypothesis statuses` containing words (`corroborated`) it was
+ * never told the meaning of, which is exactly the gap owner ruling D1 item 6
+ * requires the preregistration to name before calibration.
+ */
+test("propose_conclusion's system prompt contains every sentence describeStatusRules(STATUS_RULES[STATUS_RULES_VERSION]) returns", async () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const expectedSentences = Object.values(
+    describeStatusRules(STATUS_RULES[STATUS_RULES_VERSION]),
+  );
+  assert.ok(expectedSentences.length > 0, 'describeStatusRules must produce at least one sentence for the live table');
+
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await node(baseState());
+
+  assert.equal(requests.length, 1);
+  const text = `${requests[0].system}\n${requests[0].prompt}`;
+  for (const sentence of expectedSentences) {
+    assert.ok(
+      text.includes(sentence),
+      `propose_conclusion's prompt must include the status-rules definition sentence: ${JSON.stringify(sentence)}`,
+    );
+  }
+});
+
+/**
+ * AIC-119 slice 5: the graph arm's prompt set changed again (the status-rules
+ * definition sentences above), so the version this module ships bumps a
+ * second time — the same reasoning `roles-model-nodes.test.mjs`'s own v0.3
+ * bump recorded for the conclusion role's addition. The v0.3 pin in that file
+ * moves to v0.4 alongside this row; see that file's own comment.
+ */
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.4');
 });

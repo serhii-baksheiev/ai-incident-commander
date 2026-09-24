@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
 import { NAIVE_PROMPT_VERSION, REFERENCE_MODEL_ID, REFERENCE_PROMPT_VERSION } from '@aic/roles';
 
@@ -41,10 +42,15 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  * computation this file's own digest row below uses — and, exactly like
  * every other entry in this map, it may never be edited again after this:
  * a correction is a new dated file and a new entry, never a changed value.
+ *
+ * `v0.2-four-arm-supplement-2.md` (dated 2026-09-25) is AIC-119 slice 5's
+ * addition, the preregistration addendum owner ruling D1 item 6 requires before
+ * the first calibration. Its entry follows the same rule.
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
   'v0.2-four-arm-supplement-1.md': 'sha256:e3b3e9751a2da8e74197b10b6bb50afa70c7f9e5e62899c2371aa1b5c1f27b85',
+  'v0.2-four-arm-supplement-2.md': 'sha256:99f0779261ac57763e44f5bfb092bdf4aa16081b34f36b076ab8f2d6e7d18ba1',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');
@@ -145,7 +151,13 @@ const registrationDirectory = () =>
     .map((name) => readFileSync(join(dirname(PREREGISTRATION), name), 'utf8'))
     .join('\n');
 
-test('states the evaluator, ground-truth, prompt and model versions the code declares, and its run count', () => {
+/**
+ * AIC-119 slice 5 (owner ruling D1, item 6): the preregistration addendum
+ * names `corroborated`'s semantics against the status-rules version they were
+ * defined under, so `STATUS_RULES_VERSION` joins the versions every one of
+ * these documents together must name at least once.
+ */
+test('states the evaluator, ground-truth, prompt, status-rules and model versions the code declares, and its run count', () => {
   const body = registrationDirectory();
   for (const version of [
     evals.STRUCTURAL_EVALUATOR_VERSION,
@@ -153,6 +165,7 @@ test('states the evaluator, ground-truth, prompt and model versions the code dec
     REFERENCE_PROMPT_VERSION,
     NAIVE_PROMPT_VERSION,
     REFERENCE_MODEL_ID,
+    STATUS_RULES_VERSION,
   ]) {
     assert.ok(body.includes(`\`${version}\``), `the preregistration does not name ${version}`);
   }
