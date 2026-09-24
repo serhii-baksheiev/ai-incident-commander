@@ -355,6 +355,204 @@ test('refuses an assessment that claims a rule produced it', async () => {
   );
 });
 
+/**
+ * code-reviewer blocker 2 (round 1, `investigation-roles.ts:669`):
+ * `createModelInterpretResidualEvidence` parsed an assessment only with
+ * `EvidenceAssessmentSchema` and never checked `evidenceId` against
+ * `state.evidence`, `hypothesisId` against `state.hypotheses`, or
+ * `predictionId` against that hypothesis's own predictions. A fabricated id
+ * from a model-quality failure here was not refused until
+ * `propose_conclusion` later called `deriveHypothesisStatus`
+ * (`packages/domain/src/evaluation.ts:152-166`), which throws a PLAIN `Error`
+ * with no `role` field — a model-quality fault surfacing at the terminal node
+ * as an untyped harness fault, exactly the misattribution
+ * `model-errors.ts`/`ModelRoleOutputError` exist to prevent.
+ *
+ * These three rows pin the new contract: `interpret_residual_evidence`
+ * refuses each case itself, as a `ModelRoleOutputError('interpret_residual_evidence', …)`,
+ * before it ever reaches a later role.
+ */
+test('refuses an assessment whose evidenceId is not in state.evidence', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      assessments: [
+        {
+          id: 'a-1',
+          evidenceId: 'e-fabricated',
+          hypothesisId: 'h-1',
+          effect: 'supports',
+          strength: 'high',
+          rationale: 'because',
+        },
+      ],
+    },
+  ]);
+  const node = createModelInterpretResidualEvidence({ port, at });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'interpret_residual_evidence');
+      assert.match(error.message, /e-fabricated/);
+      return true;
+    },
+    'an assessment naming evidence the state does not carry must be refused here, not surface later as a plain Error out of deriveHypothesisStatus',
+  );
+});
+
+test('refuses an assessment whose hypothesisId is not in state.hypotheses', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      assessments: [
+        {
+          id: 'a-1',
+          evidenceId: 'evidence-1',
+          hypothesisId: 'h-fabricated',
+          effect: 'supports',
+          strength: 'high',
+          rationale: 'because',
+        },
+      ],
+    },
+  ]);
+  const node = createModelInterpretResidualEvidence({ port, at });
+  const state = initialState();
+  // state.hypotheses stays [] (initialState default): 'h-fabricated' names no
+  // hypothesis the run carries.
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'interpret_residual_evidence');
+      assert.match(error.message, /h-fabricated/);
+      return true;
+    },
+    'an assessment naming a hypothesis the run does not carry must be refused here',
+  );
+});
+
+test('refuses an assessment whose predictionId is not a prediction of the named hypothesis', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      assessments: [
+        {
+          id: 'a-1',
+          evidenceId: 'evidence-1',
+          hypothesisId: 'h-1',
+          predictionId: 'p-belongs-to-h-2',
+          effect: 'supports',
+          strength: 'high',
+          rationale: 'because',
+        },
+      ],
+    },
+  ]);
+  const node = createModelInterpretResidualEvidence({ port, at });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+    { id: 'h-2', statement: 'the dependency upgrade, not the deploy', createdBy: 'initial' },
+  ];
+  state.predictions = [
+    {
+      id: 'p-belongs-to-h-2',
+      hypothesisId: 'h-2',
+      statement: 'if true, the pool exhausts under load',
+      expectedIfTrue: [],
+      expectedIfFalse: [],
+      status: 'untested',
+    },
+  ];
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'interpret_residual_evidence');
+      assert.match(error.message, /p-belongs-to-h-2/);
+      return true;
+    },
+    "an assessment whose predictionId belongs to a DIFFERENT hypothesis must be refused: it is not 'a prediction of that hypothesis'",
+  );
+});
+
+/**
+ * `.claude/rules/invariants.md` ("State the limits — and test them"): any
+ * model-supplied id reaching a refusal message must be escaped and truncated,
+ * the same way `refuseUnknownKeys` and `conclusion-rules.ts`'s `nameValue`
+ * already do for their own sinks. Uses a hostile hypothesisId; the other two
+ * ids above are pinned by name-matching only, this row pins the escaping
+ * mechanism itself.
+ */
+test('escapes and truncates a hostile hypothesisId before it reaches the refusal message', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileId = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  assert.ok(hostileId.length > 500, 'the fixture id must exceed 500 characters');
+  const { port } = fakePort([
+    {
+      assessments: [
+        {
+          id: 'a-1',
+          evidenceId: 'evidence-1',
+          hypothesisId: hostileId,
+          effect: 'supports',
+          strength: 'high',
+          rationale: 'because',
+        },
+      ],
+    },
+  ]);
+  const node = createModelInterpretResidualEvidence({ port, at });
+  const state = initialState();
+  // state.hypotheses stays [], so the hostile id is refused as unrecognised.
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'interpret_residual_evidence');
+      assert.ok(
+        !error.message.includes('\n'),
+        'a raw newline from a hostile id must never reach the refusal message',
+      );
+      // The first 80 characters of the fixture hold exactly 62 x's, so a run
+      // of 63 or more can only come from the part truncation must drop.
+      assert.doesNotMatch(
+        error.message,
+        /x{63,}/,
+        'the id must be truncated to 80 characters: nothing past them may reach the message',
+      );
+      const expectedEscaped = JSON.stringify(hostileId.slice(0, 80));
+      assert.ok(
+        error.message.includes(expectedEscaped),
+        `the message must carry the id JSON-escaped and truncated to 80 chars: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* challenge_hypothesis                                                       */
 /* -------------------------------------------------------------------------- */

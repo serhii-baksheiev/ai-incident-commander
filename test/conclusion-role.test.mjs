@@ -24,7 +24,6 @@ import {
   IncidentConclusionSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   STATUS_RULES_VERSION,
-  deriveHypothesisStatus,
 } from '@aic/domain';
 import * as roles from '@aic/roles';
 
@@ -276,94 +275,110 @@ test('shows a different prompt when challengeRounds differs, so the round count 
   );
 });
 
+/**
+ * Round-2 rewrite (code-reviewer blocker 1, `test/conclusion-role.test.mjs:375`):
+ * the original row's fixture prediction ids were literally `p-supported` and
+ * `p-rejected`, so `describeState`'s own serialisation of those ids already
+ * put the words "supported"/"rejected" in the prompt — the row proved nothing
+ * about the `derived hypothesis statuses` line at all (`assert.match(text,
+ * /supported/)` and `/rejected/` passed against the ID text, not the derived
+ * STATUS). Deleting the whole prompt line, or computing every status for
+ * `hypotheses[0]`, or dropping `id` from each entry, all left the row green.
+ *
+ * This version's ids (`h-alpha`, `h-beta`, `p-1`, `e-1`, `e-2`) contain no
+ * status word, so the only way "rejected" or "weakened" can appear in the
+ * prompt is through the `derived hypothesis statuses` line itself, and the
+ * assertions below pin the id-status PAIRING (`"id":"h-alpha","status":"…"`)
+ * so a status computed for the wrong hypothesis is caught too.
+ *
+ * The two expected statuses are worked out BY HAND against
+ * `BASELINE_STATUS_RULES` (`packages/domain/src/status-rules.ts`) and
+ * `deriveHypothesisStatus`'s check order (`packages/domain/src/evaluation.ts`)
+ * — this test calls neither: the expectations below are literals, per
+ * `.claude/rules/invariants.md` ("the independent-oracle invariant").
+ *
+ * h-alpha -> 'rejected':
+ *   Its only assessment (a-1) has effect 'contradicts' and a defined
+ *   predictionId ('p-1'), so the 'rejected' check runs: p-1's own status is
+ *   'refuted' (rules.rejected.predictionStatus) and its cited evidence (e-1)
+ *   has reliability 'high' (rules.rejected.evidenceReliability). Both match,
+ *   so `isRejected` is true. `isRejected` is checked FIRST in
+ *   `deriveHypothesisStatus`, before weakened or supported, so nothing else
+ *   about h-alpha's assessments can change this.
+ *
+ * h-beta -> 'weakened':
+ *   Its only assessment (a-2) has effect 'contradicts' but NO predictionId,
+ *   so the 'rejected' check's own `assessment.predictionId === undefined`
+ *   guard makes `isRejected` false for h-beta (it can never see p-1, which
+ *   belongs to h-alpha, since `hypothesisAssessments`/`hypothesisPredictions`
+ *   are filtered to h-beta only). a-2's strength is 'medium', which IS in
+ *   `rules.weakened.contradictionStrengths` (`['medium', 'high']`), so
+ *   `hasMaterialContradiction` is true and the status is 'weakened' — the
+ *   'supported' branch is never reached because 'weakened' returns first.
+ */
 test('shows the derived status of every hypothesis, computed the same way deriveHypothesisStatus computes it', async () => {
   const state = baseState();
+  state.hypotheses = [
+    { id: 'h-alpha', statement: 'the checkout deploy did it', createdBy: 'initial' },
+    { id: 'h-beta', statement: 'the dependency upgrade, not the deploy', createdBy: 'initial' },
+  ];
   state.predictions = [
     {
-      id: 'p-supported',
-      hypothesisId: 'h-1',
-      statement: 'if true, latency recovers after rollback',
-      expectedIfTrue: [],
-      expectedIfFalse: [],
-      status: 'confirmed',
-    },
-    {
-      id: 'p-rejected',
-      hypothesisId: 'h-2',
-      statement: 'if true, the pool exhausts under load',
+      id: 'p-1',
+      hypothesisId: 'h-alpha',
+      statement: 'if true, the canary check is refuted',
       expectedIfTrue: [],
       expectedIfFalse: [],
       status: 'refuted',
     },
   ];
   state.evidence = [
-    ...state.evidence,
     {
-      id: 'e-3',
-      trialId: 'trial-3',
+      id: 'e-1',
+      trialId: 'trial-1',
+      kind: 'metric',
+      source: 'metrics-svc',
+      observedAt: '2026-01-01T00:05:00.000Z',
+      statement: 'the canary check outcome',
+      rawRef: 'metrics/dashboard-1',
+      reliability: 'high',
+    },
+    {
+      id: 'e-2',
+      trialId: 'trial-2',
       kind: 'metric',
       source: 'metrics-svc',
       observedAt: '2026-01-01T00:06:00.000Z',
-      statement: 'latency recovered after rollback',
-      rawRef: 'metrics/dashboard-11',
-      reliability: 'high',
+      statement: 'the pool utilisation reading',
+      rawRef: 'metrics/dashboard-2',
     },
   ];
   state.assessments = [
     {
       id: 'a-1',
       evidenceId: 'e-1',
-      hypothesisId: 'h-1',
-      predictionId: 'p-supported',
-      effect: 'supports',
+      hypothesisId: 'h-alpha',
+      predictionId: 'p-1',
+      effect: 'contradicts',
       strength: 'high',
-      rationale: 'matches the rollback timeline',
+      rationale: 'the canary check came back negative',
       producedBy: 'rule',
       at: '2026-01-01T00:08:00.000Z',
     },
     {
       id: 'a-2',
       evidenceId: 'e-2',
-      hypothesisId: 'h-1',
-      predictionId: 'p-supported',
-      effect: 'supports',
-      strength: 'high',
-      rationale: 'independently corroborates the rollback timeline',
-      producedBy: 'rule',
-      at: '2026-01-01T00:08:00.000Z',
-    },
-    {
-      id: 'a-3',
-      evidenceId: 'e-3',
-      hypothesisId: 'h-2',
-      predictionId: 'p-rejected',
+      hypothesisId: 'h-beta',
       effect: 'contradicts',
-      strength: 'high',
-      rationale: 'the pool never exhausted',
+      strength: 'medium',
+      rationale: 'the pool never came close to its limit',
       producedBy: 'rule',
       at: '2026-01-01T00:08:00.000Z',
     },
   ];
 
-  const expectedH1Status = deriveHypothesisStatus({
-    hypothesisId: 'h-1',
-    predictions: state.predictions,
-    assessments: state.assessments,
-    evidence: state.evidence,
-  });
-  const expectedH2Status = deriveHypothesisStatus({
-    hypothesisId: 'h-2',
-    predictions: state.predictions,
-    assessments: state.assessments,
-    evidence: state.evidence,
-  });
-  // Fixture sanity, checked against the SAME domain function production is
-  // specified to call — this is a content-derivation check, not a security or
-  // governance mechanism, so deriveHypothesisStatus is not a second, competing
-  // oracle here: it is the one recipe both the fixture and the role must agree
-  // with (per the spec, "computed with deriveHypothesisStatus from @aic/domain").
-  assert.equal(expectedH1Status, 'supported', 'fixture sanity: h-1 must derive to supported');
-  assert.equal(expectedH2Status, 'rejected', 'fixture sanity: h-2 must derive to rejected');
+  const EXPECTED_H_ALPHA_STATUS = 'rejected';
+  const EXPECTED_H_BETA_STATUS = 'weakened';
 
   const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
   const node = makeNode({ port });
@@ -372,8 +387,16 @@ test('shows the derived status of every hypothesis, computed the same way derive
 
   assert.equal(requests.length, 1);
   const text = `${requests[0].system}\n${requests[0].prompt}`;
-  assert.match(text, new RegExp(expectedH1Status), 'the derived status for h-1 (supported) must reach the model');
-  assert.match(text, new RegExp(expectedH2Status), 'the derived status for h-2 (rejected) must reach the model');
+  assert.match(
+    text,
+    new RegExp(`"id":"h-alpha","status":"${EXPECTED_H_ALPHA_STATUS}"`),
+    'h-alpha must be paired with its own derived status (rejected), not deleted, not unattributed, and not swapped with h-beta\'s',
+  );
+  assert.match(
+    text,
+    new RegExp(`"id":"h-beta","status":"${EXPECTED_H_BETA_STATUS}"`),
+    'h-beta must be paired with its own derived status (weakened), not deleted, not unattributed, and not swapped with h-alpha\'s',
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -533,6 +556,59 @@ test('refuses a cause mechanism outside the supplied vocabulary (refusal 5)', as
   );
 });
 
+/**
+ * security-scanner blocker (round 1, `packages/roles/src/investigation-roles.ts:727`):
+ * `cause.mechanism` was interpolated into this refusal RAW, while refusals
+ * 1-4 and 6 in the same function all escape and truncate. `CauseClaimSchema`
+ * types `mechanism` as an unbounded `z.string()`, so a model that echoes
+ * attacker-influenceable incident text back as a mechanism can forge a
+ * complete, multi-line second message into operator/CI stderr and a
+ * committed evidence record. Fixed the way `conclusion-rules.ts`'s
+ * `nameValue` already fixes the sibling paths: JSON-escaped and truncated to
+ * 80 characters.
+ */
+test('escapes and truncates a hostile cause mechanism before it reaches the refusal message (refusal 5)', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileMechanism = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  assert.ok(hostileMechanism.length > 500, 'the fixture mechanism must exceed 500 characters');
+  const answer = {
+    kind: 'root-cause',
+    causes: [
+      {
+        hypothesisId: 'h-1',
+        cause: { component: 'checkout-service', mechanism: hostileMechanism },
+        evidenceIds: ['e-1'],
+      },
+    ],
+  };
+  const node = makeNode({ port: fakePort([answer]).port });
+
+  await assert.rejects(
+    () => node(baseState()),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'propose_conclusion');
+      assert.ok(
+        !error.message.includes('\n'),
+        'a raw newline from a hostile mechanism must never reach the refusal message',
+      );
+      // The first 80 characters of the fixture hold exactly 62 x's, so a run
+      // of 63 or more can only come from the part truncation must drop.
+      assert.doesNotMatch(
+        error.message,
+        /x{63,}/,
+        'the mechanism must be truncated to 80 characters: nothing past them may reach the message',
+      );
+      const expectedEscaped = JSON.stringify(hostileMechanism.slice(0, 80));
+      assert.ok(
+        error.message.includes(expectedEscaped),
+        `the message must carry the mechanism JSON-escaped and truncated to 80 chars: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+  );
+});
+
 /* (6) conclusionViolation({...}) reports a reason */
 test('refuses a cause naming a hypothesis the state does not carry, via conclusionViolation (refusal 6)', async () => {
   const answer = {
@@ -563,5 +639,155 @@ test("refuses a 'no-incident' conclusion under stopKind 'tools-unavailable', via
     state,
     "a 'no-incident' conclusion under stopKind 'tools-unavailable' must be refused",
     /tools-unavailable/i,
+  );
+});
+
+/**
+ * code-reviewer advisory 5 (round 1): the owner ruling names "evidence
+ * belongs to the investigation" explicitly, and `conclusionViolation` already
+ * refuses a fabricated evidence id at the domain level
+ * (`test/conclusion-rules.test.mjs`) — but nothing in THIS role's own suite
+ * exercised the delegation for evidence specifically (only for hypotheses and
+ * `tools-unavailable`). This row pins that the role-level refusal fires and
+ * names the fabricated id escaped, the same way the domain's own row does.
+ */
+test('refuses a cause citing evidence the state does not carry, via conclusionViolation (refusal 6)', async () => {
+  const answer = {
+    kind: 'root-cause',
+    causes: [
+      {
+        hypothesisId: 'h-1',
+        cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        evidenceIds: ['e-does-not-exist'],
+      },
+    ],
+  };
+  const node = makeNode({ port: fakePort([answer]).port });
+  await assertRefused(
+    node,
+    baseState(),
+    'a cause citing evidence the state does not carry must be refused at the role level too',
+    /e-does-not-exist/,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Advisory 2: an absent stopKind is a graph invariant, not a model refusal   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * code-reviewer advisory 2 (round 1, `investigation-roles.ts:736`): the cast
+ * `state.control.stopKind as InvestigationStop` makes an ABSENT stop kind
+ * invisible to the type checker, and with it absent `conclusionViolation`'s
+ * rule 6 cannot fire (it only refuses `kind: 'no-incident'` when
+ * `stopKind === 'tools-unavailable'`, and `undefined !== 'tools-unavailable'`).
+ * `stopKind` is a graph-owned invariant — `terminate()` always stamps it
+ * before routing here — so its absence is a harness defect, not a model
+ * answering badly, and must not be reported as one. It must also be checked
+ * BEFORE any port call: asking the model to compose a conclusion the harness
+ * cannot even validate afterward would spend a call on a run that was never
+ * going to get an answer through.
+ */
+test('throws a plain harness Error naming stopKind when state.control.stopKind is absent, before any port call', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const state = baseState();
+  const { stopKind: _stopKind, ...controlWithoutStopKind } = state.control;
+  state.control = controlWithoutStopKind;
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(
+        !(error instanceof ModelRoleOutputError),
+        'an absent stopKind is a graph invariant violation, not a model-quality refusal, so it must not be reported as one',
+      );
+      assert.match(error.message, /stopKind/, `the error must name stopKind: ${error.message}`);
+      return true;
+    },
+    'a state with no control.stopKind must throw before the port is ever asked',
+  );
+  assert.equal(
+    requests.length,
+    0,
+    'the port must not be called before the stopKind invariant is checked',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Advisory 3: two defensive details, pinned                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * code-reviewer advisory 3 (round 1): `trigger: ownValue(claimed, 'trigger')`
+ * already reads defensively (own-property descriptor, not a plain `[[Get]]`),
+ * but nothing exercised it with `Object.prototype.trigger` actually polluted
+ * — the existing prototype-pollution row (refusal 4) only pollutes `kind`.
+ * This pins that a cause with no OWN `trigger` never picks one up through the
+ * prototype chain, even when one is planted there for the duration of the
+ * call.
+ */
+test("reads a cause's trigger only from what it owns, never from Object.prototype", async () => {
+  const answer = {
+    kind: 'root-cause',
+    causes: [
+      {
+        hypothesisId: 'h-1',
+        // No own `trigger` on this cause description.
+        cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        evidenceIds: ['e-1'],
+      },
+    ],
+  };
+
+  await withPollutedObjectPrototype('trigger', 'a-trigger-the-model-never-supplied', async () => {
+    const node = makeNode({ port: fakePort([answer]).port });
+    const result = await node(baseState());
+
+    // `Object.hasOwn` is the only sound check here: EVERY plain object
+    // inherits whatever is planted on `Object.prototype`, so a plain
+    // `cause.trigger === 'a-trigger…'` read would report "leaked" for any
+    // object at all while the pollution is in effect, correct code included.
+    // `ownValue`'s own-descriptor read is what decides whether the polluted
+    // value ever became part of the built cause; a delete-when-undefined
+    // cause that came out clean removes it from the object's OWN keys.
+    assert.equal(
+      Object.hasOwn(result.conclusion.causes[0].cause, 'trigger'),
+      false,
+      'a cause with no own trigger must not carry one built from Object.prototype',
+    );
+  });
+});
+
+/**
+ * code-reviewer advisory 3 (round 1): `const vocabulary =
+ * Object.freeze([...mechanisms])` copies the caller's array at NODE-CREATION
+ * time, so mutating the caller's own array afterward must not widen what the
+ * running node accepts. Unpinned before this row: nothing drove the node
+ * with a mutable caller array and mutated it after creation.
+ */
+test('copies the mechanism vocabulary at creation time, so a mechanism added to the caller array afterward is still refused', async () => {
+  const createModelProposeConclusion = requireExport('createModelProposeConclusion');
+  const mutableMechanisms = ['config-drift', 'capacity-exhaustion'];
+  const answer = {
+    kind: 'root-cause',
+    causes: [
+      {
+        hypothesisId: 'h-1',
+        cause: { component: 'checkout-service', mechanism: 'added-after-creation' },
+        evidenceIds: ['e-1'],
+      },
+    ],
+  };
+  const { port } = fakePort([answer]);
+  const node = createModelProposeConclusion({ mechanisms: mutableMechanisms, port });
+  mutableMechanisms.push('added-after-creation');
+
+  await assertRefused(
+    node,
+    baseState(),
+    'a mechanism added to the caller array after the node was created must still be refused: the vocabulary is copied at creation time',
+    /mechanism/i,
   );
 });

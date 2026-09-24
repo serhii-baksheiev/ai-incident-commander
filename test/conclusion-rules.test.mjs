@@ -524,3 +524,70 @@ test(
     );
   },
 );
+
+/* -------------------------------------------------------------------------- */
+/* quoteModelText: the shared escaping helper (security-scanner blocker,      */
+/* round 1) — `nameValue` exported under a public name so both roles can use  */
+/* it, instead of each role restating JSON.stringify(x.slice(0, 80)) by hand. */
+/* -------------------------------------------------------------------------- */
+
+test('quoteModelText: escapes a quote and a newline, and leaves a short value otherwise intact', () => {
+  assert.equal(
+    typeof domain.quoteModelText,
+    'function',
+    '@aic/domain must export quoteModelText',
+  );
+  assert.equal(domain.quoteModelText('a"b'), '"a\\"b"');
+  assert.equal(domain.quoteModelText('line1\nline2'), '"line1\\nline2"');
+});
+
+test('quoteModelText: truncates to exactly 80 characters before escaping', () => {
+  const eighty = 'x'.repeat(80);
+  const ninety = 'x'.repeat(90);
+  assert.equal(domain.quoteModelText(ninety), `"${eighty}"`);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Correspondence: the hand-written kind vocabulary matches the schema        */
+/* (security-scanner advisory, round 1: conclusion-rules.ts:33-38 restates    */
+/* IncidentConclusionSchema.shape.kind's enum by hand instead of deriving it) */
+/* -------------------------------------------------------------------------- */
+
+test('conclusionCauseCountViolation accepts exactly the kinds IncidentConclusionSchema declares, in both directions', () => {
+  const schemaKinds = new Set(domain.IncidentConclusionSchema.shape.kind.options);
+
+  // Direction 1: every kind the SCHEMA declares is accepted by the domain
+  // rule, via a minimal conclusion of that kind that satisfies the
+  // cause-count rule alone.
+  for (const kind of schemaKinds) {
+    const causes =
+      kind === 'root-cause'
+        ? [{ hypothesisId: 'h-1', cause: { component: 'a', mechanism: 'config-drift' }, evidenceIds: ['e-1'] }]
+        : kind === 'multiple-causes'
+          ? [
+              { hypothesisId: 'h-1', cause: { component: 'a', mechanism: 'config-drift' }, evidenceIds: ['e-1'] },
+              { hypothesisId: 'h-2', cause: { component: 'b', mechanism: 'config-drift' }, evidenceIds: ['e-1'] },
+            ]
+          : [];
+    assert.equal(
+      causeCountViolation({ kind, causes }),
+      undefined,
+      `a minimal valid '${kind}' conclusion, a kind the schema itself declares, must be accepted`,
+    );
+  }
+
+  // Direction 2: a kind OUTSIDE the schema is refused, not silently accepted —
+  // the domain's default-deny already has its own row above; this one anchors
+  // the refused kind to the schema's own enum rather than to a hand-typed list,
+  // so a schema that later drops a kind cannot leave this fixture untested.
+  const outOfEnumKind = 'not-a-real-kind';
+  assert.ok(
+    !schemaKinds.has(outOfEnumKind),
+    'the fixture kind must genuinely be outside the schema enum for this row to mean anything',
+  );
+  assert.notEqual(
+    causeCountViolation({ kind: outOfEnumKind, causes: [] }),
+    undefined,
+    'a kind outside the schema enum must be refused, not silently accepted',
+  );
+});
