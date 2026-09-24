@@ -793,6 +793,197 @@ test('refuses to run without a PostgreSQL connection string instead of skipping'
 });
 
 /* -------------------------------------------------------------------------- */
+/* AIC-57 T-4 stress findings (2000-repetition run, S1 rep 579) — two harness */
+/* defects: (1) both race functions assert the FIRST sweep already reclaims  */
+/* the run, when `FOR UPDATE SKIP LOCKED` can legitimately skip it once and  */
+/* hand it to a LATER sweep; (2) repetitions share one store/table with no   */
+/* per-repetition cleanup, so a leftover non-terminal run from an abandoned  */
+/* repetition is claimed by a later one instead of that repetition's own run */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `sweepUntilReclaimed(store, runId, { attempts, delayMs })` — the bounded
+ * retry `runS1Race`/`runOneRace` must use in place of the current one-shot
+ * `assert.deepEqual(await store.sweepExpired(), [runId])`. `sweepExpired`'s
+ * inner `FOR UPDATE SKIP LOCKED` can legitimately skip a row a concurrent
+ * transaction transiently holds (infra/postgres/tests/run-store.live.mjs ›
+ * "a sweep skips an expired run another transaction holds a row lock on, and
+ * the next sweep reclaims it") — measured directly in the 2,000-repetition
+ * stress run at S1 rep 579, where the first sweep returned `[]` and the very
+ * next repetition's sweep reclaimed both runs. A one-shot assertion on the
+ * first sweep is therefore not a defect in `sweepExpired`; it is a harness
+ * assumption the stress run falsified.
+ *
+ * Not implemented here — this is the Red step. The two rows below pin its
+ * required behaviour: bounded retry until reclaimed, and a bounded, named
+ * failure — never an unbounded wait — when the run is never freed.
+ */
+
+test("sweepUntilReclaimed retries until a lock-held run is reclaimed, and every run it swept is this repetition's own", async (t) => {
+  const store = await freshStore(t);
+  const runId = `run-t4-sweep-until-reclaimed-${randomUUID()}`;
+  await store.createRun({ runId, input: {} });
+  const claim = await store.claimNext('worker-sweep-until-reclaimed');
+  assert.equal(claim.runId, runId, 'this row must claim the run it just created, or it proves nothing about sweepUntilReclaimed');
+
+  // A separate client holds FOR KEY SHARE on the row — the same conflicting
+  // lock run-store.live.mjs's sibling row uses to force sweepExpired to skip
+  // it — and releases it a short, bounded delay later, exactly like the
+  // stress run's own transient lock holder.
+  const lockClient = await store.pool.connect();
+  await lockClient.query('begin');
+  const { rows: lockedRows } = await lockClient.query(
+    'select run_id from aic_app.runs where run_id = $1 for key share',
+    [runId],
+  );
+  assert.equal(lockedRows[0]?.run_id, runId, 'the test\'s own client must hold the lock before the lease is expired, or this row proves nothing');
+  await store.pool.query(
+    `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+    [runId],
+  );
+
+  // Released deterministically in this test's own finally, never through
+  // t.after: freshStore's own t.after (registered first, inside freshStore)
+  // calls store.close(), i.e. pool.end(), which waits for every checked-out
+  // client — including this one — to be released first. Hooks run in
+  // registration order, so a release queued after that one would never run:
+  // pool.end() would hang waiting for a client only a LATER hook frees. Same
+  // reasoning as run-store.live.mjs's own "claimNext skips a row..." row.
+  let lockReleased = false;
+  async function releaseLock() {
+    if (lockReleased) return;
+    lockReleased = true;
+    await lockClient.query('commit');
+    lockClient.release();
+  }
+  const releaseTimer = setTimeout(() => {
+    releaseLock().catch(() => {});
+  }, 150);
+
+  try {
+    const swept = await sweepUntilReclaimed(store, runId, { attempts: 20, delayMs: 20 });
+    assert.deepEqual(
+      swept,
+      [runId],
+      `sweepUntilReclaimed must retry past the sweep(s) that skip the lock-held row and return exactly this repetition's runId once it is reclaimed, got ${JSON.stringify(swept)}`,
+    );
+  } finally {
+    clearTimeout(releaseTimer);
+    await releaseLock();
+  }
+});
+
+test('sweepUntilReclaimed fails after its bounded attempts, naming the run and the attempt count, when the lock is never released', async (t) => {
+  const store = await freshStore(t);
+  const runId = `run-t4-sweep-never-reclaimed-${randomUUID()}`;
+  await store.createRun({ runId, input: {} });
+  const claim = await store.claimNext('worker-sweep-never-reclaimed');
+  assert.equal(claim.runId, runId);
+
+  // Rolled back in this test's own finally, never through t.after — see the
+  // sibling row above's comment for why: freshStore's own t.after (registered
+  // first) closes the pool, which would hang waiting for this very client if
+  // its release were queued behind that hook instead of run before it.
+  const lockClient = await store.pool.connect();
+  await lockClient.query('begin');
+  await lockClient.query('select run_id from aic_app.runs where run_id = $1 for key share', [runId]);
+  await store.pool.query(
+    `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+    [runId],
+  );
+
+  try {
+    await assert.rejects(
+      () => sweepUntilReclaimed(store, runId, { attempts: 3, delayMs: 10 }),
+      (error) => {
+        assert.match(
+          error.message,
+          new RegExp(runId.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')),
+          `sweepUntilReclaimed's failure must name the run it could not reclaim, got: ${error.message}`,
+        );
+        assert.match(
+          error.message,
+          /3 attempts?/,
+          `sweepUntilReclaimed's failure must name how many attempts it made (bounded work, not an unbounded loop), got: ${error.message}`,
+        );
+        return true;
+      },
+      'sweepUntilReclaimed must fail closed after its bounded attempts budget when the lock is never released, rather than waiting forever',
+    );
+  } finally {
+    await lockClient.query('rollback');
+    lockClient.release();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Isolation between repetitions: a leftover non-terminal run from an        */
+/* abandoned repetition must not be the run a later repetition's claimNext   */
+/* returns, nor appear in a later repetition's sweepExpired                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `abandonLeftoverRun(store, runId)` — the per-repetition cleanup the matrix
+ * must register (e.g. from the per-repetition subtest's own `t.after`) so a
+ * run left non-terminal by a failed or aborted repetition — whether still
+ * `queued` or left `running` with an expired lease — cannot be claimed or
+ * swept by a LATER repetition sharing the same store/table. Measured
+ * directly: without this, `claimNext`'s oldest-first ordering hands a later
+ * repetition the earlier repetition's own leftover run instead of the run it
+ * just created, which is exactly how one skipped sweep at rep 579 went on to
+ * fail 11,422 later subtests.
+ *
+ * Not implemented here — this is the Red step.
+ */
+test("a repetition that leaves its run non-terminal does not change which run the next repetition claims", async (t) => {
+  const store = await freshStore(t);
+  const leftoverRunning = `run-t4-leftover-running-${randomUUID()}`;
+  const leftoverQueued = `run-t4-leftover-queued-${randomUUID()}`;
+  await store.createRun({ runId: leftoverRunning, input: {} });
+  await store.createRun({ runId: leftoverQueued, input: {} });
+
+  await t.test('a repetition claims its run and is abandoned before it can finish', async (st) => {
+    const claim = await store.claimNext('worker-abandoned-repetition');
+    assert.equal(
+      claim.runId,
+      leftoverRunning,
+      'this subtest must claim the run this outer test intends to leave running with an expired lease',
+    );
+    await store.pool.query(
+      `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+      [leftoverRunning],
+    );
+    // The per-repetition cleanup the real matrix would register, so an
+    // abandoned repetition's own run cannot outlive the subtest that created
+    // it.
+    st.after(() => abandonLeftoverRun(store, leftoverRunning));
+  });
+
+  // A second leftover, from an earlier repetition that never even reached
+  // claimNext, cleaned up the same way but not through a subtest's own
+  // t.after — the mechanism must terminalize a leftover run regardless of
+  // which non-terminal status it was left in.
+  await abandonLeftoverRun(store, leftoverQueued);
+
+  const freshRunId = `run-t4-fresh-after-leftovers-${randomUUID()}`;
+  await store.createRun({ runId: freshRunId, input: {} });
+
+  const nextClaim = await store.claimNext('worker-after-leftovers');
+  assert.equal(
+    nextClaim?.runId,
+    freshRunId,
+    `claimNext must return this repetition's own freshly created run, not a leftover non-terminal run left behind by an earlier, abandoned repetition; got ${JSON.stringify(nextClaim)}`,
+  );
+
+  const swept = await store.sweepExpired();
+  assert.deepEqual(
+    swept,
+    [],
+    'sweepExpired must return nothing stale once every leftover run has been moved to a terminal state by the per-repetition cleanup',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
 /* The T-4 matrix: S1-S6, T4_REPETITIONS each, all assertions (a)-(h)         */
 /* -------------------------------------------------------------------------- */
 
@@ -1051,4 +1242,38 @@ test('measures the natural window between the fence check and the inner write, u
   // eslint-disable-next-line no-console -- the exposure window the ADR records: fence resolved -> write landed.
   console.log(`t4-window-ms landed ${percentiles(landedWindowsMs)}`);
   assert.ok(windowsMs.length > 0 && landedWindowsMs.length === windowsMs.length, 'every window sample must have both series recorded');
+});
+
+/* -------------------------------------------------------------------------- */
+/* percentiles must report an empty sample explicitly, never NaN/undefined   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `percentiles` (currently declared inline inside the test above, around the
+ * `t4-window-ms` lines) computes `at(50)`/`at(99)` by indexing a sorted copy
+ * of `samples` — for an empty array, `sorted[...]` is `undefined` and
+ * `.toFixed(3)` on it throws, or if guarded naively, prints the literal
+ * string "undefined"/"NaN" into a line this file's own header documents as
+ * stable and greppable for the stress run. Neither is an honest report of
+ * "zero samples were recorded". This pins the required behaviour: `n=0`
+ * reported explicitly, with no `NaN`/`undefined` in the line at all.
+ *
+ * Calling `percentiles` here, from outside the test function it is currently
+ * declared inside, is deliberate: the fix this row requires is for
+ * `percentiles` to become reachable from more than that one call site (module
+ * scope is enough — it needs no export), so this row and the sample-producing
+ * test above call the same one implementation rather than two copies.
+ */
+test('percentiles reports n=0 explicitly for an empty sample, never NaN or undefined', () => {
+  const report = percentiles([]);
+  assert.doesNotMatch(
+    String(report),
+    /NaN|undefined/,
+    `percentiles([]) must not print NaN or undefined for an empty sample, got ${JSON.stringify(report)}`,
+  );
+  assert.match(
+    String(report),
+    /\bn=0\b/,
+    `percentiles([]) must explicitly report n=0 for an empty sample, got ${JSON.stringify(report)}`,
+  );
 });
