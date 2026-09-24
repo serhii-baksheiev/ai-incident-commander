@@ -7,7 +7,7 @@
  * shares nothing but the connection string and the thread id is the only
  * arrangement where the checkpointer is provably what carried the state.
  *
- * Four modes, two flows:
+ * Six modes, three flows:
  *
  *   interrupt <runId>              a graph run that pauses at the human review
  *   confirm   <runId> <interrupt>  a NEW process that resumes that same pause
@@ -16,8 +16,30 @@
  *                                  executeInvestigation, so it can be SIGKILLed
  *   resume     <runId>             a NEW process that recovers the pending test
  *
- * The first flow is a clean stop and a clean restart; the second is a crash. A
- * checkpointer can pass one and fail the other, so both are driven.
+ *   tool-replay-start  <runId> <testId>  claims runId through a REAL RunStore,
+ *                                        opens a REAL RunWriteContext, and runs
+ *                                        the persistent runner with `execution`
+ *                                        wired to it - crashing (hanging, for
+ *                                        the parent to SIGKILL) the instant its
+ *                                        own real `committed()` call returns,
+ *                                        i.e. after the result transaction has
+ *                                        landed and before this node can
+ *                                        return control to LangGraph for its
+ *                                        own checkpoint
+ *   tool-replay-resume <runId>           a NEW process that claims runId again
+ *                                        (a fresh execution_attempt, after the
+ *                                        parent force-expired and swept the
+ *                                        first worker's lease) and resumes the
+ *                                        same thread through its OWN real
+ *                                        RunWriteContext
+ *
+ * The first flow is a clean stop and a clean restart; the second is a crash
+ * with no run-store/write-context involvement at all (AIC-55's checkpointer
+ * resumability); the third is AIC-56 slice D1's own acceptance row - the same
+ * kind of crash, but through the real fenced write context and a real lease
+ * takeover, which the second flow does not exercise. A checkpointer or a write
+ * context can each pass one of its own flows and fail another, so all three
+ * are driven.
  *
  * Like `test/fixtures/persistent-resume-worker.mjs`, this file does nothing on
  * import — everything is behind the `process.send` check at the bottom — so it
@@ -249,9 +271,93 @@ async function runPersistentFlow() {
   process.send({ type: 'completed', result }, () => process.exit(0));
 }
 
+/**
+ * Wraps a REAL `RunWriteContext` (AIC-56 slice C, `@aic/persistence`) so that
+ * the instant its own `committed()` call resolves - the result transaction is
+ * durably landed - this process sends `{ type: 'committed' }` over IPC and
+ * then hangs forever, exactly like `start-hang`'s own held-open promise above
+ * and for the same documented reason (AIC-68): without the ref, and without
+ * something to await, the child could exit on its own before the parent's
+ * SIGKILL lands, which would be the crash racing an exit rather than the
+ * crash itself.
+ */
+function wrapExecutionToCrashAfterCommit(context) {
+  return {
+    async committed(execKey, compute, options) {
+      const result = await context.committed(execKey, compute, options);
+      process.send({ type: 'committed', execKey });
+      process.channel.ref();
+      await new Promise(() => {});
+      return result; // unreachable
+    },
+  };
+}
+
+/**
+ * The AIC-56 slice D1 acceptance flow: a REAL `RunStore` claim, a REAL
+ * `RunWriteContext`, and the persistent runner's `execution` dependency wired
+ * to it - `tool-replay-start` crashes right after its own real commit lands
+ * (see `wrapExecutionToCrashAfterCommit`); `tool-replay-resume` is a plain,
+ * unwrapped context claiming the SAME run under a fresh `execution_attempt`
+ * after the parent has force-expired and swept the first worker's lease.
+ */
+async function runToolReplayFlow() {
+  const { createPersistentInvestigationRunner } = await import('@aic/graph');
+  const { createPostgresCheckpointer, createRunStore, openRunWriteContext } = await import('@aic/persistence');
+
+  const connection = await connectionString();
+  const checkpointer = await createPostgresCheckpointer(connection);
+  const store = createRunStore(connection, { leaseMs: 30_000, maxExecutionAttempts: 5 });
+  const testId = argument ?? 'test-checkout';
+
+  const claim = await store.claimNext(`worker-${mode}-${process.pid}`);
+  if (!claim || claim.runId !== runId) {
+    throw new Error(
+      `tool-replay worker (mode=${mode}) expected to claim ${runId} but claimNext returned ${JSON.stringify(claim)} - the parent must create/queue the run before spawning this worker`,
+    );
+  }
+
+  const context = openRunWriteContext(store, claim);
+  const execution = mode === 'tool-replay-start' ? wrapExecutionToCrashAfterCommit(context) : context;
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer,
+    execution,
+    async executeInvestigation(ctx) {
+      process.send({
+        type: 'inside-execute-investigation',
+        runId: ctx.runId,
+        testId: ctx.testId,
+        attempt: ctx.attempt,
+      });
+      return {
+        trial: { status: 'ok', durationMs: 1 },
+        evidence: {
+          kind: 'log',
+          source: 'fixture-tool',
+          observedAt: '2026-08-27T12:00:00.000Z',
+          statement: 'checkout returned a deterministic fixture result',
+          rawRef: 'fixture://checkout/result',
+          reliability: 'high',
+        },
+        payloadFingerprint: 'fixture-payload-v1',
+      };
+    },
+  });
+
+  if (mode === 'tool-replay-start') {
+    await runner.start({ runId, test: { id: testId, tool: 'fixture-tool', input: { service: 'checkout' } } });
+    return; // unreachable: the wrapped execution above never returns
+  }
+
+  const result = await runner.resume({ runId });
+  process.send({ type: 'completed', result }, () => process.exit(0));
+}
+
 async function main() {
   if (mode === 'interrupt' || mode === 'confirm') return runReviewFlow();
   if (mode === 'start-hang' || mode === 'resume') return runPersistentFlow();
+  if (mode === 'tool-replay-start' || mode === 'tool-replay-resume') return runToolReplayFlow();
   throw new Error(`unknown worker mode: ${mode}`);
 }
 

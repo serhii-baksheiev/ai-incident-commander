@@ -162,6 +162,5 @@ export {
   openRunWriteContext,
   RUN_WRITE_CONTEXT_FENCE_SQL,
   type CommittedOptions,
-  type CommittedProjection,
   type RunWriteContext,
 } from './run-write-context.js';

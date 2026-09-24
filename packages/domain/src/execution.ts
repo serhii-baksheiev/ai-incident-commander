@@ -30,6 +30,8 @@ import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
 
+import type { Evidence, Trial } from './contracts.js';
+
 // ---- canonicalJson ---------------------------------------------------------
 
 export type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
@@ -342,4 +344,32 @@ export class StaleOwnerError extends Error {
     super(message, options);
     this.name = 'StaleOwnerError';
   }
+}
+
+// ---- The committed-execution port -----------------------------------------
+
+/** The domain records a committed operation writes beside its result. */
+export interface CommittedProjection {
+  readonly trials?: readonly Trial[];
+  readonly evidence?: readonly Evidence[];
+}
+
+/**
+ * The port through which the graph commits the result of one logical
+ * operation (decisions 5-7 of docs/decisions/durable-run-execution.md): the
+ * graph depends on this and never on a storage implementation. `project`
+ * receives the committed result and returns the records to write with it.
+ * `@aic/persistence`'s run write context is the implementation; see
+ * durable-tool-replay.test.mjs › "compiles the durable-tool-replay type
+ * contract: RunWriteContext satisfies CommittedExecution".
+ */
+export interface CommittedExecution {
+  committed<T>(
+    execKey: string,
+    compute: () => Promise<T>,
+    options?: {
+      readonly project?: (result: T) => CommittedProjection | undefined;
+      readonly inputFingerprint?: string;
+    },
+  ): Promise<T>;
 }

@@ -454,6 +454,22 @@ test('StaleOwnerError carries code and is an Error named after its class', () =>
   assert.equal(err.code, 'execution.fenced');
 });
 
+/**
+ * AIC-56 slice D1 carry-over from slice C: `run-write-context.ts`'s
+ * `runFenced` attaches the fence-rejection recording failure as `cause` when
+ * it throws `StaleOwnerError` (see run-write-context.live.mjs › "a fence
+ * refusal whose rejection cannot be recorded still ends in StaleOwnerError,
+ * carrying the recording failure as its cause"), which only carries evidence
+ * if the class itself passes `cause` through to `Error` rather than dropping
+ * it - the same contract `ExecutionIntegrityViolation`'s constructor is never
+ * asked for, since none of its call sites in this codebase pass one.
+ */
+test('StaleOwnerError passes { cause } through to the underlying Error', () => {
+  const cause = new Error('fence_rejections insert failed');
+  const err = new domain.StaleOwnerError('this worker no longer holds the fencing token', { cause });
+  assert.equal(err.cause, cause);
+});
+
 // --- 6. canonicalJson -------------------------------------------------
 
 test('canonicalJson sorts object keys recursively, stable across key-order permutations', () => {
