@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./oracle": {
+      "types": "./dist/oracle-arm.d.ts",
+      "default": "./dist/oracle-arm.js"
     }
   },
   "dependencies": {

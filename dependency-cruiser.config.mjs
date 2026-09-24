@@ -55,6 +55,40 @@ export default {
       from: { path: '^packages/(?!persistence(?:/|$))' },
       to: { path: '(?:^|/)node_modules/pg(?:/|$)|^pg(?:/|$)' },
     },
+    {
+      name: 'oracle-arm-is-evaluator-side-only',
+      comment:
+        'AIC-113: the oracle positive control reads ground truth, which no investigating ' +
+        'arm may do. No module under packages/ or apps/ other than the oracle itself may ' +
+        'import it, by the @aic/evals/oracle subpath or by a relative path. Evaluator ' +
+        'scripts and tests sit outside the cruised tree and are not governed by this rule.',
+      severity: 'error',
+      from: {
+        path: '^(?:packages|apps)/',
+        pathNot: '^packages/evals/(?:src|dist)/oracle-arm\\.',
+      },
+      to: {
+        path:
+          '(?:^|/)packages/evals/(?:src|dist)/oracle-arm(?:\\.|$)|' +
+          '(?:^|/)node_modules/@aic/evals/(?:dist/)?oracle|' +
+          '^@aic/evals/oracle$',
+      },
+    },
+    {
+      name: 'benchmark-ground-truth-is-evaluator-side-only',
+      comment:
+        'AIC-113: @aic/evals carries the benchmark scenarios and their ground truth. No ' +
+        'package other than evals itself, and no app, may import it, so an investigating ' +
+        'layer cannot read the answers it is scored against.',
+      severity: 'error',
+      from: { path: '^(?:packages/(?!evals/)|apps/)' },
+      to: {
+        path:
+          '(?:^|/)packages/evals/|' +
+          '(?:^|/)node_modules/@aic/evals(?:/|$)|' +
+          '^@aic/evals(?:/|$)',
+      },
+    },
   ],
   options: {
     doNotFollow: { path: 'node_modules' },

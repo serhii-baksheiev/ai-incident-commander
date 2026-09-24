@@ -465,9 +465,9 @@ const APPLICATION_SCHEMA_SURFACE_PATTERNS = Object.freeze([
 ]);
 
 test('keeps checkpointer storage, the application schema\'s tables, and the PostgreSQL driver out of every layer but persistence', () => {
-  // `dependency-cruiser` cannot answer this one: `npm run lint:graph` runs over
-  // `packages` only (so `apps/` is outside it), and a table name in a SQL
-  // string is not an import edge at all. Hence a text scan, in the shape
+  // `dependency-cruiser` cannot answer this one: `only-persistence-imports-pg`
+  // refuses the driver only from `packages/`, so `apps/` is outside it, and a
+  // table name in a SQL string is not an import edge at all. Hence a text scan, in the shape
   // `test/roles-boundary.test.mjs` uses to hold the provider to one file.
   const scanned = [
     ...sourceFiles(resolve(projectRoot, 'packages')),
@@ -485,8 +485,8 @@ test('keeps checkpointer storage, the application schema\'s tables, and the Post
   );
 
   // Non-vacuity, and specifically for the half no lint rule covers: `apps/` is
-  // outside `npm run lint:graph`, so if the walk ever stops reaching it this
-  // row would report clean while looking at packages alone.
+  // outside `only-persistence-imports-pg`, so if the walk ever stops reaching it
+  // this row would report clean while looking at packages alone.
   assert.equal(
     scanned.map((path) => relative(projectRoot, path)).includes('apps/cli/src/index.ts'),
     true,
