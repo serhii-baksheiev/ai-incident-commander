@@ -57,8 +57,11 @@ npm run live-lab:regenerate -- \
   --candidate-directory ./candidate-recordings/aic-v01
 ```
 
-The command resets, starts, and records each scenario through the existing
-`LiveToolAdapter`. It writes one versioned JSON envelope per scenario with the
+The command resets, starts, and records each scenario through the `lab@1`
+evidence source, bound as `incident-lab` in a live `BoundSourceRegistry`
+(`test/incident-lab-source-binding.test.mjs` › "scenario-candidates.mjs
+imports createLabEvidenceSource and createBoundSourceRegistry from @aic/tools
+(AIC-98 slice a)"). It writes one versioned JSON envelope per scenario with the
 scenario ID and version, lab topology version, every tool call and input, every
 live result, and an embedded `ReplayToolAdapter` fixture. Files use
 exclusive-create semantics. If any target already exists, the command refuses
@@ -66,15 +69,16 @@ the set instead of overwriting it. These properties are exercised by
 `incident-lab/tests/aic16-completion.live.mjs` › "regenerates one byte-stable
 replayable candidate per frozen v0.1 scenario after isolated resets".
 
-A live result is recorded as `LiveToolAdapter` returns it, and since AIC-100
-that adapter runs every call through the evidence-source registry. So a
-credential-shaped value in a result is recorded redacted
-(`test/legacy-adapters-on-registry.test.mjs` › "LiveToolAdapter redacts an
-assembled credential inside a live tool's output, through the registry"), and
-a result larger than the default size budget is refused instead of recorded
-(same file › "LiveToolAdapter constructed with NO second (options) argument is
-still bound by DEFAULT_SOURCE_BUDGETS: an ok result whose serialized size
-exceeds maxResultBytes is refused budget_exceeded (code-reviewer round 1)").
+A credential-shaped value in a lab response is recorded redacted
+(`test/lab-evidence-source.test.mjs` › "registry + lab@1 redacts a
+credential-shaped value in the lab response body before it reaches the
+caller"), and the registry's default budgets apply because the command passes
+none (`test/bound-source-registry.test.mjs` › "accepts construction with no
+budgets field at all, falling back to DEFAULT_SOURCE_BUDGETS"). A refused
+observation stops the command and names the refusal reason
+(`incident-lab/tests/bad-deployment.live.mjs` › "records a reviewable
+bad-deployment candidate that replays after isolated resets", its "reset
+observation isolation" stage).
 
 Compare a complete candidate set with the accepted v0.1 replay observations:
 
