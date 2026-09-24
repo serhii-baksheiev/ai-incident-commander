@@ -675,6 +675,49 @@ test('markWaitingHuman moves running to waiting_human, clears owner and lease, a
   );
 });
 
+/**
+ * AIC-56 slice D1 carry-over from slice C: `interaction_id` names at most one
+ * run (migration 2's own unique partial index, pinned structurally by "the
+ * catalog shows them" row above) - this is the behavioural half, at the
+ * `markWaitingHuman` method itself, that no existing row in this file
+ * exercises: every other `markWaitingHuman` row here uses a distinct
+ * interaction id per run.
+ */
+test('markWaitingHuman refuses an interaction id another run already holds, and that other run stays running with its owner', async (t) => {
+  const store = await freshStore(t);
+  const { runId: runIdA, claim: claimA } = await createAndClaim(store, 'worker-dup-interaction-a');
+  const { runId: runIdB, claim: claimB } = await createAndClaim(store, 'worker-dup-interaction-b');
+  const contextA = await persistence.openRunWriteContext(store, claimA);
+  const contextB = await persistence.openRunWriteContext(store, claimB);
+
+  await contextA.markWaitingHuman('interaction-dup');
+
+  await assert.rejects(
+    () => contextB.markWaitingHuman('interaction-dup'),
+    'run B must be refused: interaction-dup is already held by run A, and the unique partial index on aic_app.runs(interaction_id) must refuse the second row and roll back the transaction',
+  );
+
+  const { rows: rowsB } = await store.pool.query(
+    'select status, owner_worker_id, execution_attempt from aic_app.runs where run_id = $1',
+    [runIdB],
+  );
+  assert.deepEqual(
+    { status: rowsB[0].status, ownerWorkerId: rowsB[0].owner_worker_id, executionAttempt: Number(rowsB[0].execution_attempt) },
+    { status: 'running', ownerWorkerId: claimB.ownerWorkerId, executionAttempt: claimB.executionAttempt },
+    "run B's refused markWaitingHuman must roll back entirely: run B keeps its own owner and lease, exactly as if the call had never been made",
+  );
+
+  const { rows: rowsA } = await store.pool.query(
+    'select status, interaction_id from aic_app.runs where run_id = $1',
+    [runIdA],
+  );
+  assert.deepEqual(
+    { status: rowsA[0].status, interactionId: rowsA[0].interaction_id },
+    { status: 'waiting_human', interactionId: 'interaction-dup' },
+    "run A's own successful markWaitingHuman must be unaffected by run B's later, refused attempt",
+  );
+});
+
 test('complete moves running to completed', async (t) => {
   const store = await freshStore(t);
   const { runId, claim } = await createAndClaim(store, 'worker-complete');
