@@ -90,6 +90,17 @@ function requireExport(name) {
 }
 
 /**
+ * AIC-119 slice E: the graph arm's prompt set changed (a fourth role,
+ * `propose_conclusion`, plus the interpret id-contract sentence below), so
+ * the version this module ships bumps with it — the same reasoning
+ * `docs/evidence/preregistration/` records under a new dated file rather than
+ * an edit to the v0.2 one.
+ */
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.3', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.3');
+});
+
+/**
  * A port that answers with a scripted body and records what it was asked.
  *
  * `answers` is consumed in order, so a test that expects two calls fails loudly
@@ -323,6 +334,44 @@ test('stamps every assessment as llm-produced and carries the prompt version', a
   assert.equal(update.declaredLlmCalls, 1);
 });
 
+/**
+ * AIC-119 slice E: the refusal for a fabricated evidenceId/hypothesisId/
+ * predictionId landed in #127 (see the three "refuses an assessment whose …"
+ * rows below), and the model was never told the rule exists. The system
+ * prompt must now say so: every assessment names an evidenceId, hypothesisId
+ * and (optional) predictionId that the state below actually shows, and any
+ * other id is refused.
+ */
+test('the system prompt states the id contract: an assessment must name an evidenceId, hypothesisId and (optional) predictionId shown in the state below, and any other id is refused', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { port, requests } = fakePort([{ assessments: [] }]);
+  const node = createModelInterpretResidualEvidence({ port, at });
+
+  await node(initialState());
+
+  assert.equal(requests.length, 1);
+  const { system } = requests[0];
+  assert.match(system, /evidenceId/, 'the id-contract sentence must name evidenceId');
+  assert.match(system, /hypothesisId/, 'the id-contract sentence must name hypothesisId');
+  assert.match(
+    system,
+    /predictionId/,
+    'the id-contract sentence must name predictionId, the optional one',
+  );
+  assert.match(
+    system,
+    /shown/i,
+    'the id-contract sentence must tie the allowed ids to the state shown below, not to ids in general',
+  );
+  assert.match(
+    system,
+    /refus/i,
+    'the id-contract sentence must say that naming any other id is refused',
+  );
+});
+
 test('refuses an assessment that claims a rule produced it', async () => {
   const createModelInterpretResidualEvidence = requireExport(
     'createModelInterpretResidualEvidence',
@@ -497,7 +546,7 @@ test('refuses an assessment whose predictionId is not a prediction of the named 
 /**
  * `.claude/rules/invariants.md` ("State the limits — and test them"): any
  * model-supplied id reaching a refusal message must be escaped and truncated,
- * the same way `refuseUnknownKeys` and `conclusion-rules.ts`'s `nameValue`
+ * the same way `refuseUnknownKeys` and `conclusion-rules.ts`'s `quoteModelText`
  * already do for their own sinks. Uses a hostile hypothesisId; the other two
  * ids above are pinned by name-matching only, this row pins the escaping
  * mechanism itself.

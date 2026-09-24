@@ -108,16 +108,21 @@ export const LIVE_MODEL_LANE_MAX_MODEL_RUNS =
 /**
  * The graph arm's completion ceiling for ONE run, read off the budget policy:
  * one `generate_hypotheses`, one `interpret_residual_evidence` per iteration,
- * and per challenge round two — `challenge_hypothesis`, then the
+ * per challenge round two — `challenge_hypothesis`, then the
  * `interpret_residual_evidence` its edge leads back to through
  * `execute_investigation` (`packages/graph/src/investigation.ts`, the
- * `challenge_hypothesis` edge). A ceiling for the ledger, not a forecast.
+ * `challenge_hypothesis` edge) — and one `propose_conclusion` (AIC-119 slice
+ * E), reached exactly once per run at termination, once per terminal, never
+ * once per iteration or per challenge round: there is no human review in this
+ * benchmark to route the graph back through it a second time. A ceiling for
+ * the ledger, not a forecast.
  * see four-arm-lane.test.mjs › "derives the per-run and total model-call caps from the budget policy and the partition lengths"
  */
 export const LIVE_MODEL_LANE_GRAPH_MODEL_CALLS_PER_RUN =
   1 +
   BENCHMARK_BUDGET_POLICY.maxIterations +
-  2 * BENCHMARK_BUDGET_POLICY.reservedChallengeBudget;
+  2 * BENCHMARK_BUDGET_POLICY.reservedChallengeBudget +
+  1;
 
 /**
  * The naive arm's completion budget for ONE run: a single prompt, a single

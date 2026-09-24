@@ -1,15 +1,62 @@
 /**
- * The oracle and naive arms of the live lane, wired once for both lane
+ * The oracle, naive and model arms of the live lane, wired once for both lane
  * commands (`eval-live-model.mjs` and `eval-final-holdout.mjs`), so the two
- * cannot drift apart in how they build either arm.
+ * cannot drift apart in how they build any arm.
  *
  * The oracle reads ground truth and makes no model call. The naive arm makes
  * one completion per record through the port it is handed.
  * see lane-arms.test.mjs › "naiveArm drives the naive role from a fake port: exactly one completion per record, notApplicable.challenge_effect on every result, promptVersion/modelId/modelProvider on every record, and no REPLAY_SCENARIOS id in any request"
+ *
+ * AIC-119 slice E: `modelNodes` used to be defined once per script
+ * (`eval-live-model.mjs`, `eval-final-holdout.mjs`), and both copies swapped
+ * only three roles — `propose_conclusion` stayed the scripted, replay-backed
+ * node, so the model arm never spent the fourth model-backed role at all.
+ * `.claude/rules/invariants.md` ("one mechanism, one implementation"): this is
+ * now the one definition, and it wires all four.
+ * see lane-arms.test.mjs › "modelNodes(record, port).propose_conclusion is a model role: the fake port sees exactly one call, carrying the mechanism vocabulary sentence built from evals.ROOT_CAUSE_MECHANISMS"
+ * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach modelNodes from ./lane-arms.mjs, the single implementation"
  */
 import * as evals from '@aic/evals';
 import { runOracleBenchmarkExperiment } from '@aic/evals/oracle';
+import {
+  createModelChallengeHypothesis,
+  createModelGenerateHypotheses,
+  createModelInterpretResidualEvidence,
+  createModelProposeConclusion,
+} from '@aic/roles';
 import { NAIVE_PROMPT_VERSION, createModelNaiveInvestigation } from '@aic/roles/naive';
+
+import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
+
+/**
+ * The deterministic arm: the replay-backed nodes, unchanged. The one
+ * implementation both lane commands use, so the control arm and the model
+ * arm's base nodes cannot drift apart.
+ * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation"
+ *
+ * ⚠ `replayBackedNodes` takes three arguments, and an earlier hold-out command
+ * passed one. The crash came at the first record of the control arm, before any
+ * model call, and it is why record `04cf86236c2f` is void.
+ */
+export function scriptedNodes(record) {
+  return replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]]));
+}
+
+/**
+ * The model arm: the same nodes with the four reasoning roles swapped for
+ * model-backed ones. `execute_investigation` still replays the recorded tool
+ * calls, so the evidence both arms see is identical and the only difference
+ * is who reasoned over it.
+ */
+export function modelNodes(record, port) {
+  return {
+    ...scriptedNodes(record),
+    generate_hypotheses: createModelGenerateHypotheses({ port }),
+    interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
+    challenge_hypothesis: createModelChallengeHypothesis({ port }),
+    propose_conclusion: createModelProposeConclusion({ port, mechanisms: evals.ROOT_CAUSE_MECHANISMS }),
+  };
+}
 
 /** The positive control: the ground-truth answer, scored like every other arm. */
 export function oracleArm({ experimentId }) {

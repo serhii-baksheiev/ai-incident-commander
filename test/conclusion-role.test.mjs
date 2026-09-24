@@ -564,7 +564,7 @@ test('refuses a cause mechanism outside the supplied vocabulary (refusal 5)', as
  * attacker-influenceable incident text back as a mechanism can forge a
  * complete, multi-line second message into operator/CI stderr and a
  * committed evidence record. Fixed the way `conclusion-rules.ts`'s
- * `nameValue` already fixes the sibling paths: JSON-escaped and truncated to
+ * `quoteModelText` (formerly `nameValue`) already fixes the sibling paths: JSON-escaped and truncated to
  * 80 characters.
  */
 test('escapes and truncates a hostile cause mechanism before it reaches the refusal message (refusal 5)', async () => {
@@ -712,6 +712,183 @@ test('throws a plain harness Error naming stopKind when state.control.stopKind i
     requests.length,
     0,
     'the port must not be called before the stopKind invariant is checked',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-119 slice E: state.assessments naming unknown ids is a harness fault,  */
+/* not a model refusal — and it must not leak raw model text                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `deriveHypothesisStatus` (`packages/domain/src/evaluation.ts`) throws a
+ * plain `Error` naming the offending id VERBATIM when an assessment cites
+ * evidence, a hypothesis or a prediction the run does not carry — reachable
+ * here whenever `state.assessments` was written before AIC-119 slice D's own
+ * validation existed (a checkpoint resumed across that boundary). This role
+ * must validate those references itself, BEFORE deriving any hypothesis
+ * status and before any port call — the same ordering the stopKind guard
+ * above already uses, for the same reason: asking the model to compose a
+ * conclusion the harness cannot even validate would spend a call on a run
+ * that was never going to get an answer through. The id in the thrown
+ * message must go through `quoteModelText` (`@aic/domain`), the same
+ * escape-and-truncate `interpret_residual_evidence`'s own refusals already
+ * use, rather than `deriveHypothesisStatus`'s raw, unescaped text.
+ */
+test('an assessment naming evidence the run does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileEvidenceId = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  const state = baseState({
+    assessments: [
+      {
+        id: 'a-1',
+        evidenceId: hostileEvidenceId,
+        hypothesisId: 'h-1',
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'because',
+        producedBy: 'llm',
+        promptVersion: 'reference-roles-prompt-v0.2',
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  });
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(
+        !(error instanceof ModelRoleOutputError),
+        'a state whose assessments name unknown evidence is a state/harness fault, not a model-quality refusal',
+      );
+      assert.ok(
+        !error.message.includes('\n'),
+        `a raw newline from a hostile id must never reach the message: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+    'a state whose assessments cite unknown evidence must throw before the port is ever asked',
+  );
+  assert.equal(
+    requests.length,
+    0,
+    'the port must not be called before the assessment references are validated',
+  );
+});
+
+/**
+ * Round-2 (code-reviewer blocker 3, `investigation-roles.ts:764`): the
+ * `hypothesisId` branch of the same validation loop had no test — with it
+ * deleted, the full suite stayed green. This row is the independent-oracle
+ * check that closes it: `deriveHypothesisStatus` filters assessments BY
+ * hypothesis (`packages/domain/src/evaluation.ts`), so it never throws on an
+ * unknown `hypothesisId` — meaning this branch is a genuinely new refusal,
+ * not a pre-emption of a throw that already existed further down.
+ */
+test('an assessment naming a hypothesisId the state does not carry throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileHypothesisId = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  const state = baseState({
+    assessments: [
+      {
+        id: 'a-1',
+        evidenceId: 'e-1',
+        hypothesisId: hostileHypothesisId,
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'because',
+        producedBy: 'llm',
+        promptVersion: 'reference-roles-prompt-v0.2',
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  });
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(
+        !(error instanceof ModelRoleOutputError),
+        'a state whose assessments name an unknown hypothesis is a state/harness fault, not a model-quality refusal',
+      );
+      assert.ok(
+        !error.message.includes('\n'),
+        `a raw newline from a hostile id must never reach the message: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+    'a state whose assessments name a hypothesis the run does not carry must throw before the port is ever asked',
+  );
+  assert.equal(
+    requests.length,
+    0,
+    'the port must not be called before the assessment references are validated',
+  );
+});
+
+/**
+ * Round-2 (code-reviewer blocker 3, `investigation-roles.ts:770`): the
+ * `predictionId` branch of the same loop, also untested — with it deleted,
+ * the full suite stayed green. The fixture below is the case the branch
+ * exists for: the named prediction is real, but it belongs to a DIFFERENT
+ * hypothesis than the assessment names, so a check that only asked "does
+ * this predictionId exist anywhere" would wrongly accept it.
+ */
+test('an assessment naming a predictionId that is not a prediction of its hypothesis throws a plain (non-ModelRoleOutputError) Error before any port call, with no raw newline from a hostile id', async () => {
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostilePredictionId = `"quoted"\nline-two-${'x'.repeat(500)}`;
+  const state = baseState({
+    predictions: [
+      {
+        id: hostilePredictionId,
+        hypothesisId: 'h-2',
+        statement: 'if true, some other signal would appear',
+        expectedIfTrue: [],
+        expectedIfFalse: [],
+        status: 'untested',
+      },
+    ],
+    assessments: [
+      {
+        id: 'a-1',
+        evidenceId: 'e-1',
+        hypothesisId: 'h-1',
+        predictionId: hostilePredictionId,
+        effect: 'supports',
+        strength: 'high',
+        rationale: 'because',
+        producedBy: 'llm',
+        promptVersion: 'reference-roles-prompt-v0.2',
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  });
+  const { port, requests } = fakePort([VALID_ANSWERS_BY_KIND.inconclusive]);
+  const node = makeNode({ port });
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(
+        !(error instanceof ModelRoleOutputError),
+        'a state whose assessments name a predictionId of the wrong hypothesis is a state/harness fault, not a model-quality refusal',
+      );
+      assert.ok(
+        !error.message.includes('\n'),
+        `a raw newline from a hostile id must never reach the message: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+    'a state whose assessments name a predictionId that is not a prediction of its named hypothesis must throw before the port is ever asked',
+  );
+  assert.equal(
+    requests.length,
+    0,
+    'the port must not be called before the assessment references are validated',
   );
 });
 

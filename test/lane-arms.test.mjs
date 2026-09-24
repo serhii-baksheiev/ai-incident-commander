@@ -273,6 +273,128 @@ test('each lane command creates exactly one reference-model port and hands it to
 });
 
 /* -------------------------------------------------------------------------- */
+/* 3b. modelNodes: the single implementation, wired with propose_conclusion   */
+/*     (AIC-119 slice E)                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The same execution-input shape `test/live-model-lane.test.mjs`'s
+ * `calibrationExecutionInput` builds, copied rather than imported: that
+ * helper is not exported, and this file's own convention (see the file
+ * header) is that a row needing `scripts/lane-arms.mjs` imports it inside the
+ * row so a broken module fails only that row.
+ */
+function calibrationExecutionInput() {
+  const [record] = evals.createCalibrationBenchmarkPlan({
+    experimentId: 'aic-119e-lane-arms-modelnodes',
+    runsPerScenario: 3,
+    metadata: v3Metadata,
+  });
+  assert.ok(record, 'the calibration plan must contain at least one record');
+  return {
+    experimentId: record.experimentId,
+    exampleId: record.exampleId,
+    scenarioId: record.scenario.id,
+    fixture: record.scenario.fixture,
+    runId: record.runId,
+    threadId: record.threadId,
+    metadata: record.metadata,
+  };
+}
+
+/**
+ * `modelNodes` moves into `scripts/lane-arms.mjs` (the one implementation
+ * both live-model scripts wire), and gains `propose_conclusion` beside the
+ * three roles it already swapped — the same vocabulary the naive arm
+ * receives: `createModelProposeConclusion({ port, mechanisms:
+ * evals.ROOT_CAUSE_MECHANISMS })`.
+ *
+ * The vocabulary sentence is checked against `evals.ROOT_CAUSE_MECHANISMS`
+ * directly — @aic/evals' own export, not a read of
+ * `investigation-roles.ts`'s internal vocabulary constant — so this row
+ * cannot be satisfied by the role quietly inventing its own list.
+ */
+test('modelNodes(record, port).propose_conclusion is a model role: the fake port sees exactly one call, carrying the mechanism vocabulary sentence built from evals.ROOT_CAUSE_MECHANISMS', async () => {
+  const { modelNodes } = await import('../scripts/lane-arms.mjs');
+  const input = calibrationExecutionInput();
+
+  const requests = [];
+  const port = {
+    async complete(request) {
+      requests.push(request);
+      return {
+        text: JSON.stringify({ kind: 'inconclusive', causes: [] }),
+        modelId: 'fake-model-under-test',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
+    },
+  };
+
+  const nodes = modelNodes(input, port);
+  assert.equal(
+    typeof nodes.propose_conclusion,
+    'function',
+    'modelNodes must wire propose_conclusion to a model-backed role, not the scripted one',
+  );
+
+  const state = {
+    incident: { id: 'aic-119e-fake-incident' },
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [],
+    control: { stopKind: 'sufficient', challengeRounds: 0 },
+  };
+
+  await nodes.propose_conclusion(state);
+
+  assert.equal(requests.length, 1, 'propose_conclusion must make exactly one model call per invocation');
+  const vocabularySentence = `Classify each cause's mechanism as one of: ${evals.ROOT_CAUSE_MECHANISMS.join(', ')}.`;
+  assert.ok(
+    requests[0].system.includes(vocabularySentence),
+    `expected the request system prompt to carry the vocabulary sentence built from evals.ROOT_CAUSE_MECHANISMS: ${JSON.stringify(requests[0].system)}`,
+  );
+});
+
+/**
+ * `.claude/rules/invariants.md` ("one mechanism, one implementation"):
+ * `modelNodes` used to exist twice, once per script. Both scripts must now
+ * reach it through `scripts/lane-arms.mjs` — by `import` when the binding is
+ * used locally, or by `export … from` when a script also needs to keep
+ * re-exporting it for its own tests, so either shape satisfies this row.
+ */
+test('both eval-live-model.mjs and eval-final-holdout.mjs reach modelNodes from ./lane-arms.mjs, the single implementation', () => {
+  for (const relativePath of ['scripts/eval-live-model.mjs', 'scripts/eval-final-holdout.mjs']) {
+    const source = readFileSync(join(REPO_ROOT, relativePath), 'utf8');
+    assert.match(
+      source,
+      /\b(?:import|export)\s*\{[^}]*\bmodelNodes\b[^}]*\}\s*from\s*'\.\/lane-arms\.mjs'/,
+      `${relativePath} must reach modelNodes from ./lane-arms.mjs, not define its own copy`,
+    );
+  }
+});
+
+/**
+ * `.claude/rules/invariants.md` ("one mechanism, one implementation"): the
+ * control arm's nodes and the model arm's base nodes come from one
+ * `scriptedNodes`, in `scripts/lane-arms.mjs`. This row is `modelNodes`'s
+ * sibling row above: it guards against either lane command declaring its own
+ * copy again, which is how the two used to drift apart unnoticed.
+ */
+test('both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation', () => {
+  for (const relativePath of ['scripts/eval-live-model.mjs', 'scripts/eval-final-holdout.mjs']) {
+    const source = readFileSync(join(REPO_ROOT, relativePath), 'utf8');
+    assert.match(
+      source,
+      /\b(?:import|export)\s*\{[^}]*\bscriptedNodes\b[^}]*\}\s*from\s*'\.\/lane-arms\.mjs'/,
+      `${relativePath} must reach scriptedNodes from ./lane-arms.mjs, not define its own copy`,
+    );
+  }
+});
+
+/* -------------------------------------------------------------------------- */
 /* 4. the committed control baseline, under v0.3, both corpora                */
 /* -------------------------------------------------------------------------- */
 

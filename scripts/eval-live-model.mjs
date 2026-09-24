@@ -103,7 +103,7 @@ import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { readControlBaseline } from './eval-final-holdout.mjs';
-import { naiveArm, oracleArm, publishNaiveArm } from './lane-arms.mjs';
+import { naiveArm, oracleArm, publishNaiveArm, scriptedNodes } from './lane-arms.mjs';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -111,16 +111,12 @@ import * as observability from '@aic/observability';
 import {
   MODEL_API_KEY_VARIABLE,
   REFERENCE_PROMPT_VERSION,
-  createModelChallengeHypothesis,
-  createModelGenerateHypotheses,
-  createModelInterpretResidualEvidence,
   createModelUsageLedger,
   createReferenceModelPort,
   readModelCredential,
   resolveModelConfig,
 } from '@aic/roles';
 
-import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
 
 function flag(name) {
@@ -155,7 +151,7 @@ const baseMetadata = Object.freeze({
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,
   evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
-  // Both arms replay their TOOLS. Only the three roles differ between them,
+  // Both arms replay their TOOLS. Only the four reasoning roles differ between them,
   // which is what keeps the comparison about the model rather than about the
   // environment the two arms ran against.
   toolMode: 'replay',
@@ -164,25 +160,16 @@ const baseMetadata = Object.freeze({
   docsAvailable: false,
 });
 
-/** The deterministic arm: the replay-backed nodes, unchanged. */
-export function scriptedNodes(record) {
-  return replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]]));
-}
-
 /**
- * The model arm: the same nodes with the three roles swapped for model-backed
- * ones. `execute_investigation` still replays the recorded tool calls, so the
- * evidence both arms see is identical and the only difference is who reasoned
- * over it.
+ * The model arm: the same nodes with the four reasoning roles swapped for
+ * model-backed ones. Re-exported from `scripts/lane-arms.mjs`, the one
+ * implementation both live-model scripts wire (AIC-119 slice E,
+ * `.claude/rules/invariants.md` "one mechanism, one implementation") — an
+ * import here rather than a definition, so this command's own tests can keep
+ * reaching it as `../scripts/eval-live-model.mjs`'s own export.
+ * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach modelNodes from ./lane-arms.mjs, the single implementation"
  */
-export function modelNodes(record, port) {
-  return {
-    ...scriptedNodes(record),
-    generate_hypotheses: createModelGenerateHypotheses({ port }),
-    interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
-    challenge_hypothesis: createModelChallengeHypothesis({ port }),
-  };
-}
+export { modelNodes, scriptedNodes } from './lane-arms.mjs';
 
 /**
  * The `--publish` step: the model arm, then the naive arm.

@@ -350,7 +350,7 @@ for (const roleCase of ROLE_CASES) {
  *   - `test/roles-model-nodes.test.mjs` › "routes a model-backed run to its
  *     challenge, with the leader the graph can see" stops at the first
  *     challenge and never loops back through `interpret_residual_evidence`.
- *   - `scripts/eval-live-model.mjs`'s `modelNodes` drives all three roles
+ *   - `modelNodes` (`scripts/lane-arms.mjs`) drives every model role
  *     together, but only through `evals.runGraphBenchmarkExperiment` against
  *     the replay-fixture corpus (`test/fixtures/benchmark-experiment.mjs`),
  *     which is a real-tool-replay harness this row has no need of.

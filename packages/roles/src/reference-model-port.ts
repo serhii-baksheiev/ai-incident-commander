@@ -113,7 +113,7 @@ export interface ModelCompletion {
  * The provider-neutral port the roles depend on.
  *
  * A role is written against this interface and never against the adapter below,
- * so a test drives the three roles with a fake port and no network.
+ * so a test drives the model roles with a fake port and no network.
  */
 export interface ModelPort {
   complete(request: ModelCompletionRequest): Promise<ModelCompletion>;
