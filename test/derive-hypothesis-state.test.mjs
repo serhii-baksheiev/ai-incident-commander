@@ -74,13 +74,15 @@ test('derive_hypothesis_state refuses an assessment naming a hypothesis the stat
 });
 
 test('derive_hypothesis_state refuses an assessment naming a prediction that belongs to another hypothesis', () => {
+  // The prediction exists, but under h-2. Only the ownership clause separates
+  // this from a valid reference, and the node's own wording separates its
+  // refusal from the status derivation's older, unescaped one.
   const predictions = [
-    { id: 'p-of-h2', hypothesisId: 'h-2', statement: 'x', expectedIfTrue: [], expectedIfFalse: [], status: 'untested' },
+    { id: HOSTILE, hypothesisId: 'h-2', statement: 'x', expectedIfTrue: [], expectedIfFalse: [], status: 'untested' },
   ];
-  assert.throws(
-    () => node()(state({ predictions, assessments: [assessment({ predictionId: 'p-of-h2' })] })),
-    /p-of-h2/,
-  );
+  const run = () => node()(state({ predictions, assessments: [assessment({ predictionId: HOSTILE })] }));
+  assertEscapedRefusal(run);
+  assert.throws(run, /^Error: derive_hypothesis_state: an assessment names a prediction/);
 });
 
 test('derive_hypothesis_state returns an empty result for a state whose assessments all name what the state holds', () => {

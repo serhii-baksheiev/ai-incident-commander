@@ -276,6 +276,25 @@ test('T4 boundary: once challengeRounds reaches MAX_CHALLENGE_ROUNDS, the newest
   assert.deepEqual(decision, { route: 'terminal', stopKind: 'sufficient', leaderId: 'h-challenge' });
 });
 
+test('T4 limit: an earlier hypothesis that leads while a newer challenge alternative exists is read as no leadership change, so it is sufficient without another round', async () => {
+  // The documented proxy: "leadership changed" is read as "the leader is the
+  // newest challenge alternative". Leadership that passes to an EARLIER
+  // hypothesis is not detected, because the challenge target is not stored in
+  // state. This row pins the limit as it stands, so a change to it is visible.
+  const createStateTerminationCheck = requireStateTerminationCheck();
+  const check = createStateTerminationCheck();
+  const state = baseState({
+    hypotheses: [hypothesis('h-initial'), hypothesis('h-challenge', 'challenge')],
+    evidence: [evidenceFor('e-i1'), evidenceFor('e-i2')],
+    assessments: corroboratedAssessments('h-initial', ['e-i1', 'e-i2']),
+    control: { challengeRounds: 1 },
+  });
+
+  const decision = await check(state);
+
+  assert.deepEqual(decision, { route: 'terminal', stopKind: 'sufficient', leaderId: 'h-initial' });
+});
+
 /* -------------------------------------------------------------------------- */
 /* T5 - a sole corroborated-or-above leader                                   */
 /* -------------------------------------------------------------------------- */
