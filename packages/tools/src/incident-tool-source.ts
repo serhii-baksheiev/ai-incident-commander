@@ -3,15 +3,14 @@ import type { EvidenceSource, EvidenceSourceOutcome, EvidenceSourceProvenance } 
 
 /**
  * AIC-100, slice d: an `EvidenceSource` over one legacy `IncidentTool`, with
- * the fixed adapter identity `aic.incident-tool@1` that
- * `migrateReplayFixtureV1` also uses. The tool's `ToolResult` is carried whole
- * as the `ok` output; a throw propagates to the registry's classifier.
+ * the adapter identity `migrateReplayFixtureV1` also uses; the tool's
+ * `ToolResult` is the `ok` output. Use it through `createBoundSourceRegistry`:
+ * the provenance this source returns is a placeholder.
  */
 
 export const INCIDENT_TOOL_ADAPTER_ID = 'aic.incident-tool';
 export const INCIDENT_TOOL_ADAPTER_VERSION = '1';
 
-/** The registry rebuilds provenance itself, so this value is never returned. */
 const PLACEHOLDER_PROVENANCE: EvidenceSourceProvenance = Object.freeze({
   sourceBindingId: '',
   adapter: '',

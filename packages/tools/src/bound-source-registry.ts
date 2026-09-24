@@ -299,7 +299,7 @@ export const REPLAY_IDENTITY_VERSION = 2;
 
 const REPLAY_IDENTITY_PREFIX = `v${REPLAY_IDENTITY_VERSION}:`;
 
-/** Exported for `migrateReplayFixtureV1`, so both build the same identity. */
+/** Exported for `migrateReplayFixtureV1`. */
 export function buildReplayIdentity(parts: {
   readonly sourceBindingId: string;
   readonly adapter: string;

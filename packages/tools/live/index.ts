@@ -13,11 +13,12 @@ import { createIncidentToolSource } from '../src/incident-tool-source.js';
 export const LIVE_TOOL_DEPENDENCIES = [DOMAIN_LAYER] as const;
 
 /**
- * AIC-100, slice d: a thin wrapper over `createBoundSourceRegistry`'s `live`
- * mode, one `createIncidentToolSource` binding per tool. The public signature
- * and error strings are unchanged (test/tool-registry-replay.test.mjs); the
- * optional second argument reaches the registry's budgets and clock
- * (test/legacy-adapters-on-registry.test.mjs, "d4" rows).
+ * AIC-100, slice d: a wrapper over `createBoundSourceRegistry`'s `live` mode,
+ * one `createIncidentToolSource` binding per tool. Omitted budgets default to
+ * `DEFAULT_SOURCE_BUDGETS` (test/legacy-adapters-on-registry.test.mjs ›
+ * "LiveToolAdapter constructed with NO second (options) argument is still
+ * bound by DEFAULT_SOURCE_BUDGETS: an ok result whose serialized size exceeds
+ * maxResultBytes is refused budget_exceeded (code-reviewer round 1)").
  */
 export interface LiveToolAdapterOptions {
   readonly budgets?: Partial<SourceBudgets>;

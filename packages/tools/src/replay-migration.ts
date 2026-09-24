@@ -10,8 +10,9 @@ import { REPLAY_FIXTURE_VERSION } from './replay-key.js';
  * recordings `BoundSourceRegistry` replays. Design pins and edge cases:
  * test/replay-fixture-migration.test.mjs.
  *
- * Keys are processed in sorted order so `skipped.keys` does not depend on the
- * caller's insertion order.
+ * Keys are processed in sorted order (test/replay-fixture-migration.test.mjs
+ * › "is deterministic: the same responses content produces deep-equal
+ * recordings and skipped, regardless of the object's key insertion order").
  */
 
 const MIGRATED_ADAPTER = `${INCIDENT_TOOL_ADAPTER_ID}@${INCIDENT_TOOL_ADAPTER_VERSION}`;
@@ -33,10 +34,7 @@ interface ParsedLegacyKey {
 
 /**
  * Recovers `(toolId, input)` from a legacy v1 key, or `null` when the key is
- * not this version's shape — never thrown, so a caller loops over every key
- * and treats `null` as "skip this one" (this module's own contract: a single
- * bad entry is reported in `skipped`, never a thrown failure for the whole
- * fixture).
+ * not this version's shape.
  */
 function parseLegacyReplayKey(key: string): ParsedLegacyKey | null {
   const prefix = `${REPLAY_FIXTURE_VERSION}:`;

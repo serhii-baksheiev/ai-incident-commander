@@ -23,16 +23,15 @@ export interface ReplayFixture<Output = Evidence[]> {
   readonly responses: Readonly<Record<string, ToolResult<Output>>>;
 }
 
-/** Provenance is discarded on unwrap, so this timestamp is never returned. */
 const MIGRATION_FETCHED_AT = '1970-01-01T00:00:00.000Z';
 
 /**
- * AIC-100, slice d: a thin wrapper over `createBoundSourceRegistry`'s `replay`
- * mode. The v1 fixture is migrated once, at construction, by
- * `migrateReplayFixtureV1`; each read-only tool id is bound to a stub source
- * that replay mode never executes. `createReplayFixtureKey` still runs first,
- * so an input it refuses keeps its legacy error. The public signature and
- * error strings are unchanged (test/tool-registry-replay.test.mjs).
+ * AIC-100, slice d: a wrapper over `createBoundSourceRegistry`'s `replay` mode,
+ * over the v1 fixture migrated once by `migrateReplayFixtureV1`. The stub
+ * sources only give each read-only tool id a binding. `createReplayFixtureKey`
+ * runs first to keep the legacy key-failure result
+ * (test/tool-registry-replay.test.mjs › "redacts replay key generation errors
+ * from ToolResult.error").
  */
 export class ReplayToolAdapter<Output = Evidence[]> {
   readonly #registry: BoundSourceRegistry;
