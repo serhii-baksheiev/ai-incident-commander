@@ -10,11 +10,11 @@ import {
   HypothesisSchema,
   IncidentConclusionSchema,
   InvestigationTestSchema,
+  quoteModelText,
   type CommittedExecution,
   type EvidenceAssessment,
   type Hypothesis,
   type IncidentState,
-  type InvestigationStop,
   type InvestigationTest,
 } from '@aic/domain';
 import type { ChallengeResult, InvestigationNodeResult } from '@aic/graph';
@@ -262,6 +262,9 @@ export interface ModelRoleOptions {
  * durable-model-replay.test.mjs › "records a distinct model.role exec key for
  * every model call across generate -> interpret -> challenge -> interpret, and
  * no key ever repeats"
+ * see durable-model-replay.test.mjs › "records a distinct model.role exec key
+ * for propose_conclusion too, one edge past the row above, and no key ever
+ * repeats"
  *
  * The completion is committed before the role parses it, so a truncated or
  * malformed answer is what later attempts replay for that key, and changing
@@ -454,7 +457,7 @@ export function createModelInterpretResidualEvidence({
       const declaredPredictionId = ownValue(candidate, 'predictionId');
       const predictionId =
         declaredPredictionId === null ? undefined : declaredPredictionId;
-      return parseWith(role, EvidenceAssessmentSchema, {
+      const assessment = parseWith(role, EvidenceAssessmentSchema, {
         id: ownValue(candidate, 'id'),
         evidenceId: ownValue(candidate, 'evidenceId'),
         hypothesisId: ownValue(candidate, 'hypothesisId'),
@@ -466,6 +469,46 @@ export function createModelInterpretResidualEvidence({
         promptVersion,
         at: stampedAt,
       });
+
+      // 🔴 A fabricated evidenceId/hypothesisId/predictionId is a
+      // model-quality failure and is refused HERE, not left to surface later
+      // as a plain, untyped `Error` out of `deriveHypothesisStatus`
+      // (`packages/domain/src/evaluation.ts`) when `propose_conclusion` reads
+      // this assessment — that misattributes a model fault as a harness fault,
+      // exactly what `ModelRoleOutputError` exists to prevent.
+      // see roles-model-nodes.test.mjs › "refuses an assessment whose evidenceId is not in state.evidence"
+      // see roles-model-nodes.test.mjs › "refuses an assessment whose hypothesisId is not in state.hypotheses"
+      // see roles-model-nodes.test.mjs › "refuses an assessment whose predictionId is not a prediction of the named hypothesis"
+      // see roles-model-nodes.test.mjs › "escapes and truncates a hostile hypothesisId before it reaches the refusal message"
+      if (!state.evidence.some(({ id }) => id === assessment.evidenceId)) {
+        throw new ModelRoleOutputError(
+          role,
+          `an assessment cites evidence the run does not carry: ${quoteModelText(assessment.evidenceId)}`,
+        );
+      }
+      if (!state.hypotheses.some(({ id }) => id === assessment.hypothesisId)) {
+        throw new ModelRoleOutputError(
+          role,
+          `an assessment names a hypothesis the run does not carry: ${quoteModelText(assessment.hypothesisId)}`,
+        );
+      }
+      if (
+        assessment.predictionId !== undefined &&
+        !state.predictions.some(
+          (prediction) =>
+            prediction.id === assessment.predictionId &&
+            prediction.hypothesisId === assessment.hypothesisId,
+        )
+      ) {
+        throw new ModelRoleOutputError(
+          role,
+          `an assessment names a predictionId that is not a prediction of hypothesis ${quoteModelText(
+            assessment.hypothesisId,
+          )}: ${quoteModelText(assessment.predictionId)}`,
+        );
+      }
+
+      return assessment;
     });
 
     return { assessments, declaredLlmCalls: 1 };
@@ -647,11 +690,19 @@ export interface ModelProposeConclusionOptions extends ModelRoleOptions {
  * v0.2 evaluation's two arms read the same sentence), `control.stopKind` and
  * `control.challengeRounds` as context, and the derived status of every
  * hypothesis — computed with `deriveHypothesisStatus` (`@aic/domain`), the
- * same function the graph itself uses, so the model is shown the run's own
- * read of its hypotheses rather than a second, competing one.
+ * same function the benchmark (`packages/evals/src/graph-benchmark.ts`) uses
+ * — this role's only other production caller — so the model is shown the
+ * run's own read of its hypotheses rather than a second, competing one.
  * see conclusion-role.test.mjs › "shows the model the mechanism vocabulary, exactly as naive-role's sentence reads, and the stop kind as context"
  * see conclusion-role.test.mjs › "shows a different prompt when challengeRounds differs, so the round count reaches the model as context"
  * see conclusion-role.test.mjs › "shows the derived status of every hypothesis, computed the same way deriveHypothesisStatus computes it"
+ *
+ * The mechanism vocabulary shapes the request (it is embedded in the JSON
+ * schema `completeOnce` sends) but is not itself a `buildExecKey('model.role',
+ * ...)` field, so a vocabulary change between a crash and a resume lands on
+ * the same exec key with a different request — refused as an execution
+ * integrity violation, the same as a changed `maxOutputTokens`
+ * (`completeOnce`'s own doc, below), never silently reused.
  */
 export function createModelProposeConclusion(
   options: ModelProposeConclusionOptions,
@@ -664,6 +715,22 @@ export function createModelProposeConclusion(
   const outputSchema = proposeConclusionSchema(vocabulary);
 
   return async (state) => {
+    // 🔴 An ABSENT `stopKind` is a graph invariant violation, not a model
+    // refusal: `terminate()` always stamps `control.stopKind` before routing
+    // here, so its absence means the harness reached this role wrongly, and
+    // reporting it as a `ModelRoleOutputError` would blame the model for a
+    // fault it had no chance to cause. Checked BEFORE any port call — asking
+    // the model to compose a conclusion the harness cannot even validate
+    // afterward would spend a call on a run that was never going to get an
+    // answer through.
+    // see conclusion-role.test.mjs › "throws a plain harness Error naming stopKind when state.control.stopKind is absent, before any port call"
+    const stopKind = state.control.stopKind;
+    if (stopKind === undefined) {
+      throw new Error(
+        'propose_conclusion: state.control.stopKind is absent; terminate() must stamp it before routing to this role',
+      );
+    }
+
     const hypothesisStatuses = state.hypotheses.map((hypothesis) => ({
       id: hypothesis.id,
       status: deriveHypothesisStatus({
@@ -683,7 +750,7 @@ export function createModelProposeConclusion(
       ].join('\n'),
       prompt: [
         `prompt-version: ${promptVersion}`,
-        `stop kind: ${state.control.stopKind ?? 'unknown'}`,
+        `stop kind: ${stopKind}`,
         `challenge rounds so far: ${state.control.challengeRounds}`,
         `derived hypothesis statuses: ${JSON.stringify(hypothesisStatuses)}`,
         '',
@@ -724,7 +791,7 @@ export function createModelProposeConclusion(
       if (!vocabulary.includes(cause.mechanism)) {
         throw new ModelRoleOutputError(
           role,
-          `a cause's mechanism is outside the supplied vocabulary: ${cause.mechanism}`,
+          `a cause's mechanism is outside the supplied vocabulary: ${quoteModelText(cause.mechanism)}`,
         );
       }
     }
@@ -733,7 +800,7 @@ export function createModelProposeConclusion(
       conclusion,
       hypotheses: state.hypotheses,
       evidence: state.evidence,
-      stopKind: state.control.stopKind as InvestigationStop,
+      stopKind,
     });
     if (reason !== undefined) {
       throw new ModelRoleOutputError(role, reason);
