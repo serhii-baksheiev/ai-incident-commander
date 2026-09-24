@@ -56,7 +56,7 @@ test('records the T-4 verdict: how to re-run it, what it measured, and what the 
     ['the harness file', /infra\/postgres\/tests\/t4-race\.live\.mjs/],
     [
       'the pre-write fence is pinned outside the matrix',
-      /fenced-checkpointer\.live\.mjs › "a real zombie worker's checkpoint write is refused by a real RunWriteContext after a takeover/,
+      /fenced-checkpointer\.live\.mjs`? › "a real zombie worker's checkpoint write is refused by a real RunWriteContext after a takeover/,
     ],
   ]) {
     assert.match(verdict, pattern, `the T-4 verdict must record: ${part}`);
