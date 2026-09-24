@@ -275,22 +275,33 @@ function collectFiles(root, excludedDirNames) {
   return results;
 }
 
-test('no file under packages/, apps/, scripts/, or the shared benchmark-experiment fixture references the live-pilot directory', async () => {
+/**
+ * The partition name is matched as a whole token (not preceded or followed by
+ * a word character or a hyphen), so a bare `'live-pilot'` passed to a path
+ * join is caught as well as a `live-pilot/...` path.
+ *
+ * Limits stated rather than discovered later: this is a scan of file text. A
+ * name assembled at runtime from separate pieces is not seen, and
+ * `collectFiles` skips symbolic links, so a symlinked file is not read.
+ */
+test('no file under packages/, apps/, scripts/, the shared benchmark-experiment fixture, or package-lock.json names the live-pilot partition', async () => {
   const live = await loadLivePilotRegistry();
-  const needle = `${live.LIVE_PILOT_PARTITION}/`;
+  const escaped = live.LIVE_PILOT_PARTITION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const token = new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`);
   const excludedDirNames = new Set(['node_modules', 'dist', 'coverage', '.git']);
   const files = [
     ...collectFiles(resolve(projectRoot, 'packages'), excludedDirNames),
     ...collectFiles(resolve(projectRoot, 'apps'), excludedDirNames),
     ...collectFiles(resolve(projectRoot, 'scripts'), excludedDirNames),
     resolve(projectRoot, 'test/fixtures/benchmark-experiment.mjs'),
+    resolve(projectRoot, 'package-lock.json'),
   ];
-  const offenders = files.filter((file) => readFileSync(file, 'utf8').includes(needle));
+  const offenders = files.filter((file) => token.test(readFileSync(file, 'utf8')));
   assert.deepEqual(
     offenders,
     [],
-    `no product or evaluator source file may reference the "${needle}" path, which is what keeps live-pilot data ` +
-      `outside every candidate fingerprint path; offending file(s): ${JSON.stringify(offenders.map((f) => relative(projectRoot, f)))}`,
+    `no product or evaluator source file, and no candidate fingerprint file, may name the "${live.LIVE_PILOT_PARTITION}" ` +
+      `partition; offending file(s): ${JSON.stringify(offenders.map((f) => relative(projectRoot, f)))}`,
   );
 });
 
@@ -392,8 +403,9 @@ function writeProbeSource(fixtureRoot, packageDirectory, source) {
 }
 
 /**
- * The registry module the probe imports, written into the scratch copy so
- * the import can resolve — see the limit stated above the probe helpers.
+ * The registry module the probe imports, written over the copied one so the
+ * probe's resolution precondition (see the limit stated above the probe
+ * helpers) holds whatever the real registry declares.
  */
 function writeRegistryStub(fixtureRoot) {
   const path = resolve(fixtureRoot, 'live-pilot/registry.mjs');

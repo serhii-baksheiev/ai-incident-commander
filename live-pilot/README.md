@@ -10,17 +10,19 @@ loop. They are not evidence that the loop is good.
   directions — see `test/live-pilot-partition.test.mjs` › "every benchmark
   calibration, holdout and REPLAY_SCENARIOS id is outside the live-pilot case
   registry".
-- **Outside the candidate fingerprint.** Nothing under `packages/`, `apps/` or
-  `scripts/` refers to this directory, and product code may not import it —
-  see `test/live-pilot-partition.test.mjs` › "no file under packages/, apps/,
-  scripts/, or the shared benchmark-experiment fixture references the
-  live-pilot directory" and › "rejects packages/graph importing
-  live-pilot/registry.mjs by relative path".
+- **Outside the candidate fingerprint.** No file under `packages/`, `apps/`
+  or `scripts/`, nor the shared benchmark-experiment fixture or
+  `package-lock.json`, names this partition, and product code may not import
+  it — see `test/live-pilot-partition.test.mjs` › "no file under packages/,
+  apps/, scripts/, the shared benchmark-experiment fixture, or
+  package-lock.json names the live-pilot partition" and › "rejects
+  packages/graph importing live-pilot/registry.mjs by relative path". The name
+  scan reads file text, so a name assembled at runtime from separate pieces is
+  not seen; that test states its limits above it.
 - **Model-visible and evaluator-only material are separate.** Each case names
   its fixture (what an investigation may read) apart from its historical truth
   (what only an evaluator may read) — see `test/live-pilot-partition.test.mjs`
   › "declares the live-pilot partition identity and exactly one frozen case,
   flowa-904, split into model-visible and evaluator-only path groups".
 - **Any outcome is a valid outcome.** Stalled, ambiguous and inconclusive are
-  legitimate pilot results. Neither the roles nor the status rules are tuned to
-  make a case succeed.
+  legitimate pilot results.
