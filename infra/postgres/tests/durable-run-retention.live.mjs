@@ -211,14 +211,6 @@ test('pruneTerminalRun refuses a run in queued, running or waiting_human, and le
 
   const scenarios = [
     {
-      status: 'queued',
-      async prepare(workerId) {
-        const runId = `run-retention-queued-${randomUUID()}`;
-        await store.createRun({ runId, input: {} });
-        return runId;
-      },
-    },
-    {
       status: 'running',
       async prepare(workerId) {
         const { runId } = await createAndClaim(store, workerId);
@@ -231,6 +223,16 @@ test('pruneTerminalRun refuses a run in queued, running or waiting_human, and le
         const { runId, claim } = await createAndClaim(store, workerId);
         const context = await persistence.openRunWriteContext(store, claim);
         await context.markWaitingHuman(`interaction-${runId}`);
+        return runId;
+      },
+    },
+    // Last: its run stays queued, and claimNext takes the oldest queued run,
+    // so a claiming scenario after it would claim this run instead of its own.
+    {
+      status: 'queued',
+      async prepare(workerId) {
+        const runId = `run-retention-queued-${randomUUID()}`;
+        await store.createRun({ runId, input: {} });
         return runId;
       },
     },
