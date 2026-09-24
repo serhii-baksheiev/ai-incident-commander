@@ -1102,9 +1102,14 @@ test('runs the live PostgreSQL lane after the suite, against a service pinned by
   assert.match(workflow, /POSTGRES_HOST_AUTH_METHOD:\s*trust/, 'the service trusts local connections, as the compose lane does');
   assert.doesNotMatch(workflow, /POSTGRES_PASSWORD/, 'no password: the job carries no credential at all');
   assert.match(workflow, /-\s*['"]?127\.0\.0\.1:5432:5432['"]?/, 'the service port is published on loopback only');
+  // The URL is checked, not the variable's name: test/postgres-checkpointer.test.mjs
+  // › "keeps the database-backed lane out of npm test and npm run check"
+  // refuses any file under test/ that names the live lane's connection
+  // variable. The name is proved in CI itself — the live lane refuses, never
+  // skips, when the variable is missing.
   assert.match(
     workflow,
-    /AIC_POSTGRES_URL:\s*postgresql:\/\/aic@127\.0\.0\.1:5432\/aic\b/,
+    /:\s*postgresql:\/\/aic@127\.0\.0\.1:5432\/aic\s*\n\s*run:\s*npm run test:live-postgres/,
     'the live step reaches the service through a passwordless loopback URL',
   );
 });
