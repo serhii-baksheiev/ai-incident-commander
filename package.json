@@ -35,6 +35,7 @@
     "check": "npm run lint && npm run build && npm test",
     "cli": "node apps/cli/dist/index.js",
     "eval:final-holdout": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs",
+    "eval:final-holdout:publish": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/publish-final-holdout.mjs",
     "eval:oracle": "npm run build --silent && node --import ./test/fixtures/no-ambient-tracing.mjs scripts/eval-oracle.mjs"
   },
   "devDependencies": {

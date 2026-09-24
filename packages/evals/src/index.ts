@@ -4,6 +4,7 @@ import { GRAPH_DEPENDENCIES } from '@aic/graph';
 export * from './arm-answer.js';
 export * from './budget-policy.js';
 export * from './final-evaluation-record.js';
+export * from './final-evaluation-publication.js';
 export * from './benchmark-evaluation.js';
 export * from './graph-benchmark.js';
 export * from './live-model-lane.js';
