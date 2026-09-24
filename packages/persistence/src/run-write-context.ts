@@ -8,8 +8,7 @@ import {
   ExecKeySchema,
   ExecutionIntegrityViolation,
   StaleOwnerError,
-  type Evidence,
-  type Trial,
+  type CommittedProjection,
 } from '@aic/domain';
 
 import { APPLICATION_SCHEMA } from './app-schema.js';
@@ -24,14 +23,9 @@ import type { RunClaim, RunStore } from './run-store.js';
  * against.
  */
 
-/** What a `project()` callback hands `committed` to write beside the result. */
-export interface CommittedProjection {
-  readonly trials?: readonly Trial[];
-  readonly evidence?: readonly Evidence[];
-}
-
-export interface CommittedOptions {
-  readonly project?: () => CommittedProjection | undefined;
+export interface CommittedOptions<T> {
+  /** Receives the committed result; returns the records written beside it. */
+  readonly project?: (result: T) => CommittedProjection | undefined;
   readonly inputFingerprint?: string;
 }
 
@@ -49,7 +43,7 @@ export interface RunWriteContext {
    * JSON round trip, not the object `compute` returned; a non-JSON result is
    * refused after `compute` ran, and nothing is committed for it.
    */
-  committed<T>(execKey: string, compute: () => Promise<T>, options?: CommittedOptions): Promise<T>;
+  committed<T>(execKey: string, compute: () => Promise<T>, options?: CommittedOptions<T>): Promise<T>;
   /**
    * An interaction id names at most one run (a unique index in migration 2);
    * reusing one held by another run is refused by the database and the
@@ -294,7 +288,7 @@ async function committed<T>(
   claim: RunClaim,
   execKey: string,
   compute: () => Promise<T>,
-  options: CommittedOptions,
+  options: CommittedOptions<T>,
 ): Promise<T> {
   ExecKeySchema.parse(execKey);
   const { project, inputFingerprint } = options;
@@ -384,7 +378,8 @@ async function committed<T>(
       throw violation;
     }
 
-    const projection = project?.() ?? {};
+    const committedValue = JSON.parse(insertedRows[0]!.result_json) as T;
+    const projection = project?.(committedValue) ?? {};
     for (const trial of projection.trials ?? []) {
       await client.query(
         `INSERT INTO "${APPLICATION_SCHEMA}".run_trials (run_id, trial_id, body)
@@ -403,7 +398,7 @@ async function committed<T>(
     }
 
     await appendEvent(client, claim.runId, claim.executionAttempt, 'node_result.committed', { execKey });
-    return JSON.parse(insertedRows[0]!.result_json) as T;
+    return committedValue;
   });
 }
 

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 
 import {
+  buildExecKey,
   DOMAIN_LAYER,
   EvidenceSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   TrialSchema,
   upsertById,
+  type CommittedExecution,
   type Evidence,
   type ToolId,
   type Trial,
@@ -165,13 +167,25 @@ export function buildInvocationConfig({
   };
 }
 
+/**
+ * `execution` is optional: without it the node calls `executeInvestigation`
+ * directly, exactly as before AIC-56. With it, the tool call is one committed
+ * operation under the `tool.trial` exec key, so a run resumed after a crash
+ * between the commit and LangGraph's checkpoint reuses the committed result
+ * instead of calling the tool again (docs/decisions/durable-run-execution.md,
+ * decisions 6 and 7). see durable-tool-replay.test.mjs › "crash between commit
+ * and checkpoint: resume returns the committed result and calls
+ * executeInvestigation exactly once in total"
+ */
 export function createPersistentInvestigationRunner({
   checkpointer,
   executeInvestigation,
   trace,
+  execution,
 }: Readonly<{
   checkpointer: BaseCheckpointSaver;
   trace?: InvocationTrace;
+  execution?: CommittedExecution;
   executeInvestigation(
     context: ExecuteInvestigationContext,
   ): Promise<ExecuteInvestigationResult>;
@@ -183,33 +197,54 @@ export function createPersistentInvestigationRunner({
         testId: state.test.id,
         attempt: state.attempt,
       });
-      const executed = await executeInvestigation({
-        runId: state.runId,
-        testId: state.test.id,
-        attempt: state.attempt,
-        tool: state.test.tool,
-        input: state.test.input,
-      });
-      const evidenceId = deriveEvidenceId({
-        trialId,
-        payloadFingerprint: executed.payloadFingerprint,
-      });
-      const evidence = EvidenceSchema.parse({
-        ...executed.evidence,
-        id: evidenceId,
-        trialId,
-      });
-      const trial = TrialSchema.parse({
-        id: trialId,
-        runId: state.runId,
-        testId: state.test.id,
-        attempt: state.attempt,
-        tool: state.test.tool,
-        input: state.test.input,
-        status: executed.trial.status,
-        durationMs: executed.trial.durationMs,
-        evidenceIds: [evidenceId],
-      });
+      const recordsOf = (executed: ExecuteInvestigationResult) => {
+        const evidenceId = deriveEvidenceId({
+          trialId,
+          payloadFingerprint: executed.payloadFingerprint,
+        });
+        const evidence = EvidenceSchema.parse({
+          ...executed.evidence,
+          id: evidenceId,
+          trialId,
+        });
+        const trial = TrialSchema.parse({
+          id: trialId,
+          runId: state.runId,
+          testId: state.test.id,
+          attempt: state.attempt,
+          tool: state.test.tool,
+          input: state.test.input,
+          status: executed.trial.status,
+          durationMs: executed.trial.durationMs,
+          evidenceIds: [evidenceId],
+        });
+        return { trial, evidence };
+      };
+      const call = () =>
+        executeInvestigation({
+          runId: state.runId,
+          testId: state.test.id,
+          attempt: state.attempt,
+          tool: state.test.tool,
+          input: state.test.input,
+        });
+      const executed = execution
+        ? await execution.committed(
+            buildExecKey('tool.trial', {
+              runId: state.runId,
+              testId: state.test.id,
+              trialAttempt: state.attempt,
+            }),
+            call,
+            {
+              project: (committed) => {
+                const { trial, evidence } = recordsOf(committed);
+                return { trials: [trial], evidence: [evidence] };
+              },
+            },
+          )
+        : await call();
+      const { trial, evidence } = recordsOf(executed);
 
       return { trials: trial, evidence };
     })
