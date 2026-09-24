@@ -180,6 +180,7 @@ test('outcomeFromArmAnswer drops an evidenceAssessment whose evidenceId the fixt
   assert.deepEqual(outcome.evidenceAssessments, [
     {
       fingerprint: { kind: 'metric', source: 'metrics/unit', predicate: 'B statement' },
+      evidenceId: 'ev-b',
       hypothesisId: 'hyp-1',
       effect: 'supports',
     },

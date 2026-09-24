@@ -118,7 +118,7 @@ export function outcomeFromArmAnswer({
       const evidence = shownById.get(evidenceId);
       return evidence === undefined
         ? []
-        : [{ fingerprint: fingerprintOf(evidence), hypothesisId, effect }];
+        : [{ fingerprint: fingerprintOf(evidence), evidenceId, hypothesisId, effect }];
     });
 
   return {
@@ -127,6 +127,7 @@ export function outcomeFromArmAnswer({
       evidenceIds.filter((evidenceId) => shownById.has(evidenceId)),
     ),
     evidenceFingerprints: referenced.map(fingerprintOf),
+    referencedEvidenceIds: referenced.map(({ id }) => id),
     stopKind: answer.stopKind,
     conclusionKind: answer.conclusion.kind,
     rootCause: causes[0]?.cause,
