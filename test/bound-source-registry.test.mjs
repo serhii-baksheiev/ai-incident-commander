@@ -2927,8 +2927,8 @@ test('redactEvidenceOutput does not over-redact past a FOOTER-LESS PEM header: p
   const output = redactEvidenceOutput(input);
 
   assert.ok(
-    output.includes('service healthy'),
-    `expected "service healthy" to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
+    output.includes('INFO service healthy'),
+    `expected "INFO service healthy" — the leading level word must survive too, it is eaten today (review round 3, finding 4) — to survive redaction of a footer-less PEM header; got ${JSON.stringify(output)}`,
   );
   assert.ok(
     output.includes('200 OK'),
@@ -3020,3 +3020,341 @@ for (const { label, build } of UNSUPPORTED_NON_OBJECT_REDACTION_VALUE_ROWS) {
     assert.equal(output.list[0], '[REDACTED:unsupported]', 'arrays are still walked normally too');
   });
 }
+
+/* ============================================================================ */
+/* AIC-100 slice c — review round 3 findings (FOURTH, owner-granted gate       */
+/* round), PEM rework                                                          */
+/*                                                                              */
+/* Four findings, both reviewers, on packages/tools/src/redaction.ts's PEM     */
+/* pattern (unchanged since review round 2, still @ b14c52f's shape):          */
+/*   1. An INDENTED PEM block (e.g. a YAML block scalar, where every           */
+/*      continuation line carries leading whitespace) leaves the body and      */
+/*      footer untouched — only the header line itself is redacted, because    */
+/*      neither the header-line loop nor the base64 body class tolerates the   */
+/*      leading indentation each continuation line carries.                    */
+/*   2. A single body line with a TRAILING space (unindented otherwise) breaks */
+/*      the body class the same way: everything from that space onward — the  */
+/*      rest of the body and the footer — survives untouched.                 */
+/*   3. An INDENTED ENCRYPTED PEM block (Proc-Type/DEK-Info header lines, the  */
+/*      blank line, the body and the footer all indented) survives in full,   */
+/*      including the DEK-Info value: the header-line loop requires each RFC   */
+/*      1421 line to start with its letter class immediately, no leading      */
+/*      whitespace tolerated.                                                  */
+/*   4. An ordinary colon-bearing log line ("INFO: service healthy") after a  */
+/*      FOOTER-LESS PEM header is wrongly treated as an RFC 1421 header line   */
+/*      and consumed by the redaction along with the next colon-bearing line — */
+/*      the header-line loop's `[A-Za-z-]+:[^\r\n]*\r?\n` shape cannot tell a  */
+/*      real Proc-Type/DEK-Info line from an unrelated log line that merely    */
+/*      happens to start with `word:`. The existing footer-less row above     */
+/*      ("does not over-redact past a FOOTER-LESS PEM header …") is also       */
+/*      strengthened in place to assert the leading "INFO" of its own first    */
+/*      line survives too — it is eaten today by that same over-matching.      */
+/*                                                                              */
+/* All fixtures below reuse fixturePemHeader / fixturePemBodyLine1/2 /         */
+/* fixturePemFooter already defined above this file, per this file's own      */
+/* established "assembled at runtime, never one literal" convention           */
+/* (.claude/scripts/lib/secrets.mjs's vocabulary).                            */
+/* ============================================================================ */
+
+/* -------------------------------------------------------------------------- */
+/* review round 3 fixtures                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Four spaces of indentation — the shape a YAML block scalar ('tls:\n  key: |\n')
+ * applies to every continuation line of the literal it introduces (review
+ * round 3, findings 1 and 3).
+ */
+const fixturePemIndent = '    ';
+
+/**
+ * The DEK-Info value of the INDENTED encrypted-PEM fixture below, asserted not
+ * to survive on its own (review round 3, finding 3) — a second, independent
+ * value from the existing (unindented) `fixtureEncryptedPemInfoLines`' own DEK
+ * value above, so the two rows cannot pass each other's assertion by accident.
+ */
+const fixtureIndentedEncryptedPemDekInfoValue = 'FE65DC21BA43'.repeat(3);
+
+/**
+ * An RFC 1421 encrypted-PEM header block whose OWN LINES (not the BEGIN header
+ * before them) are each indented (review round 3, finding 3).
+ */
+const fixtureIndentedEncryptedPemInfoLines = [
+  fixturePemIndent + ['Proc-Type', ': 4,ENCRYPTED'].join(''),
+  fixturePemIndent + ['DEK-Info', ': AES-256-CBC,', fixtureIndentedEncryptedPemDekInfoValue].join(''),
+].join('\n');
+
+/**
+ * Ordinary colon-bearing log lines following a FOOTER-LESS PEM header — none
+ * of these is an RFC 1421 Proc-Type/DEK-Info line, and none should ever be
+ * treated as one (review round 3, finding 4).
+ */
+const fixtureFooterlessPemColonLogLines = '\nINFO: service healthy\nERROR: connection refused\nWARN: retry';
+
+/* -------------------------------------------------------------------------- */
+/* finding 1 — an INDENTED PEM block (a YAML block scalar) must still be      */
+/* redacted in full; surrounding document text must survive                  */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts the WHOLE PEM block even when every continuation line is INDENTED, as inside a YAML block scalar — the surrounding document text survives (review round 3, finding 1)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [
+    'tls:',
+    '  key: |',
+    fixturePemIndent + fixturePemHeader,
+    fixturePemIndent + fixturePemBodyLine1,
+    fixturePemIndent + fixturePemBodyLine2,
+    fixturePemIndent + fixturePemFooter,
+    'next: value',
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the PEM body must never survive redaction just because every continuation line was indented',
+  );
+  assert.equal(
+    output.includes(fixturePemBodyLine2),
+    false,
+    'the PEM body must never survive redaction just because every continuation line was indented',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer must never survive redaction just because every continuation line was indented',
+  );
+  assert.ok(output.includes('tls:'), 'surrounding document text before the indented block must survive');
+  assert.ok(output.includes('key: |'), 'surrounding document text before the indented block must survive');
+  assert.ok(output.includes('next: value'), 'surrounding document text after the indented block must survive');
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 2 — a body line with a single TRAILING space must not stop the     */
+/* rest of the body and the footer from being redacted                       */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts the WHOLE PEM block even when a body line carries a single TRAILING space — the following body line and the footer must not survive (review round 3, finding 2)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [fixturePemHeader, `${fixturePemBodyLine1} `, fixturePemBodyLine2, fixturePemFooter].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the PEM body must never survive redaction just because it carried a trailing space',
+  );
+  assert.equal(
+    output.includes(fixturePemBodyLine2),
+    false,
+    'a LATER body line must never survive redaction just because an earlier line carried a trailing space',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer must never survive redaction just because an earlier body line carried a trailing space',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 3 — an INDENTED ENCRYPTED PEM block must still be redacted in      */
+/* full: no body line, no footer, and no DEK-Info value survives             */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts an INDENTED ENCRYPTED PEM block: the base64 body, the footer, and the DEK-Info value all fail to survive when every continuation line is indented (review round 3, finding 3)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [
+    fixturePemHeader,
+    fixtureIndentedEncryptedPemInfoLines,
+    fixturePemIndent,
+    fixturePemIndent + fixturePemBodyLine1,
+    fixturePemIndent + fixturePemFooter,
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the base64 body of an indented encrypted PEM block must never survive redaction',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer of an indented encrypted PEM block must never survive redaction',
+  );
+  assert.equal(
+    output.includes(fixtureIndentedEncryptedPemDekInfoValue),
+    false,
+    'the DEK-Info value of an indented encrypted PEM block must never survive redaction',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* finding 4 — an ordinary colon-bearing log line after a FOOTER-LESS header  */
+/* must never be treated as an RFC 1421 header line                          */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput does not treat an ordinary colon-bearing log line as an RFC 1421 header line after a FOOTER-LESS PEM header: the lines survive exactly, leading level word included (review round 3, finding 4)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `${fixturePemHeader}${fixtureFooterlessPemColonLogLines}`;
+
+  const output = redactEvidenceOutput(input);
+
+  assert.ok(
+    output.includes('INFO: service healthy'),
+    `expected "INFO: service healthy" to survive redaction of a footer-less PEM header exactly; got ${JSON.stringify(output)}`,
+  );
+  assert.ok(
+    output.includes('ERROR: connection refused'),
+    `expected "ERROR: connection refused" to survive redaction of a footer-less PEM header exactly; got ${JSON.stringify(output)}`,
+  );
+  assert.ok(
+    output.includes('WARN: retry'),
+    `expected "WARN: retry" to survive redaction of a footer-less PEM header exactly; got ${JSON.stringify(output)}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* PEM timing rows — redactEvidenceOutput must stay within a bound on         */
+/* adversarial PEM-shaped input, so fixing findings 1-4 above (adding         */
+/* indentation tolerance) never reintroduces a quadratic PEM pattern          */
+/* (review round 3; `.claude/rules/invariants.md`, "a guard that fails open   */
+/* must do provably bounded work", applied to this redactor as the existing  */
+/* ReDoS timing rows above already do for the URL pattern)                    */
+/* -------------------------------------------------------------------------- */
+
+const ONE_MIB_CHARS = 1024 * 1024;
+const PEM_TIMING_BOUND_MS = 250;
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** Repeats `unit` until at least `totalChars` characters exist, then truncates to exactly `totalChars`. */
+function buildRepeatedTextOfLength(unit, totalChars) {
+  return unit.repeat(Math.ceil(totalChars / unit.length)).slice(0, totalChars);
+}
+
+test(
+  'redactEvidenceOutput stays within a bound on 1 MiB of repeated PEM headers with no footer (review round 3, PEM timing)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const input = buildRepeatedTextOfLength(`${fixturePemHeader}\n`, ONE_MIB_CHARS);
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < PEM_TIMING_BOUND_MS,
+      `redactEvidenceOutput must stay under ${PEM_TIMING_BOUND_MS}ms on 1 MiB of repeated PEM headers with no footer; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'redactEvidenceOutput stays within a bound on a footer-less PEM header followed by 1 MiB of base64 (review round 3, PEM timing)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const input = `${fixturePemHeader}\n${buildRepeatedTextOfLength(BASE64_ALPHABET, ONE_MIB_CHARS)}`;
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < PEM_TIMING_BOUND_MS,
+      `redactEvidenceOutput must stay under ${PEM_TIMING_BOUND_MS}ms on a footer-less PEM header followed by 1 MiB of base64; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'redactEvidenceOutput stays within a bound on a PEM header followed by 1 MiB of whitespace (review round 3, PEM timing)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const input = `${fixturePemHeader}\n${' '.repeat(ONE_MIB_CHARS)}`;
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < PEM_TIMING_BOUND_MS,
+      `redactEvidenceOutput must stay under ${PEM_TIMING_BOUND_MS}ms on a PEM header followed by 1 MiB of whitespace; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'redactEvidenceOutput stays within a bound on 1 MiB of "Proc-Type: x" lines after a PEM header (review round 3, PEM timing)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const input = `${fixturePemHeader}\n${buildRepeatedTextOfLength('Proc-Type: x\n', ONE_MIB_CHARS)}`;
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < PEM_TIMING_BOUND_MS,
+      `redactEvidenceOutput must stay under ${PEM_TIMING_BOUND_MS}ms on 1 MiB of Proc-Type lines after a PEM header; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'redactEvidenceOutput stays within a bound on a PEM header, ~1 MiB of base64 body, and a footer (review round 3, PEM timing)',
+  { timeout: 10_000 },
+  () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const input = `${fixturePemHeader}\n${buildRepeatedTextOfLength(BASE64_ALPHABET, ONE_MIB_CHARS)}\n${fixturePemFooter}`;
+
+    const startedAtMs = performance.now();
+    redactEvidenceOutput(input);
+    const elapsedMs = performance.now() - startedAtMs;
+
+    assert.ok(
+      elapsedMs < PEM_TIMING_BOUND_MS,
+      `redactEvidenceOutput must stay under ${PEM_TIMING_BOUND_MS}ms on a PEM header, ~1 MiB of base64 body, and a footer; took ${elapsedMs}ms`,
+    );
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* advisory — the registry's operations snapshot must be independent of the  */
+/* adapter's own array: a later push onto describe().operations must not     */
+/* widen the allow-list (review round 3)                                     */
+/* -------------------------------------------------------------------------- */
+
+test('a later push onto the adapter\'s own describe().operations array does not widen the registry\'s allow-list: a call for the newly pushed operation is still refused unavailable (review round 3, advisory)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const operations = ['fetch-logs'];
+  const source = buildOkSourceWithOutput({ lines: ['fixture output'] }, { operations });
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  // Mutates the SAME array describe() returned at construction, rather than
+  // calling describe() again — pins that the registry's snapshot does not
+  // alias the adapter's own live array.
+  operations.push('newly-pushed-op');
+
+  const outcome = await registry.execute('binding-a', 'newly-pushed-op', {});
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(
+    outcome.reason,
+    'unavailable',
+    'a push onto the adapter\'s own operations array after construction must never widen the registry\'s allow-list',
+  );
+});
