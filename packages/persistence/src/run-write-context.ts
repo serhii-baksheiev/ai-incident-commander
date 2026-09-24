@@ -49,6 +49,14 @@ export interface RunWriteContext {
    * An interaction id names at most one run (a unique index in migration 2);
    * reusing one held by another run is refused by the database and the
    * transaction rolls back.
+   *
+   * `markWaitingHuman`, `complete` and `fail` each append a run event whose
+   * string (`interactionId`, `reason`) is capped at `MAX_RUN_EVENT_PAYLOAD_STRING`
+   * (256) characters by `assertRunEventPayload` (`@aic/domain`). A longer one
+   * is refused with `RunEventPayloadError`, and the whole transition rolls
+   * back: the run keeps its status — `fail` with a long reason leaves it
+   * `running`. Pass a short code, not an error message or a stack. see
+   * run-event-payload.live.mjs.
    */
   markWaitingHuman(interactionId: string): Promise<void>;
   complete(reason?: string): Promise<void>;

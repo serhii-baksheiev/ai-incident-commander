@@ -15,6 +15,7 @@
  * `.heartbeatAt` in `packages/persistence/src/run-store.ts` — a raw driver
  * value never crosses this port.
  */
+import { echoed } from './echo.js';
 
 /** One row of a run's append-only event timeline. */
 export interface RunEvent {
@@ -136,8 +137,9 @@ export function parseLastEventId(value: unknown): number {
  * storedResultSha, computedResultSha}`), so its entry is the union of both.
  * See test/run-event-payload-contract.test.mjs, whose correspondence rows
  * scan `run-write-context.ts`'s own source text (never this registry's logic)
- * in both directions, so this list and what production actually writes can
- * never silently drift apart. This module names no table — see
+ * in both directions, so this list and what production writes cannot drift
+ * apart without a row going red — for every call site the scan can parse, and
+ * a floor row requires it to parse all of them. This module names no table — see
  * `MAX_RUN_EVENT_SEQ`'s own comment above.
  */
 export const RUN_EVENT_PAYLOAD_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -165,8 +167,9 @@ export const MAX_RUN_EVENT_PAYLOAD_STRING = 256;
  * every refusal shape, with reasons distinguished only in the message text.
  * See test/run-event-payload-contract.test.mjs.
  *
- * Its message never echoes an unbounded value: a refused oversized string is
- * named by its type, its key and its length, never by its own text — the
+ * Its message never echoes an unbounded value: `type` and `key` pass through
+ * `echoed` (at most 64 characters, JSON-escaped, so no raw newline), and a
+ * refused oversized string is named by its length, never by its own text — the
  * cross-cutting rule `.claude/rules/invariants.md` states for a refusal that
  * can see attacker- or user-supplied data.
  */
@@ -200,31 +203,33 @@ function describeKind(value: unknown): string {
  * @throws {RunEventPayloadError} when `payload` is not valid for `type`.
  */
 export function assertRunEventPayload(type: string, payload: unknown): void {
-  const allowedKeys = RUN_EVENT_PAYLOAD_KEYS[type];
+  // Own properties only: an inherited name such as `constructor` is not a
+  // registered type (see the contract row on Object.prototype names).
+  const allowedKeys = Object.hasOwn(RUN_EVENT_PAYLOAD_KEYS, type) ? RUN_EVENT_PAYLOAD_KEYS[type] : undefined;
   if (allowedKeys === undefined) {
-    throw new RunEventPayloadError(`run event: unknown event type ${JSON.stringify(type)}`);
+    throw new RunEventPayloadError(`run event: unknown event type ${echoed(type)}`);
   }
 
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
     throw new RunEventPayloadError(
-      `run event: payload for "${type}" must be a plain object, got ${describeKind(payload)}`,
+      `run event: payload for ${echoed(type)} must be a plain object, got ${describeKind(payload)}`,
     );
   }
 
   for (const key of Object.keys(payload as Record<string, unknown>)) {
     if (!allowedKeys.includes(key)) {
-      throw new RunEventPayloadError(`run event: payload for "${type}" does not allow key "${key}"`);
+      throw new RunEventPayloadError(`run event: payload for ${echoed(type)} does not allow key ${echoed(key)}`);
     }
 
     const value = (payload as Record<string, unknown>)[key];
     if (typeof value !== 'string' && value !== null) {
       throw new RunEventPayloadError(
-        `run event: payload for "${type}" key "${key}" must be a string or null, got ${describeKind(value)}`,
+        `run event: payload for ${echoed(type)} key ${echoed(key)} must be a string or null, got ${describeKind(value)}`,
       );
     }
     if (typeof value === 'string' && value.length > MAX_RUN_EVENT_PAYLOAD_STRING) {
       throw new RunEventPayloadError(
-        `run event: payload for "${type}" key "${key}" is ${value.length} characters long, exceeding MAX_RUN_EVENT_PAYLOAD_STRING (${MAX_RUN_EVENT_PAYLOAD_STRING})`,
+        `run event: payload for ${echoed(type)} key ${echoed(key)} is ${value.length} characters long, exceeding MAX_RUN_EVENT_PAYLOAD_STRING (${MAX_RUN_EVENT_PAYLOAD_STRING})`,
       );
     }
   }
