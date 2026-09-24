@@ -164,3 +164,13 @@ export {
   type CommittedOptions,
   type RunWriteContext,
 } from './run-write-context.js';
+
+/**
+ * AIC-56 slice E: checkpoint writes fenced by the run write context's
+ * ownership check.
+ */
+export {
+  createFencedCheckpointer,
+  type CheckpointFence,
+  type FencedCheckpointerOptions,
+} from './fenced-checkpointer.js';
