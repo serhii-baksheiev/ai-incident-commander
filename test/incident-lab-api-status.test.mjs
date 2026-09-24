@@ -8,6 +8,8 @@ import test from 'node:test';
 
 import { childEnv } from './fixtures/child-env.mjs';
 
+const READINESS_DEADLINE_MS = 30_000;
+
 async function reserveFreePort() {
   const server = createServer();
   await new Promise((resolveListen, rejectListen) => {
@@ -58,7 +60,12 @@ async function startApiWithUnavailableDependencies(t) {
   });
 
   const baseUrl = `http://127.0.0.1:${port}`;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  // A wall-clock deadline, not an attempt count: a fixed 50 x 20 ms loop gave
+  // the child about one second, and under concurrent suite load it needs
+  // several, which made this row fail with no fault in the lab API.
+  const deadline = Date.now() + READINESS_DEADLINE_MS;
+  let waitMs = 20;
+  while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       assert.fail(`lab API exited before readiness: ${stderr}`);
     }
@@ -70,9 +77,12 @@ async function startApiWithUnavailableDependencies(t) {
     } catch {
       // The child has not bound its loopback socket yet.
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    await new Promise((resolveWait) => setTimeout(resolveWait, waitMs));
+    waitMs = Math.min(waitMs * 2, 250);
   }
-  assert.fail(`lab API did not become ready: ${stderr}`);
+  assert.fail(
+    `lab API did not become ready within ${READINESS_DEADLINE_MS} ms: ${stderr}`,
+  );
 }
 
 test('returns service unavailable when health dependencies cannot be reached', async (t) => {
