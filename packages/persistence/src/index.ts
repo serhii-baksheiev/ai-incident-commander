@@ -190,7 +190,9 @@ export {
 
 /**
  * AIC-58 slice a: a durable, tail/poll `RunEventStreamSource` (the domain
- * port `@aic/domain` declares) over `aic_app.run_events`.
+ * port `@aic/domain` declares) over the run's append-only event timeline in
+ * `aic_app` (named in `run-event-stream.ts`, not repeated here — see
+ * test/run-events-table-boundary.test.mjs for why this file names no table).
  */
 export {
   createRunEventStreamSource,

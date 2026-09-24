@@ -126,3 +126,106 @@ export function parseLastEventId(value: unknown): number {
 
   throw new InvalidLastEventIdError(`invalid Last-Event-ID: ${describe(value)}`);
 }
+
+/**
+ * AIC-58, slice c: "payloads reference IDs, never raw bodies" — a closed
+ * registry naming, for each event `type` `run-write-context.ts` writes today,
+ * exactly the keys its payload may carry. The registry names the ALLOWED keys
+ * per type, not the required ones: `execution.integrity_violation` is written
+ * with two different literal shapes (`{execKey, reason}` and `{execKey,
+ * storedResultSha, computedResultSha}`), so its entry is the union of both.
+ * See test/run-event-payload-contract.test.mjs, whose correspondence rows
+ * scan `run-write-context.ts`'s own source text (never this registry's logic)
+ * in both directions, so this list and what production actually writes can
+ * never silently drift apart. This module names no table — see
+ * `MAX_RUN_EVENT_SEQ`'s own comment above.
+ */
+export const RUN_EVENT_PAYLOAD_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'node_result.committed': Object.freeze(['execKey']),
+  'node_result.reused': Object.freeze(['execKey']),
+  'execution.integrity_violation': Object.freeze(['execKey', 'reason', 'storedResultSha', 'computedResultSha']),
+  'run.waiting_human': Object.freeze(['interactionId']),
+  'run.completed': Object.freeze(['reason']),
+  'run.failed': Object.freeze(['reason']),
+});
+
+/**
+ * The cap `assertRunEventPayload` enforces on each individual STRING VALUE of
+ * a run event's payload — not a total serialized-size budget. The ticket
+ * calls out oversized strings ("a string longer than an exported cap"), not a
+ * total-byte budget. Inclusive: a string of exactly this many characters is
+ * accepted.
+ */
+export const MAX_RUN_EVENT_PAYLOAD_STRING = 256;
+
+/**
+ * Raised by `assertRunEventPayload` for any refused payload, whatever the
+ * reason — mirroring `InvalidLastEventIdError`'s one-code-per-class
+ * convention: a single stable `.code` (`'run_event_payload.invalid'`) across
+ * every refusal shape, with reasons distinguished only in the message text.
+ * See test/run-event-payload-contract.test.mjs.
+ *
+ * Its message never echoes an unbounded value: a refused oversized string is
+ * named by its type, its key and its length, never by its own text — the
+ * cross-cutting rule `.claude/rules/invariants.md` states for a refusal that
+ * can see attacker- or user-supplied data.
+ */
+export class RunEventPayloadError extends Error {
+  readonly code = 'run_event_payload.invalid' as const;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'RunEventPayloadError';
+  }
+}
+
+/** A bounded, safe-to-print label for a value's kind — never its own content. */
+function describeKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  return typeof value;
+}
+
+/**
+ * The refusal seam every run event write routes through before it is
+ * appended (`run-write-context.ts`'s `appendEvent`, before `nextSeq`, so a
+ * refusal here throws inside the fenced transaction and the whole write rolls
+ * back — see infra/postgres/tests/run-event-payload.live.mjs). Refuses: a
+ * `type` outside `RUN_EVENT_PAYLOAD_KEYS`, a `payload` that is not a plain
+ * object, a key outside the registered set for that `type` (including a key
+ * borrowed from a different type), a value that is neither a string nor
+ * `null`, and a string value past `MAX_RUN_EVENT_PAYLOAD_STRING` (the cap is
+ * inclusive). See test/run-event-payload-contract.test.mjs.
+ *
+ * @throws {RunEventPayloadError} when `payload` is not valid for `type`.
+ */
+export function assertRunEventPayload(type: string, payload: unknown): void {
+  const allowedKeys = RUN_EVENT_PAYLOAD_KEYS[type];
+  if (allowedKeys === undefined) {
+    throw new RunEventPayloadError(`run event: unknown event type ${JSON.stringify(type)}`);
+  }
+
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new RunEventPayloadError(
+      `run event: payload for "${type}" must be a plain object, got ${describeKind(payload)}`,
+    );
+  }
+
+  for (const key of Object.keys(payload as Record<string, unknown>)) {
+    if (!allowedKeys.includes(key)) {
+      throw new RunEventPayloadError(`run event: payload for "${type}" does not allow key "${key}"`);
+    }
+
+    const value = (payload as Record<string, unknown>)[key];
+    if (typeof value !== 'string' && value !== null) {
+      throw new RunEventPayloadError(
+        `run event: payload for "${type}" key "${key}" must be a string or null, got ${describeKind(value)}`,
+      );
+    }
+    if (typeof value === 'string' && value.length > MAX_RUN_EVENT_PAYLOAD_STRING) {
+      throw new RunEventPayloadError(
+        `run event: payload for "${type}" key "${key}" is ${value.length} characters long, exceeding MAX_RUN_EVENT_PAYLOAD_STRING (${MAX_RUN_EVENT_PAYLOAD_STRING})`,
+      );
+    }
+  }
+}

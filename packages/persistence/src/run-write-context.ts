@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 
 import {
+  assertRunEventPayload,
   assertRunTransition,
   canonicalJson,
   ExecKeySchema,
@@ -222,7 +223,13 @@ async function nextSeq(client: PoolClient, runId: string): Promise<number> {
   return Number(rows[0]!.next_seq);
 }
 
-/** Appends one `run_events` row inside the caller's already-fenced transaction. */
+/**
+ * Appends one `run_events` row inside the caller's already-fenced
+ * transaction. `assertRunEventPayload` runs first, before `nextSeq`: a
+ * refused payload throws before the counter is even touched, so the whole
+ * fenced transaction rolls back with no row and no counter increment — see
+ * infra/postgres/tests/run-event-payload.live.mjs.
+ */
 async function appendEvent(
   client: PoolClient,
   runId: string,
@@ -230,6 +237,7 @@ async function appendEvent(
   type: string,
   payload: unknown,
 ): Promise<void> {
+  assertRunEventPayload(type, payload);
   const seq = await nextSeq(client, runId);
   await client.query(
     `INSERT INTO "${APPLICATION_SCHEMA}".run_events (run_id, seq, type, execution_attempt, payload)
