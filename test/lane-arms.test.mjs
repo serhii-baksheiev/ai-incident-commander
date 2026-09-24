@@ -666,8 +666,10 @@ function capturingNaiveArm(experimentId, assign) {
  * AIC-120 replaces `publishHoldoutArms` with the pure `planHoldoutPublication`
  * (whose plan `scripts/final-holdout-publication.mjs` then executes) — LangSmith
  * publication for the hold-out moves entirely out of the lane call. The three
- * rows below carry forward every assertion the three deleted `publishHoldoutArms`
- * rows made, restated on the new API:
+ * rows below restate, on the new API, the order, both-required and per-arm
+ * reason-independence assertions the three deleted `publishHoldoutArms` rows
+ * made — not those rows' dataset-name or exact-persisted-experiment-object
+ * assertions, which moved elsewhere (see below):
  *   - "publishHoldoutArms persists the model arm then the naive arm, in order,
  *     under their own dataset names and exact experiment objects, when both are
  *     reportable" -> "planHoldoutPublication requires the model arm before the
@@ -690,19 +692,19 @@ function capturingNaiveArm(experimentId, assign) {
  * coverage of planHoldoutPublication; the rows here are the wiring-level
  * restatement that belongs beside fourArmLaneForPublish/capturingNaiveArm.
  *
- * ⚠ **These three rows do NOT carry forward every assertion of the three
- * deleted `publishHoldoutArms` rows** — one clause of the first deleted row's
- * title, "under their own dataset names and exact experiment objects", named
- * something `planHoldoutPublication` cannot assert at all: it is pure and
- * never calls `persist`, so it has no dataset name to read. That half moved to
- * `scripts/final-holdout-publication.mjs`'s `publishRecordedMeasurement`, and
- * is pinned in `test/final-evaluation-publication.test.mjs` ›
+ * The dataset-name and exact-experiment-object half of the three deleted
+ * rows' assertions is not restated here: `planHoldoutPublication` is pure and
+ * never calls `persist`, so it has no dataset name or persisted experiment to
+ * read. That half now lives in `scripts/final-holdout-publication.mjs`'s
+ * `publishRecordedMeasurement` — the dataset name is pinned in
+ * `test/final-evaluation-publication.test.mjs` ›
  * "publishOnly persists each required arm under a dataset name built from the
  * record’s own head SHA and attempt number, and a retry after ingestion-failed
- * bumps the suffix" — added in the same round that noticed this comment
- * overclaimed. Everything else the three deleted rows checked (order, both-
- * required, per-arm reason independence, the naive experiment being the one
- * `runNaiveArm` actually captured) is restated here.
+ * bumps the suffix", and the exact experiment object reaching `persist` per
+ * arm is pinned by the same file's ›
+ * "T8: naive persist succeeds and model persist rejects — the log holds model
+ * ingestion-failed and naive verified, satisfied is false, and the next
+ * publishOnly retries only the model arm".
  */
 test('planHoldoutPublication requires the model arm before the naive arm, in FINAL_EVALUATION_PUBLISHABLE_ARMS order, when both are reportable, and the naive experiment is the one runNaiveArm actually captured', async () => {
   let modelExperiment;

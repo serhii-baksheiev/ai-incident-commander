@@ -653,11 +653,13 @@ test('verifyPersistedBenchmarkReference rejects naming the count, when a run id 
 });
 
 /**
- * AIC-120 round 2: the read-back dataset's own `id` is read and returned, but
- * never compared with the `datasetId` the caller asked to verify. A workspace
- * whose `readDataset` answers with a real dataset — just not the one this
- * reference names — reads today as a clean verification, exactly the
- * wrong-workspace failure this function's own header exists to catch.
+ * AIC-120 round 2: before this fix, the read-back dataset's own `id` was read
+ * and returned but never compared with the `datasetId` the caller asked to
+ * verify. A workspace whose `readDataset` answered with a real dataset — just
+ * not the one this reference names — read as a clean verification, exactly
+ * the wrong-workspace failure this function's own header exists to catch.
+ * This row guards against that: the read-back id is now compared against the
+ * requested `datasetId` before verification can succeed.
  */
 test('verifyPersistedBenchmarkReference rejects when the read-back dataset id disagrees with the requested datasetId', async () => {
   const verify = requireFunction(observability, 'verifyPersistedBenchmarkReference', '@aic/observability');
@@ -681,7 +683,7 @@ test('verifyPersistedBenchmarkReference rejects when the read-back dataset id di
   await assert.rejects(
     () => verify({ client, reference }),
     (error) => error instanceof Error && /d1-from-a-different-workspace/.test(error.message) && /d1/.test(error.message),
-    'a read-back dataset whose own id disagrees with the requested datasetId must be refused, naming both ids: today the function returns whatever id came back with no comparison at all',
+    'a read-back dataset whose own id disagrees with the requested datasetId must be refused, naming both ids: this guards against the function returning whatever id came back with no comparison at all',
   );
 });
 
@@ -704,13 +706,15 @@ test('writeRecordDurably writes pretty-printed JSON with a trailing newline, lea
 });
 
 /**
- * AIC-120 round 2: `writeRecordDurably` opens its temp file with the plain
- * `'w'` flag, which has no `O_EXCL`/`O_NOFOLLOW` and so follows a pre-created
- * symlink at that exact path. An attacker (or a leftover temp file from a
- * killed prior run, replaced by a symlink) who plants
- * `<path>.tmp-<pid>` pointing at an arbitrary file gets that file overwritten
- * with the new record, and then renamed into place at `path` — the write
- * lands wherever the symlink pointed, never where the caller asked.
+ * AIC-120 round 2: before this fix, `writeRecordDurably` opened its temp file
+ * with the plain `'w'` flag, which has no `O_EXCL`/`O_NOFOLLOW` and so
+ * followed a pre-created symlink at that exact path. An attacker (or a
+ * leftover temp file from a killed prior run, replaced by a symlink) who
+ * planted `<path>.tmp-<pid>` pointing at an arbitrary file got that file
+ * overwritten with the new record, and then renamed into place at `path` —
+ * the write landed wherever the symlink pointed, never where the caller
+ * asked. This row guards against that: the temp file is now opened with
+ * `'wx'`, which refuses to open a path that already exists.
  */
 test('writeRecordDurably refuses to write through a pre-created symlink at its own temp path, leaving the symlink target untouched', async (t) => {
   const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
@@ -730,7 +734,7 @@ test('writeRecordDurably refuses to write through a pre-created symlink at its o
   assert.equal(
     readFileSync(targetPath, 'utf8'),
     targetContents,
-    'the symlink target must be left exactly as it was: today the write follows the link and overwrites it with the new record',
+    'the symlink target must be left exactly as it was: this guards against the write following the link and overwriting it with the new record',
   );
   assert.equal(
     existsSync(path),
@@ -1545,6 +1549,38 @@ test('T11c: publishOnly refuses when the record bytes changed after a prior atte
     }),
   );
   assert.equal(persistCalls, 0);
+});
+
+test('T11d: publishOnly refuses a complete record whose candidate.headSha is missing, before any persist call, and logs no attempt', async (t) => {
+  const { publishOnly } = await import('../scripts/publish-final-holdout.mjs');
+  const { attemptLogPath, readPublicationAttempts } = await import('../scripts/final-holdout-publication.mjs');
+  const dir = tempDir(t, 'aic-120-t11d-');
+  const { fingerprint, basename } = freshFingerprint();
+  const modelExperiment = distinctExperiment('aic-120-t11d-model');
+  const publicationPlan = { model: { required: true }, naive: { required: false, reason: 'x' } };
+  const record = completeRecordFor({ fingerprint, measurementId: randomUUID(), modelExperiment, naiveExperiment: null, publicationPlan });
+  delete record.candidate.headSha;
+  const recordPath = join(dir, basename);
+  writeJson(recordPath, record);
+
+  let persistCalls = 0;
+  await assert.rejects(
+    () =>
+      publishOnly({
+        recordPath,
+        async persist() {
+          persistCalls += 1;
+        },
+        async verify() {},
+        now: () => 'T',
+        newAttemptId: () => 'a1',
+      }),
+    (error) => error instanceof Error && /headSha/.test(error.message),
+  );
+  assert.equal(persistCalls, 0);
+
+  const attempts = await readPublicationAttempts(attemptLogPath(recordPath));
+  assert.deepEqual(attempts, [], 'a refusal before any persist call must log no attempt at all');
 });
 
 /* -------------------------------------------------------------------------- */

@@ -387,11 +387,13 @@ for (const [label, score] of [['NaN', Number.NaN], ['Infinity', Number.POSITIVE_
  * is why the tripwire above exists.
  *
  * AIC-120 round 2: `verifyPersistedBenchmarkReference` is the third entry
- * point, and it reads its `client` slot with the untyped `ownValue` rather
- * than `ownClient` — so an own ACCESSOR `client` reads as absent there today,
- * and the call falls through to the LIVE default client exactly the way the
- * other two used to. Its `baseOptions` carries no `reference` on purpose, so
- * whichever client answer is in play, the very next own-read throws
+ * point. Before this fix it read its `client` slot with the untyped
+ * `ownValue` rather than `ownClient` — so an own ACCESSOR `client` read as
+ * absent there, and the call fell through to the LIVE default client exactly
+ * the way the other two used to; it now reads the slot with `ownClient`, the
+ * same as the other two entry points. Its `baseOptions` carries no
+ * `reference` on purpose, so whichever client answer is in play, the very
+ * next own-read throws
  * `nextRefusal` before any client method is ever called — same discipline as
  * the other two rows, and the same reason the tripwire above never fires for
  * any of them.
