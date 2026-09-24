@@ -732,6 +732,7 @@ test('more concurrent fence refusals than the pool has connections all end in St
   await store.claimNext('worker-storm-b');
 
   const refusals = 25; // pg's default pool max is 10
+  let timer;
   const outcome = await Promise.race([
     Promise.allSettled(
       Array.from({ length: refusals }, (_, i) =>
@@ -742,13 +743,20 @@ test('more concurrent fence refusals than the pool has connections all end in St
         ),
       ),
     ),
-    new Promise((resolve) => setTimeout(() => resolve('timeout'), 15_000)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), 15_000);
+    }),
   ]);
+  clearTimeout(timer);
   if (outcome === 'timeout') {
     // A wedged pool never hands its clients back, so the store's own close in
     // t.after would wait forever and hang the lane instead of failing it.
     // Destroy the held clients (pg-pool's internal list) so the row fails.
-    for (const client of [...(store.pool._clients ?? [])]) client.release(new Error('wedged pool torn down by the test'));
+    assert.ok(
+      Array.isArray(store.pool._clients),
+      'the teardown reads pg-pool\'s private client list; if it moved, fail here rather than hang in t.after',
+    );
+    for (const client of [...store.pool._clients]) client.release(new Error('wedged pool torn down by the test'));
   }
   assert.notEqual(outcome, 'timeout', 'concurrent fence refusals must not wedge the pool');
   assert.equal(
@@ -802,4 +810,33 @@ test('replay refuses a stored result whose text no longer matches its result_sha
     'a stored result that no longer hashes to its result_sha must not be replayed as authoritative',
   );
   assert.equal(computeCalls, 0, 'a corrupted committed result is refused, never silently recomputed');
+});
+
+test('a fence refusal whose rejection cannot be recorded still ends in StaleOwnerError, carrying the recording failure as its cause', async (t) => {
+  const store = await freshStore(t);
+  const { runId, claim: claimA } = await createAndClaim(store, 'worker-unrecorded-a');
+  const contextA = await persistence.openRunWriteContext(store, claimA);
+  await store.pool.query(
+    `update aic_app.runs set lease_expires_at = clock_timestamp() - interval '1 second' where run_id = $1`,
+    [runId],
+  );
+
+  await store.pool.query('alter table aic_app.fence_rejections rename to fence_rejections_unavailable');
+  try {
+    await assert.rejects(
+      () =>
+        contextA.committed(
+          domain.buildExecKey('tool.trial', { runId, testId: 'unrecorded', trialAttempt: 1 }),
+          async () => ({ value: 'never lands' }),
+          { project: noProjection },
+        ),
+      (error) =>
+        error instanceof domain.StaleOwnerError &&
+        error.cause instanceof Error &&
+        /fence_rejections/.test(error.cause.message),
+      'the refusal is still the answer, and the lost evidence is observable as its cause (decision 12: never silently)',
+    );
+  } finally {
+    await store.pool.query('alter table aic_app.fence_rejections_unavailable rename to fence_rejections');
+  }
 });
