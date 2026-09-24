@@ -570,6 +570,17 @@ test('builds before it tests, because a suite that reads a stale dist reports mu
  * all. A count in prose over a growing directory is the same defect this file's
  * record-table row already exists to stop.
  */
+/**
+ * Either arm's publication counts: the model arm's `publication` and, since
+ * AIC-117 slice d, the naive arm's `naivePublication`, decided independently
+ * of it. Shared with the synthetic-record row below, so both read a record
+ * the same way — one spelling of the filter, not two that can disagree.
+ */
+function recordShowsPublication(record) {
+  const shows = (block) => block !== undefined && block.status !== 'absent';
+  return shows(record.publication) || shows(record.naivePublication);
+}
+
 test('no hold-out record carries a published result, which is what the gate document may say about ingestion', () => {
   const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
   const records = readdirSync(dir).filter((name) => name.endsWith('.json'));
@@ -578,13 +589,39 @@ test('no hold-out record carries a published result, which is what the gate docu
 
   const published = records.filter((name) => {
     const record = JSON.parse(readFileSync(join(dir, name), 'utf8'));
-    return record.publication !== undefined && record.publication.status !== 'absent';
+    return recordShowsPublication(record);
   });
 
   assert.deepEqual(
     published,
     [],
     'a record carrying a published result would falsify the gate document\'s statement that no ingestion occurred during this gate — update the document from the records rather than leaving the sentence standing',
+  );
+});
+
+/**
+ * The row above reads the committed records, none of which carry a published
+ * `naivePublication` — so on its own it cannot show the filter would catch
+ * one if it appeared. A synthetic record set closes that gap without
+ * touching disk.
+ */
+test('the ingestion filter counts a record whose naivePublication alone is published, not only one whose model publication is', () => {
+  const records = [
+    {
+      publication: { status: 'absent', absentReason: 'the run was not asked to publish' },
+      naivePublication: { status: 'published', datasetId: 'd', projects: [], runIds: [] },
+    },
+    {
+      publication: { status: 'absent', absentReason: 'x' },
+      naivePublication: { status: 'absent', absentReason: 'y' },
+    },
+    {},
+  ];
+
+  assert.deepEqual(
+    records.map(recordShowsPublication),
+    [true, false, false],
+    'only the record whose naivePublication is published must be counted',
   );
 });
 

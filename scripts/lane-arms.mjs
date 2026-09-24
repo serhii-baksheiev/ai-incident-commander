@@ -64,4 +64,3 @@ export async function publishNaiveArm({ laneReport, naiveExperiment, datasetName
   const publication = await persist({ datasetName, experiment: naiveExperiment });
   return { status: 'published', ...publication };
 }
-
