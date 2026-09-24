@@ -37,16 +37,17 @@ import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
  * `sufficient`, `derive_hypothesis_state` always answers `{}`); wiring the
  * canonical ones here is what lets the control arm and the model arm actually
  * exercise state-driven termination rather than the fixture's constant.
- * `modelNodes` inherits both, because it spreads `scriptedNodes`, so a model
- * run can stop `stalled` or `ambiguous` where the fixture's constant always
- * answered `sufficient`, and can run a second challenge round within the
- * graph's challenge cap.
- * see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
- * see state-termination.test.mjs › "T6: after a round has run, no hypothesis reaching corroborated or above is stalled, not sufficient by default"
- * The one
- * implementation both lane commands use, so the control arm and the model
+ * `modelNodes` inherits both, because it spreads `scriptedNodes`. This is the
+ * one implementation both lane commands use, so the control arm and the model
  * arm's base nodes cannot drift apart.
  * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation"
+ *
+ * For the model arm this means a run can stop `stalled` or `ambiguous` where
+ * the fixture's constant always answered `sufficient`, and a second challenge
+ * round can be required after the first while the round cap allows it.
+ * see state-termination.test.mjs › "T6: after a round has run, no hypothesis reaching corroborated or above is stalled, not sufficient by default"
+ * see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
+ * see state-termination.test.mjs › "T3: two hypotheses at corroborated-or-above after the first round is challenge-required, naming the earlier one in state order as leader on the tie"
  * see lane-arms.test.mjs › "scriptedNodes(record) and modelNodes(record, port) both carry the canonical derive_hypothesis_state and termination_check nodes, proven by behaviour rather than identity or source text"
  * see lane-arms.test.mjs › "scriptedNodes(record)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a sparse-evidence variant reaches a different one"
  *
