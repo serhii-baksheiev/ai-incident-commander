@@ -753,13 +753,19 @@ test('writeRecordDurably ignores a leftover file or symlink at the old predictab
 });
 
 /**
- * AIC-120 round 3: the random token (`randomBytes(6)`, 12 hex characters) is
- * generated fresh per call, so two calls for the same path never derive the
- * same temp name from `path` and `pid` alone. This is the property that
- * makes the fix above safe to rely on across repeated legitimate writes, not
- * just a one-off: nothing about a second call can collide with whatever the
- * first call already cleaned up (or, per the row above, with anything
- * sitting at the old name).
+ * AIC-120 round 3: two calls to `writeRecordDurably` for the same path, from
+ * this process, each get a clean run — the second call's temp name is not
+ * blocked by anything the first call left behind, and neither call leaves a
+ * `<path>.tmp-*` entry behind afterward. That is all this row proves.
+ *
+ * 🔴 This row does NOT prove the default token is random. It passes exactly
+ * as written against the pre-fix implementation at `bf58006`, whose temp name
+ * was `${path}.tmp-${pid}` — constant across calls in one process — because
+ * the first call's `renameSync` already frees that name before the second
+ * call opens it; a constant *default* token passes this row identically. For
+ * the property that the default token varies per call, see the row below,
+ * "freshTempToken returns twelve lowercase hex characters, and returns a
+ * different value on every one of 1000 consecutive calls".
  */
 test('writeRecordDurably succeeds on two calls to the same path from this process, leaving no leftover temp file from either call', async (t) => {
   const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
@@ -828,6 +834,129 @@ test('writeRecordDurably atomically replaces a prior file rather than appending 
   await writeRecordDurably(path, { version: 2 });
 
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { version: 2 });
+});
+
+/**
+ * AIC-120 gate round 2 (code-reviewer blocker 1): the security value of the
+ * temp-name fix rests entirely on the DEFAULT token being unpredictable per
+ * call — every other row in this file either plants at the old fixed name or
+ * supplies its own explicit `token`, so none of them can tell a random
+ * default apart from a constant one. The round-1 mutation probe found
+ * exactly that gap: `token = randomBytes(6)…` -> `token = 'aaaaaaaaaaaa'`
+ * left the whole suite green (59/59 in this file, 108/109 across every file
+ * touching the module). This row observes `freshTempToken` directly so a
+ * constant default reddens it.
+ */
+test('freshTempToken returns twelve lowercase hex characters, and returns a different value on every one of 1000 consecutive calls', async () => {
+  const { freshTempToken } = await import('../scripts/final-holdout-publication.mjs');
+  assert.equal(
+    typeof freshTempToken,
+    'function',
+    'freshTempToken must be exported from scripts/final-holdout-publication.mjs; a missing export, not a typo in this test, is why this row is expected to fail today',
+  );
+
+  const seen = new Set();
+  for (let i = 0; i < 1000; i += 1) {
+    const token = freshTempToken();
+    assert.match(
+      token,
+      /^[0-9a-f]{12}$/,
+      `call #${i} must return twelve lowercase hex characters, got ${JSON.stringify(token)}`,
+    );
+    seen.add(token);
+  }
+  assert.equal(
+    seen.size,
+    1000,
+    'a constant (or otherwise low-entropy) default token must not pass: 1000 calls must return 1000 distinct values',
+  );
+});
+
+/**
+ * AIC-120 gate round 2 (code-reviewer blocker 2): the header above
+ * `writeRecordDurably` claims, unconditionally, that "the temp name carries a
+ * fresh random token per call". That is only true for the DEFAULT — a caller
+ * that supplies `{ token }` (the seam the symlink row above uses) gets
+ * exactly the token it passed, which is the documented, deliberate escape
+ * hatch, not a bug. Proving the default's shape from inside a test that
+ * calls `writeRecordDurably` cannot distinguish "default computed by
+ * freshTempToken()" from "default computed by an equivalent inline
+ * expression" without reaching into the module's internals, and it cannot
+ * observe randomness at all without spying on `node:crypto.randomBytes` —
+ * which is a live ESM binding, so this module's own already-imported
+ * reference to it cannot be swapped for a fake from outside. A source audit
+ * is the seam that is actually available: read the file text and check that
+ * the signature really does delegate the default to the tested,
+ * independently-verified `freshTempToken` above, rather than inlining a
+ * second, undocumented way to compute one.
+ */
+test('the source of writeRecordDurably defaults its token parameter to a call to freshTempToken()', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts', 'final-holdout-publication.mjs'), 'utf8');
+  const marker = 'export async function writeRecordDurably(';
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(
+    markerIndex,
+    -1,
+    'writeRecordDurably must be declared as "export async function writeRecordDurably(" for this audit to locate its signature',
+  );
+
+  const openParenIndex = markerIndex + marker.length - 1;
+  let depth = 0;
+  let closeParenIndex = -1;
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    if (source[i] === '(') depth += 1;
+    else if (source[i] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        closeParenIndex = i;
+        break;
+      }
+    }
+  }
+  assert.notEqual(closeParenIndex, -1, 'the parameter list opened at writeRecordDurably( must close with a balanced ")"');
+
+  const signature = source.slice(markerIndex, closeParenIndex + 1);
+  assert.match(
+    signature,
+    /token\s*=\s*freshTempToken\(\)/,
+    `the writeRecordDurably parameter list must default token to freshTempToken(), got: ${signature}`,
+  );
+});
+
+/**
+ * A security advisory from the round-1 review: the temp name is built by
+ * plain string concatenation (`${path}.tmp-${pid}-${token}`), with no
+ * escaping of `token`. A token containing a path separator or a `..`
+ * segment changes which filesystem entry actually gets opened — exactly the
+ * unpredictability the fix exists to add is undone if the token itself can
+ * redirect the write. `freshTempToken()`'s own output can never trigger
+ * this (it is fixed-width hex), so this refusal only matters for the
+ * explicit `{ token }` seam a caller may use.
+ */
+test('writeRecordDurably rejects a token that is not lowercase hex of length 1-32, before touching the filesystem', async (t) => {
+  const { writeRecordDurably } = await import('../scripts/final-holdout-publication.mjs');
+  const invalidTokens = ['../x', 'x/y', '', 'ABC', 'a'.repeat(33)];
+
+  for (const token of invalidTokens) {
+    const dir = tempDir(t, 'aic-120-invalid-token-');
+    const path = join(dir, 'record.json');
+
+    await assert.rejects(
+      () => writeRecordDurably(path, { hello: 'world' }, { token }),
+      `writeRecordDurably must refuse the malformed token ${JSON.stringify(token)}`,
+    );
+
+    assert.equal(
+      existsSync(path),
+      false,
+      `no file may land at ${path} for the refused token ${JSON.stringify(token)}`,
+    );
+    assert.deepEqual(
+      readdirSync(dir),
+      [],
+      `no <path>.tmp-* entry (or anything else) may be created in ${dir} for the refused token ${JSON.stringify(token)}: the refusal must happen before any filesystem call`,
+    );
+  }
 });
 
 test('attemptLogPath places the attempt log in a publications/ subdirectory beside the record, named after its basename without .json', async () => {
