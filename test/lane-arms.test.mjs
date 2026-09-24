@@ -1,12 +1,10 @@
 /**
- * AIC-117 slice b: `scripts/lane-arms.mjs` (not yet written) wires the oracle
- * and naive arms into the two live-model scripts, and the v0.3 control
- * baseline the lane now observes without withholding.
+ * AIC-117 slice b: `scripts/lane-arms.mjs` wires the oracle and naive arms into
+ * the two live-model scripts, and the committed control baseline covers every
+ * axis the lane observes under v0.3.
  *
- * `scripts/lane-arms.mjs` does not exist yet, so every row that needs it
- * imports it DYNAMICALLY, inside the row: a static top-level import would
- * throw while the whole file loads and take every row down with the same
- * "module not found" instead of each row failing on its own account.
+ * Rows that need `scripts/lane-arms.mjs` import it inside the row, so a broken
+ * module fails those rows on their own account rather than the whole file.
  *
  * Independent oracle: what a row expects is either a literal, or read from a
  * committed evidence file this module does not produce —
@@ -239,6 +237,32 @@ test('both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and n
       /evaluatorVersion:\s*evals\.STRUCTURAL_EVALUATOR_VERSION/,
       `${relativePath} must declare evaluatorVersion as evals.STRUCTURAL_EVALUATOR_VERSION`,
     );
+  }
+});
+
+/**
+ * The two paid arms spend through ONE port, and so one usage ledger: the call
+ * and output-token caps bound the naive and graph-model arms together only if
+ * neither arm builds a port of its own. A source audit, because neither command
+ * can run a lane without a live credential.
+ */
+test('each lane command creates exactly one reference-model port and hands it to both paid arms', () => {
+  for (const relativePath of ['scripts/eval-live-model.mjs', 'scripts/eval-final-holdout.mjs']) {
+    const source = readFileSync(join(REPO_ROOT, relativePath), 'utf8');
+
+    assert.equal(
+      source.split('createReferenceModelPort(').length - 1,
+      1,
+      `${relativePath} must create exactly one reference-model port: a second one carries its own ledger and escapes the lane's caps`,
+    );
+
+    const naiveStart = source.indexOf('async runNaiveArm(plan)');
+    const modelStart = source.indexOf('async runModelArm(plan)');
+    assert.ok(naiveStart >= 0 && modelStart > naiveStart, `${relativePath} must declare runNaiveArm before runModelArm`);
+    const naiveBody = source.slice(naiveStart, modelStart);
+    const modelBody = source.slice(modelStart, modelStart + 1500);
+    assert.match(naiveBody, /sharedPort\(\)/, `${relativePath} runNaiveArm must take the shared port`);
+    assert.match(modelBody, /sharedPort\(\)/, `${relativePath} runModelArm must take the shared port`);
   }
 });
 

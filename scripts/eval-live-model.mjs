@@ -4,7 +4,7 @@
  *
  * `npm run eval:live-model`
  *
- * Two arms over the CALIBRATION corpus, at one commit, in one process.
+ * Four arms over the CALIBRATION corpus, at one commit, in one process.
  *
  * 🔴 It used to be the hold-out corpus, and that was the defect rather than the
  * design: this command is a repeatable diagnostic, the lane's `scenarioSet` was
@@ -15,15 +15,19 @@
  * a guard. The corpus is declared by the caller now, and the hold-out has one
  * caller: `scripts/eval-final-holdout.mjs`.
  *
- *
  *   - a SCRIPTED control arm — the deterministic nodes the regression suite
- *     already uses — and
- *   - a MODEL arm, identical except that `generate_hypotheses`,
+ *     already uses;
+ *   - an ORACLE positive control and a NAIVE single-prompt arm, from
+ *     `scripts/lane-arms.mjs`; and
+ *   - a MODEL arm, identical to the control except that `generate_hypotheses`,
  *     `interpret_residual_evidence` and `challenge_hypothesis` are backed by the
  *     reference model.
  *
- * Everything else about the two arms is the same object graph, which is what
- * makes the comparison mean anything: if the control arm's numbers move against
+ * The naive and model arms spend through one port and one usage ledger.
+ * see lane-arms.test.mjs › "each lane command creates exactly one reference-model port and hands it to both paid arms"
+ *
+ * Everything else about the control and model arms is the same object graph,
+ * which is what makes the comparison mean anything: if the control arm's numbers move against
  * their declared baseline, the change is in the HARNESS and the model arm's
  * numbers are marked UNREPORTABLE.
  * ⚠ Marked, not withheld — `arms.model.metrics` still carries every model mean
@@ -72,10 +76,13 @@
  * see live-model-lane.test.mjs › "measures the harness zero that makes
  * evidence_coverage unreportable"
  *
- * ⚠ **What leaves this process when the lane runs.** The prompt carries the
- * incident, the hypotheses, the predictions, the evidence and the assessments —
- * the investigation state — to the configured provider's HTTPS endpoint. That is
- * the only destination the lane reaches on its own; `--publish` adds a second,
+ * ⚠ **What leaves this process when the lane runs.** The model arm's prompt
+ * carries the incident, the hypotheses, the predictions, the evidence and the
+ * assessments — the investigation state. The naive arm's prompt carries every
+ * telemetry entry: each tool input, each piece of evidence, and the reason or
+ * message of each unavailable or failed call (`describeTelemetry` in
+ * `packages/roles/src/naive-role.ts`). Both go to the configured provider's
+ * HTTPS endpoint. That is the only destination the lane reaches on its own; `--publish` adds a second,
  * the LangSmith ingestion below. Nothing leaves at all without a credential.
  *
  * The scripted nodes come from `test/fixtures/benchmark-experiment.mjs`, which
