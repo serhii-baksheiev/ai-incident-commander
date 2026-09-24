@@ -455,7 +455,7 @@ test(
     await withIngestSink(async (sink) => {
       await withCheckpointDirectory('aic-tracing-offline-', async (checkpoint) => {
         const runId = 'run-tracing-offline';
-        const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+        const args = [cliPath, 'dev', 'spike', 'start', '--run-id', runId, '--checkpoint', checkpoint];
         // The endpoint is pointed AT the sink on purpose: the run stays offline
         // because no flag enabled tracing, not because it had nowhere to send.
         const executed = await runCli(args, {
@@ -488,7 +488,7 @@ test(
     await withIngestSink(async (sink) => {
       await withCheckpointDirectory('aic-tracing-ingest-', async (checkpoint) => {
         const runId = 'run-tracing-ingest';
-        const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+        const args = [cliPath, 'dev', 'spike', 'start', '--run-id', runId, '--checkpoint', checkpoint];
         const executed = await runCli(args, {
           LANGSMITH_TRACING: 'true',
           LANGSMITH_API_KEY: fakeTracingValue,
@@ -544,6 +544,8 @@ test(
       await withCheckpointDirectory('aic-tracing-flush-', async (checkpoint) => {
         const args = [
           cliPath,
+          'dev',
+          'spike',
           'start',
           '--run-id',
           'run-tracing-flush',
@@ -581,6 +583,8 @@ test(
       await withCheckpointDirectory('aic-tracing-bg-', async (checkpoint) => {
         const args = [
           cliPath,
+          'dev',
+          'spike',
           'start',
           '--run-id',
           'run-tracing-bg',
@@ -616,6 +620,8 @@ test(
       await withCheckpointDirectory('aic-tracing-no-key-', async (checkpoint) => {
         const args = [
           cliPath,
+          'dev',
+          'spike',
           'start',
           '--run-id',
           'run-tracing-no-key',
@@ -660,7 +666,7 @@ test(
     await withIngestSink(async (sink) => {
       await withCheckpointDirectory('aic-tracing-cli-', async (checkpoint) => {
         const runId = 'run-tracing-cli';
-        const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+        const args = [cliPath, 'dev', 'spike', 'start', '--run-id', runId, '--checkpoint', checkpoint];
         const executed = await runCli(args, {
           LANGSMITH_TRACING: 'true',
           LANGSMITH_API_KEY: fakeTracingValue,
@@ -701,6 +707,8 @@ test(
       await withCheckpointDirectory('aic-tracing-payload-', async (checkpoint) => {
         const args = [
           cliPath,
+          'dev',
+          'spike',
           'start',
           '--run-id',
           'run-tracing-payload',

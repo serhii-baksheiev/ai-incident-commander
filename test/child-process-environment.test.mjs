@@ -405,7 +405,7 @@ test(
           process.env.LANGCHAIN_ENDPOINT = sink.endpoint;
 
           const runId = 'run-child-env-hermetic';
-          const args = [cliPath, 'start', '--run-id', runId, '--checkpoint', checkpoint];
+          const args = [cliPath, 'dev', 'spike', 'start', '--run-id', runId, '--checkpoint', checkpoint];
           const executed = await runNode(args, {});
 
           assert.equal(executed.status, 0, commandDiagnostics(args, executed));
