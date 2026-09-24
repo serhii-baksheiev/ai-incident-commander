@@ -5,6 +5,7 @@ export * from './model-config.js';
 export * from './model-errors.js';
 export * from './model-usage-ledger.js';
 export * from './investigation-roles.js';
+export * from './naive-role.js';
 
 export {
   MODEL_API_KEY_VARIABLE,
