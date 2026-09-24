@@ -52,7 +52,8 @@ export interface RunWriteContext {
   markWaitingHuman(interactionId: string): Promise<void>;
   complete(reason?: string): Promise<void>;
   fail(reason: string): Promise<void>;
-  assertOwner(): Promise<void>;
+  /** The fence alone; a refusal is recorded under `kind` (default `assertOwner`). */
+  assertOwner(kind?: string): Promise<void>;
 }
 
 /**
@@ -458,16 +459,30 @@ async function fail(pool: Pool, claim: RunClaim, reason: string): Promise<void> 
  * The fence alone, with no transaction and no write: refuses the instant a
  * lease has expired, independent of whether `sweepExpired` has run yet. See
  * run-write-context.live.mjs › "a context whose lease merely expired, with no
- * sweep yet, is refused too".
+ * sweep yet, is refused too". A refusal is recorded in `fence_rejections`
+ * under `kind`, as a refused write is — the fenced checkpointer calls this
+ * before each checkpoint write with `kind = 'checkpoint'`; see
+ * fenced-checkpointer.live.mjs › "a real zombie worker's checkpoint write is
+ * refused by a real RunWriteContext after a takeover, fence_rejections records
+ * it with kind = checkpoint, and B's checkpoint is unaffected".
  */
-async function assertOwner(pool: Pool, claim: RunClaim): Promise<void> {
+async function assertOwner(pool: Pool, claim: RunClaim, kind: string): Promise<void> {
   const { rows } = await pool.query(RUN_WRITE_CONTEXT_FENCE_SQL, [
     claim.runId,
     claim.ownerWorkerId,
     claim.executionAttempt,
   ]);
   if (rows.length === 0) {
-    throw new StaleOwnerError(fenceRefusalMessage(claim, 'assertOwner'));
+    let recordFailure: unknown;
+    try {
+      await recordFenceRejection(pool, claim, kind);
+    } catch (error) {
+      recordFailure = error;
+    }
+    throw new StaleOwnerError(
+      fenceRefusalMessage(claim, kind),
+      recordFailure === undefined ? undefined : { cause: recordFailure },
+    );
   }
 }
 
@@ -487,6 +502,6 @@ export function openRunWriteContext(store: RunStore, claim: RunClaim): RunWriteC
     markWaitingHuman: (interactionId) => markWaitingHuman(pool, claim, interactionId),
     complete: (reason) => complete(pool, claim, reason),
     fail: (reason) => fail(pool, claim, reason),
-    assertOwner: () => assertOwner(pool, claim),
+    assertOwner: (kind = 'assertOwner') => assertOwner(pool, claim, kind),
   };
 }
