@@ -50,7 +50,7 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
   'v0.2-four-arm-supplement-1.md': 'sha256:e3b3e9751a2da8e74197b10b6bb50afa70c7f9e5e62899c2371aa1b5c1f27b85',
-  'v0.2-four-arm-supplement-2.md': 'sha256:e6c374fcd112872399d52db661100378d46f4a6c2d61ab0b09347a3196826b79',
+  'v0.2-four-arm-supplement-2.md': 'sha256:cd26ddea452bbb0c89b8f879d21efdf1181945b0557f5f71c86424664e825f02',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');

@@ -218,6 +218,14 @@ test('freezes every v0.2 benchmark scenario byte for byte, with no id missing an
       `${scenarioId} changed bytes. A change to a benchmark scenario is a new, dated, preregistered decision (owner ruling D1, item 6), never a silent edit to fit a status-rules result`,
     );
   }
+
+  for (const scenarioId of expectedV01ScenarioIds) {
+    assert.equal(
+      expectedAllScenarioDigests[scenarioId],
+      expectedV01ScenarioDigests[scenarioId],
+      `${scenarioId}: the ten-scenario freeze and the v0.1 freeze must name the same bytes`,
+    );
+  }
 });
 
 /**

@@ -1072,6 +1072,68 @@ test('the corroborated and supported sentences carry the table\'s own numbers an
 });
 
 /**
+ * Every earlier status must be ruled out before a later one is reached, so the
+ * precedence clause joins them with "and", never "or".
+ */
+test('the precedence clause says every earlier status has been ruled out, joined with and', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const sentences = describeStatusRules(STATUS_RULES['v0.2']);
+
+  assert.match(sentences.corroborated, /'rejected', 'weakened' and 'supported' have already been ruled out/);
+  assert.doesNotMatch(sentences.corroborated, /'weakened' or 'supported'/);
+});
+
+/**
+ * `deriveHypothesisStatus` rejects on a contradicting assessment that names a
+ * prediction with the rule's status and whose evidence has the rule's
+ * reliability (packages/domain/src/evaluation.ts, `isRejected`). The sentence
+ * says that, not "a contradicted prediction".
+ */
+test('the rejected sentence names a contradicting assessment tied to a refuted prediction, from evidence at high reliability', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const sentences = describeStatusRules(STATUS_RULES['v0.2']);
+
+  assert.match(sentences.rejected, /a contradicting assessment tied to a prediction with status 'refuted'/);
+  assert.match(sentences.rejected, /evidence at reliability 'high'/);
+});
+
+test('describeStatusRules refuses a status the table lists without a precedence position or without a rule', () => {
+  const describeStatusRules = requireDescribeStatusRules();
+  const base = STATUS_RULES['v0.2'].hypothesis;
+
+  assert.throws(
+    () => describeStatusRules({ hypothesis: { ...base, statuses: [...base.statuses, 'orphan'], rules: { ...base.rules, orphan: { fallback: true } } } }),
+    /status 'orphan' has no place in the precedence order/,
+  );
+  assert.throws(
+    () => describeStatusRules({ hypothesis: { ...base, statuses: [...base.statuses, 'bare'], precedence: [...base.precedence, 'bare'] } }),
+    /status 'bare' has no rule/,
+  );
+});
+
+/**
+ * The corroborated sentence quotes the corroborated rule's own copy of the
+ * support requirements. `deriveHypothesisStatus` evaluates corroborated with
+ * the SUPPORTED rule's copy (packages/domain/src/evaluation.ts, the shared
+ * corroboration shape) and reads only `maximumConfirmedPredictions` off the
+ * corroborated rule. The two copies must therefore stay equal in every table,
+ * or the prompt would describe a rule the derivation does not apply.
+ */
+test("in every STATUS_RULES table, corroborated's support requirements equal supported's, which are the ones deriveHypothesisStatus applies to both", () => {
+  for (const [version, table] of Object.entries(STATUS_RULES)) {
+    const { corroborated, supported } = table.hypothesis.rules;
+    if (corroborated === undefined) continue;
+    for (const field of ['minimumIndependentSupports', 'independenceKey', 'supportStrengths', 'forbiddenContradictionStrengths']) {
+      assert.deepEqual(
+        corroborated[field],
+        supported[field],
+        `${version}: corroborated.${field} must equal supported.${field}, the copy the derivation reads`,
+      );
+    }
+  }
+});
+
+/**
  * Proves the sentence is GENERATED from the table, not a hand-written string
  * that happens to mention the right numbers today: a mutated copy of the
  * table with a different `minimumIndependentSupports` must produce a

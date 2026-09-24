@@ -25,11 +25,10 @@
  *
  * Every count below is a literal, measured once against this tree
  * (`node --import ./test/fixtures/no-ambient-tracing.mjs --test
- * test/prereg-confounds.test.mjs`) and written here, per
- * `.claude/rules/invariants.md` ("independent-oracle invariant"): the
- * assertions do not derive their expectation from
- * `STRUCTURAL_GROUND_TRUTH` a second time, they recompute it from the
- * fixture's own tool outputs.
+ * test/prereg-confounds.test.mjs`) and written here. The ok evidence ids are
+ * recomputed from the fixture's own tool outputs. Which of them are expected
+ * or misleading is read from `STRUCTURAL_GROUND_TRUTH`, because the confound
+ * is about the evidence that ground truth DECLARES misleading.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -81,17 +80,18 @@ function decisiveNonMisleadingIdsOf(scenarioId) {
  */
 function assertSingleDecisiveEvidence(scenarioId) {
   const decisiveIds = decisiveNonMisleadingIdsOf(scenarioId);
-  assert.ok(
-    decisiveIds.length <= 1,
-    `${scenarioId} must carry at most one decisive non-misleading evidence id for the confound named in owner ruling D1 item 6 to hold; measured ${decisiveIds.length}: ${JSON.stringify(decisiveIds)}`,
+  assert.equal(
+    decisiveIds.length,
+    1,
+    `${scenarioId} must carry exactly one decisive non-misleading evidence id, the single-decisive-evidence confound owner ruling D1 item 6 names; measured ${decisiveIds.length}: ${JSON.stringify(decisiveIds)}`,
   );
 }
 
-test('dependency-caused-incident-b carries at most one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)', () => {
+test('dependency-caused-incident-b carries exactly one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)', () => {
   assertSingleDecisiveEvidence('dependency-caused-incident-b');
 });
 
-test('challenge-changes-leader carries at most one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)', () => {
+test('challenge-changes-leader carries exactly one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)', () => {
   assertSingleDecisiveEvidence('challenge-changes-leader');
 });
 
