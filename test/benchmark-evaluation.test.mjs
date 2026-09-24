@@ -868,6 +868,7 @@ test('publishes three independent metrics and rejects accidental other-stop succ
   assert.deepEqual(unsupportedClaims, {
     key: 'unsupported_claim_rate',
     score: 0.5,
+    claimCount: 2,
   });
 
   const expectedFingerprints = [

@@ -239,7 +239,7 @@ test('emits every declared cap in the report a record is written from', async ()
 
   assert.deepEqual(
     Object.keys(report.caps).sort(),
-    ['maxModelCalls', 'maxModelRuns', 'maxOutputTokens'],
+    ['graphModelCallsPerRun', 'maxModelCalls', 'maxModelRuns', 'maxOutputTokens', 'naiveModelCallsPerRun'],
     'every bound a run is under must reach the report: a record naming two of three cannot say what the third was',
   );
   assert.equal(report.caps.maxModelRuns, requireExport('LIVE_MODEL_LANE_MAX_MODEL_RUNS'));
@@ -482,7 +482,9 @@ test('runs both arms over the same plan and reports them separately', async () =
   assert.deepEqual(plans[0][1], plans[1][1], 'both arms take the same plan');
   assert.equal(plans[0][1].scenarioSet, 'final-evaluation');
   assert.equal(report.headSha, HEAD_SHA);
-  assert.deepEqual(Object.keys(report.arms).sort(), ['control', 'model']);
+  // The oracle and naive arms are reported as not run when the caller supplies
+  // none: see four-arm-lane.test.mjs › "still returns not-run oracle and naive arms, with model and control unchanged apart from the new fields, when the caller supplies only the two original arms"
+  assert.deepEqual(Object.keys(report.arms).sort(), ['control', 'model', 'naive', 'oracle']);
   assert.notEqual(
     report.arms.control.metrics,
     report.arms.model.metrics,
@@ -516,7 +518,13 @@ test('publishes one figure per metric and no composite anywhere', async () => {
 
   const report = await runLiveModelLane(laneOptions());
 
-  for (const arm of Object.values(report.arms)) {
+  const measured = Object.values(report.arms).filter((arm) => arm.metrics !== undefined);
+  assert.deepEqual(
+    measured.map(({ arm }) => arm).sort(),
+    ['model', 'scripted-control'],
+    'every arm that ran must be checked; an arm that did not run carries no metrics',
+  );
+  for (const arm of measured) {
     for (const [key, value] of Object.entries(arm.metrics)) {
       assert.equal(value.key, key);
       assert.equal(typeof value.mean, 'number');
@@ -695,9 +703,19 @@ test('reports what the model arm consumed on its own axes', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
 
   const report = await runLiveModelLane(
-    laneOptions({
-      modelUsage: () => ({ calls: 7, inputTokens: 900, outputTokens: 120 }),
-    }),
+    laneOptions((() => {
+      // The ledger the runner owns: it reads 7 calls, 900 in and 120 out only
+      // after the model arm has spent them, so the arm's own figures are the
+      // difference the lane measures across that arm.
+      let spent = { calls: 0, inputTokens: 0, outputTokens: 0 };
+      return {
+        modelUsage: () => spent,
+        async runModelArm() {
+          spent = { calls: 7, inputTokens: 900, outputTokens: 120 };
+          return scriptedExperiment('aic-94-live-model-model', perfect);
+        },
+      };
+    })()),
   );
 
   assert.deepEqual(report.arms.model.usage, {

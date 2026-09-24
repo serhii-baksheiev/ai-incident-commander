@@ -100,8 +100,19 @@ export interface BenchmarkMetric<Key extends BenchmarkMetricKey> {
   readonly score: number;
 }
 
+/**
+ * `unsupported_claim_rate` additionally carries how many claims it counted —
+ * the denominator the rate was computed over — so a reader of one run's
+ * metric does not have to re-derive it from the raw outcome.
+ * see four-arm-lane.test.mjs › "evaluateUnsupportedClaimRate reports how many claims it counted"
+ */
+export interface UnsupportedClaimRateMetric
+  extends BenchmarkMetric<'unsupported_claim_rate'> {
+  readonly claimCount: number;
+}
+
 export type BenchmarkMetrics = Readonly<{
-  unsupported_claim_rate: BenchmarkMetric<'unsupported_claim_rate'>;
+  unsupported_claim_rate: UnsupportedClaimRateMetric;
   evidence_coverage: BenchmarkMetric<'evidence_coverage'>;
   termination_correctness: BenchmarkMetric<'termination_correctness'>;
 }>;
@@ -431,7 +442,7 @@ export function evaluateUnsupportedClaimRate({
 }: Readonly<{
   claims: readonly Readonly<{ evidenceIds: readonly string[] }>[];
   supportingEvidenceIds: readonly string[];
-}>): BenchmarkMetric<'unsupported_claim_rate'> {
+}>): UnsupportedClaimRateMetric {
   const supporting = new Set(supportingEvidenceIds);
   const unsupported = claims.filter(
     ({ evidenceIds }) =>
@@ -442,6 +453,7 @@ export function evaluateUnsupportedClaimRate({
   return {
     key: 'unsupported_claim_rate',
     score: claims.length === 0 ? 0 : unsupported / claims.length,
+    claimCount: claims.length,
   };
 }
 
