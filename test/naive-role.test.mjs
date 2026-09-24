@@ -41,6 +41,7 @@ import { EvidenceAssessmentSchema, IncidentConclusionSchema } from '@aic/domain'
 import * as roles from '@aic/roles';
 
 import { childEnv } from './fixtures/child-env.mjs';
+import { withPollutedObjectPrototype } from './fixtures/prototype-decoy.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -346,7 +347,7 @@ test('sends the exported DEFAULT_MAX_OUTPUT_TOKENS as maxOutputTokens by default
   assert.equal(
     requests[0].maxOutputTokens,
     DEFAULT_MAX_OUTPUT_TOKENS,
-    'the naive role must import the same DEFAULT_MAX_OUTPUT_TOKENS the other roles use, not restate the number',
+    'the naive role must send the same output budget as the exported DEFAULT_MAX_OUTPUT_TOKENS',
   );
 });
 
@@ -415,6 +416,39 @@ test('refuses a hypothesis with an empty id', async () => {
   const answer = baseAnswer();
   answer.hypotheses = [{ id: '', statement: 'an anonymous hypothesis' }, ...answer.hypotheses];
   await assertRefused(answer, /id/i, 'every hypothesis must carry a non-empty id');
+});
+
+test('refuses an unknown key on the conclusion, on a cause, and on a cause description', async () => {
+  const onConclusion = baseAnswer();
+  onConclusion.conclusion.confidence = 0.9;
+  await assertRefused(onConclusion, /confidence/, 'an unknown key on the conclusion must be refused, not dropped');
+
+  const onCause = baseAnswer();
+  onCause.conclusion.causes[0].weight = 1;
+  await assertRefused(onCause, /weight/, 'an unknown key on a cause must be refused, not dropped');
+
+  const onDescription = baseAnswer();
+  onDescription.conclusion.causes[0].cause.severity = 'high';
+  await assertRefused(onDescription, /severity/, 'an unknown key on a cause description must be refused, not dropped');
+});
+
+test('reads the conclusion only from what the answer owns, never from Object.prototype', async () => {
+  const withoutKind = baseAnswer();
+  delete withoutKind.conclusion.kind;
+  await withPollutedObjectPrototype('kind', 'root-cause', () =>
+    assertRefused(withoutKind, null, 'an inherited kind must not stand in for the answer the model did not give'),
+  );
+
+  const { port } = fakePort([baseAnswer()]);
+  const node = makeNode({ port });
+  const answer = await withPollutedObjectPrototype('trigger', 'SMUGGLED', () =>
+    node({ incidentId: INCIDENT_ID, entries: sampleEntries() }),
+  );
+  assert.equal(
+    Object.hasOwn(answer.conclusion.causes[0].cause, 'trigger'),
+    false,
+    'a cause the model gave no trigger must not acquire one from the prototype',
+  );
 });
 
 test('refuses an assessment naming an evidence id not among the shown evidence', async () => {

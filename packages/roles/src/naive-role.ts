@@ -196,6 +196,16 @@ function refuse(reason: string): never {
   throw new ModelRoleOutputError(ROLE, reason);
 }
 
+const CONCLUSION_KEYS: ReadonlySet<string> = new Set(['kind', 'causes']);
+const CAUSE_KEYS: ReadonlySet<string> = new Set(['hypothesisId', 'cause', 'evidenceIds']);
+const CAUSE_DESCRIPTION_KEYS: ReadonlySet<string> = new Set(['component', 'mechanism', 'trigger']);
+
+function refuseUnknownKeys(value: unknown, allowed: ReadonlySet<string>, where: string): void {
+  if (value === null || typeof value !== 'object') return;
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) refuse(`${where} carries keys the answer shape does not declare: ${unknown.join(', ')}`);
+}
+
 function requireCauseCount(conclusion: IncidentConclusion): void {
   const count = conclusion.causes.length;
   if ((conclusion.kind === 'no-incident' || conclusion.kind === 'inconclusive') && count !== 0) {
@@ -273,25 +283,36 @@ export function createModelNaiveInvestigation(
       return { evidenceId, hypothesisId, effect: effect as EvidenceAssessment['effect'] };
     });
 
-    // Rebuilt from own reads, as the other roles rebuild what they parse: the
-    // schema would otherwise read an inherited field as the model's answer.
+    // Rebuilt from own reads so the schema never reads an inherited field as
+    // the model's answer, and every unknown own key refused, so the rebuild
+    // keeps the strictness the domain schema would have applied to the raw
+    // object.
+    // see naive-role.test.mjs › "reads the conclusion only from what the answer owns, never from Object.prototype"
+    // see naive-role.test.mjs › "refuses an unknown key on the conclusion, on a cause, and on a cause description"
     const declared = ownValue(document, 'conclusion');
+    refuseUnknownKeys(declared, CONCLUSION_KEYS, 'the conclusion');
     const conclusion = parseWith(ROLE, IncidentConclusionSchema, {
       kind: ownValue(declared, 'kind'),
       causes: ownArray(ROLE, declared, 'causes').map((cause) => {
+        refuseUnknownKeys(cause, CAUSE_KEYS, 'a cause');
         const claimed = ownValue(cause, 'cause');
-        const trigger = ownValue(claimed, 'trigger');
+        refuseUnknownKeys(claimed, CAUSE_DESCRIPTION_KEYS, "a cause's description");
         return {
           hypothesisId: ownValue(cause, 'hypothesisId'),
+          // An own key even when absent, so the schema cannot read an
+          // inherited trigger through a key the rebuild left out.
           cause: {
             component: ownValue(claimed, 'component'),
             mechanism: ownValue(claimed, 'mechanism'),
-            ...(trigger === undefined ? {} : { trigger }),
+            trigger: ownValue(claimed, 'trigger'),
           },
           evidenceIds: ownValue(cause, 'evidenceIds'),
         };
       }),
     });
+    for (const { cause } of conclusion.causes) {
+      if (cause.trigger === undefined) delete (cause as { trigger?: string }).trigger;
+    }
     for (const { hypothesisId, cause, evidenceIds } of conclusion.causes) {
       if (!hypothesisIds.has(hypothesisId)) {
         refuse(`a cause names a hypothesis the answer did not declare: ${hypothesisId}`);
