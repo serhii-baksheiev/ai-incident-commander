@@ -249,6 +249,58 @@ test('two corroborated hypotheses that terminated ambiguous report stalledLeader
   });
 });
 
+/**
+ * "Lacks a confirmed prediction" is literal: a refuted or untested prediction
+ * is not a confirmed one, so a corroborated leader carrying only those reports
+ * the same flag as a leader with no prediction at all. Neither prediction here
+ * is tied to a contradicting assessment, so neither rejects or weakens h-first.
+ */
+test('a corroborated leader carrying only a refuted and an untested prediction counts zero confirmed predictions and, stopped ambiguous, reports stalledLeaderLacksConfirmedPrediction', () => {
+  const predictionGapOf = requirePredictionGapOf();
+  const state = finalState({
+    hypotheses: [hypothesis('h-first'), hypothesis('h-second')],
+    predictions: [
+      predictionFor('p-refuted', 'h-first', 'refuted'),
+      predictionFor('p-untested', 'h-first', 'untested'),
+    ],
+    evidence: [evidenceFor('e-f1'), evidenceFor('e-f2'), evidenceFor('e-s1'), evidenceFor('e-s2')],
+    assessments: [
+      ...corroboratedAssessments('h-first', ['e-f1', 'e-f2']),
+      ...corroboratedAssessments('h-second', ['e-s1', 'e-s2']),
+    ],
+    stopKind: 'ambiguous',
+  });
+
+  const gap = predictionGapOf(state);
+
+  assert.equal(gap.leaderId, 'h-first');
+  assert.equal(gap.leaderStatus, 'corroborated');
+  assert.equal(gap.leaderConfirmedPredictions, 0, 'a refuted or untested prediction is not a confirmed one');
+  assert.equal(gap.stalledLeaderLacksConfirmedPrediction, true);
+});
+
+test("leaderConfirmedPredictions counts only the leader's confirmed predictions, not every prediction it carries", () => {
+  const predictionGapOf = requirePredictionGapOf();
+  // One support: h-only stays a candidate whatever its predictions say, and it
+  // is the leader because it is the only hypothesis.
+  const state = finalState({
+    hypotheses: [hypothesis('h-only')],
+    predictions: [
+      predictionFor('p-confirmed', 'h-only', 'confirmed'),
+      predictionFor('p-untested', 'h-only', 'untested'),
+    ],
+    evidence: [evidenceFor('e-1')],
+    assessments: [supportAssessment('h-only', 'e-1', 'medium')],
+    stopKind: 'stalled',
+  });
+
+  const gap = predictionGapOf(state);
+
+  assert.equal(gap.leaderStatus, 'candidate');
+  assert.equal(gap.leaderConfirmedPredictions, 1, 'one of the two predictions is confirmed');
+  assert.equal(gap.stalledOther, true);
+});
+
 /* -------------------------------------------------------------------------- */
 /* (d) only candidates, stopped stalled                                       */
 /* -------------------------------------------------------------------------- */

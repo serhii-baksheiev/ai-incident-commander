@@ -475,7 +475,7 @@ test('publishes no outputs.predictionGap when the result declares none', async (
   assert.equal(Object.hasOwn(run.outputs, 'predictionGap'), false);
 });
 
-test('refuses a predictionGap carrying a key the diagnostic does not declare, before anything is sent', async () => {
+test('refuses a predictionGap carrying a key the diagnostic does not declare, and publishes no run for it', async () => {
   const capture = capturingClient();
   const { record, result } = resultWithPredictionGap({ ...PREDICTION_GAP, composite: 0.9 });
 
@@ -489,4 +489,27 @@ test('refuses a predictionGap carrying a key the diagnostic does not declare, be
     /predictionGap names an unknown field: composite/,
   );
   assert.deepEqual(capture.runs, []);
+});
+
+test('refuses a predictionGap field whose value is not of that field\'s scalar type, and publishes no run for it', async () => {
+  const cases = [
+    ['leaderId', { nested: 'object' }, /predictionGap field leaderId must be a string or absent/],
+    ['leaderConfirmedPredictions', '1', /predictionGap field leaderConfirmedPredictions must be a finite number/],
+    ['stalledOther', 'yes', /predictionGap field stalledOther must be a boolean/],
+  ];
+  for (const [field, value, pattern] of cases) {
+    const capture = capturingClient();
+    const { record, result } = resultWithPredictionGap({ ...PREDICTION_GAP, [field]: value });
+    // eslint-disable-next-line no-await-in-loop -- one refusal per field, each against its own capture
+    await assert.rejects(
+      () =>
+        observability.persistBenchmarkExperiment({
+          client: capture.client,
+          datasetName: uniqueDatasetName(`prediction-gap-bad-${field}`),
+          experiment: { records: [record], results: [result] },
+        }),
+      pattern,
+    );
+    assert.deepEqual(capture.runs, [], `${field}: no run is published for a malformed diagnostic`);
+  }
 });

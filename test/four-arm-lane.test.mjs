@@ -477,6 +477,22 @@ test('gives the model arm a status field alongside its existing fields, for both
   assert.equal(refused.arms.model.status, 'refused');
 });
 
+test('a refused model arm carries no predictionGapCounts, exactly as it carries no metrics', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const refused = await runLiveModelLane(
+    fourArmLaneOptions({
+      async runModelArm() {
+        throw new Error('model refused');
+      },
+    }),
+  );
+
+  assert.equal(refused.arms.model.status, 'refused');
+  assert.equal('metrics' in refused.arms.model, false);
+  assert.equal('predictionGapCounts' in refused.arms.model, false, 'a refused arm produced no results to count');
+});
+
 /* -------------------------------------------------------------------------- */
 /* 3. per-arm usage from one ledger reader                                    */
 /* -------------------------------------------------------------------------- */
