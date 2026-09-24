@@ -22,6 +22,7 @@ export const HypothesisStatusSchema = z.enum([
   'supported',
   'weakened',
   'rejected',
+  'corroborated',
 ]);
 
 export const HypothesisSchema = z.strictObject({
