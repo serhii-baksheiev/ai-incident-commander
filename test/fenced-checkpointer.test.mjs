@@ -36,6 +36,31 @@
  *
  * If the implementation shapes either differently, that reason belongs in the
  * PR description, not in a silent rename here.
+ *
+ * ## AIC-57 slice (a) — fork detection: a design choice this file also pins
+ *
+ * The item names the observable contract ("a `fence_rejections` row with
+ * `kind = 'checkpoint_fork'`, or a separate column/table if you find a
+ * reason") without prescribing the mechanism. This file pins the mechanism:
+ * after `put`/`putWrites`/`deleteThread`'s inner write has already landed,
+ * the fenced checkpointer re-checks ownership by calling
+ * `fence.assertOwner('checkpoint_fork')` a SECOND time — reusing the exact
+ * primitive a real `RunWriteContext` already exposes rather than widening the
+ * `CheckpointFence`/`RunWriteContext` contract with a new method or table: a
+ * real `assertOwner(kind)` already records a `fence_rejections` row under
+ * `kind` before throwing (`run-write-context.ts`'s `recordRejectionAndThrow`),
+ * so calling it again with `kind = 'checkpoint_fork'` after a passing write
+ * IS the fork recording. A rejection from this second call is swallowed by
+ * the fenced checkpointer: the write already landed on another connection
+ * and must not be undone, and a stale writer's fork must not fail the caller,
+ * who has no way to act on it (see "Row 8" below).
+ *
+ * This changes Row 2's exact ordering below: every successful write now ends
+ * with one more fence call after the inner saver runs, which is why each of
+ * Row 2's expected `log` arrays carries one more trailing `'fence'` entry
+ * than AIC-56 shipped. If the implementation shapes fork detection
+ * differently, that choice belongs in the PR description, not in a silent
+ * rename here.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -148,7 +173,7 @@ test('getTuple and list return exactly what the inner saver returns, and never c
 /* Row 2 — writes fence, then beforeWrite, then the inner saver, in order     */
 /* -------------------------------------------------------------------------- */
 
-test('put, putWrites and deleteThread each run the fence, then beforeWrite, then the inner saver, in that order', async () => {
+test('put, putWrites and deleteThread each run the fence, then beforeWrite, then the inner saver, then re-check the fence once the write has landed, in that order', async () => {
   const log = [];
   const context = createFakeFenceContext({ onAssertOwner: () => log.push('fence') });
   const inner = createInnerWriteStub(log);
@@ -158,28 +183,36 @@ test('put, putWrites and deleteThread each run the fence, then beforeWrite, then
   const fenced = fencedCheckpointerFactory()(inner, context, { beforeWrite });
   const config = { configurable: { thread_id: 'thread-order' } };
 
+  // The trailing 'fence' in each expected array below is AIC-57 slice (a)'s
+  // fork-detection recheck (this file's header, "AIC-57 slice (a)"): a SECOND
+  // assertOwner call, after the inner write has landed, that this fake's
+  // `onAssertOwner` records identically to the first (it does not
+  // distinguish `kind` here — Row 8 below does, via `calls`/`rejectedKinds`).
+  // A fence that stays true (as this one does, throughout) must still be
+  // called again, and records nothing beyond appearing in this ordering log.
+
   log.length = 0;
   await fenced.put(config, {}, {}, {});
   assert.deepEqual(
     log,
-    ['fence', 'beforeWrite', 'inner.put'],
-    'put must check the fence, then run beforeWrite, then delegate to the inner saver — in that order',
+    ['fence', 'beforeWrite', 'inner.put', 'fence'],
+    'put must check the fence, run beforeWrite, delegate to the inner saver, and THEN re-check the fence once the write has landed — in that order',
   );
 
   log.length = 0;
   await fenced.putWrites(config, [], 'task-1');
   assert.deepEqual(
     log,
-    ['fence', 'beforeWrite', 'inner.putWrites'],
-    'putWrites must check the fence, then run beforeWrite, then delegate to the inner saver — in that order',
+    ['fence', 'beforeWrite', 'inner.putWrites', 'fence'],
+    'putWrites must check the fence, run beforeWrite, delegate to the inner saver, and THEN re-check the fence once the write has landed — in that order',
   );
 
   log.length = 0;
   await fenced.deleteThread('thread-order');
   assert.deepEqual(
     log,
-    ['fence', 'beforeWrite', 'inner.deleteThread'],
-    'deleteThread must check the fence, then run beforeWrite, then delegate to the inner saver — in that order',
+    ['fence', 'beforeWrite', 'inner.deleteThread', 'fence'],
+    'deleteThread must check the fence, run beforeWrite, delegate to the inner saver, and THEN re-check the fence once the write has landed — in that order',
   );
 });
 
@@ -398,4 +431,173 @@ test('pins the exact set of BaseCheckpointSaver members the fenced checkpointer 
     ['get', 'toJSON'],
     `the set of BaseCheckpointSaver members the fenced checkpointer inherits unfenced changed: found [${notOverridden.join(', ')}]. If a NEW member appears here, decide deliberately whether it needs fencing before updating this pin — that is the point of the sentinel`,
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 8 (AIC-57 slice (a)) — fork detection: a post-write ownership recheck  */
+/* that has turned false is recorded, but never undoes the write or fails    */
+/* the caller; a recheck that stays true records nothing                     */
+/* -------------------------------------------------------------------------- */
+
+test('put records a checkpoint_fork when the post-write ownership recheck fails, without failing the caller or undoing the landed write', async () => {
+  const log = [];
+  const context = createFakeFenceContext({ failOnCall: 2 });
+  const inner = createInnerWriteStub(log);
+  const fenced = fencedCheckpointerFactory()(inner, context);
+  const config = { configurable: { thread_id: 'thread-fork-put' } };
+
+  const returnedConfig = await fenced.put(config, {}, {}, {});
+
+  assert.deepEqual(
+    context.calls,
+    ['checkpoint', 'checkpoint_fork'],
+    'put must check the fence before the write under kind=checkpoint, and re-check it after the write lands under kind=checkpoint_fork',
+  );
+  assert.deepEqual(
+    context.rejectedKinds,
+    ['checkpoint_fork'],
+    'only the SECOND (post-write) call may have failed here — the pre-write check (call 1) must have passed, or the write below could never have landed at all',
+  );
+  assert.deepEqual(
+    returnedConfig,
+    config,
+    'put must still resolve normally: a fork detected AFTER the write already landed must not fail the caller — the caller has no way to act on it',
+  );
+  assert.deepEqual(
+    log,
+    ['inner.put'],
+    'the inner saver must have actually been called: the write is not skipped or rolled back because of a fork detected after the fact',
+  );
+});
+
+test('putWrites and deleteThread each record a checkpoint_fork the same way as put: recorded, not undone, not failed', async () => {
+  const config = { configurable: { thread_id: 'thread-fork-others' } };
+
+  {
+    const log = [];
+    const context = createFakeFenceContext({ failOnCall: 2 });
+    const inner = createInnerWriteStub(log);
+    const fenced = fencedCheckpointerFactory()(inner, context);
+    await fenced.putWrites(config, [], 'task-1');
+    assert.deepEqual(context.calls, ['checkpoint', 'checkpoint_fork']);
+    assert.deepEqual(context.rejectedKinds, ['checkpoint_fork']);
+    assert.deepEqual(log, ['inner.putWrites'], 'putWrites must still have reached the inner saver');
+  }
+
+  {
+    const log = [];
+    const context = createFakeFenceContext({ failOnCall: 2 });
+    const inner = createInnerWriteStub(log);
+    const fenced = fencedCheckpointerFactory()(inner, context);
+    await fenced.deleteThread('thread-fork-others');
+    assert.deepEqual(context.calls, ['checkpoint', 'checkpoint_fork']);
+    assert.deepEqual(context.rejectedKinds, ['checkpoint_fork']);
+    assert.deepEqual(log, ['inner.deleteThread'], 'deleteThread must still have reached the inner saver');
+  }
+});
+
+test('a real checkpoint that already landed in the inner MemorySaver is not undone when the post-write ownership recheck fails', async () => {
+  const inner = new MemorySaver();
+  const context = createFakeFenceContext({ failOnCall: 2 });
+  const fenced = fencedCheckpointerFactory()(inner, context);
+  const config = { configurable: { thread_id: 'thread-fork-real' } };
+  const checkpoint = {
+    v: 1,
+    id: 'checkpoint-fork-real-1',
+    ts: '2026-09-24T00:00:00.000Z',
+    channel_values: {},
+    channel_versions: {},
+    versions_seen: {},
+  };
+
+  await fenced.put(config, checkpoint, {}, {});
+
+  assert.deepEqual(
+    context.rejectedKinds,
+    ['checkpoint_fork'],
+    'the SECOND assertOwner call (the post-write recheck) must be the one that failed — the FIRST (pre-write) call must have passed, or this write could never have landed in the inner MemorySaver at all',
+  );
+  const tuple = await inner.getTuple(config);
+  assert.ok(
+    tuple,
+    'the checkpoint must still be present in the inner MemorySaver: a fork detected AFTER the write landed must never undo it',
+  );
+  assert.equal(tuple.checkpoint.id, checkpoint.id, 'the surviving checkpoint must be the exact one that was written');
+});
+
+test('a fence that stays true through the post-write recheck records no fork, for put, putWrites and deleteThread alike', async () => {
+  const context = createFakeFenceContext();
+  const inner = createInnerWriteStub([]);
+  const fenced = fencedCheckpointerFactory()(inner, context);
+  const config = { configurable: { thread_id: 'thread-fork-clean' } };
+
+  await fenced.put(config, {}, {}, {});
+  await fenced.putWrites(config, [], 'task-1');
+  await fenced.deleteThread('thread-fork-clean');
+
+  assert.deepEqual(
+    context.rejectedKinds,
+    [],
+    'a fence that stays true throughout must never record a fork, for any of the three write methods',
+  );
+});
+
+test('when the inner saver write itself throws, the error propagates unchanged and no post-write fork recheck runs', async () => {
+  const context = createFakeFenceContext();
+  const failure = new Error('boom: the inner saver refused this checkpoint');
+  const inner = {
+    serde: {},
+    async getTuple() {
+      return undefined;
+    },
+    async *list() {
+      // no checkpoints
+    },
+    async put() {
+      throw failure;
+    },
+    async putWrites() {
+      throw failure;
+    },
+    async deleteThread() {
+      throw failure;
+    },
+  };
+  const fenced = fencedCheckpointerFactory()(inner, context);
+  const config = { configurable: { thread_id: 'thread-inner-throws' } };
+
+  await assert.rejects(
+    () => fenced.put(config, {}, {}, {}),
+    (error) => error === failure,
+    "the inner saver's own failure must propagate unchanged, never masked by fork-recheck machinery",
+  );
+  assert.deepEqual(
+    context.calls,
+    ['checkpoint'],
+    'when the inner write itself throws, nothing landed, so no post-write fork recheck may run: assertOwner must have been called exactly once (the pre-write check)',
+  );
+});
+
+test('a post-write recheck that fails for any reason other than a recorded fence refusal fails the write loudly instead of making the fork silent', async () => {
+  const config = { configurable: { thread_id: 'thread-fork-unrecorded' } };
+  for (const [label, recheckError] of [
+    ['a refused connection', new Error('sorry, too many clients already')],
+    ['a refusal whose record failed', new StaleOwnerError('stale', { cause: new Error('fence_rejections insert failed') })],
+  ]) {
+    const log = [];
+    let calls = 0;
+    const context = {
+      async assertOwner() {
+        calls += 1;
+        if (calls === 2) throw recheckError;
+      },
+    };
+    const fenced = fencedCheckpointerFactory()(createInnerWriteStub(log), context);
+    await assert.rejects(
+      () => fenced.put(config, {}, {}, {}),
+      (error) => error === recheckError,
+      `${label}: an unrecorded fork must surface to the caller — decision 12, never silent`,
+    );
+    assert.deepEqual(log, ['inner.put'], `${label}: the landed write is still not undone`);
+  }
 });

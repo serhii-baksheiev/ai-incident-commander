@@ -1,3 +1,4 @@
+import { StaleOwnerError } from '@aic/domain';
 import {
   BaseCheckpointSaver,
   type ChannelVersions,
@@ -19,10 +20,10 @@ export interface CheckpointFence {
 
 export interface FencedCheckpointerOptions {
   /**
-   * Runs after the fence passed and before the inner saver writes — the seam
-   * AIC-57's race harness holds open to reorder a stale write against a new
-   * owner's. see fenced-checkpointer.live.mjs › "the barrier seam: beforeWrite
-   * holds a passing write open, and no checkpoint lands until it is released"
+   * Runs after the fence passed and before the inner saver writes: a seam for
+   * holding a passing write open. see fenced-checkpointer.live.mjs › "the
+   * barrier seam: beforeWrite holds a passing write open, and no checkpoint
+   * lands until it is released"
    */
   readonly beforeWrite?: () => Promise<void>;
 }
@@ -59,6 +60,40 @@ class FencedCheckpointer extends BaseCheckpointSaver {
     await this.#beforeWrite?.();
   }
 
+  /**
+   * Runs once a write has landed. The fence check and the inner write are not
+   * atomic, so a writer can lose ownership between them; re-checking afterwards
+   * turns such a write into a recorded `checkpoint_fork` instead of a silent
+   * one (AIC-57: stale checkpoint writes are observable, not silent). The write
+   * is not undone — it landed on another connection — and the caller is not
+   * failed by the record: the next owner's resume reconciles through its
+   * committed node results. see fenced-checkpointer.test.mjs › "put records a
+   * checkpoint_fork when the post-write ownership recheck fails, without
+   * failing the caller or undoing the landed write"
+   */
+  async #recheck(): Promise<void> {
+    try {
+      await this.#fence.assertOwner('checkpoint_fork');
+    } catch (error) {
+      // A plain refusal was recorded by the fence under `checkpoint_fork`, and
+      // that record is the observation. Anything else — a refusal whose record
+      // failed (it carries the failure as `cause`), a lost connection — would
+      // leave the fork unrecorded, so it surfaces instead of vanishing. see
+      // fenced-checkpointer.test.mjs › "a post-write recheck that fails for any
+      // reason other than a recorded fence refusal fails the write loudly
+      // instead of making the fork silent"
+      if (error instanceof StaleOwnerError && error.cause === undefined) return;
+      throw error;
+    }
+  }
+
+  async #write<T>(write: () => Promise<T>): Promise<T> {
+    await this.#guard();
+    const result = await write();
+    await this.#recheck();
+    return result;
+  }
+
   getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
     return this.#inner.getTuple(config);
   }
@@ -90,18 +125,15 @@ class FencedCheckpointer extends BaseCheckpointSaver {
     metadata: CheckpointMetadata,
     newVersions: ChannelVersions,
   ): Promise<RunnableConfig> {
-    await this.#guard();
-    return this.#inner.put(config, checkpoint, metadata, newVersions);
+    return this.#write(() => this.#inner.put(config, checkpoint, metadata, newVersions));
   }
 
   async putWrites(config: RunnableConfig, writes: PendingWrite[], taskId: string): Promise<void> {
-    await this.#guard();
-    return this.#inner.putWrites(config, writes, taskId);
+    return this.#write(() => this.#inner.putWrites(config, writes, taskId));
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    await this.#guard();
-    return this.#inner.deleteThread(threadId);
+    return this.#write(() => this.#inner.deleteThread(threadId));
   }
 
   getNextVersion(current: number | undefined): number {
