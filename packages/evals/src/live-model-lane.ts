@@ -15,7 +15,7 @@ import {
   type BenchmarkVersions,
   type NotApplicableMetrics,
 } from './benchmark-evaluation.js';
-import { BEHAVIOR_EVALUATOR_VERSION, BEHAVIOR_METRIC_KEYS } from './behavior-evaluators.js';
+import { BEHAVIOR_METRIC_KEYS, STRUCTURAL_EVALUATOR_VERSION } from './behavior-evaluators.js';
 import { BENCHMARK_BUDGET_POLICY } from './budget-policy.js';
 import { BENCHMARK_SCENARIO_PARTITIONS } from './replay-scenarios.js';
 import type { GateMetricKey } from './benchmark-regression-gate.js';
@@ -106,13 +106,18 @@ export const LIVE_MODEL_LANE_MAX_MODEL_RUNS =
   LIVE_MODEL_LANE_RUNS_PER_SCENARIO;
 
 /**
- * The graph arm's completion budget for ONE run: one `generate_hypotheses`,
- * plus the budget policy's own iteration and challenge headroom — both of
- * which re-enter a model-backed role.
+ * The graph arm's completion ceiling for ONE run, read off the budget policy:
+ * one `generate_hypotheses`, one `interpret_residual_evidence` per iteration,
+ * and per challenge round two — `challenge_hypothesis`, then the
+ * `interpret_residual_evidence` its edge leads back to through
+ * `execute_investigation` (`packages/graph/src/investigation.ts`, the
+ * `challenge_hypothesis` edge). A ceiling for the ledger, not a forecast.
  * see four-arm-lane.test.mjs › "derives the per-run and total model-call caps from the budget policy and the partition lengths"
  */
 export const LIVE_MODEL_LANE_GRAPH_MODEL_CALLS_PER_RUN =
-  1 + BENCHMARK_BUDGET_POLICY.maxIterations + BENCHMARK_BUDGET_POLICY.reservedChallengeBudget;
+  1 +
+  BENCHMARK_BUDGET_POLICY.maxIterations +
+  2 * BENCHMARK_BUDGET_POLICY.reservedChallengeBudget;
 
 /**
  * The naive arm's completion budget for ONE run: a single prompt, a single
@@ -167,7 +172,9 @@ export const LIVE_MODEL_LANE_MAX_MODEL_CALLS =
  * the bound — the same property that makes the call cap safe to pick.
  * see roles-port-contract.test.mjs › "stops reserving once the declared output-token budget is spent, not only once the calls are"
  */
-export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 900_000;
+// Raised with the derived call cap (owner decision, 2026-09-24).
+// see four-arm-lane.test.mjs › "sets the output-token ceiling at the raised bound (owner decision 2026-09-24)"
+export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 1_200_000;
 
 /**
  * The report schema version, carried as `schemaVersion` on every report. The
@@ -241,6 +248,8 @@ export type LiveModelLaneMetrics = Readonly<
 
 export interface LiveModelLaneControlArm {
   readonly arm: 'scripted-control';
+  /** Always completed: a control arm that throws aborts the lane instead. */
+  readonly status: 'completed';
   readonly metrics: LiveModelLaneMetrics;
   /** What this arm scored, in the shape a baseline is declared in. */
   readonly observedBaseline: Readonly<Partial<Record<GateMetricKey, number>>>;
@@ -345,7 +354,6 @@ export interface LiveModelLaneGraphVsNaiveEntry {
 
 export interface LiveModelLaneReport {
   readonly schemaVersion: typeof LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION;
-  /** Every arm sees the full telemetry dump; no retrieval. */
   readonly informationMode: 'full-dump';
   readonly headSha: string;
   readonly experimentId: string;
@@ -404,7 +412,11 @@ export interface LiveModelLaneOptions {
   /** Optional single-shot arm. A throw here is caught, like the model arm's. */
   runNaiveArm?(plan: LiveModelLanePlan): Promise<BenchmarkExperiment>;
   runModelArm(plan: LiveModelLanePlan): Promise<BenchmarkExperiment>;
-  /** Read AFTER the model arm, from the ledger the runner owns. */
+  /**
+   * The ledger the runner owns, read before and after each paid arm; each
+   * arm's usage is the difference. It must return a fresh snapshot per call —
+   * a live reference would read the same object twice and record zero.
+   */
   modelUsage?(): ModelUsageTotals;
   publish?(report: LiveModelLaneReport): Promise<void>;
 }
@@ -433,9 +445,10 @@ function requireOptionalArm(
 function withheldMetricsFor(
   metadata: BenchmarkVersions,
 ): Readonly<Partial<Record<GateMetricKey, string>>> {
-  return metadata.evaluatorVersion === BEHAVIOR_EVALUATOR_VERSION
-    ? LIVE_MODEL_LANE_WITHHELD_METRICS
-    : {};
+  // Spelled so that a version this lane does not recognise withholds.
+  return metadata.evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION
+    ? {}
+    : LIVE_MODEL_LANE_WITHHELD_METRICS;
 }
 
 interface MetricSample {
@@ -876,6 +889,14 @@ export async function runLiveModelLane(
   const withheld = withheldMetricsFor(options.metadata);
 
   const control = await options.runControlArm(plan);
+  const controlExampleIds = exampleIdsOf(control);
+  // Checked before any paid arm: a control short of the plan is visible for free.
+  // see four-arm-lane.test.mjs › "rejects a control arm that missed the declared plan before any paid arm runs"
+  if (controlExampleIds.join('|') !== declaredExampleIds.join('|')) {
+    throw new Error(
+      'the control arm must cover the declared plan: a comparison across two corpora is not a comparison',
+    );
+  }
 
   // 🔴 The baseline is judged against the control arm BEFORE any paid arm runs.
   //
@@ -897,6 +918,7 @@ export async function runLiveModelLane(
   // that could not run.
   // see four-arm-lane.test.mjs › "throws when the oracle arm throws, and never invokes naive or model"
   let oracleExperiment: BenchmarkExperiment | undefined;
+  let oracleNotApplicable: NotApplicableMetrics | undefined;
   if (runOracleArm !== undefined) {
     oracleExperiment = await runOracleArm(plan);
     if (exampleIdsOf(oracleExperiment).join('|') !== declaredExampleIds.join('|')) {
@@ -904,6 +926,9 @@ export async function runLiveModelLane(
         'the oracle arm must cover the declared plan: a comparison across two corpora is not a comparison',
       );
     }
+    // Decided here, before any paid arm, for the same reason as the baseline.
+    // see four-arm-lane.test.mjs › "rejects before any paid arm runs when the oracle arms own results disagree about notApplicable"
+    oracleNotApplicable = liftNotApplicable('oracle', oracleExperiment, withheld);
   }
 
   // Naive: caught exactly like the model arm's throw, below — a refused paid
@@ -911,6 +936,7 @@ export async function runLiveModelLane(
   let naiveExperiment: BenchmarkExperiment | undefined;
   let naiveRefusal: string | undefined;
   let naiveUsage: ModelUsageTotals | undefined;
+  let naiveNotApplicable: NotApplicableMetrics | undefined;
   if (runNaiveArm !== undefined) {
     const before = options.modelUsage?.();
     try {
@@ -928,6 +954,8 @@ export async function runLiveModelLane(
           'the naive arm must cover the declared plan: a comparison across two corpora is not a comparison',
         );
       }
+      // see four-arm-lane.test.mjs › "rejects before the model arm runs when the naive arms own results disagree about notApplicable"
+      naiveNotApplicable = liftNotApplicable('naive', naiveExperiment, withheld);
     }
   }
 
@@ -952,22 +980,9 @@ export async function runLiveModelLane(
     }
   }
 
-  const controlExampleIds = exampleIdsOf(control);
-  if (model !== undefined) {
-    const modelExampleIds = exampleIdsOf(model);
-    if (
-      controlExampleIds.join('|') !== modelExampleIds.join('|') ||
-      controlExampleIds.join('|') !== declaredExampleIds.join('|')
-    ) {
-      throw new Error(
-        'the control and model arms must cover the same examples as the declared plan: a comparison across two corpora is not a comparison',
-      );
-    }
-  } else if (controlExampleIds.join('|') !== declaredExampleIds.join('|')) {
-    // The control arm is still held to the declared corpus. A refused model arm
-    // excuses the comparison, never the arm that did finish.
+  if (model !== undefined && exampleIdsOf(model).join('|') !== controlExampleIds.join('|')) {
     throw new Error(
-      'the control arm must cover the declared plan: a comparison across two corpora is not a comparison',
+      'the control and model arms must cover the same examples as the declared plan: a comparison across two corpora is not a comparison',
     );
   }
 
@@ -992,8 +1007,6 @@ export async function runLiveModelLane(
   const credentialFields = { provider: config.provider, modelId: config.modelId };
   const maxOutputBudget = LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS;
 
-  const oracleNotApplicable =
-    oracleExperiment === undefined ? undefined : liftNotApplicable('oracle', oracleExperiment, withheld);
   const oracleSummary =
     oracleExperiment === undefined ? undefined : summarize(oracleExperiment, withheld);
   const oracleArm: LiveModelLaneOracleArm =
@@ -1007,14 +1020,9 @@ export async function runLiveModelLane(
         };
 
   const naiveFailed = runNaiveArm !== undefined && naiveExperiment === undefined;
-  const naiveNotApplicable =
-    naiveExperiment === undefined ? undefined : liftNotApplicable('naive', naiveExperiment, withheld);
   const naiveSummary =
     naiveExperiment === undefined ? undefined : summarize(naiveExperiment, withheld);
-  const naiveReportableResult =
-    runNaiveArm === undefined
-      ? undefined
-      : armReportable('naive', naiveRefusal, naiveExperiment, declaredBaseline, movedMetrics);
+  const naiveReportable = armReportable('naive', naiveRefusal, naiveExperiment, declaredBaseline, movedMetrics);
   const naiveArm: LiveModelLaneNaiveArm =
     runNaiveArm === undefined
       ? { arm: 'naive', status: 'not-run', reason: 'the caller supplied no naive arm' }
@@ -1031,10 +1039,10 @@ export async function runLiveModelLane(
             arm: 'naive',
             status: 'completed',
             metrics: naiveSummary as LiveModelLaneMetrics,
-            reportable: (naiveReportableResult as Readonly<{ reportable: boolean; unreportableReason?: string }>).reportable,
-            ...((naiveReportableResult as Readonly<{ reportable: boolean; unreportableReason?: string }>).unreportableReason === undefined
+            reportable: naiveReportable.reportable,
+            ...(naiveReportable.unreportableReason === undefined
               ? {}
-              : { unreportableReason: (naiveReportableResult as Readonly<{ reportable: boolean; unreportableReason?: string }>).unreportableReason }),
+              : { unreportableReason: naiveReportable.unreportableReason }),
             ...(naiveNotApplicable === undefined ? {} : { notApplicable: naiveNotApplicable }),
             model: credentialFields,
             ...(naiveUsage === undefined ? {} : { usage: naiveUsage }),
@@ -1094,6 +1102,7 @@ export async function runLiveModelLane(
     arms: {
       control: {
         arm: 'scripted-control',
+        status: 'completed',
         metrics: controlMetrics,
         observedBaseline,
         movedMetrics,

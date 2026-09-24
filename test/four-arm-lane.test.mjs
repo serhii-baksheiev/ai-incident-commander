@@ -212,8 +212,13 @@ test('still returns not-run oracle and naive arms, with model and control unchan
 
   assert.deepEqual(
     Object.keys(report.arms.control).sort(),
-    ['arm', 'metrics', 'movedMetrics', 'observedBaseline'],
-    'the control arm is unchanged',
+    ['arm', 'metrics', 'movedMetrics', 'observedBaseline', 'status'],
+    'the control arm keeps its existing fields and gains status',
+  );
+  assert.equal(
+    report.arms.control.status,
+    'completed',
+    'the control arm never carries a refused state: a throwing control aborts the lane rather than being reported as one',
   );
   assert.deepEqual(
     Object.keys(report.arms.model).sort(),
@@ -635,6 +640,45 @@ test('sums claimCount over runs on the arm metric and carries claimCounts per sc
   assert.deepEqual(metric.perScenario[scenarioId].claimCounts, claimCounts);
 });
 
+/**
+ * Partial instrumentation publishes neither a misleading sum nor a
+ * per-scenario array shorter than its scores: one run of one scenario lacks
+ * `claimCount`, which must sink `carriesClaimCounts` for the WHOLE metric,
+ * not just that one scenario.
+ * see live-model-lane.ts, `summarize` › the `carriesClaimCounts` guard
+ */
+test('publishes no claimCount and no claimCounts anywhere when one result of the arm lacks it', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(
+    fourArmLaneOptions({
+      scenarioSet: 'calibration',
+      runsPerScenario: 3,
+      async runModelArm() {
+        return scriptedExperiment('claimcount-partial-model', perfect, {
+          scenarioSet: 'calibration',
+          runsPerScenario: 3,
+          claimCountFor: (_record, runIndex) => (runIndex === 0 ? undefined : 3),
+        });
+      },
+    }),
+  );
+
+  const metric = report.arms.model.metrics.unsupported_claim_rate;
+  assert.equal(
+    'claimCount' in metric,
+    false,
+    'a metric with one uninstrumented run must publish no summed claimCount',
+  );
+  for (const [scenarioId, scenarioMetric] of Object.entries(metric.perScenario)) {
+    assert.equal(
+      'claimCounts' in scenarioMetric,
+      false,
+      `scenario ${scenarioId} must carry no claimCounts either: partial instrumentation on the metric withholds it everywhere, not only on the run that lacked it`,
+    );
+  }
+});
+
 /* -------------------------------------------------------------------------- */
 /* 5. notApplicable lifted to the arm                                         */
 /* -------------------------------------------------------------------------- */
@@ -657,6 +701,38 @@ test('lifts a consistent notApplicable map from every result of an arm onto the 
   );
 
   assert.deepEqual(report.arms.naive.notApplicable, CONSTANT_NOT_APPLICABLE);
+});
+
+test('lifts a consistent notApplicable map from every result of the model arm onto the arm itself', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(
+    fourArmLaneOptions({
+      async runModelArm() {
+        return scriptedExperiment('notapplicable-model', perfect, {
+          notApplicableFor: () => CONSTANT_NOT_APPLICABLE,
+        });
+      },
+    }),
+  );
+
+  assert.deepEqual(report.arms.model.notApplicable, CONSTANT_NOT_APPLICABLE);
+});
+
+test('lifts a consistent notApplicable map from every result of the oracle arm onto the arm itself', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(
+    fourArmLaneOptions({
+      async runOracleArm() {
+        return scriptedExperiment('notapplicable-oracle', perfect, {
+          notApplicableFor: () => CONSTANT_NOT_APPLICABLE,
+        });
+      },
+    }),
+  );
+
+  assert.deepEqual(report.arms.oracle.notApplicable, CONSTANT_NOT_APPLICABLE);
 });
 
 test('carries no notApplicable key on an arm whose results carried none', async () => {
@@ -687,6 +763,119 @@ test('refuses an arm whose results disagree about notApplicable, naming the arm'
       return true;
     },
   );
+});
+
+/**
+ * The mirror of `live-model-lane.test.mjs` › "judges the declared baseline
+ * before the paid arm runs, so a bad declaration costs no model call": an
+ * oracle whose own results disagree about notApplicable is a harness defect
+ * discoverable from the oracle's own experiment alone, so it must be refused
+ * before either paid arm — naive or model — ever runs, exactly as an
+ * unconfigured credential or a malformed optional-arm option costs no arm.
+ */
+test('rejects before any paid arm runs when the oracle arms own results disagree about notApplicable', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const touched = [];
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        fourArmLaneOptions({
+          async runOracleArm() {
+            return scriptedExperiment('notapplicable-inconsistent-oracle', perfect, {
+              notApplicableFor: (_record, runIndex) => (runIndex === 0 ? CONSTANT_NOT_APPLICABLE : undefined),
+            });
+          },
+          async runNaiveArm() {
+            touched.push('naive');
+            return scriptedExperiment('unreached', perfect);
+          },
+          async runModelArm() {
+            touched.push('model');
+            return scriptedExperiment('unreached', perfect);
+          },
+        }),
+      ),
+    (error) => {
+      assert.match(error.message, /oracle/i);
+      return true;
+    },
+  );
+
+  assert.deepEqual(
+    touched,
+    [],
+    'a self-inconsistent oracle is free to detect from the oracle experiment alone; neither paid arm may spend on top of it',
+  );
+});
+
+/**
+ * The naive arm's own inconsistency is likewise free to see the moment its
+ * experiment returns — before the model arm, the one arm this whole lane
+ * exists to bound, is ever reached.
+ */
+test('rejects before the model arm runs when the naive arms own results disagree about notApplicable', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  let modelRan = false;
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        fourArmLaneOptions({
+          async runNaiveArm() {
+            return scriptedExperiment('notapplicable-inconsistent-naive-precheck', perfect, {
+              notApplicableFor: (_record, runIndex) => (runIndex === 0 ? CONSTANT_NOT_APPLICABLE : undefined),
+            });
+          },
+          async runModelArm() {
+            modelRan = true;
+            return scriptedExperiment('unreached', perfect);
+          },
+        }),
+      ),
+    (error) => {
+      assert.match(error.message, /naive/i);
+      return true;
+    },
+  );
+
+  assert.equal(
+    modelRan,
+    false,
+    'a naive arm whose own results disagree is a harness defect visible for free; the model arm must never spend on top of it',
+  );
+});
+
+test('rejects a control arm that missed the declared plan before any paid arm runs', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const paid = [];
+
+  await assert.rejects(
+    () =>
+      runLiveModelLane(
+        fourArmLaneOptions({
+          async runControlArm() {
+            const experiment = scriptedExperiment('control-short-of-plan', perfect);
+            return {
+              ...experiment,
+              records: experiment.records.slice(0, -1),
+              results: experiment.results.slice(0, -1),
+            };
+          },
+          async runNaiveArm() {
+            paid.push('naive');
+            return scriptedExperiment('unreached', perfect);
+          },
+          async runModelArm() {
+            paid.push('model');
+            return scriptedExperiment('unreached', perfect);
+          },
+        }),
+      ),
+    /control arm must cover the declared plan/,
+  );
+
+  assert.deepEqual(paid, [], 'a control arm short of the plan is visible for free; no paid arm may spend on top of it');
 });
 
 test("never lets a withheld metric appear in an arm's notApplicable, even when a result declared it", async () => {
@@ -799,33 +988,52 @@ test('carries no comparability key when the oracle did not run', async () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Three of the eight calibration scenarios carry a hand-picked
- * termination_correctness score for the model and the naive arm; the other
- * five score identically on both arms (a tie). The oracle and the control are
- * perfect throughout, so every metric is comparable and the baseline holds.
+ * Deliberately ASYMMETRIC on both metrics, so that swapping which arm counts
+ * as closer to best (a comparison inverted end to end) would move the win and
+ * loss counts apart rather than leaving them equal — a 1-win/1-loss fixture
+ * stays green under either direction, which is why the counts below differ.
  *
- * Expected counts, derived here rather than by running anything:
- *   unsupported_claim_rate — every scenario ties (both arms score 0, the
- *     best value): { win: 0, tie: 8, loss: 0 }.
- *   termination_correctness — WINNING_SCENARIO: model at best (distance 0),
- *     naive off it (distance 1) => win. TYING_SCENARIO: both at 0.5
- *     (distance 0.5 each) => tie. LOSING_SCENARIO: model off best (distance
- *     1), naive at best (distance 0) => loss. The remaining five scenarios
- *     both score 1 (distance 0) => tie.
- *     { win: 1, tie: 6, loss: 1 }.
+ * termination_correctness (best = 1), by scenario:
+ *   TERMINATION_WIN_SCENARIOS (2 scenarios) — model at best (distance 0),
+ *     naive off it (distance 1) => win, twice.
+ *   TERMINATION_LOSS_SCENARIO — model off best (distance 1), naive at best
+ *     (distance 0) => loss, once.
+ *   TERMINATION_TIE_SCENARIO — both at 0.5 (distance 0.5 each) => tie.
+ *   the remaining 4 scenarios — both at 1 (distance 0) => tie.
+ *   Hand count over the 8 calibration scenarios: { win: 2, tie: 5, loss: 1 }.
+ *
+ * unsupported_claim_rate (best = 0), by a DIFFERENT set of scenarios so this
+ * metric's direction is pinned independently of the one above:
+ *   CLAIM_RATE_WIN_SCENARIOS (2 scenarios) — model at best (distance 0),
+ *     naive off it (distance 1) => win, twice.
+ *   CLAIM_RATE_LOSS_SCENARIO — model off best (distance 1), naive at best
+ *     (distance 0) => loss, once.
+ *   the remaining 5 scenarios — both at 0 (distance 0) => tie.
+ *   Hand count over the 8 calibration scenarios: { win: 2, tie: 5, loss: 1 }.
+ *
+ * The oracle and the control are perfect throughout (the `perfect` helper
+ * `fourArmLaneOptions` already defaults both arms to), so every metric is
+ * comparable and the declared baseline holds.
  */
-const WINNING_SCENARIO = 'bad-deployment';
-const TYING_SCENARIO = 'db-pool-exhaustion';
-const LOSING_SCENARIO = 'false-alert';
+const TERMINATION_WIN_SCENARIOS = ['bad-deployment', 'db-pool-exhaustion'];
+const TERMINATION_LOSS_SCENARIO = 'false-alert';
+const TERMINATION_TIE_SCENARIO = 'deployment-caused-incident-a';
 
-function terminationScoreFor(role) {
+const CLAIM_RATE_WIN_SCENARIOS = ['multiple-plausible-causes', 'transient-self-resolved'];
+const CLAIM_RATE_LOSS_SCENARIO = 'challenge-keeps-leader';
+
+function graphVsNaiveScoreFor(role) {
   return (key, record) => {
-    if (key === 'unsupported_claim_rate') return 0;
-    if (key !== 'termination_correctness') return 1;
     const id = record.scenario.id;
-    if (id === WINNING_SCENARIO) return role === 'model' ? 1 : 0;
-    if (id === TYING_SCENARIO) return 0.5;
-    if (id === LOSING_SCENARIO) return role === 'model' ? 0 : 1;
+    if (key === 'unsupported_claim_rate') {
+      if (CLAIM_RATE_WIN_SCENARIOS.includes(id)) return role === 'model' ? 0 : 1;
+      if (id === CLAIM_RATE_LOSS_SCENARIO) return role === 'model' ? 1 : 0;
+      return 0;
+    }
+    if (key !== 'termination_correctness') return 1;
+    if (TERMINATION_WIN_SCENARIOS.includes(id)) return role === 'model' ? 1 : 0;
+    if (id === TERMINATION_LOSS_SCENARIO) return role === 'model' ? 0 : 1;
+    if (id === TERMINATION_TIE_SCENARIO) return 0.5;
     return 1;
   };
 }
@@ -838,13 +1046,13 @@ test('counts win, tie and loss per metric between the graph and the naive arm, a
       scenarioSet: 'calibration',
       runsPerScenario: 3,
       async runNaiveArm() {
-        return scriptedExperiment('graphvsnaive-naive', terminationScoreFor('naive'), {
+        return scriptedExperiment('graphvsnaive-naive', graphVsNaiveScoreFor('naive'), {
           scenarioSet: 'calibration',
           runsPerScenario: 3,
         });
       },
       async runModelArm() {
-        return scriptedExperiment('graphvsnaive-model', terminationScoreFor('model'), {
+        return scriptedExperiment('graphvsnaive-model', graphVsNaiveScoreFor('model'), {
           scenarioSet: 'calibration',
           runsPerScenario: 3,
         });
@@ -853,8 +1061,149 @@ test('counts win, tie and loss per metric between the graph and the naive arm, a
   );
 
   assert.deepEqual(Object.keys(report.graphVsNaive).sort(), ['termination_correctness', 'unsupported_claim_rate']);
-  assert.deepEqual(report.graphVsNaive.unsupported_claim_rate, { win: 0, tie: 8, loss: 0 });
-  assert.deepEqual(report.graphVsNaive.termination_correctness, { win: 1, tie: 6, loss: 1 });
+  assert.deepEqual(report.graphVsNaive.unsupported_claim_rate, { win: 2, tie: 5, loss: 1 });
+  assert.deepEqual(report.graphVsNaive.termination_correctness, { win: 2, tie: 5, loss: 1 });
+});
+
+/**
+ * A metric the oracle misses best on is excluded from graphVsNaive entirely
+ * (`comparability[key].comparable === false`), while a metric it does reach
+ * best on stays — so the exclusion is per-metric, not a lane-wide effect of
+ * one bad oracle axis.
+ */
+test('excludes a metric the oracle misses best on from graphVsNaive, while a metric it reaches best on stays', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const report = await runLiveModelLane(
+    fourArmLaneOptions({
+      async runOracleArm() {
+        return scriptedExperiment(
+          'oracle-gate-oracle',
+          (key) => (key === 'termination_correctness' ? 0.5 : perfect(key)),
+        );
+      },
+    }),
+  );
+
+  assert.deepEqual(report.comparability.termination_correctness, {
+    best: 1,
+    oracleMean: 0.5,
+    comparable: false,
+  });
+  assert.equal(
+    'termination_correctness' in report.graphVsNaive,
+    false,
+    'a metric the oracle misses best on is not comparable, so the graph and naive arms are never compared on it',
+  );
+  assert.ok(
+    report.graphVsNaive.unsupported_claim_rate,
+    'a metric the oracle DOES reach best on must stay in the comparison',
+  );
+});
+
+/**
+ * `challenge_effect` is never compared between the graph and the naive arm:
+ * the naive arm runs no challenge round, so every one of its results marks
+ * the metric not-applicable (`NAIVE_NOT_APPLICABLE`,
+ * `test/naive-arm.test.mjs` › "challenge_effect is never computed for a naive
+ * result, and every result carries notApplicable equal to
+ * NAIVE_NOT_APPLICABLE"), and `graphVsNaiveFor` skips a key present in either
+ * arm's notApplicable map before it ever reads that arm's metric.
+ *
+ * The naive arm here is the REAL `runNaiveBenchmarkExperiment`, driven over
+ * the calibration plan, rather than the fixture's `scriptedExperiment` — the
+ * `notApplicable` map under test is the naive runner's own, not one this file
+ * injects.
+ */
+test('never compares challenge_effect between the graph and the naive arm, because the naive arm marks it not-applicable', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const CHALLENGE_SCENARIO_ID = 'challenge-keeps-leader';
+  const DEFAULT_NAIVE_ANSWER = Object.freeze({
+    hypotheses: Object.freeze([]),
+    assessments: Object.freeze([]),
+    conclusion: Object.freeze({ kind: 'inconclusive', causes: Object.freeze([]) }),
+    stopKind: 'stalled',
+  });
+
+  function challengeEffectExperiment(experimentId, plan) {
+    const records = planFor(plan.scenarioSet, {
+      experimentId,
+      runsPerScenario: plan.runsPerScenario,
+      metadata: plan.metadata,
+    });
+    const results = records.map((record) => ({
+      experimentId: record.experimentId,
+      exampleId: record.exampleId,
+      runId: record.runId,
+      actualStopKind: 'sufficient',
+      metrics: {
+        unsupported_claim_rate: { key: 'unsupported_claim_rate', score: 0 },
+        termination_correctness: { key: 'termination_correctness', score: 1 },
+      },
+      behaviorMetrics:
+        record.scenario.id === CHALLENGE_SCENARIO_ID
+          ? { challenge_effect: { key: 'challenge_effect', score: 1 } }
+          : {},
+    }));
+    return { records, results, stopKindDistribution: { sufficient: results.length } };
+  }
+
+  const report = await runLiveModelLane(
+    fourArmLaneOptions({
+      scenarioSet: 'calibration',
+      runsPerScenario: 3,
+      async runOracleArm(plan) {
+        return challengeEffectExperiment('challenge-effect-oracle', plan);
+      },
+      async runNaiveArm(plan) {
+        return evals.runNaiveBenchmarkExperiment({
+          experimentId: 'challenge-effect-naive',
+          scenarioSet: plan.scenarioSet,
+          runsPerScenario: plan.runsPerScenario,
+          metadata: plan.metadata,
+          async investigate() {
+            return DEFAULT_NAIVE_ANSWER;
+          },
+          async recordEvaluation() {},
+        });
+      },
+      async runModelArm(plan) {
+        return challengeEffectExperiment('challenge-effect-model', plan);
+      },
+    }),
+  );
+
+  assert.deepEqual(report.arms.naive.notApplicable, evals.NAIVE_NOT_APPLICABLE);
+  assert.ok(
+    report.comparability.challenge_effect,
+    'the oracle must reach challenge_effect for this row to test anything: without a comparability entry the exclusion below would be vacuous',
+  );
+  assert.equal(report.comparability.challenge_effect.comparable, true);
+  assert.equal(
+    'challenge_effect' in report.graphVsNaive,
+    false,
+    "challenge_effect is never compared: the naive arm's own notApplicable excludes it before the metric is ever read",
+  );
+});
+
+/**
+ * The mirror of the "still returns not-run oracle and naive arms" row: here
+ * naive AND model both complete, and only the oracle is missing — so
+ * `comparability` and `graphVsNaive` are absent for the same reason
+ * (`comparability` requires the oracle; `graphVsNaive` requires all three),
+ * not because either paid arm failed to run.
+ */
+test('carries no comparability or graphVsNaive key when the oracle did not run, even though naive and model both completed', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const { runOracleArm: _omitted, ...withoutOracle } = fourArmLaneOptions();
+  const report = await runLiveModelLane(withoutOracle);
+
+  assert.equal(report.arms.oracle.status, 'not-run');
+  assert.equal(report.arms.naive.status, 'completed');
+  assert.equal(report.arms.model.status, 'completed');
+  assert.equal('comparability' in report, false);
+  assert.equal('graphVsNaive' in report, false);
 });
 
 test('carries no graphVsNaive key when the naive arm did not run', async () => {
@@ -872,6 +1221,14 @@ test('carries no graphVsNaive key when the naive arm did not run', async () => {
 /* 9. call cap derived from the budget policy and the partition lengths       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The graph arm's per-run budget re-enters a model-backed role TWICE per
+ * challenge round, not once: a challenge round is
+ * `challenge_hypothesis => execute_investigation => evaluate_predictions =>
+ * interpret_residual_evidence`, and both `challenge_hypothesis` and
+ * `interpret_residual_evidence` are model-backed roles. So the reserved
+ * challenge headroom is spent at 2 model calls per round, not 1.
+ */
 test('derives the per-run and total model-call caps from the budget policy and the partition lengths', () => {
   const graphPerRun = requireExport('LIVE_MODEL_LANE_GRAPH_MODEL_CALLS_PER_RUN');
   const naivePerRun = requireExport('LIVE_MODEL_LANE_NAIVE_MODEL_CALLS_PER_RUN');
@@ -880,7 +1237,8 @@ test('derives the per-run and total model-call caps from the budget policy and t
 
   assert.equal(
     graphPerRun,
-    1 + evals.BENCHMARK_BUDGET_POLICY.maxIterations + evals.BENCHMARK_BUDGET_POLICY.reservedChallengeBudget,
+    1 + evals.BENCHMARK_BUDGET_POLICY.maxIterations + 2 * evals.BENCHMARK_BUDGET_POLICY.reservedChallengeBudget,
+    'one generate_hypotheses, plus the iteration headroom, plus TWO model-backed roles per reserved challenge round',
   );
   assert.equal(naivePerRun, 1);
   assert.equal(
@@ -897,4 +1255,12 @@ test('publishes the per-run call caps in the report alongside the existing bound
 
   assert.equal(report.caps.graphModelCallsPerRun, requireExport('LIVE_MODEL_LANE_GRAPH_MODEL_CALLS_PER_RUN'));
   assert.equal(report.caps.naiveModelCallsPerRun, requireExport('LIVE_MODEL_LANE_NAIVE_MODEL_CALLS_PER_RUN'));
+});
+
+/* -------------------------------------------------------------------------- */
+/* 10. the output-token ceiling                                               */
+/* -------------------------------------------------------------------------- */
+
+test('sets the output-token ceiling at the raised bound (owner decision 2026-09-24)', () => {
+  assert.equal(requireExport('LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS'), 1_200_000);
 });
