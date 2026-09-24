@@ -554,8 +554,8 @@ const ORDERINGS = Object.freeze([
   'S1-released-before-B-claims',
   'S2-released-before-B-reads-thread',
   'S3-released-before-B-commit-resolves',
-  'S4-released-before-B-post-commit-putWrites',
-  'S5-released-before-B-post-commit-put',
+  'S4-released-before-B-post-commit-put',
+  'S5-released-before-B-post-commit-putWrites',
   'S6-released-after-B-completes',
 ]);
 
@@ -589,9 +589,12 @@ async function runOneRace(t, store, ordering) {
     executeInvestigation: tool.execute,
   });
   const aResultPromise = runnerA.start({ runId, test: { id: testId, tool: 'fixture-tool', input: {} } });
-  // A is expected to fail once released past the sweep (every ordering below
-  // releases A only after the sweep has already run) — this file asserts on
-  // ITS settlement, not on it resolving.
+  // A's own outcome is not an invariant: when the held write is A's last, it
+  // lands, the post-write recheck records the fork without failing the call,
+  // and A's invoke resolves; when a later write is refused, it rejects. Which
+  // write is held is itself a race under real I/O. The file waits for A to
+  // settle and asserts on what A could not do — commit after B's claim — not
+  // on which way A settled.
   const aSettled = aResultPromise.then(
     () => ({ outcome: 'resolved' }),
     (error) => ({ outcome: 'rejected', error }),
@@ -654,7 +657,7 @@ async function runOneRace(t, store, ordering) {
     await releaseAAndAwaitSettlement();
     bGates.release();
     bResult = await bResultPromise;
-  } else if (ordering === 'S4-released-before-B-post-commit-putWrites') {
+  } else if (ordering === 'S4-released-before-B-post-commit-put') {
     // S4's target is the content-identified post-commit `put` (see
     // `withHeldPostCommitPut`'s own header for why content, not position).
     const bBarrier = deferredPromise();
@@ -671,7 +674,7 @@ async function runOneRace(t, store, ordering) {
     await releaseAAndAwaitSettlement();
     bBarrier.resolve();
     bResult = await bResultPromise;
-  } else if (ordering === 'S5-released-before-B-post-commit-put') {
+  } else if (ordering === 'S5-released-before-B-post-commit-putWrites') {
     // S5's target is the content-identified post-commit `putWrites` (see
     // `withHeldPostCommitPutWrites`'s own header). This file does not claim
     // it dispatches strictly before or after S4's `put` — measured directly,
@@ -795,7 +798,9 @@ test('refuses to run without a PostgreSQL connection string instead of skipping'
 
 test(
   'T-4: for every S1-S6 release point, a stale attempt-1 checkpoint write that lands after attempt 2 has claimed is a recorded checkpoint_fork, never a silent product divergence',
-  { timeout: 600_000 },
+  // Scales with the stress count: measured ~155 ms per race, so a fixed cap
+  // stopped a 2,000-repetition run long before it finished.
+  { timeout: Math.max(600_000, REPETITIONS * ORDERINGS.length * 1_000) },
   async (t) => {
     await provisionCheckpointerSchema();
     const store = await freshStore(t);
@@ -855,7 +860,8 @@ test(
           const run = await store.getRun(runId);
           assert.equal(run.status, 'completed', `the run must be completed after B's takeover (${ordering} rep ${repetition})`);
 
-          // Independent oracle for the resumed Trial/Evidence identity.
+          // Regression pin for the resumed Trial/Evidence identity (the ids are
+          // derived with production's own functions, so this pins, not proves).
           const expectedTrialId = deriveTrialId({ runId, testId, attempt: 1 });
           const expectedEvidenceId = deriveEvidenceId({ trialId: expectedTrialId, payloadFingerprint: 't4-race-call-1' });
           assert.equal(bResult.trials[0]?.id, expectedTrialId, `the resumed trial id must match the independently-derived id (${ordering} rep ${repetition})`);
@@ -966,6 +972,7 @@ test('measures the natural window between the fence check and the inner write, u
   const connectionString = requireConnectionString();
 
   const windowsMs = [];
+  const landedWindowsMs = [];
   const sampleCount = Math.min(REPETITIONS, 50);
 
   for (let i = 0; i < sampleCount; i += 1) {
@@ -991,9 +998,15 @@ test('measures the natural window between the fence check and the inner write, u
         const value = Reflect.get(target, prop, receiver);
         if (prop === 'put' && fenceResolvedAt !== undefined) {
           return async function (...args) {
+            const fenceAt = fenceResolvedAt;
             const writeStartedAt = performance.now();
-            windowsMs.push(writeStartedAt - fenceResolvedAt);
-            return value.apply(target, args);
+            windowsMs.push(writeStartedAt - fenceAt);
+            const result = await value.apply(target, args);
+            // The exposure window ends when the write has landed, not when it
+            // was dispatched: a lease lost anywhere before this point makes the
+            // write a fork, which is what the post-write recheck records.
+            landedWindowsMs.push(performance.now() - fenceAt);
+            return result;
           };
         }
         return value;
@@ -1028,9 +1041,14 @@ test('measures the natural window between the fence check and the inner write, u
     }
   }
 
-  const sorted = [...windowsMs].sort((a, b) => a - b);
-  const percentile = (p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
-  // eslint-disable-next-line no-console -- the stable prefix this file's header documents, for the stress run to grep.
-  console.log(`t4-window-ms p50=${percentile(50).toFixed(3)} p99=${percentile(99).toFixed(3)} n=${sorted.length}`);
-  assert.ok(sorted.length > 0, 'at least one window sample must have been recorded');
+  const percentiles = (samples) => {
+    const sorted = [...samples].sort((a, b) => a - b);
+    const at = (p) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+    return `p50=${at(50).toFixed(3)} p99=${at(99).toFixed(3)} n=${sorted.length}`;
+  };
+  // eslint-disable-next-line no-console -- the stable prefixes this file's header documents, for the stress run to grep.
+  console.log(`t4-window-ms dispatch ${percentiles(windowsMs)}`);
+  // eslint-disable-next-line no-console -- the exposure window the ADR records: fence resolved -> write landed.
+  console.log(`t4-window-ms landed ${percentiles(landedWindowsMs)}`);
+  assert.ok(windowsMs.length > 0 && landedWindowsMs.length === windowsMs.length, 'every window sample must have both series recorded');
 });
