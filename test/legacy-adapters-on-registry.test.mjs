@@ -8,9 +8,8 @@
  * slice's Green step must keep passing UNEDITED, and this file names none of
  * them.
  *
- * Three NEW pieces of surface this file pins, none implemented yet — every
- * row below is expected to fail on a missing export or the behaviour it
- * names, never on a typo in the test itself:
+ * Three pieces of surface this file pins — every row below guards a missing
+ * export or the behaviour it names, never a typo in the test itself:
  *
  *   - `createIncidentToolSource(tool)`, a NEW export from `@aic/tools`: an
  *     `EvidenceSource` wrapper around one legacy `IncidentTool`.

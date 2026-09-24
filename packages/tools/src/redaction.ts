@@ -41,11 +41,16 @@
  * module's (see `./bound-source-registry.ts`'s doc comments, which name what
  * is and is not redacted there).
  *
- * Six credential shapes are recognised, each pinned in
- * test/bound-source-registry.test.mjs with a runtime-assembled example (never
- * a literal, per `.claude/scripts/lib/secrets.mjs`'s vocabulary) and a
- * near-miss that must be left untouched:
+ * Seven credential shapes are recognised, each pinned with a
+ * runtime-assembled example (never a literal, per
+ * `.claude/scripts/lib/secrets.mjs`'s vocabulary) and a near-miss that must
+ * be left untouched — the first six in test/bound-source-registry.test.mjs,
+ * the seventh (AIC-98 slice b) in test/redaction-github-pat.test.mjs:
  *   - a GitHub personal-access-token shape (`ghp_` + 36 alphanumerics);
+ *   - a GitHub fine-grained personal-access-token shape (`github_pat_` + 20
+ *     or more `[A-Za-z0-9_]` characters — see test/redaction-github-pat.test.mjs's
+ *     header for why this is a minimum rather than GitHub's documented exact
+ *     82-character suffix);
  *   - an AWS access-key-id shape (`AKIA` + 16 upper-case alphanumerics);
  *   - a "Bearer <token>" credential (20+ token characters), where the WHOLE
  *     match — including the `Bearer ` prefix — is dropped, not just the
@@ -71,9 +76,9 @@
  * are exactly the kind of claim `.claude/rules/invariants.md` requires be
  * either generated or pointed at a test, and none of the following has a test
  * asserting it IS caught:
- *   - any token family outside the six above — a fine-grained GitHub PAT
- *     (`github_pat_...`), an AWS secret access key or session token, a JWT, a
- *     generic API-key-shaped string with no recognisable prefix;
+ *   - any token family outside the seven above — an AWS secret access key or
+ *     session token, a JWT, a generic API-key-shaped string with no
+ *     recognisable prefix;
  *   - a lower-case `authorization: bearer <token>` header (the pinned pattern
  *     is the literal `Bearer ` prefix, case-sensitive);
  *   - HTTP Basic-auth credentials carried as a base64 `Authorization: Basic
@@ -85,7 +90,7 @@
  *     mid-token) — this module only scans the SUBSTRINGS of each individual
  *     string value, never joins sibling strings before scanning;
  *   - a credential that is itself base64-wrapped (encoded so it no longer
- *     matches any of the six shapes' own character classes);
+ *     matches any of the seven shapes' own character classes);
  *   - a PEM private-key block whose header departs from the exact armor form
  *     this module recognises: a lower- or mixed-case label, a tab instead of the
  *     space after `BEGIN`, more than 64 label characters before `PRIVATE KEY`,
@@ -282,6 +287,19 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
     // bounded by non-alphanumeric characters on both sides so a
     // 35-character near-miss is left alone rather than partially matched.
     pattern: /(?<![A-Za-z0-9_])ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9_])/g,
+    replacement: REDACTED,
+  },
+  {
+    // GitHub fine-grained personal-access-token: `github_pat_` + 20 or more
+    // `[A-Za-z0-9_]` characters — matching .claude/scripts/lib/secrets.mjs's
+    // own `github_pat_[A-Za-z0-9_]{20,}` pattern, one fact with one spelling.
+    // A minimum-length bound rather than an exact one — see
+    // test/redaction-github-pat.test.mjs's header for why: GitHub's
+    // documented suffix is exactly 82 characters, but this project's own
+    // fixture in test/github-evidence-source.test.mjs uses an 80-character
+    // one, and a pattern anchored to exactly 82 would leave that fixture
+    // unredacted.
+    pattern: /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])/g,
     replacement: REDACTED,
   },
   {
@@ -488,7 +506,7 @@ function redactAtDepth(value: unknown, depth: number): unknown {
  * is replaced with `[REDACTED]` in place. Anything else, anywhere in the
  * walk — a `Buffer`, `Map`, `Set`, `Date`, `Error` or other class instance, or
  * a `function`, `symbol`, `bigint` or `undefined` value — fails closed to
- * `[REDACTED:unsupported]`. See this file's header for the six recognised
+ * `[REDACTED:unsupported]`. See this file's header for the seven recognised
  * credential shapes, what this module does NOT catch, and the depth-cap
  * fail-closed behaviour.
  */

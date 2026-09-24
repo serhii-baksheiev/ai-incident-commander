@@ -82,16 +82,85 @@ test('keeps every provider reference out of the graph and domain packages', () =
   }
 });
 
+/**
+ * Outbound HTTP is an explicit, reviewed allow-list (AIC-98, 2026-09-24 owner
+ * ruling), not "whichever files this scanner happens to catch".
+ *
+ * The list started as a single adapter and the scanner's own two signals
+ * (`fetch(` and a `https?://` literal) were enough to hold it to that one
+ * file. `packages/tools/src/github-source.ts` (github@1, owner-approved)
+ * widened the list to two, still caught by those signals. Then
+ * `packages/tools/src/lab-source.ts` (merged in #131) reached the network
+ * through `options.fetch ?? (globalThis.fetch as LabFetch)` and a call
+ * through the resulting alias — no `fetch(` call and no URL literal — and
+ * slipped the scanner silently: the row kept comparing against one file while
+ * a second outbound surface existed. The owner ruling: keep the invariant,
+ * spell the allow-list explicitly, and tighten the scanner so an aliased
+ * global fetch can no longer slip past it the same way. Every new outbound
+ * surface is now an explicit, reviewed edit of `OUTBOUND_HTTP_FILES` below.
+ *
+ * A comment may DISCUSS `fetch(` or a URL without issuing either — the same
+ * "only a read outside a comment counts" convention used elsewhere in this
+ * file (see the process-environment row above) — so the source is scanned
+ * with comments stripped first.
+ *
+ * The scanner's own bound, stated so the assertion below claims no wider
+ * scope than this: `workspaceSources` walks `.ts` files under `packages/`
+ * only (see `sourceFiles` above), so `incident-lab/`'s own `.mjs` files — which
+ * also issue HTTP, outside `packages/` entirely — are outside what this row
+ * looks at. Within `packages/`, the three signals `issuesOutboundHttp` tests
+ * for are a `fetch(`/`fetch?.(` call, a `https?://` literal, and a direct
+ * `globalThis.fetch` reference — an outbound surface reached only through
+ * `import { fetch } from 'undici'`, `const { fetch } = globalThis`, or
+ * `node:http`/`node:https` is invisible to it.
+ */
+const OUTBOUND_HTTP_FILES = [
+  'packages/roles/src/reference-model-port.ts',
+  'packages/tools/src/github-source.ts',
+  'packages/tools/src/lab-source.ts',
+];
+
+function issuesOutboundHttp(source) {
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  return (
+    /\bfetch\s*(?:\?\.)?\s*\(/.test(code) ||
+    /\bhttps?:\/\//.test(code) ||
+    /\bglobalThis\s*\.\s*fetch\b/.test(code)
+  );
+}
+
 test('performs the provider request in the adapter and nowhere else', () => {
-  const issuing = workspaceSources.filter((path) => {
-    const source = readFileSync(path, 'utf8');
-    return /\bfetch\s*\(/.test(source) || /\bhttps?:\/\//.test(source);
-  });
+  const issuing = workspaceSources.filter((path) => issuesOutboundHttp(readFileSync(path, 'utf8')));
 
   assert.deepEqual(
     issuing.map((path) => path.slice(projectRoot.length + 1)),
-    ['packages/roles/src/reference-model-port.ts'],
-    'one outbound HTTP surface, so a security review has one file to read',
+    OUTBOUND_HTTP_FILES,
+    'these are the only files under packages/**/*.ts that this scanner finds issuing outbound HTTP by a fetch(/globalThis.fetch call or a https?:// literal — see the comment above OUTBOUND_HTTP_FILES for what is outside that scope. A new file caught here belongs as a deliberate, reviewed addition to OUTBOUND_HTTP_FILES, never a silent fourth file the scanner happens to also catch',
+  );
+});
+
+test('detects an outbound call reached only through an aliased global fetch, and not a mere mention of "fetch" in code or comments', () => {
+  // The lab-source.ts miss, reproduced in memory: no `fetch(` call and no URL
+  // literal, only a reference to the global that a later call goes through.
+  const aliasedGlobalFetch = `
+    const f = options.fetch ?? globalThis.fetch;
+    await f(url);
+  `;
+  assert.ok(
+    issuesOutboundHttp(aliasedGlobalFetch),
+    'a variable aliasing globalThis.fetch, called under its own name, must still be detected as an outbound HTTP surface',
+  );
+
+  const noOutboundHttp = `
+    // fetch(url) is discussed here, not issued.
+    const fetchedAt = new Date().toISOString();
+  `;
+  assert.equal(
+    issuesOutboundHttp(noOutboundHttp),
+    false,
+    'a "fetchedAt" identifier and a "fetch(" mention confined to a comment must not be detected: neither one issues outbound HTTP',
   );
 });
 
