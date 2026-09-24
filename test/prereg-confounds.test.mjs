@@ -79,15 +79,21 @@ function decisiveNonMisleadingIdsOf(scenarioId) {
  * evidence id, which is the fresh fixture check owner ruling D1 item 6 asks
  * for before the confound can be named in the preregistration addendum.
  */
-for (const scenarioId of ['dependency-caused-incident-b', 'challenge-changes-leader']) {
-  test(`${scenarioId} carries at most one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)`, () => {
-    const decisiveIds = decisiveNonMisleadingIdsOf(scenarioId);
-    assert.ok(
-      decisiveIds.length <= 1,
-      `${scenarioId} must carry at most one decisive non-misleading evidence id for the confound named in owner ruling D1 item 6 to hold; measured ${decisiveIds.length}: ${JSON.stringify(decisiveIds)}`,
-    );
-  });
+function assertSingleDecisiveEvidence(scenarioId) {
+  const decisiveIds = decisiveNonMisleadingIdsOf(scenarioId);
+  assert.ok(
+    decisiveIds.length <= 1,
+    `${scenarioId} must carry at most one decisive non-misleading evidence id for the confound named in owner ruling D1 item 6 to hold; measured ${decisiveIds.length}: ${JSON.stringify(decisiveIds)}`,
+  );
 }
+
+test('dependency-caused-incident-b carries at most one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)', () => {
+  assertSingleDecisiveEvidence('dependency-caused-incident-b');
+});
+
+test('challenge-changes-leader carries at most one distinct, non-misleading, expected ok evidence id (single-decisive-evidence confound)', () => {
+  assertSingleDecisiveEvidence('challenge-changes-leader');
+});
 
 /*
  * Measured directly against this tree: multiple-plausible-causes' fixture
