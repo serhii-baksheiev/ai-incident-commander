@@ -79,18 +79,31 @@ function describe(value: unknown): string {
 }
 
 const NON_NEGATIVE_INTEGER_DECIMAL = /^(?:0|[1-9]\d*)$/;
-const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * The storage-column bound `parseLastEventId` enforces: the application
+ * schema's own sequence column for this port is PostgreSQL `integer` (int4),
+ * whose maximum is 2^31-1, not `bigint` — see
+ * `infra/postgres/tests/run-event-stream.live.mjs`'s "LIVE correspondence" row,
+ * which reddens in either direction if the column or this constant ever
+ * drifts from the other (AIC-58 review round 1, finding 1). This module names
+ * no table: `packages/persistence` owns that boundary
+ * (test/postgres-checkpointer.test.mjs's storage-surface scan).
+ */
+export const MAX_RUN_EVENT_SEQ = 2147483647;
+const MAX_RUN_EVENT_SEQ_BIGINT = BigInt(MAX_RUN_EVENT_SEQ);
 
 /**
  * Turns a reconnecting client's `Last-Event-ID` header into the `afterSeq`
  * value `RunEventStreamSource.readAfter`/`.tail` take: accepts a
  * non-negative integer number, or its decimal string exactly as the header
- * sends it, up to `Number.MAX_SAFE_INTEGER`. A decimal string beyond that
- * bound is refused outright — never rounded through `Number()`, which would
- * silently accept a value it cannot represent exactly; the comparison runs
- * on `BigInt` instead. Refuses a negative or fractional value, `NaN` and
- * `Infinity`, and anything that is not a number or a string (`null`,
- * `undefined`, a boolean, an array, a plain object).
+ * sends it, up to `MAX_RUN_EVENT_SEQ` (2147483647 — the storage column's own
+ * PostgreSQL `integer` maximum, not `Number.MAX_SAFE_INTEGER`). A decimal
+ * string beyond that bound is refused outright — never rounded through
+ * `Number()`, which would silently accept a value it cannot represent
+ * exactly; the comparison runs on `BigInt` instead. Refuses a negative or
+ * fractional value, `NaN` and `Infinity`, and anything that is not a number
+ * or a string (`null`, `undefined`, a boolean, an array, a plain object).
  *
  * See test/run-event-stream-source-contract.test.mjs's "parseLastEventId
  * accepts" and "parseLastEventId refuses" blocks.
@@ -99,14 +112,14 @@ const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
  */
 export function parseLastEventId(value: unknown): number {
   if (typeof value === 'number') {
-    if (Number.isSafeInteger(value) && value >= 0) return value;
+    if (Number.isSafeInteger(value) && value >= 0 && value <= MAX_RUN_EVENT_SEQ) return value;
     throw new InvalidLastEventIdError(`invalid Last-Event-ID: ${describe(value)}`);
   }
 
   if (typeof value === 'string') {
     if (NON_NEGATIVE_INTEGER_DECIMAL.test(value)) {
       const asBigInt = BigInt(value);
-      if (asBigInt <= MAX_SAFE_INTEGER_BIGINT) return Number(asBigInt);
+      if (asBigInt <= MAX_RUN_EVENT_SEQ_BIGINT) return Number(asBigInt);
     }
     throw new InvalidLastEventIdError(`invalid Last-Event-ID: ${describe(value)}`);
   }
