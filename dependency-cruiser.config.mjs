@@ -90,6 +90,16 @@ export default {
       },
     },
     {
+      name: 'packages-and-apps-do-not-import-live-pilot',
+      comment:
+        'AIC-127: live-pilot/ holds reconstructed real incidents. Product code may not ' +
+        'import it, so pilot data can neither change behaviour nor move the candidate ' +
+        'fingerprint unseen.',
+      severity: 'error',
+      from: { path: '^(?:packages|apps)/' },
+      to: { path: '(?:^|/)live-pilot/' },
+    },
+    {
       name: 'naive-role-does-not-import-the-graph',
       comment:
         'AIC-115: the naive single-prompt role is the no-graph baseline the graph arm is ' +
