@@ -878,7 +878,7 @@ roles → domain/graph
 evals → domain/graph/roles
 ```
 
-Three rules in `dependency-cruiser.config.mjs` enforce part of this, and each
+Three of the rules in `dependency-cruiser.config.mjs` enforce part of this, and each
 has its own scope — the block says which, because reading them as one rule over
 all six lines is how a session reports a violation that is not one:
 
@@ -888,15 +888,15 @@ all six lines is how a session reports a violation that is not one:
 | `graph-and-domain-do-not-import-model-providers` | `^packages/(?:domain\|graph)/` | line 2, both layers |
 | `domain-does-not-import-product-implementation` | `^packages/domain/` | the one-way-ness of lines 3 and 4 — `domain` may not import `graph` or `tools` |
 
-What no rule covers is the direction of lines 5 and 6, with one exception the
-table above already states: nothing refuses an edge OUT of `roles` and `evals`,
-and nothing refuses an edge INTO `evals` at all. The one exception is an edge
-into **`roles`** from `domain` or `graph`, which the second rule does refuse —
-its `to` names `packages/roles` and the provider SDKs, and `packages/evals`
-appears in no rule's `to` path. Measured at the AIC-94 gate, both directions: a
-`packages/graph` module importing `@aic/evals` passes `npm run lint:graph` with
-the edge resolved and valid, while the same probe importing `@aic/roles` errors. Everything else there is the workspace manifests'
-business and is convention.
+What no rule covers is the direction of lines 5 and 6, with two exceptions.
+Nothing refuses an edge OUT of `roles` and `evals`. An edge into **`roles`**
+from `domain` or `graph` is refused by the second rule above, whose `to` names
+`packages/roles` and the provider SDKs. An edge into **`evals`** from any other
+package or from `apps/` is refused by `benchmark-ground-truth-is-evaluator-side-only`
+(AIC-113), because `evals` carries the benchmark ground truth — see
+`test/oracle-positive-control.test.mjs` › "rejects packages/graph importing the
+@aic/evals root, where the scenarios and their ground truth live". Everything
+else there is the workspace manifests' business and is convention.
 
 An earlier version of this paragraph said no rule covered either direction. It
 contradicted its own table two lines up, and `prose-reviewer` measured that at

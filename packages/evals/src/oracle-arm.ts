@@ -29,8 +29,9 @@ import {
  * module from anywhere under `packages/` or `apps/`, and of `@aic/evals`
  * itself from any package but evals and from any app.
  * see oracle-positive-control.test.mjs › "never exports the oracle arm from the
- * @aic/evals package root" and › "rejects packages/graph importing
- * @aic/evals/oracle"
+ * @aic/evals package root", › "rejects packages/graph importing
+ * @aic/evals/oracle" and › "rejects packages/graph importing the @aic/evals
+ * root, where the scenarios and their ground truth live"
  *
  * It answers in the same `ArmAnswer` shape a non-graph model arm answers in,
  * and may cite evidence only by the ids the fixture shows, exactly as a model
