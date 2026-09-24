@@ -50,22 +50,17 @@ export interface RunWriteContext {
    * refused after `compute` ran, and nothing is committed for it.
    */
   committed<T>(execKey: string, compute: () => Promise<T>, options?: CommittedOptions): Promise<T>;
+  /**
+   * An interaction id names at most one run (a unique index in migration 2);
+   * reusing one held by another run is refused by the database and the
+   * transaction rolls back.
+   */
   markWaitingHuman(interactionId: string): Promise<void>;
   complete(reason?: string): Promise<void>;
   fail(reason: string): Promise<void>;
   assertOwner(): Promise<void>;
 }
 
-/**
- * The fence every run-scoped write performs first, in the same transaction as
- * the write it guards (decision 3: ownership is lease-based and fenced). A
- * `FOR SHARE` lock, not `FOR UPDATE`: this is a check that the caller's claim
- * is still the run's valid owner, not exclusive possession of the row for the
- * whole transaction. Exported as data — see run-write-context.test.mjs › "the
- * fence statement text contains FOR SHARE, all four predicates, and never
- * now()" — for the same reason `RunStore.SQL_STATEMENTS` is: a claim about SQL
- * text belongs in the text itself, not only in a comment describing it.
- */
 /**
  * The status transitions this module's statements perform, checked against the
  * domain lifecycle once, at module load, the way `RUN_STORE_TRANSITIONS` is.
@@ -79,6 +74,16 @@ for (const [from, to] of RUN_WRITE_CONTEXT_TRANSITIONS) {
   assertRunTransition(from, to);
 }
 
+/**
+ * The fence every run-scoped write performs first, in the same transaction as
+ * the write it guards (decision 3: ownership is lease-based and fenced). A
+ * `FOR SHARE` lock, not `FOR UPDATE`: this is a check that the caller's claim
+ * is still the run's valid owner, not exclusive possession of the row for the
+ * whole transaction. Exported as data — see run-write-context.test.mjs › "the
+ * fence statement text contains FOR SHARE, all four predicates, and never
+ * now()" — for the same reason `RunStore.SQL_STATEMENTS` is: a claim about SQL
+ * text belongs in the text itself, not only in a comment describing it.
+ */
 export const RUN_WRITE_CONTEXT_FENCE_SQL = `
   SELECT 1
   FROM "${APPLICATION_SCHEMA}".runs
@@ -176,13 +181,21 @@ async function runFenced<T>(
   // how enough simultaneous refusals held every connection at once. see
   // run-write-context.live.mjs › "more concurrent fence refusals than the pool
   // has connections all end in StaleOwnerError instead of wedging the pool"
+  // The refusal stays the answer when the rejection cannot be recorded, and the
+  // lost evidence travels with it as the error's cause rather than vanishing.
+  // see run-write-context.live.mjs › "a fence refusal whose rejection cannot
+  // be recorded still ends in StaleOwnerError, carrying the recording failure
+  // as its cause"
+  let recordFailure: unknown;
   try {
     await recordFenceRejection(pool, claim, kind);
-  } catch {
-    // The refusal is the answer the caller needs; failing to record it must
-    // not turn it into a different error.
+  } catch (error) {
+    recordFailure = error;
   }
-  throw new StaleOwnerError(fenceRefusalMessage(claim, kind));
+  throw new StaleOwnerError(
+    fenceRefusalMessage(claim, kind),
+    recordFailure === undefined ? undefined : { cause: recordFailure },
+  );
 }
 
 /**
@@ -220,6 +233,34 @@ async function appendEvent(
 }
 
 /**
+ * The stored result text, provided it still hashes to the `result_sha` written
+ * beside it; otherwise an integrity violation is recorded and committed before
+ * it is thrown, so a corrupted committed result is never replayed as
+ * authoritative. see run-write-context.live.mjs › "replay refuses a stored
+ * result whose text no longer matches its result_sha"
+ */
+async function verifiedStoredText(
+  client: PoolClient,
+  claim: RunClaim,
+  execKey: string,
+  stored: { result_json: string; result_sha: string },
+): Promise<string> {
+  const actualSha = createHash('sha256').update(stored.result_json).digest('hex');
+  if (actualSha === stored.result_sha) return stored.result_json;
+  await appendEvent(client, claim.runId, claim.executionAttempt, 'execution.integrity_violation', {
+    execKey,
+    reason: 'stored_result_sha_mismatch',
+  });
+  await client.query('COMMIT');
+  const violation: PossiblyCommittedError = new ExecutionIntegrityViolation(
+    `the stored result for ${execKey} no longer matches its result_sha`,
+    { execKey },
+  );
+  violation[COMMITTED_BEFORE_THROW] = true;
+  throw violation;
+}
+
+/**
  * `committed`'s protocol (decisions 5-8 and 12):
  *
  * 1. Validate `execKey` against `ExecKeySchema`.
@@ -248,34 +289,6 @@ async function appendEvent(
  *    idempotent: no throw, the stored result is returned, and no second row is
  *    written". `node_results` is never UPDATEd.
  */
-/**
- * The stored result text, provided it still hashes to the `result_sha` written
- * beside it; otherwise an integrity violation is recorded and committed before
- * it is thrown, so a corrupted committed result is never replayed as
- * authoritative. see run-write-context.live.mjs › "replay refuses a stored
- * result whose text no longer matches its result_sha"
- */
-async function verifiedStoredText(
-  client: PoolClient,
-  claim: RunClaim,
-  execKey: string,
-  stored: { result_json: string; result_sha: string },
-): Promise<string> {
-  const actualSha = createHash('sha256').update(stored.result_json).digest('hex');
-  if (actualSha === stored.result_sha) return stored.result_json;
-  await appendEvent(client, claim.runId, claim.executionAttempt, 'execution.integrity_violation', {
-    execKey,
-    reason: 'stored_result_sha_mismatch',
-  });
-  await client.query('COMMIT');
-  const violation: PossiblyCommittedError = new ExecutionIntegrityViolation(
-    `the stored result for ${execKey} no longer matches its result_sha`,
-    { execKey },
-  );
-  violation[COMMITTED_BEFORE_THROW] = true;
-  throw violation;
-}
-
 async function committed<T>(
   pool: Pool,
   claim: RunClaim,
