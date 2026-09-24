@@ -115,9 +115,12 @@ assumes covers more than it does.
    way. Found by a cold security review, which proved the path with a stub
    provider echoing a canary into its 401 body.
 8. **A deterministic-only final evaluation would be worse than none.** The
-   replay-backed control arm scores a single value of zero on every metric it
-   emits over this corpus, so spending the one shot on it would produce a record
-   carrying no information about the candidate. The command runs all four arms
+   scripted control arm sits at the zero floor on five of the six metrics it
+   emits over this corpus — `termination_correctness` is the exception, moved
+   off zero by AIC-119 slice 3's canonical termination node
+   (`docs/evidence/control-baseline.json`) — so spending the one shot on it
+   would produce a record carrying next to no information about the candidate.
+   The command runs all four arms
    — scripted control, oracle, naive and graph-model — and requires the model
    arm; that is why it needs a provider credential and refuses without one.
 9. **The naive arm spends from the one-shot budget before the model arm.** Both
