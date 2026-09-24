@@ -1,3 +1,5 @@
+import { quoteModelText } from '@aic/domain';
+
 import { ModelRoleOutputError } from './model-errors.js';
 import type { ModelCompletion } from './reference-model-port.js';
 import { ownValue } from './own-value.js';
@@ -124,7 +126,7 @@ export function parseJsonDocument(role: string, text: string): unknown {
   } catch (cause) {
     throw new ModelRoleOutputError(
       role,
-      `the answer is not parseable JSON: ${(cause as Error).message}`,
+      `the answer is not parseable JSON: ${quoteModelText((cause as Error).message)}`,
     );
   }
 }

@@ -751,7 +751,7 @@ export function createModelProposeConclusion(
     // Checked before `deriveHypothesisStatus` and before any port call, for
     // the same reason the `stopKind` guard above is. For an unknown evidenceId
     // or a prediction outside its hypothesis, `deriveHypothesisStatus`
-    // (`packages/domain/src/evaluation.ts`) throws its own plain, UNESCAPED
+    // (`packages/domain/src/evaluation.ts`) throws its own plain
     // `Error`; an unknown hypothesisId it would silently filter out, so that
     // branch is a refusal of its own rather than a pre-emption. Asking the model to compose a
     // conclusion the harness cannot even validate would spend a call on a run
