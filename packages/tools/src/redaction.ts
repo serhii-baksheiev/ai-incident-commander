@@ -291,8 +291,10 @@ const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = [
   },
   {
     // GitHub fine-grained personal-access-token: `github_pat_` + 20 or more
-    // `[A-Za-z0-9_]` characters. A minimum-length bound rather than an exact
-    // one — see test/redaction-github-pat.test.mjs's header for why: GitHub's
+    // `[A-Za-z0-9_]` characters — matching .claude/scripts/lib/secrets.mjs's
+    // own `github_pat_[A-Za-z0-9_]{20,}` pattern, one fact with one spelling.
+    // A minimum-length bound rather than an exact one — see
+    // test/redaction-github-pat.test.mjs's header for why: GitHub's
     // documented suffix is exactly 82 characters, but this project's own
     // fixture in test/github-evidence-source.test.mjs uses an 80-character
     // one, and a pattern anchored to exactly 82 would leave that fixture

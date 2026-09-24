@@ -46,7 +46,7 @@ export interface GithubEvidenceSourceOptions {
 
 // Non-empty, starts with an alphanumeric (so a leading '.' — and so a bare
 // '..' — never matches), no '/' or whitespace anywhere, at most 100 chars
-// total. See test/github-evidence-source.test.mjs's INVALID_OWNER_REPO_ROWS.
+// total.
 const OWNER_OR_REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 function validateOwnerOrRepo(value: string, label: 'owner' | 'repo'): string {
@@ -56,13 +56,24 @@ function validateOwnerOrRepo(value: string, label: 'owner' | 'repo'): string {
   return value;
 }
 
+/**
+ * Validated in an order that never echoes a credential: the scheme is
+ * checked first, against the scheme alone, before anything about `raw` (or
+ * the URL derived from it) is put into a thrown message — a bad scheme on a
+ * userinfo-carrying URL (e.g. `http://user:pw@...`) must never echo the
+ * whole URL, and once that check passes, userinfo is refused with a fixed
+ * message carrying no part of `raw` at all.
+ */
 function validateApiBaseUrl(raw: string): URL {
   const url = new URL(raw);
   if (url.protocol !== 'https:') {
-    throw new Error(`createGithubEvidenceSource: apiBaseUrl must use https, got ${JSON.stringify(raw)}`);
+    throw new Error(`createGithubEvidenceSource: apiBaseUrl must use https, got scheme ${JSON.stringify(url.protocol.replace(/:$/, ''))}`);
   }
   if (url.username !== '' || url.password !== '') {
-    throw new Error(`createGithubEvidenceSource: apiBaseUrl must not carry userinfo, got ${JSON.stringify(raw)}`);
+    throw new Error('createGithubEvidenceSource: apiBaseUrl must not carry userinfo');
+  }
+  if ((url.pathname !== '/' && url.pathname !== '') || url.search !== '' || url.hash !== '') {
+    throw new Error(`createGithubEvidenceSource: apiBaseUrl must be root-only (no path, query or fragment), got pathname ${JSON.stringify(url.pathname)}`);
   }
   return url;
 }
@@ -113,7 +124,9 @@ interface OperationSpec {
  * The six read-only operations this adapter supports, in the fixed order the
  * ticket names them — `describe()` reports `Object.keys(OPERATIONS)`
  * unchanged, so this declaration order IS the pinned order. See
- * test/github-evidence-source.test.mjs's `EXPECTED_OPERATIONS`.
+ * test/github-evidence-source.test.mjs › "describe() reports adapterId
+ * \"github\", version \"1\" and exactly the six read-only operation ids, in
+ * the pinned order, without ever calling fetch".
  */
 const OPERATIONS: Readonly<Record<string, OperationSpec>> = {
   list_deployments: {
@@ -201,8 +214,7 @@ function isSuccessStatus(status: number): boolean {
 /**
  * The status -> refusal-reason mapping the ticket pins: 401 denied; 403 with
  * `x-ratelimit-remaining: 0`, or 429, rate_limited; any other 403 denied; 404
- * unavailable; 400/422 adapter_error; 5xx unavailable. See
- * test/github-evidence-source.test.mjs's STATUS_MAPPING_ROWS.
+ * unavailable; 400/422 adapter_error; 5xx unavailable.
  */
 function reasonForStatus(status: number, headers: Headers): EvidenceSourceRefusalReason {
   if (status === 401) return 'denied';
@@ -222,6 +234,40 @@ function reasonForStatus(status: number, headers: Headers): EvidenceSourceRefusa
 type CappedBodyResult = { readonly ok: true; readonly text: string } | { readonly ok: false };
 
 /**
+ * One in-flight GET, returned by `performRequest`. Its `AbortController` and
+ * deadline timer stay armed past the headers resolving — through the body
+ * read, if any — so `armReader` lets a body-reading caller register the
+ * reader the deadline should cancel, `deadlineExceeded` reports whether that
+ * already happened, and `release` clears the timer on every exit path,
+ * whether or not a body was ever read. See test/github-evidence-source.test.mjs
+ * › "a response whose headers arrive but whose body never closes is bounded
+ * by a deadline, and its reader is released via cancel() (a real-timer race
+ * bounds the row itself: it rejects rather than hangs when the adapter never
+ * settles)".
+ */
+interface PerformedRequest {
+  readonly response: Response;
+  armReader(reader: ReadableStreamDefaultReader<Uint8Array>): void;
+  deadlineExceeded(): boolean;
+  release(): void;
+}
+
+/**
+ * Releases a response body that is never going to be read, without ever
+ * awaiting a rejection into the caller: a `cancel()` that itself throws must
+ * still let the caller return its refusal outcome. See
+ * test/github-evidence-source.test.mjs › "a non-2xx response body is never
+ * parsed: a poisoned, throwing body still refuses cleanly".
+ */
+async function releaseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // A rejecting cancel must never turn a refusal into a throw.
+  }
+}
+
+/**
  * Reads `response.body` chunk by chunk, never buffering the whole body
  * before checking size: as soon as the running total exceeds `maxBytes` the
  * reader is cancelled and `{ ok: false }` is returned without ever
@@ -229,18 +275,33 @@ type CappedBodyResult = { readonly ok: true; readonly text: string } | { readonl
  * test/github-evidence-source.test.mjs › "a response body exceeding
  * maxResponseBytes aborts the read (never buffers the whole body first) and
  * refuses budget_exceeded".
+ *
+ * `request` is armed with the reader so the request's own deadline (still
+ * live across this read — see `performRequest`) can cancel it if the body
+ * never closes; when that happens this rejects rather than returning a
+ * silent `done`, mirroring test/github-evidence-source.test.mjs › "a
+ * response whose headers arrive but whose body never closes is bounded by a
+ * deadline, and its reader is released via cancel() (a real-timer race
+ * bounds the row itself: it rejects rather than hangs when the adapter never
+ * settles)".
  */
-async function readCappedBody(response: Response, maxBytes: number): Promise<CappedBodyResult> {
+async function readCappedBody(response: Response, maxBytes: number, request: PerformedRequest): Promise<CappedBodyResult> {
   const body = response.body;
   if (!body) {
     return { ok: true, text: '' };
   }
   const reader = body.getReader();
+  request.armReader(reader);
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      if (request.deadlineExceeded()) {
+        throw new Error('GITHUB_BODY_READ_DEADLINE_EXCEEDED: the response body did not close within requestTimeoutMs');
+      }
+      break;
+    }
     const chunk = value as Uint8Array;
     total += chunk.byteLength;
     if (total > maxBytes) {
@@ -316,11 +377,28 @@ export function createGithubEvidenceSource(options: GithubEvidenceSourceOptions)
   // test/github-evidence-source.test.mjs › "a slow response is aborted
   // through the AbortSignal at requestTimeoutMs, and the adapter propagates
   // the resulting rejection as a throw rather than classifying it".
-  async function performRequest(url: URL): Promise<Response> {
+  //
+  // The timer stays armed after `fetchFn` resolves on headers: the caller
+  // calls `release()` only once it is done with the response, whether that
+  // is immediately (a probe whose body is never read) or after a body read
+  // it registered via `armReader`. On the deadline, the controller aborts
+  // and, if a reader was armed, that reader is cancelled too — see
+  // `readCappedBody`.
+  async function performRequest(url: URL): Promise<PerformedRequest> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let fired = false;
+    const timer = setTimeout(() => {
+      fired = true;
+      controller.abort();
+      activeReader?.cancel().catch(() => {});
+    }, requestTimeoutMs);
+    function release(): void {
+      clearTimeout(timer);
+    }
+    let response: Response;
     try {
-      return await fetchFn(url, {
+      response = await fetchFn(url, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${token()}`,
@@ -330,9 +408,18 @@ export function createGithubEvidenceSource(options: GithubEvidenceSourceOptions)
         redirect: 'error',
         signal: controller.signal,
       });
-    } finally {
-      clearTimeout(timer);
+    } catch (error) {
+      release();
+      throw error;
     }
+    return {
+      response,
+      armReader(reader) {
+        activeReader = reader;
+      },
+      deadlineExceeded: () => fired,
+      release,
+    };
   }
 
   return {
@@ -349,22 +436,50 @@ export function createGithubEvidenceSource(options: GithubEvidenceSourceOptions)
      */
     async check(): Promise<EvidenceSourceCheckResult> {
       const repoUrl = new URL(`/repos/${owner}/${repo}`, apiBaseUrl);
-      const repoResponse = await performRequest(repoUrl);
+      const repoRequest = await performRequest(repoUrl);
+      const repoResponse = repoRequest.response;
       if (!isSuccessStatus(repoResponse.status)) {
-        return { status: 'refused', reason: reasonForStatus(repoResponse.status, repoResponse.headers) };
+        const reason = reasonForStatus(repoResponse.status, repoResponse.headers);
+        await releaseBody(repoResponse);
+        repoRequest.release();
+        return { status: 'refused', reason };
       }
 
       const tokenExpiration = repoResponse.headers.get('github-authentication-token-expiration');
+      await releaseBody(repoResponse);
+      repoRequest.release();
 
       const hooksUrl = new URL(`/repos/${owner}/${repo}/hooks`, apiBaseUrl);
       const secretsUrl = new URL(`/repos/${owner}/${repo}/actions/secrets`, apiBaseUrl);
-      const [hooksResponse, secretsResponse] = await Promise.all([
+      const [hooksRequest, secretsRequest] = await Promise.all([
         performRequest(hooksUrl),
         performRequest(secretsUrl),
       ]);
+      const hooksResponse = hooksRequest.response;
+      const secretsResponse = secretsRequest.response;
+
+      // Reuses reasonForStatus's own rate-limit test rather than a second
+      // x-ratelimit-remaining check: a 403 hooks/secrets probe answered under
+      // rate limiting is not evidence of least privilege either way. See
+      // test/github-evidence-source.test.mjs › "check() refuses rate_limited,
+      // not ready, when the hooks probe answers 403 with
+      // x-ratelimit-remaining: 0 (a rate-limited probe is not proof of least
+      // privilege)" and › "check() refuses rate_limited, not ready, when the
+      // actions/secrets probe answers 403 with x-ratelimit-remaining: 0 (a
+      // rate-limited probe is not proof of least privilege)".
+      const hooksReason = reasonForStatus(hooksResponse.status, hooksResponse.headers);
+      const secretsReason = reasonForStatus(secretsResponse.status, secretsResponse.headers);
       const hooksOk = hooksResponse.status === 403 || hooksResponse.status === 404;
       const secretsOk = secretsResponse.status === 403 || secretsResponse.status === 404;
 
+      await releaseBody(hooksResponse);
+      await releaseBody(secretsResponse);
+      hooksRequest.release();
+      secretsRequest.release();
+
+      if (hooksReason === 'rate_limited' || secretsReason === 'rate_limited') {
+        return { status: 'refused', reason: 'rate_limited' };
+      }
       if (!tokenExpiration || !hooksOk || !secretsOk) {
         return { status: 'refused', reason: 'denied' };
       }
@@ -401,20 +516,36 @@ export function createGithubEvidenceSource(options: GithubEvidenceSourceOptions)
       let pageCount = 0;
 
       for (;;) {
-        const response = await performRequest(currentUrl);
+        const request = await performRequest(currentUrl);
+        const response = request.response;
         if (!isSuccessStatus(response.status)) {
-          return {
-            status: 'refused',
-            reason: reasonForStatus(response.status, response.headers),
-            provenance: PLACEHOLDER_PROVENANCE,
-          };
+          const reason = reasonForStatus(response.status, response.headers);
+          await releaseBody(response);
+          request.release();
+          return { status: 'refused', reason, provenance: PLACEHOLDER_PROVENANCE };
         }
 
-        const bodyResult = await readCappedBody(response, maxResponseBytes);
+        let bodyResult: CappedBodyResult;
+        try {
+          bodyResult = await readCappedBody(response, maxResponseBytes, request);
+        } finally {
+          request.release();
+        }
         if (!bodyResult.ok) {
           return { status: 'refused', reason: 'budget_exceeded', provenance: PLACEHOLDER_PROVENANCE };
         }
-        const parsed: unknown = JSON.parse(bodyResult.text);
+
+        // A 2xx body that fails to parse is refused rather than thrown, and
+        // the raw text never reaches the outcome — see
+        // test/github-evidence-source.test.mjs › "execute() refuses
+        // adapter_error, rather than throwing, when a 2xx body is not valid
+        // JSON, and the raw body text never reaches the serialized outcome".
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(bodyResult.text);
+        } catch {
+          return { status: 'refused', reason: 'adapter_error', provenance: PLACEHOLDER_PROVENANCE };
+        }
         pageCount += 1;
 
         if (!spec.paginated) {
