@@ -4,7 +4,7 @@
  *
  * `npm run eval:live-model`
  *
- * Two arms over the CALIBRATION corpus, at one commit, in one process.
+ * Four arms over the CALIBRATION corpus, at one commit, in one process.
  *
  * 🔴 It used to be the hold-out corpus, and that was the defect rather than the
  * design: this command is a repeatable diagnostic, the lane's `scenarioSet` was
@@ -15,15 +15,19 @@
  * a guard. The corpus is declared by the caller now, and the hold-out has one
  * caller: `scripts/eval-final-holdout.mjs`.
  *
- *
  *   - a SCRIPTED control arm — the deterministic nodes the regression suite
- *     already uses — and
- *   - a MODEL arm, identical except that `generate_hypotheses`,
+ *     already uses;
+ *   - an ORACLE positive control and a NAIVE single-prompt arm, from
+ *     `scripts/lane-arms.mjs`; and
+ *   - a MODEL arm, identical to the control except that `generate_hypotheses`,
  *     `interpret_residual_evidence` and `challenge_hypothesis` are backed by the
  *     reference model.
  *
- * Everything else about the two arms is the same object graph, which is what
- * makes the comparison mean anything: if the control arm's numbers move against
+ * The naive and model arms spend through one port and one usage ledger.
+ * see lane-arms.test.mjs › "each lane command creates exactly one reference-model port and hands it to both paid arms"
+ *
+ * Everything else about the control and model arms is the same object graph,
+ * which is what makes the comparison mean anything: if the control arm's numbers move against
  * their declared baseline, the change is in the HARNESS and the model arm's
  * numbers are marked UNREPORTABLE.
  * ⚠ Marked, not withheld — `arms.model.metrics` still carries every model mean
@@ -72,10 +76,13 @@
  * see live-model-lane.test.mjs › "measures the harness zero that makes
  * evidence_coverage unreportable"
  *
- * ⚠ **What leaves this process when the lane runs.** The prompt carries the
- * incident, the hypotheses, the predictions, the evidence and the assessments —
- * the investigation state — to the configured provider's HTTPS endpoint. That is
- * the only destination the lane reaches on its own; `--publish` adds a second,
+ * ⚠ **What leaves this process when the lane runs.** The model arm's prompt
+ * carries the incident, the hypotheses, the predictions, the evidence and the
+ * assessments — the investigation state. The naive arm's prompt carries every
+ * telemetry entry: each tool input, each piece of evidence, and the reason or
+ * message of each unavailable or failed call (`describeTelemetry` in
+ * `packages/roles/src/naive-role.ts`). Both go to the configured provider's
+ * HTTPS endpoint. That is the only destination the lane reaches on its own; `--publish` adds a second,
  * the LangSmith ingestion below. Nothing leaves at all without a credential.
  *
  * The scripted nodes come from `test/fixtures/benchmark-experiment.mjs`, which
@@ -91,6 +98,7 @@ import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { readControlBaseline } from './eval-final-holdout.mjs';
+import { naiveArm, oracleArm } from './lane-arms.mjs';
 
 import { STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
@@ -141,7 +149,7 @@ const baseMetadata = Object.freeze({
   promptVersion: REFERENCE_PROMPT_VERSION,
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,
-  evaluatorVersion: evals.BEHAVIOR_EVALUATOR_VERSION,
+  evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
   // Both arms replay their TOOLS. Only the three roles differ between them,
   // which is what keeps the comparison about the model rather than about the
   // environment the two arms ran against.
@@ -197,6 +205,18 @@ async function main() {
   // of it: the LangSmith record has to be the runs, not the report about them.
   let modelExperiment;
 
+  // One port for both paid arms, so the naive and graph-model arms spend
+  // through the same ledger and the same credential read.
+  let port;
+  const sharedPort = () => {
+    port ??= createReferenceModelPort({
+      apiKey: readModelCredential(env),
+      modelId: config.modelId,
+      ledger,
+    });
+    return port;
+  };
+
   const report = await evals.runLiveModelLane({
     env,
     // Declared, never defaulted. This command is run repeatedly and must never
@@ -218,6 +238,14 @@ async function main() {
         async recordEvaluation() {},
       });
     },
+    runOracleArm: oracleArm({ experimentId: `aic-94-oracle-${headSha().slice(0, 12)}` }),
+    async runNaiveArm(plan) {
+      return naiveArm({
+        experimentId: `aic-94-naive-${headSha().slice(0, 12)}`,
+        port: sharedPort(),
+        config,
+      })(plan);
+    },
     async runModelArm(plan) {
       // The credential's VALUE is read through `readModelCredential`, the same
       // function `resolveModelConfig` uses for its availability decision — not a
@@ -232,12 +260,7 @@ async function main() {
       // the property worth having: exactly one function reads it.
       // see roles-boundary.test.mjs › "reads the credential value in
       // readModelCredential and nowhere else in packages or scripts"
-      const apiKey = readModelCredential(env);
-      const port = createReferenceModelPort({
-        apiKey,
-        modelId: config.modelId,
-        ledger,
-      });
+      const port = sharedPort();
       modelExperiment = await evals.runGraphBenchmarkExperiment({
         experimentId: `aic-94-model-${headSha().slice(0, 12)}`,
         scenarioSet: plan.scenarioSet,

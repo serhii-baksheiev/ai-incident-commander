@@ -24,7 +24,6 @@ import {
   parseFinalEvaluationRecord,
   BEHAVIOR_METRIC_KEYS,
   BENCHMARK_METRIC_KEYS,
-  LIVE_MODEL_LANE_WITHHELD_METRICS,
 } from '@aic/evals';
 
 import { childEnv } from './fixtures/child-env.mjs';
@@ -347,9 +346,12 @@ test('declares a control baseline for the hold-out, without which the model arm 
   // the ones the lane compares" while naming two of the five, so the row read as
   // covering the very gap it left open — the lane compared two axes and the
   // control arm emitted five.
-  const compared = [...BENCHMARK_METRIC_KEYS, ...BEHAVIOR_METRIC_KEYS]
-    .filter((key) => !Object.hasOwn(LIVE_MODEL_LANE_WITHHELD_METRICS, key))
-    .sort();
+  //
+  // Both commands declare the structural evaluator, under which the lane
+  // withholds nothing, so every metric key is compared:
+  // see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and naiveArm from ./lane-arms.mjs, wire them into runLiveModelLane, and declare the v0.3 structural evaluator"
+  // see four-arm-lane.test.mjs › "reports evidence_coverage under behavior-evaluators-v0.3, with withheld empty"
+  const compared = [...BENCHMARK_METRIC_KEYS, ...BEHAVIOR_METRIC_KEYS].sort();
   const declared = Object.keys(baseline).filter((key) => !key.startsWith('_'));
   assert.deepEqual(
     declared.sort(),

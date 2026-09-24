@@ -106,9 +106,10 @@ assumes covers more than it does.
    them, tunes against them and *then* runs the evaluation once leaves a clean
    one-shot record. The corpus is protected from automated re-evaluation, not
    from reading.
-7. **`report.arms.model.unreportableReason` can be quoted from the provider.**
-   When the model arm ends on a transport or HTTP error, up to 400 characters of
-   the provider's own response body reach that field — and this file's records
+7. **`report.arms.model.unreportableReason` and `report.arms.naive.refusalReason`
+   can be quoted from the provider.** When either paid arm ends on a transport or
+   HTTP error, up to 400 characters of the provider's own response body reach
+   that field — and this file's records
    are committed, so remote text enters this repository's history. It is capped
    and never interpreted, but it is not authored here and should be read that
    way. Found by a cold security review, which proved the path with a stub
@@ -116,9 +117,18 @@ assumes covers more than it does.
 8. **A deterministic-only final evaluation would be worse than none.** The
    replay-backed control arm scores a single value of zero on every metric it
    emits over this corpus, so spending the one shot on it would produce a record
-   carrying no information about the candidate. The command runs both arms and
-   requires the model arm; that is why it needs a provider credential and
-   refuses without one.
+   carrying no information about the candidate. The command runs all four arms
+   — scripted control, oracle, naive and graph-model — and requires the model
+   arm; that is why it needs a provider credential and refuses without one.
+9. **The naive arm spends from the one-shot budget before the model arm.** Both
+   paid arms draw on one call and output-token ledger, and the naive arm runs
+   first, so a naive arm that spent unusually much leaves less for the model arm
+   on the run that cannot be repeated. The caps are sized for both arms together
+   (`LIVE_MODEL_LANE_MAX_MODEL_CALLS` counts one naive call per run), but the
+   order is the lane's and is not reversed here.
+   see four-arm-lane.test.mjs › "runs control, then oracle, then naive, then model, all over the same plan"
+   see four-arm-lane.test.mjs › "derives the per-run and total model-call caps from the budget policy and the partition lengths"
+   see lane-arms.test.mjs › "each lane command creates exactly one reference-model port and hands it to both paid arms"
 
 ## The invariance, measured rather than argued
 
