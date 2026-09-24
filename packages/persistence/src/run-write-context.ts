@@ -59,7 +59,9 @@ export interface RunWriteContext {
    * `complete` are pinned by run-event-payload.live.mjs › "fail() with a reason
    * one character past the cap is refused before any run_events row or counter
    * increment lands, and the run stays running; exactly at the cap it is
-   * accepted" and its complete() twin; `markWaitingHuman` takes the same
+   * accepted" and › "complete() with a reason one character past the cap is
+   * refused before any run_events row or counter increment lands, and the run
+   * stays running; exactly at the cap it is accepted"; `markWaitingHuman` takes the same
    * `appendEvent` path and has no row of its own.
    */
   markWaitingHuman(interactionId: string): Promise<void>;

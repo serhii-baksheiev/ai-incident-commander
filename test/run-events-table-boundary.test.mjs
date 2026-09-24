@@ -36,8 +36,8 @@ const PERSISTENCE_SRC = resolve(projectRoot, 'packages/persistence/src');
  * Every module allowed to even NAME `run_events` — deliberately just the
  * four the ticket names, so a fifth mention (a new module, or an existing
  * one growing a stray reference) has to be added here on purpose. See this
- * file's header for why `index.ts` is not on this list despite currently
- * matching the scan.
+ * file's header for why `index.ts` is not on this list: its comment was
+ * reworded in this slice instead.
  */
 const ALLOWED_TO_NAME_RUN_EVENTS = Object.freeze([
   'app-schema.ts',
@@ -119,9 +119,8 @@ test('within packages/persistence/src, only app-schema.ts, run-write-context.ts,
   // (see retention.ts's own SELECTs). This pins that shape rather than
   // trusting the module's doc comment (`.claude/rules/invariants.md`'s "a
   // sentence describing behaviour is either generated or a pointer to a
-  // test") — folded into this same test so the file's one Red assertion
-  // (the naming boundary above) does not leave this acceptance criterion
-  // sitting in an already-green, unexercised test of its own.
+  // test") — folded into this same test, beside the naming boundary above,
+  // rather than kept as a separate row of its own.
   assert.match(
     retentionSource,
     /events:\s*eventRows\.map\(\(row\)\s*=>\s*\(\{\s*seq:\s*Number\(row\.seq\),\s*type:\s*row\.type,\s*executionAttempt:\s*Number\(row\.execution_attempt\),\s*payload:\s*row\.payload,\s*\}\)\)/s,

@@ -50,11 +50,10 @@
  *
  * The task brief asserts the run_events-naming boundary is exactly four
  * files (`app-schema.ts`, `run-write-context.ts`, `run-event-stream.ts`,
- * `retention.ts`). Measured: `packages/persistence/src/index.ts` already
- * carries a bare `run_events` mention in its AIC-58 slice-a doc comment
- * ("... over `aic_app.run_events`"). See
- * test/run-events-table-boundary.test.mjs for where this is pinned instead
- * of silently widened here.
+ * `retention.ts`). When this file was written, `packages/persistence/src/index.ts`
+ * also named the table in its slice-a doc comment; this slice reworded that
+ * comment rather than widening the list. The boundary itself is pinned in
+ * test/run-events-table-boundary.test.mjs.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
