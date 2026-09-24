@@ -63,7 +63,7 @@ investigates, and what owns what at that connection?**
 | Service | the AIC installation (implicit workspace, decision 9) | identity is server-assigned; repository names are aliases (decision 4) |
 | Environment | exactly one Service | an Environment never moves between Services |
 | SourceBinding | exactly one Environment | a binding to a source of evidence, versioned by adapter |
-| CredentialRef | exactly one Environment | a first-class record holding a reference to a secret, never the secret; a SourceBinding refers to one read `CredentialRef`, the `ActionPolicy` refers to the write `CredentialRef`s, and a `ProposedAction` only refers to one — nothing but the Environment owns it |
+| CredentialRef | exactly one Environment | a first-class record holding a reference to a secret, never the secret; a SourceBinding refers to at most one read `CredentialRef` (none for an adapter that takes no credential), the `ActionPolicy` refers to the write `CredentialRef`s, and a `ProposedAction` only refers to one — nothing but the Environment owns it |
 | ActionPolicy | exactly one Environment | which action types are allowed there |
 | Incident | its `primaryScope` Environment | intake carries `idempotencyKey` (AIC-96 defines the schema, AIC-99 is the CLI that writes it) so repeated intake does not create a second Incident |
 | Evidence | the run that collected it | carries its provenance as a snapshot taken at fetch time (see Trust boundary), not as a live pointer |
@@ -90,7 +90,9 @@ consumer; AIC owns only its own records about them.
   bounded and redacted at the adapter boundary before it becomes Evidence.
 - **Every piece of Evidence must record where it came from:** `sourceBindingId`,
   `adapterId@version`, `credentialRefId`, `fetchedAt` and `requestFingerprint`
-  (AIC-100, AIC-59).
+  (AIC-100, AIC-59). `credentialRefId` is null for a credential-less
+  SourceBinding (e.g. `lab@1`); the other provenance fields are still
+  recorded.
 
 ## Removal semantics
 

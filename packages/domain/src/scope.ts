@@ -56,55 +56,173 @@ export const EnvironmentSchema = z.strictObject({
 });
 
 /**
- * Adapter-specific config key: a slug-like camelCase word (`baseUrl`,
- * `owner`, `repo`). The domain does not know which keys a given adapter
- * expects - that catalog is a later slice (packages/tools/src/lab-source.ts,
- * github-source.ts). This only bounds the SHAPE every adapter's config must
- * fit.
+ * The camelCase-slug shape every adapter config key must fit (`baseUrl`,
+ * `owner`, `repo`). Anchored at both ends and capped at sixty-four
+ * characters by the quantifier itself, so testing it costs at most
+ * sixty-four characters of work regardless of how long the candidate key
+ * actually is.
  */
-const ConfigKeySchema = z.string().regex(/^[a-z][a-zA-Z0-9]{0,63}$/);
+const CONFIG_KEY_PATTERN = /^[a-z][a-zA-Z0-9]{0,63}$/;
 
 /**
- * Credential-shaped patterns a config value must never carry - a config
- * value travels with the SourceBinding record itself, never through the
- * CredentialRef indirection, so anything that reads as a live credential is
- * refused here rather than accepted and left to leak downstream. Every
- * pattern below is anchored and unquantified-inside-a-quantifier (no nested
- * repetition), so this predicate is O(length) per pattern with no
- * backtracking blowup.
- *
- * Limit, stated rather than left to be found: this is a fixed, small
- * vocabulary (GitHub PAT, AWS access key, Slack token, a Bearer-prefixed
- * value, `scheme://user:pass@` userinfo) - not an entropy analyser. A
- * credential shaped some other way passes; a placeholder that happens to
- * match one of these shapes is refused. See
- * registry-names-and-config.test.mjs for the corpus this is checked against.
+ * The JavaScript prototype-chain property names a slug-shaped regex alone
+ * does not exclude. `__proto__` is included because `JSON.parse` can produce
+ * it as a genuine OWN enumerable property (registry-names-and-config.test.mjs
+ * › "refuses a __proto__ own property supplied through JSON.parse, rather
+ * than silently dropping it") - refusing it here, read via `Reflect.ownKeys`
+ * before any spread could turn that own property into a prototype
+ * assignment instead, is what keeps it from being silently dropped with no
+ * issue reported at all.
  */
-const SECRET_SHAPE_PATTERNS = [
-  /^ghp_/,
-  /^github_pat_/,
-  /^AKIA/,
-  /^xox[baprs]-/,
-  /^Bearer /,
-  /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/@]*:[^/@]*@/,
+const CONFIG_KEY_DENY_SET = new Set(['constructor', 'prototype', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']);
+
+const MAX_CONFIG_KEYS = 16;
+const MAX_CONFIG_VALUE_LENGTH = 512;
+
+/**
+ * The domain's own credential vocabulary - a framework-free mirror of
+ * `SECRET_VALUE_PATTERNS` (`.claude/scripts/lib/secrets.mjs`), which the
+ * domain cannot import (scoped-domain-contract.test.mjs › "the domain
+ * package imports only zod, node:crypto and its own modules"). Kept aligned
+ * by a two-way check rather than by this comment alone
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation"): see
+ * registry-names-and-config.test.mjs › "every SECRET_VALUE_PATTERNS family is
+ * either mirrored by the correspondence corpus or explicitly excluded, with a
+ * reason" and › "refuses a config value if and only if findSecretValues
+ * flags it, over a shared corpus of credential-shaped and benign values".
+ *
+ * Mirrors every `SECRET_VALUE_PATTERNS` family except `assigned-secret` - a
+ * KEYWORD+SEPARATOR+VALUE construction with its own bounded candidate walk,
+ * reproducing which here would be the duplicated-complexity risk
+ * `.claude/rules/invariants.md` warns about; the exclusion and its reasoning
+ * are recorded once, in registry-names-and-config.test.mjs's
+ * `EXCLUDED_SECRET_FAMILIES`.
+ *
+ * Three domain-only additions the owner's 2026-09-25 ruling names, none of
+ * them in `SECRET_VALUE_PATTERNS`: a `Bearer `-prefixed value, `scheme://
+ * user:pass@` userinfo, and an AWS STS session key id (`ASIA`-prefixed). See
+ * › "refuses a config value carrying a Bearer-prefixed token", › "refuses a
+ * config value carrying userinfo (scheme://user:pass@host)" and › "refuses a
+ * config value carrying an AWS STS session key id (ASIA-prefixed), asserted
+ * directly rather than through findSecretValues".
+ *
+ * Every pattern is unanchored, so a credential shape is refused wherever it
+ * sits in a value, not only at the start - see › "refuses a config value
+ * carrying a recognised credential shape embedded anywhere in it, not only at
+ * the start". The userinfo pattern is the LINEAR form: the first class
+ * excludes `:` so there is only one place the required `:` can match, and the
+ * second class excludes `@` so its run and the trailing `@` cannot overlap -
+ * the ambiguous `[^/@]*:[^/@]*@` shape this replaced backtracked
+ * quadratically over a value with many colons and no closing `@` (see the
+ * "Bounded by construction" comment on `SourceBindingConfigSchema` below for
+ * the measured rows).
+ */
+const DOMAIN_SECRET_PATTERNS = [
+  /ATATT3x[A-Za-z0-9_\-=]{16,}/, // atlassian-token
+  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/, // github-pat
+  /\bAKIA(?!IOSFODNN7EXAMPLE\b)[A-Z0-9]{16}\b/, // cloud-access-key
+  /\bsk-ant-[A-Za-z0-9\-_]{16,}/, // anthropic-key
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, // private-key-block
+  /\bxox[baprs]-[A-Za-z0-9-]{16,}/, // slack-token
+  /\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/, // google-api-key
+  /\b[sr]k_live_[A-Za-z0-9]{16,}/, // stripe-live-key
+  /\bsk-proj-[A-Za-z0-9_-]{16,}/, // openai-project-key
+  /\bnpm_[A-Za-z0-9]{30,}/, // npm-token
+  /\bglpat-[A-Za-z0-9_-]{16,}/, // gitlab-pat
+  /\bBearer [A-Za-z0-9\-._~+/]+=*/, // domain-only: Bearer-prefixed value
+  /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/@:\s]*:[^/@\s]*@/, // domain-only: scheme://user:pass@ userinfo (linear form)
+  /\bASIA[A-Z0-9]{16}\b/, // domain-only: AWS STS session key id
 ];
 
-const looksLikeSecret = (value: string) => SECRET_SHAPE_PATTERNS.some((pattern) => pattern.test(value));
+/**
+ * At most `MAX_CONFIG_VALUE_LENGTH` characters, capped before any pattern
+ * reads it - the credential scan never reads past this slice, whatever the
+ * candidate's actual length.
+ */
+const boundedCredentialSlice = (value: string) =>
+  value.length > MAX_CONFIG_VALUE_LENGTH ? value.slice(0, MAX_CONFIG_VALUE_LENGTH) : value;
+
+const looksLikeCredential = (value: string) =>
+  DOMAIN_SECRET_PATTERNS.some((pattern) => pattern.test(boundedCredentialSlice(value)));
 
 /**
- * A per-adapter config object. Bounded at sixteen keys, each a slug-like
- * name, each value a non-empty string of at most 512 characters that does
- * not read as a credential (see `looksLikeSecret` above). What each adapter
- * actually requires is validated by the adapter catalog in a later slice -
- * this schema only enforces the shape every adapter's config must fit.
+ * A per-adapter config object.
+ *
+ * Bounded by construction, not by the length of anything it is handed - each
+ * ceiling is checked before the work it would otherwise cost is done:
+ *
+ *   1. more than sixteen keys refuses the whole config without reading a
+ *      single key or value - registry-names-and-config.test.mjs › "screens
+ *      one thousand keys of 600-character values in under 250ms, and still
+ *      refuses the binding";
+ *   2. a key is judged by `CONFIG_KEY_PATTERN`, anchored at both ends and
+ *      capped at sixty-four characters by its own quantifier, so a key of
+ *      any length costs at most sixty-four characters of work;
+ *   3. a value's credential screen reads at most `MAX_CONFIG_VALUE_LENGTH`
+ *      characters of it, whatever its actual length, before the value's own
+ *      length ceiling is even checked - › "screens a single 1 MiB config
+ *      value in under 250ms, and still refuses the binding", › "screens
+ *      sixteen keys of 40,004-character userinfo-shaped values in under
+ *      250ms, and still refuses the binding".
+ *
+ * Keys are read via `Reflect.ownKeys` on the raw input before anything else
+ * touches it, so a `__proto__` own property (as `JSON.parse` produces one) is
+ * seen as a key rather than dropped by a spread or a zod-internal copy - ›
+ * "refuses a __proto__ own property supplied through JSON.parse, rather than
+ * silently dropping it". `CONFIG_KEY_DENY_SET` refuses the other
+ * prototype-shadowing names a slug-shaped regex alone would accept - ›
+ * "refuses constructor, toString, valueOf, hasOwnProperty and prototype as
+ * config keys". A key that is itself slug-shaped is still screened for a
+ * credential shape anywhere within it - › "refuses a config key that is
+ * itself slug-shaped but reads as a credential anywhere within it".
+ *
+ * A refused key or value is never echoed into the issue it reports: every
+ * issue carries a fixed message and `path: []`, which zod resolves to
+ * `['config']` on the parent `SourceBindingSchema` - never the key or value
+ * text itself. See › "refuses a credential-shaped config key, and never
+ * echoes the refused key into the reported issues" and › "never carries a
+ * refused secret-shaped config value into the error".
  */
-const SourceBindingConfigSchema = z
-  .record(ConfigKeySchema, z.string().min(1).max(512))
-  .refine((config) => Object.keys(config).length <= 16, 'a SourceBinding config carries at most sixteen keys')
-  .refine(
-    (config) => Object.values(config).every((value) => !looksLikeSecret(value)),
-    'a SourceBinding config value must not be shaped like a credential',
-  );
+const SourceBindingConfigSchema = z.unknown().superRefine((value, ctx) => {
+  const fail = (message: string) => ctx.addIssue({ code: 'custom', message, path: [] });
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    fail('a SourceBinding config must be a plain object');
+    return;
+  }
+
+  const keys = Reflect.ownKeys(value).filter((key): key is string => typeof key === 'string');
+
+  if (keys.length > MAX_CONFIG_KEYS) {
+    fail('a SourceBinding config carries at most sixteen keys');
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    if (CONFIG_KEY_DENY_SET.has(key)) {
+      fail('a SourceBinding config key must not be a JavaScript prototype-chain property name');
+      continue;
+    }
+    if (!CONFIG_KEY_PATTERN.test(key)) {
+      fail('a SourceBinding config key must be a camelCase slug of at most sixty-four characters');
+      continue;
+    }
+    if (looksLikeCredential(key)) {
+      fail('a SourceBinding config key must not be shaped like a credential');
+      continue;
+    }
+
+    const rawValue = record[key];
+    if (typeof rawValue !== 'string' || rawValue.length < 1 || rawValue.length > MAX_CONFIG_VALUE_LENGTH) {
+      fail('a SourceBinding config value must be a non-empty string of at most 512 characters');
+      continue;
+    }
+    if (looksLikeCredential(rawValue)) {
+      fail('a SourceBinding config value must not be shaped like a credential');
+    }
+  }
+}) as unknown as z.ZodType<Record<string, string>>;
 
 export const SourceBindingSchema = z.strictObject({
   id: RegistryIdSchema,
