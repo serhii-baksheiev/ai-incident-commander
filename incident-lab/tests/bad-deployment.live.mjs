@@ -347,7 +347,8 @@ test(
             scenarioVersion: 1,
             candidateDirectory: resolve(candidateRoot, 'after-reset'),
           }),
-          /live observation failed for deployments: error/,
+          // 'unavailable' is the lab@1 refusal code for the 409 the inactive scenario answers.
+          /live observation failed for deployments: unavailable$/,
         ));
 
       await withinStage('replay', async () => {
