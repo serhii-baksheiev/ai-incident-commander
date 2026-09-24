@@ -3,12 +3,11 @@
  *
  * `quoteModelText` (`@aic/domain`, `packages/domain/src/conclusion-rules.ts`)
  * escapes and truncates a model-supplied value before it is named in a
- * refusal. This file pins twelve refusal sites that name such a value: eight
- * `refuse(...)` calls in `packages/roles/src/naive-role.ts`, one in
- * `packages/roles/src/investigation-roles.ts`'s `generate_hypotheses` (a
- * duplicate of an id the run already carries, where the run's own record can
- * carry a hostile id and the model repeats it), and three in
- * `packages/domain/src/evaluation.ts`'s `deriveHypothesisStatus`.
+ * refusal. This file pins one row per refusal site that names such a value;
+ * each row's name says which module and which refusal. The
+ * `generate_hypotheses` row covers a duplicate of an id the run already
+ * carries, where the run's own record can carry a hostile id and the model
+ * repeats it.
  *
  * The oracle is independent of `quoteModelText`: every row asserts, directly
  * against the thrown message, that it carries no raw newline and does not
@@ -381,7 +380,9 @@ test('parseJsonDocument: an answer that is not parseable JSON is refused without
   const createModelNaiveInvestigation = requireExport(roles, 'createModelNaiveInvestigation', '@aic/roles');
   const ModelRoleOutputError = requireExport(roles, 'ModelRoleOutputError', '@aic/roles');
   // A brace pair whose body JSON.parse rejects, carrying raw newlines inside
-  // the part a JSON.parse error message quotes back.
+  // the part a JSON.parse error message quotes back. V8 quotes back only a
+  // short snippet, so here the newline half of assertEscaped is the one that
+  // bites; the truncation half cannot fire for this row.
   const port = {
     async complete() {
       return {
@@ -397,6 +398,7 @@ test('parseJsonDocument: an answer that is not parseable JSON is refused without
     (error) => {
       assert.ok(error instanceof ModelRoleOutputError, 'a malformed answer is a ModelRoleOutputError');
       assert.match(error.message, /the answer is not parseable JSON/);
+      assert.match(error.message, /is not valid JSON/, "the parser's own diagnosis must survive the escaping");
       assertEscaped(error, 'an unparseable answer (role-output.ts parseJsonDocument)');
       return true;
     },

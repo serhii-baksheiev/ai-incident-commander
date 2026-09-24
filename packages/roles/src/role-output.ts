@@ -12,7 +12,8 @@ import { ownValue } from './own-value.js';
  * A module of its own, rather than part of `investigation-roles.ts`, so a role
  * that must not depend on the orchestration graph — the naive single-prompt
  * role — can share it: that file imports `@aic/graph`'s node types, and this
- * one imports nothing outside this package.
+ * one imports nothing that reaches `@aic/graph`.
+ * see naive-role.test.mjs › "rejects packages/roles/src/naive-role.ts reaching the graph through a module it imports"
  */
 
 /**
