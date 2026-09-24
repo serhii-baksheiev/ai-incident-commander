@@ -662,9 +662,35 @@ function capturingNaiveArm(experimentId, assign) {
   };
 }
 
-test('publishHoldoutArms persists the model arm then the naive arm, in order, under their own dataset names and exact experiment objects, when both are reportable', async () => {
-  const { publishHoldoutArms } = await import('../scripts/eval-final-holdout.mjs');
-
+/**
+ * AIC-120 replaces `publishHoldoutArms` with the pure `planHoldoutPublication`
+ * (whose plan `scripts/final-holdout-publication.mjs` then executes) — LangSmith
+ * publication for the hold-out moves entirely out of the lane call. The three
+ * rows below carry forward every assertion the three deleted `publishHoldoutArms`
+ * rows made, restated on the new API:
+ *   - "publishHoldoutArms persists the model arm then the naive arm, in order,
+ *     under their own dataset names and exact experiment objects, when both are
+ *     reportable" -> "planHoldoutPublication requires the model arm before the
+ *     naive arm ... when both are reportable" (order + both required + the
+ *     naive experiment is the one runNaiveArm actually captured)
+ *   - "publishHoldoutArms persists only the naive arm, and carries the model
+ *     arms own reason as publicationSkipped, when the model arm is unreportable
+ *     and the naive arm is reportable" -> "planHoldoutPublication marks only the
+ *     model arm not required ... while the naive arm stays required" (skip
+ *     reason + arm independence)
+ *   - "publishHoldoutArms persists only the model arm, and reports
+ *     naivePublication absent with the refusal reason, when the naive arm
+ *     refused" -> "planHoldoutPublication marks only the naive arm not required,
+ *     carrying its refusal reason ... when the naive arm refused" (skip reason +
+ *     arm independence, the other direction)
+ * `publishHoldoutArms` itself is gone: these rows assert on `evals.planHoldoutPublication`
+ * (packages/evals/src/final-evaluation-publication.ts), not on anything
+ * `scripts/eval-final-holdout.mjs` exports.
+ * see final-evaluation-publication.test.mjs for the exhaustive reason-by-reason
+ * coverage of planHoldoutPublication; the rows here are the wiring-level
+ * restatement that belongs beside fourArmLaneForPublish/capturingNaiveArm.
+ */
+test('planHoldoutPublication requires the model arm before the naive arm, in FINAL_EVALUATION_PUBLISHABLE_ARMS order, when both are reportable, and the naive experiment is the one runNaiveArm actually captured', async () => {
   let modelExperiment;
   let naiveExperiment;
   const report = await fourArmLaneForPublish({
@@ -672,74 +698,61 @@ test('publishHoldoutArms persists the model arm then the naive arm, in order, un
       modelExperiment = await scriptedModelExperimentFor('model-1', plan);
       return modelExperiment;
     },
-    runNaiveArm: capturingNaiveArm('aic-117d-publish-holdout-naive-1', (experiment) => (naiveExperiment = experiment)),
+    runNaiveArm: capturingNaiveArm('aic-120-lane-arms-naive-1', (experiment) => (naiveExperiment = experiment)),
   });
 
   assert.equal(report.arms.model.reportable, true);
   assert.equal(report.arms.naive.reportable, true);
-
-  const calls = [];
-  async function persist(options) {
-    calls.push(options);
-    return { datasetId: `d-${calls.length}`, projects: [], runIds: [] };
-  }
-
-  const result = await publishHoldoutArms({ laneReport: report, modelExperiment, naiveExperiment, headSha: HEAD_SHA, persist });
+  assert.ok(
+    naiveExperiment && naiveExperiment.records.length > 0,
+    'capturingNaiveArm must have captured a real experiment inside runNaiveArm, the same capture pattern eval-final-holdout.mjs uses',
+  );
 
   assert.deepEqual(
-    calls,
-    [
-      { datasetName: `aic-19-final-holdout-${HEAD_SHA12}`, experiment: modelExperiment },
-      { datasetName: `aic-19-final-holdout-naive-${HEAD_SHA12}`, experiment: naiveExperiment },
-    ],
-    'persist must be called for the model arm before the naive arm, each under its own dataset name and exact experiment object',
+    [...evals.FINAL_EVALUATION_PUBLISHABLE_ARMS],
+    ['model', 'naive'],
+    'the publish order is model then naive, exactly what publishHoldoutArms used to hard-code',
   );
-  assert.deepEqual(result.publication, { datasetId: 'd-1', projects: [], runIds: [] });
-  assert.equal(result.publicationSkipped, undefined);
-  assert.deepEqual(result.naivePublication, { status: 'published', datasetId: 'd-2', projects: [], runIds: [] });
+
+  const plan = evals.planHoldoutPublication({
+    report,
+    experiments: { model: modelExperiment, naive: naiveExperiment },
+  });
+  assert.deepEqual(Object.keys(plan), ['model', 'naive']);
+  assert.deepEqual(plan.model, { required: true });
+  assert.deepEqual(plan.naive, { required: true });
 });
 
-test('publishHoldoutArms persists only the naive arm, and carries the model arms own reason as publicationSkipped, when the model arm is unreportable and the naive arm is reportable', async () => {
-  const { publishHoldoutArms } = await import('../scripts/eval-final-holdout.mjs');
-
+test('planHoldoutPublication marks only the model arm not required, carrying its own unreportable reason, while the naive arm stays required, when the model arm is unreportable and the naive arm is reportable', async () => {
   let naiveExperiment;
   const report = await fourArmLaneForPublish({
     async runModelArm() {
       throw new Error('model harness exploded');
     },
-    runNaiveArm: capturingNaiveArm('aic-117d-publish-holdout-naive-2', (experiment) => (naiveExperiment = experiment)),
+    runNaiveArm: capturingNaiveArm('aic-120-lane-arms-naive-2', (experiment) => (naiveExperiment = experiment)),
   });
 
   assert.equal(report.arms.model.reportable, false);
   assert.equal(report.arms.naive.reportable, true);
 
-  const calls = [];
-  async function persist(options) {
-    calls.push(options);
-    return { datasetId: 'd', projects: [], runIds: [] };
-  }
-
-  const result = await publishHoldoutArms({
-    laneReport: report,
-    modelExperiment: undefined,
-    naiveExperiment,
-    headSha: HEAD_SHA,
-    persist,
+  const plan = evals.planHoldoutPublication({
+    report,
+    experiments: { model: undefined, naive: naiveExperiment },
   });
 
   assert.deepEqual(
-    calls,
-    [{ datasetName: `aic-19-final-holdout-naive-${HEAD_SHA12}`, experiment: naiveExperiment }],
-    'independence: exactly one persist call, for the naive arm, though the model arm is unreportable',
+    plan.model,
+    { required: false, reason: report.arms.model.unreportableReason },
+    'the plan must carry the model arms own unreportable reason, not a generic one',
   );
-  assert.equal(result.publication, null);
-  assert.equal(result.publicationSkipped, report.arms.model.unreportableReason);
-  assert.deepEqual(result.naivePublication, { status: 'published', datasetId: 'd', projects: [], runIds: [] });
+  assert.deepEqual(
+    plan.naive,
+    { required: true },
+    "independence: the naive arm's requirement must not be affected by the model arm's own refusal",
+  );
 });
 
-test('publishHoldoutArms persists only the model arm, and reports naivePublication absent with the refusal reason, when the naive arm refused', async () => {
-  const { publishHoldoutArms } = await import('../scripts/eval-final-holdout.mjs');
-
+test('planHoldoutPublication marks only the naive arm not required, carrying its refusal reason, while the model arm stays required, when the naive arm refused and the model arm is reportable', async () => {
   let modelExperiment;
   const report = await fourArmLaneForPublish({
     async runModelArm(plan) {
@@ -754,28 +767,17 @@ test('publishHoldoutArms persists only the model arm, and reports naivePublicati
   assert.equal(report.arms.model.reportable, true);
   assert.equal(report.arms.naive.status, 'refused');
 
-  const calls = [];
-  async function persist(options) {
-    calls.push(options);
-    return { datasetId: 'd', projects: [], runIds: [] };
-  }
-
-  const result = await publishHoldoutArms({
-    laneReport: report,
-    modelExperiment,
-    naiveExperiment: undefined,
-    headSha: HEAD_SHA,
-    persist,
+  const plan = evals.planHoldoutPublication({
+    report,
+    experiments: { model: modelExperiment, naive: undefined },
   });
 
   assert.deepEqual(
-    calls,
-    [{ datasetName: `aic-19-final-holdout-${HEAD_SHA12}`, experiment: modelExperiment }],
-    'exactly one persist call, for the model arm, though the naive arm refused',
+    plan.model,
+    { required: true },
+    "independence: the model arm's requirement must not be affected by the naive arm's own refusal",
   );
-  assert.deepEqual(result.publication, { datasetId: 'd', projects: [], runIds: [] });
-  assert.equal(result.publicationSkipped, undefined);
-  assert.deepEqual(result.naivePublication, { status: 'absent', absentReason: 'naive harness exploded' });
+  assert.deepEqual(plan.naive, { required: false, reason: 'naive harness exploded' });
 });
 
 test('publishLiveModelArms rejects with the refusal message before any persist call, when the model arm is unreportable — even though the naive arm is reportable', async () => {
@@ -907,39 +909,34 @@ test('eval-live-model.mjs calls publishLiveModelArms inside the body of its publ
 });
 
 /**
- * Same shape as the row above, for the sibling command's own helper
- * (`publishHoldoutArms`), plus the one field eval-final-holdout.mjs alone
- * gains: `naivePublication` on the complete record — an existence check on the
- * full source, not narrowed, because it names a field written outside
- * `publish(laneReport)` entirely.
+ * AIC-120 replaces the sibling row above (`eval-final-holdout.mjs calls
+ * publishHoldoutArms inside the body of its publish(laneReport) callback...`):
+ * there is no `publish(laneReport)` callback and no `naivePublication` field
+ * any more — LangSmith publication for the hold-out moved out of the lane call
+ * entirely, into `completeHoldout`/`publishRecordedMeasurement`
+ * (scripts/eval-final-holdout.mjs, scripts/final-holdout-publication.mjs). What
+ * survives from the deleted row is the one assertion still true under the new
+ * design — `runNaiveArm` still assigns `naiveExperiment`, because
+ * `completeHoldout`'s `execute()` closure still needs to capture it — plus the
+ * new invariant this ticket adds: the options object handed to
+ * `runLiveModelLane` carries no `publish` key at all.
+ * see final-evaluation-publication.test.mjs › "T12: a persist that reads the record file AT CALL TIME sees status complete, proving the durable write happens before any publication attempt"
+ * see final-evaluation-publication.test.mjs › "scripts/eval-final-holdout.mjs passes runLiveModelLane no publish option any more"
  */
-test('eval-final-holdout.mjs calls publishHoldoutArms inside the body of its publish(laneReport) callback, which sits inside the flag(\'publish\') spread, runNaiveArm assigns naiveExperiment, and naivePublication reaches the complete record', () => {
+test("eval-final-holdout.mjs's runNaiveArm still assigns naiveExperiment, and its runLiveModelLane call carries no publish key any more", () => {
   const source = readFileSync(join(REPO_ROOT, 'scripts/eval-final-holdout.mjs'), 'utf8');
-
-  const spreadBody = bracedBodyAfter(source, /flag\('publish'\)\s*\?\s*\{/);
-  assert.match(
-    spreadBody,
-    /async publish\(laneReport\)/,
-    "the publish(laneReport) callback must sit inside the flag('publish') ? { spread",
-  );
-
-  const publishBody = bracedBodyAfter(source, 'async publish(laneReport) {');
-  assert.match(
-    publishBody,
-    /publishHoldoutArms\(/,
-    'the body of publish(laneReport) must call publishHoldoutArms',
-  );
 
   const naiveArmBody = bracedBodyAfter(source, 'async runNaiveArm(plan) {');
   assert.match(
     naiveArmBody,
     /naiveExperiment\s*=/,
-    'the body of runNaiveArm must assign naiveExperiment',
+    "the body of runNaiveArm must assign naiveExperiment: completeHoldout's execute() closure still captures it for planHoldoutPublication and the record",
   );
 
-  assert.match(
-    source,
-    /naivePublication\s*:/,
-    'scripts/eval-final-holdout.mjs must write naivePublication into the complete record',
+  const laneBody = bracedBodyAfter(source, 'evals.runLiveModelLane({');
+  assert.doesNotMatch(
+    laneBody,
+    /\bpublish\s*[:(]/,
+    'AIC-120: LangSmith publication moved entirely out of the lane call and into completeHoldout/publishRecordedMeasurement, so the options object handed to runLiveModelLane must carry no publish key',
   );
 });

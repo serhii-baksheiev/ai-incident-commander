@@ -164,6 +164,30 @@ test('declares the one-shot command as an npm script, so it is invoked by name r
   );
 });
 
+/**
+ * AIC-120: publication-only recovery (`publishOnly`, scripts/publish-final-holdout.mjs)
+ * needs no model credential and imports no role, lane or benchmark runner
+ * (test/final-evaluation-publication.test.mjs's T5 source-audits that
+ * directly), so it gets the same build-then-run-under-no-ambient-tracing
+ * prefix every other `eval:` command in this file uses — a recovery command
+ * reachable only by path is one a reader has to know exists, the same
+ * argument the row above makes for `eval:final-holdout` itself.
+ */
+test('declares eval:final-holdout:publish as an npm script, built and run under no-ambient-tracing like every other eval: command', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+
+  assert.equal(
+    typeof manifest.scripts['eval:final-holdout:publish'],
+    'string',
+    'the publication-only recovery command must be reachable by name, not only by path',
+  );
+  assert.match(
+    manifest.scripts['eval:final-holdout:publish'],
+    /^npm run build --silent && node --import \.\/test\/fixtures\/no-ambient-tracing\.mjs scripts\/publish-final-holdout\.mjs\b/,
+    'the recovery command must build first and run under the no-ambient-tracing preload, the same prefix every other eval: command in this file declares',
+  );
+});
+
 test('keeps the evidence directory committed rather than ignored', () => {
   // A gitignored record is one `rm` away from a free and invisible re-run,
   // which is the whole property the record exists to carry. `git check-ignore`
@@ -581,7 +605,7 @@ function recordShowsPublication(record) {
   return shows(record.publication) || shows(record.naivePublication);
 }
 
-test('no hold-out record carries a published result, which is what the gate document may say about ingestion', () => {
+test('no hold-out record carries a published result, and no publication attempt log records a verified one either, which is what the gate document may say about ingestion', () => {
   const dir = join(REPO_ROOT, 'docs/evidence/final-evaluation');
   const records = readdirSync(dir).filter((name) => name.endsWith('.json'));
 
@@ -596,6 +620,37 @@ test('no hold-out record carries a published result, which is what the gate docu
     published,
     [],
     'a record carrying a published result would falsify the gate document\'s statement that no ingestion occurred during this gate — update the document from the records rather than leaving the sentence standing',
+  );
+
+  // AIC-120: a LangSmith publication attempt is no longer recorded on the
+  // record itself — it is appended to a JSONL log beside it
+  // (docs/evidence/final-evaluation/publications/<basename>.jsonl). That
+  // directory does not exist in this repository yet, because no publication
+  // has ever been attempted under the new mechanism; an absent directory is
+  // read as no logs at all, the same fail-open-on-ENOENT-only rule
+  // `readRecords` above already uses, never as a reason to skip the check.
+  let logNames;
+  try {
+    logNames = readdirSync(join(dir, 'publications')).filter((name) => name.endsWith('.jsonl'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    logNames = [];
+  }
+
+  const verifiedAttempts = logNames.flatMap((name) => {
+    const lines = readFileSync(join(dir, 'publications', name), 'utf8')
+      .split('\n')
+      .filter((line) => line.length > 0);
+    return lines
+      .map((line) => JSON.parse(line))
+      .filter((attempt) => attempt.outcome === 'verified')
+      .map((attempt) => `${name}: ${attempt.attemptId}`);
+  });
+
+  assert.deepEqual(
+    verifiedAttempts,
+    [],
+    'a verified publication attempt in the log would also falsify "no ingestion occurred during this gate" — update the document rather than leaving the sentence standing',
   );
 });
 
