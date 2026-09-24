@@ -250,6 +250,12 @@ test('a refusal echoes a caller-supplied type or key bounded and escaped — nev
   }
 });
 
+test('assertRunEventPayload refuses a non-string type rather than coercing it into a registered name, as buildExecKey does for its op', () => {
+  const coercesToRegistered = { toString: () => 'run.failed' };
+  assertRefusesAsRunEventPayloadError(coercesToRegistered, { reason: 'ok' }, 'an object whose toString names a registered type is not that type');
+  assertRefusesAsRunEventPayloadError(42, {}, 'a number is not an event type');
+});
+
 test('assertRunEventPayload refuses a payload that is not a plain object', () => {
   for (const notAnObject of [null, undefined, 'a string', 42, true, ['execKey']]) {
     assertRefusesAsRunEventPayloadError(
