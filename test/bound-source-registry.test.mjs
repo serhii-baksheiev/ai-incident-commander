@@ -29,10 +29,17 @@
  *       - `adapter`: `` `${describe().adapterId}@${describe().version}` `` of
  *         the CURRENT binding's source — computed fresh on every call, in
  *         every mode (including replay, so a migrated binding is detected).
- *       - `credentialRefId`: the binding's own `credentialRefId`.
+ *       - `credentialRefId`: the binding's own `credentialRefId` — recomputed
+ *         fresh from the CURRENT binding on every call, in every mode
+ *         INCLUDING a replay hit. A recording made under one credential
+ *         reference and later replayed through a binding rebound to a
+ *         different one reports the REPLAYING binding's reference, never the
+ *         one baked into the stored recording (review round 1, code-reviewer
+ *         blocker 2).
  *       - `fetchedAt`: `clock().toISOString()` in `live`/`record`; the
  *         RECORDED value in `replay` (never the replaying process's own
- *         clock).
+ *         clock) — the ONE field a replay hit takes from the stored
+ *         recording rather than recomputing.
  *       - `requestFingerprint`: `createRequestFingerprint(operation, input)`
  *         (slice a, unmodified).
  *   - Two provenance edge cases this file pins explicitly, because
@@ -60,10 +67,20 @@
  *     refused `unavailable`, also without calling `source.execute`.
  *   - Replay identity — a versioned string, so a migration is explicit rather
  *     than implicit — is exactly
- *     `` `v${REPLAY_IDENTITY_VERSION}:${sourceBindingId}:${adapter}:${requestFingerprint}` ``,
- *     `REPLAY_IDENTITY_VERSION` is exported and pinned to `2` here. A
- *     different `sourceBindingId` OR a different `adapter` (adapter VERSION
- *     included) for the same `operation`/`input` is therefore a genuinely
+ *     `` `v${REPLAY_IDENTITY_VERSION}:` + JSON.stringify([sourceBindingId, adapter, requestFingerprint]) ``,
+ *     `REPLAY_IDENTITY_VERSION` is exported and pinned to `2` here. The three
+ *     parts are encoded the way slice a's own `createReplayFixtureKey`
+ *     (`./replay-key.ts`) already joins its own parts — a `JSON.stringify` of
+ *     an array — rather than a raw `:`-join, because a raw join lets one
+ *     part's own `:` characters relabel a boundary: binding `'a'` + adapter
+ *     `'b:c@1'` and binding `'a:b'` + adapter `'c@1'` produce the identical
+ *     colon-joined string for the same fingerprint (review round 1,
+ *     code-reviewer blocker 1). Under the array encoding those two stay
+ *     genuinely different identities — a replay under one is a miss, never a
+ *     hit served from the other's recording, and `rekeyReplayRecordings`
+ *     rekeying one leaves the other's entries untouched. A different
+ *     `sourceBindingId` OR a different `adapter` (adapter VERSION included)
+ *     for the same `operation`/`input` is therefore always a genuinely
  *     different identity — a miss, never a coincidental hit.
  *   - `rekeyReplayRecordings(store, { sourceBindingId, fromAdapter, toAdapter })`
  *     is the ONLY thing that ever re-keys a stored recording: it moves every
@@ -71,12 +88,38 @@
  *     for `(sourceBindingId, toAdapter)` — updating both the stored key and
  *     the recorded outcome's own `provenance.adapter` to `toAdapter` — and
  *     returns the number of entries migrated. An entry for a different
- *     `sourceBindingId` or a different `fromAdapter` is left untouched.
+ *     `sourceBindingId` or a different `fromAdapter` is left untouched. A
+ *     call where `fromAdapter === toAdapter` is a no-op: it returns `0` and
+ *     leaves the recording exactly where it was, still replayable (review
+ *     round 1, code-reviewer blocker 3) — it must never delete-then-reinsert
+ *     under the same identity.
  *   - Two `ReplayStore` implementations, `get`/`set`/`keys`/`delete`, all
  *     async: `createMemoryReplayStore()` (in-process) and
  *     `createFileReplayStore(path)` (one JSON file, object keys written
  *     sorted so two stores holding the same recordings, written in different
  *     orders, produce byte-identical files).
+ *
+ * ## Review round 1 — security findings pinned here too
+ *
+ *   - `createFileReplayStore` creates its file mode `0o600`, never
+ *     world-readable, because record mode persists unredacted adapter output
+ *     (security blocker 4).
+ *   - `execute()` in `replay` over a file that fails to parse as JSON
+ *     resolves to a `refused`/`adapter_error` outcome — it never rejects —
+ *     and the serialized outcome carries no text from the file (security
+ *     blocker 5a). A stored record that is not a well-formed
+ *     `EvidenceSourceOutcome` (an unrecognised `status`, a `refused` `reason`
+ *     outside `EVIDENCE_SOURCE_REFUSAL_REASONS`, or no `provenance` at all) is
+ *     refused `unavailable` rather than handed back to the caller verbatim
+ *     (security blocker 5b). In `record` mode, a `store.set` that throws
+ *     resolves to a `refused`/`adapter_error` outcome rather than rejecting,
+ *     even though the adapter call itself already succeeded (security
+ *     blocker 5c).
+ *   - A recordings file carrying a `__proto__` key never lets `get()` return
+ *     an inherited `Object.prototype` member for identities that happen to
+ *     collide with one (`'constructor'`, `'toString'`, …), and reading such a
+ *     file never pollutes `Object.prototype` itself (security advisory 6,
+ *     taken).
  *
  * Independent oracles throughout: every expected fingerprint or replay
  * identity below is built BY HAND in this file with `node:crypto`, over a
@@ -88,7 +131,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -144,9 +187,15 @@ function handBuiltFingerprint(operation, input) {
   return `sha256:${hex}`;
 }
 
-/** This file's own pinned design for the replay-identity string (see header). */
+/**
+ * This file's own pinned design for the replay-identity string (see header):
+ * a JSON array, not a raw `:`-join — deliberately a second, hand-rolled
+ * encoding rather than importing the production module's own array-join
+ * helper, so this oracle cannot be satisfied merely by production checking
+ * its own work (review round 1, code-reviewer blocker 1).
+ */
 function handBuiltIdentity({ sourceBindingId, adapter, requestFingerprint }) {
-  return `v2:${sourceBindingId}:${adapter}:${requestFingerprint}`;
+  return `v2:${JSON.stringify([sourceBindingId, adapter, requestFingerprint])}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -566,6 +615,41 @@ test('record: also stores a refused outcome (an adapter_error), not only an ok o
   assert.deepEqual(stored, outcome);
 });
 
+test('record: a store whose set() throws resolves to a refused adapter_error outcome, never rejects, even though the adapter call already succeeded (security blocker 5c)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const source = buildOkSource();
+
+  // A hand-made failing store — deliberately not createMemoryReplayStore or
+  // createFileReplayStore, so this is an independent oracle for "the module
+  // under test reacts correctly to a failing dependency" rather than the
+  // module's own store implementation.
+  const throwingStore = {
+    async get() {
+      return undefined;
+    },
+    async set() {
+      throw new Error('disk full: set() must never be allowed to reject execute()');
+    },
+    async keys() {
+      return [];
+    },
+    async delete() {},
+  };
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: throwingStore,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  await assert.doesNotReject(async () => {
+    const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+    assert.equal(outcome.status, 'refused');
+    assert.equal(outcome.reason, 'adapter_error');
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /* replay mode — never calls the adapter; hit, miss, and identity mismatches  */
 /* -------------------------------------------------------------------------- */
@@ -599,6 +683,52 @@ test('replay: a hit is served entirely from the store, the adapter is never call
   assert.equal(replayingSource.calls.length, 0, 'replay must never call the adapter, even on a hit');
   assert.deepEqual(replayed, recorded);
   assert.equal(replayed.provenance.fetchedAt, '2026-09-24T00:00:00.000Z');
+});
+
+test('replay writes provenance.credentialRefId from the REPLAYING binding, not the one baked into the recording, while still keeping the RECORDED fetchedAt (code-reviewer blocker 2)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [
+      {
+        sourceBindingId: 'binding-a',
+        source: buildOkSource({ adapterId: 'fixture-adapter', version: '1.0.0' }),
+        credentialRefId: 'old-ref',
+      },
+    ],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  const recorded = await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(recorded.provenance.credentialRefId, 'old-ref');
+
+  const replayingSource = buildRefusingToBeCalledSource({ adapterId: 'fixture-adapter', version: '1.0.0' });
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    // Same sourceBindingId/adapter (so the replay identity still hits) but
+    // rebound to a DIFFERENT credentialRefId than the one that was recorded.
+    bindings: [{ sourceBindingId: 'binding-a', source: replayingSource, credentialRefId: 'new-ref' }],
+    store,
+    clock: fixedClock('2099-01-01T00:00:00.000Z'),
+  });
+
+  const replayed = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(replayingSource.calls.length, 0, 'replay must never call the adapter, even on a hit');
+  assert.equal(replayed.status, 'ok');
+  assert.equal(
+    replayed.provenance.credentialRefId,
+    'new-ref',
+    'credentialRefId must be recomputed from the CURRENT (replaying) binding, never read back off disk',
+  );
+  assert.equal(
+    replayed.provenance.fetchedAt,
+    '2026-09-24T00:00:00.000Z',
+    'fetchedAt is the one field a replay hit keeps from the recording',
+  );
 });
 
 test('replay: a miss (nothing recorded for this identity) is refused unavailable, without calling the adapter', async () => {
@@ -676,6 +806,46 @@ test('replay identity includes the adapter VERSION: a recording made under versi
   assert.equal(outcome.status, 'refused');
   assert.equal(outcome.reason, 'unavailable');
   assert.equal(upgradedSource.calls.length, 0);
+});
+
+test('replay identity does not collide across a `:` inside a part: binding \'a\' + adapter \'b:c@1\' and binding \'a:b\' + adapter \'c@1\' are DIFFERENT identities (code-reviewer blocker 1)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  // adapter string is `${adapterId}@${version}` — adapterId 'b:c', version
+  // '1' produces the adapter string 'b:c@1'.
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [
+      { sourceBindingId: 'a', source: buildOkSource({ adapterId: 'b:c', version: '1' }), credentialRefId: null },
+    ],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const recorded = await recorder.execute('a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(recorded.status, 'ok');
+
+  // Old, buggy colon-joined identity for THIS call would be
+  // "v2:a:b:c@1:<fingerprint>" — byte-identical to the colon-joined identity
+  // for sourceBindingId 'a:b' + adapter 'c@1' + the SAME fingerprint. Prove
+  // the two never collide: a replay under the other binding/adapter pair,
+  // over the identical operation/input (so the fingerprint truly matches),
+  // must be a miss.
+  const collidingSource = buildRefusingToBeCalledSource({ adapterId: 'c', version: '1' });
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'a:b', source: collidingSource, credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await replayer.execute('a:b', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable', 'binding \'a:b\' + adapter \'c@1\' must never be served binding \'a\' + adapter \'b:c@1\'\'s recording');
+  assert.equal(collidingSource.calls.length, 0);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -771,6 +941,90 @@ test('rekeyReplayRecordings leaves an unrelated recording (a different sourceBin
   assert.equal(untouched.provenance.adapter, 'fixture-adapter@1.0.0');
 });
 
+test('rekeyReplayRecordings is a no-op when fromAdapter === toAdapter: returns 0 and leaves the recording intact and replayable (code-reviewer blocker 3)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const rekeyReplayRecordings = rekeyReplayRecordingsFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [
+      { sourceBindingId: 'binding-a', source: buildOkSource({ version: '1.0.0' }), credentialRefId: null },
+    ],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  const recorded = await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  const migratedCount = await rekeyReplayRecordings(store, {
+    sourceBindingId: 'binding-a',
+    fromAdapter: 'fixture-adapter@1.0.0',
+    toAdapter: 'fixture-adapter@1.0.0',
+  });
+  assert.equal(migratedCount, 0, 'an equal from/to adapter must never be counted as a migration');
+
+  const expectedFingerprint = handBuiltFingerprint('fetch-logs', { service: 'checkout' });
+  const identity = handBuiltIdentity({
+    sourceBindingId: 'binding-a',
+    adapter: 'fixture-adapter@1.0.0',
+    requestFingerprint: expectedFingerprint,
+  });
+  const stillThere = await store.get(identity);
+  assert.deepEqual(stillThere, recorded, 'the recording must be left exactly where it was, byte for byte, not deleted and reinserted');
+
+  const replayingSource = buildRefusingToBeCalledSource({ version: '1.0.0' });
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: replayingSource, credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  const replayed = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(replayed.status, 'ok', 'a no-op rekey must never make the recording unreplayable');
+});
+
+test('rekeyReplayRecordings leaves a colon-colliding sourceBindingId (\'a:b\') untouched when rekeying sourceBindingId \'a\' (encoding fix also protects the migration path)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const rekeyReplayRecordings = rekeyReplayRecordingsFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [
+      // adapter string 'b:c@1' (adapterId 'b:c', version '1') — chosen so
+      // the OLD colon-joined identity for ('a', 'b:c@1', fp) is
+      // byte-identical to the OLD colon-joined identity for
+      // ('a:b', 'c@1', fp).
+      { sourceBindingId: 'a', source: buildOkSource({ adapterId: 'b:c', version: '1' }), credentialRefId: null },
+      { sourceBindingId: 'a:b', source: buildOkSource({ adapterId: 'c', version: '1' }), credentialRefId: null },
+    ],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('a', 'fetch-logs', { service: 'checkout' });
+  const collidingRecorded = await recorder.execute('a:b', 'fetch-logs', { service: 'checkout' });
+  assert.equal(collidingRecorded.status, 'ok');
+
+  const migratedCount = await rekeyReplayRecordings(store, {
+    sourceBindingId: 'a',
+    fromAdapter: 'b:c@1',
+    toAdapter: 'b:c@2',
+  });
+  assert.equal(migratedCount, 1, 'only sourceBindingId \'a\' matches the migration filter');
+
+  const expectedFingerprint = handBuiltFingerprint('fetch-logs', { service: 'checkout' });
+  const untouchedIdentity = handBuiltIdentity({
+    sourceBindingId: 'a:b',
+    adapter: 'c@1',
+    requestFingerprint: expectedFingerprint,
+  });
+  const untouched = await store.get(untouchedIdentity);
+  assert.ok(untouched, '\'a:b\'\'s recording must be left exactly where it was, unaffected by rekeying \'a\'');
+  assert.equal(untouched.provenance.adapter, 'c@1');
+});
+
 /* -------------------------------------------------------------------------- */
 /* createFileReplayStore — one JSON file, sorted keys, byte-identical         */
 /* regardless of write order                                                  */
@@ -845,6 +1099,240 @@ test('createFileReplayStore writes byte-identical files regardless of the order 
     descendingBytes,
     'writing the same two recordings in a different order must produce byte-identical files (object keys sorted on write)',
   );
+});
+
+test('createFileReplayStore creates its recordings file with mode 0o600, never world-readable (security blocker 4)', async (t) => {
+  const dir = withScratchDir(t);
+  const createFileReplayStore = fileReplayStoreFactory();
+  const filePath = join(dir, 'permissions.json');
+
+  const store = createFileReplayStore(filePath);
+  await store.set('v2:["binding-a","fixture-adapter@1.0.0","fp"]', {
+    status: 'ok',
+    output: {},
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: '2026-09-24T00:00:00.000Z',
+      requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
+    },
+  });
+
+  if (process.platform === 'win32') {
+    // POSIX file-mode bits are not meaningful on Windows ACLs; this row is
+    // skipped there by stated reason rather than asserted against.
+    t.skip('POSIX file-mode bits do not apply on win32');
+    return;
+  }
+
+  const mode = statSync(filePath).mode & 0o777;
+  assert.equal(
+    mode,
+    0o600,
+    `recordings file must be created 0o600 (owner read/write only); got ${mode.toString(8)}`,
+  );
+});
+
+test('replay over a file that is not valid JSON resolves to a refused adapter_error outcome, never rejects, and no text from the file reaches the serialized outcome (security blocker 5a)', async (t) => {
+  const dir = withScratchDir(t);
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createFileReplayStore = fileReplayStoreFactory();
+  const filePath = join(dir, 'corrupt.json');
+  const marker = 'zz9-bound-registry-corrupt-file-marker-4471-not-a-real-value';
+
+  writeFileSync(filePath, `{not valid json at all, marker=${marker}`, 'utf8');
+
+  const registry = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store: createFileReplayStore(filePath),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  await assert.doesNotReject(async () => {
+    const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+    assert.equal(outcome.status, 'refused');
+    assert.equal(outcome.reason, 'adapter_error');
+    assert.equal(JSON.stringify(outcome).includes(marker), false, 'no text from the unparseable file may reach the serialized outcome');
+  });
+});
+
+/**
+ * Writes a malformed record UNDER THE STORE'S OWN REAL KEY, rather than a
+ * hand-built identity string: a legitimate call is recorded first (through
+ * the registry, whatever identity scheme it currently uses), and then that
+ * one entry is overwritten in place. This is deliberate — it keeps these
+ * three rows correct regardless of which replay-identity encoding is active
+ * (see code-reviewer blocker 1), rather than risking a silent identity
+ * mismatch that would make the row pass vacuously (a miss, never reaching
+ * the malformed-value handling under test) instead of exercising it.
+ */
+async function replaceRecordedEntryWith(store, malformedRecord) {
+  const keys = await store.keys();
+  assert.equal(keys.length, 1, 'setup: exactly one legitimate recording must exist before it is corrupted');
+  await store.set(keys[0], malformedRecord);
+}
+
+test('replay treats a stored record missing provenance as unavailable rather than returning it verbatim (security blocker 5b)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  await replaceRecordedEntryWith(store, { status: 'ok', output: {} });
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable');
+});
+
+test('replay treats a stored record whose status is neither ok nor refused as unavailable (security blocker 5b)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  await replaceRecordedEntryWith(store, {
+    status: 'not-a-real-status',
+    output: {},
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: '2026-09-24T00:00:00.000Z',
+      requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
+    },
+  });
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable');
+});
+
+test('replay treats a stored record whose refused reason is outside EVIDENCE_SOURCE_REFUSAL_REASONS as unavailable (security blocker 5b)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+  const bogusReason = 'not-a-real-refusal-reason';
+  assert.equal(
+    tools.EVIDENCE_SOURCE_REFUSAL_REASONS.includes(bogusReason),
+    false,
+    'the fixture reason must genuinely be outside the five typed reasons',
+  );
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  await replaceRecordedEntryWith(store, {
+    status: 'refused',
+    reason: bogusReason,
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: '2026-09-24T00:00:00.000Z',
+      requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
+    },
+  });
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable');
+});
+
+test('createFileReplayStore: a __proto__ key in the file never surfaces through get() for identities like "constructor" or "toString", and does not pollute Object.prototype (security advisory 6)', async (t) => {
+  const dir = withScratchDir(t);
+  const createFileReplayStore = fileReplayStoreFactory();
+  const filePath = join(dir, 'proto.json');
+
+  // Built as raw JSON TEXT, deliberately not via a JS object literal: `{
+  // __proto__: x }` in JS source reassigns the object's actual prototype at
+  // construction time, which would just make this test's own JSON.stringify
+  // serialize "{}" and prove nothing. A hand-written string is what an
+  // attacker-controlled recordings file on disk actually looks like — a
+  // plain own key literally named "__proto__", which is exactly what
+  // JSON.parse (used inside createFileReplayStore) turns it back into: an
+  // ordinary own data property, not an actual prototype reassignment.
+  writeFileSync(filePath, '{"__proto__":{"polluted":"yes"}}\n', 'utf8');
+
+  const store = createFileReplayStore(filePath);
+
+  assert.equal(
+    await store.get('constructor'),
+    undefined,
+    'get() must never return an inherited Object.prototype member for an identity that was never actually recorded',
+  );
+  assert.equal(
+    await store.get('toString'),
+    undefined,
+    'get() must never return an inherited Object.prototype member for an identity that was never actually recorded',
+  );
+  assert.equal(Object.prototype.polluted, undefined, 'reading the file must never pollute the real Object.prototype');
+});
+
+test('createFileReplayStore: after a set(), no temporary file is left beside the store in its directory, and the store file still parses as JSON (advisory 7, atomic writes)', async (t) => {
+  const dir = withScratchDir(t);
+  const createFileReplayStore = fileReplayStoreFactory();
+  const filePath = join(dir, 'atomic.json');
+
+  const store = createFileReplayStore(filePath);
+  await store.set('v2:["binding-a","fixture-adapter@1.0.0","fp"]', {
+    status: 'ok',
+    output: {},
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: '2026-09-24T00:00:00.000Z',
+      requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
+    },
+  });
+
+  const entries = readdirSync(dir);
+  assert.deepEqual(
+    entries,
+    ['atomic.json'],
+    `no temporary file may be left beside the store after set() completes; found ${JSON.stringify(entries)}`,
+  );
+  assert.doesNotThrow(() => JSON.parse(readFileSync(filePath, 'utf8')), 'the store file itself must still parse as JSON');
 });
 
 /* -------------------------------------------------------------------------- */
