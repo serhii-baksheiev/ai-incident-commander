@@ -311,6 +311,33 @@ function withCommitSignal(context) {
  * signal this file uses instead of a sleep to know A has actually arrived
  * with NOTHING of its post-commit checkpoint activity visible yet.
  */
+/**
+ * Tracks every write promise a (fenced) checkpointer hands back. A fenced
+ * write resolves only after its post-write ownership recheck — the step that
+ * records a checkpoint_fork — so awaiting these, not the stale runner's own
+ * settlement, is what makes "the fork has been recorded" deterministic: the
+ * runner rejects on the first write the fence REFUSES, while the write held at
+ * the barrier and its recheck may still be in flight.
+ */
+function trackWrites(saver) {
+  const pending = [];
+  const proxy = new Proxy(saver, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== 'function') return value;
+      if (prop === 'put' || prop === 'putWrites' || prop === 'deleteThread') {
+        return (...args) => {
+          const promise = value.apply(target, args);
+          pending.push(promise);
+          return promise;
+        };
+      }
+      return value.bind(target);
+    },
+  });
+  return { saver: proxy, settled: () => Promise.allSettled(pending) };
+}
+
 function withHeldWritesAfterCommit(inner, committedPromise, gate, reached) {
   let armed = false;
   committedPromise.then(() => {
@@ -555,9 +582,9 @@ async function runOneRace(t, store, ordering) {
   const aBarrier = deferredPromise();
   const aReachedBarrier = deferredPromise();
   const gatedInnerA = withHeldWritesAfterCommit(innerA, aCommittedPromise, aBarrier, aReachedBarrier);
-  const fencedA = persistence.createFencedCheckpointer(gatedInnerA, contextA);
+  const trackedA = trackWrites(persistence.createFencedCheckpointer(gatedInnerA, contextA));
   const runnerA = createPersistentInvestigationRunner({
-    checkpointer: fencedA,
+    checkpointer: trackedA.saver,
     execution: signalledExecutionA,
     executeInvestigation: tool.execute,
   });
@@ -584,7 +611,9 @@ async function runOneRace(t, store, ordering) {
 
   async function releaseAAndAwaitSettlement() {
     aBarrier.resolve();
-    return aSettled;
+    const settled = await aSettled;
+    await trackedA.settled();
+    return settled;
   }
 
   const claimB = await store.claimNext(`worker-t4-b-${randomUUID()}`);
@@ -704,9 +733,9 @@ async function runS1Race(t, store) {
   const aBarrier = deferredPromise();
   const aReachedBarrier = deferredPromise();
   const gatedInnerA = withHeldWritesAfterCommit(innerA, aCommittedPromise, aBarrier, aReachedBarrier);
-  const fencedA = persistence.createFencedCheckpointer(gatedInnerA, contextA);
+  const trackedA = trackWrites(persistence.createFencedCheckpointer(gatedInnerA, contextA));
   const runnerA = createPersistentInvestigationRunner({
-    checkpointer: fencedA,
+    checkpointer: trackedA.saver,
     execution: signalledExecutionA,
     executeInvestigation: tool.execute,
   });
@@ -726,6 +755,7 @@ async function runS1Race(t, store) {
 
   aBarrier.resolve();
   await aSettled;
+  await trackedA.settled();
 
   const claimB = await store.claimNext(`worker-t4-b-${randomUUID()}`);
   assert.equal(claimB.runId, runId);
@@ -945,7 +975,6 @@ test('measures the natural window between the fence check and the inner write, u
     assert.equal(claim.runId, runId);
 
     const inner = await persistence.createPostgresCheckpointer(connectionString);
-    t.after(() => inner.pool.end());
     const realContext = await persistence.openRunWriteContext(store, claim);
 
     let fenceResolvedAt;
@@ -988,8 +1017,15 @@ test('measures the natural window between the fence check and the inner write, u
         payloadFingerprint: 't4-race-window-v1',
       }),
     });
-    await runner.start({ runId, test: { id: 't4-window-test', tool: 'fixture-tool', input: {} } });
-    await realContext.complete('t4-race-window');
+    try {
+      await runner.start({ runId, test: { id: 't4-window-test', tool: 'fixture-tool', input: {} } });
+      await realContext.complete('t4-race-window');
+    } finally {
+      // Closed per sample: registered on the test's own t.after, every
+      // sample's pool stayed open until the test ended and the samples ran
+      // PostgreSQL out of connections ('too many clients already').
+      await inner.pool.end();
+    }
   }
 
   const sorted = [...windowsMs].sort((a, b) => a - b);

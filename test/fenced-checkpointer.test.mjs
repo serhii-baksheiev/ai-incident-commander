@@ -577,3 +577,27 @@ test('when the inner saver write itself throws, the error propagates unchanged a
     'when the inner write itself throws, nothing landed, so no post-write fork recheck may run: assertOwner must have been called exactly once (the pre-write check)',
   );
 });
+
+test('a post-write recheck that fails for any reason other than a recorded fence refusal fails the write loudly instead of making the fork silent', async () => {
+  const config = { configurable: { thread_id: 'thread-fork-unrecorded' } };
+  for (const [label, recheckError] of [
+    ['a refused connection', new Error('sorry, too many clients already')],
+    ['a refusal whose record failed', new StaleOwnerError('stale', { cause: new Error('fence_rejections insert failed') })],
+  ]) {
+    const log = [];
+    let calls = 0;
+    const context = {
+      async assertOwner() {
+        calls += 1;
+        if (calls === 2) throw recheckError;
+      },
+    };
+    const fenced = fencedCheckpointerFactory()(createInnerWriteStub(log), context);
+    await assert.rejects(
+      () => fenced.put(config, {}, {}, {}),
+      (error) => error === recheckError,
+      `${label}: an unrecorded fork must surface to the caller — decision 12, never silent`,
+    );
+    assert.deepEqual(log, ['inner.put'], `${label}: the landed write is still not undone`);
+  }
+});
