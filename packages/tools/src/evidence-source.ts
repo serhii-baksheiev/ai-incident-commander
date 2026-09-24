@@ -142,9 +142,10 @@ export function classifyEvidenceSourceFailure(
  * an independently computed sha256 over the pinned canonical envelope (fixed
  * input, hand-built string — not canonicalJson called from the test)" for the
  * exact pinned wire format. It throws what `canonicalJson` throws for a
- * non-JSON input (a Date, a bigint, `undefined` inside an object, a cycle), so
- * an adapter calls it inside its own try and classifies that as
- * `adapter_error`.
+ * non-JSON input — see durable-execution-contract.test.mjs › "canonicalJson
+ * refuses non-JSON values: undefined in an object, a function, a bigint, NaN
+ * and Infinity" — so an adapter calls it inside its own try and classifies
+ * that as `adapter_error`.
  */
 export function createRequestFingerprint(operation: string, input: unknown): string {
   const canonicalEnvelope = JSON.stringify(canonicalJson({ input, operation }));
@@ -183,8 +184,12 @@ export function evidenceSourceOutcomeToToolResult<Output>(
     case 'timeout':
       return { status: 'unavailable', reason: outcome.reason };
     default: {
+      // Compile-time: a new reason must be mapped above. Runtime (untyped JS or
+      // fixture JSON): a reason outside the five stays untestable, and its
+      // unknown text is not echoed.
       const unmapped: never = outcome.reason;
-      return unmapped;
+      void unmapped;
+      return { status: 'unavailable', reason: 'unavailable' };
     }
   }
 }
