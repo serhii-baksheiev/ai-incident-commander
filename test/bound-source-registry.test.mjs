@@ -1937,7 +1937,7 @@ test('redactEvidenceOutput leaves a string with an unrecognised xox-letter alone
   assert.equal(redactEvidenceOutput(input), input);
 });
 
-test('redactEvidenceOutput recurses into arrays and objects, keeps object keys, and leaves non-string values unchanged', () => {
+test('redactEvidenceOutput recurses into arrays and objects, keeps object keys, and leaves a number, boolean or null value unchanged (review round 1: title corrected to name exactly what this row pins, code-reviewer blocker 3)', () => {
   const redactEvidenceOutput = redactEvidenceOutputFactory();
   const input = {
     id: 42,
@@ -2112,3 +2112,465 @@ test('bound-source-registry.ts no longer documents recordings as UNREDACTED (AIC
     'slice c redacts before persistence — the module\'s own doc comments must no longer claim recordings are UNREDACTED',
   );
 });
+
+/* ============================================================================ */
+/* AIC-100 slice c — review round 1 findings on redaction.ts /                 */
+/* bound-source-registry.ts (this file's own pins for the new behaviour)       */
+/*                                                                              */
+/* A genuine conflict surfaced while writing these rows, and is NOT resolved   */
+/* here (test-writer scope: pin what the finding asks, surface what it        */
+/* contradicts rather than silently picking a side — .claude/rules/           */
+/* autonomy.md's "Invariant conflict" stop rule): code-reviewer blocker 6      */
+/* asks that construction refuse a binding whose describe().adapterId does    */
+/* not match SAFE_ADAPTER_TOKEN (no `:` allowed in the pinned example          */
+/* pattern), but the existing rows "replay identity does not collide across a */
+/* `:` inside a part" and "rekeyReplayRecordings leaves a colon-colliding      */
+/* sourceBindingId ('a:b') untouched" (above, code-reviewer blocker 1)         */
+/* deliberately construct a binding whose adapterId is `'b:c'` — a `:` inside  */
+/* the adapterId is exactly the shape those two rows need to exist at all.    */
+/* Enforcing the pinned SAFE_ADAPTER_TOKEN pattern verbatim on adapterId would */
+/* make those two already-pinned rows throw at construction, before they ever */
+/* reach the behaviour they pin. So below: SAFE_ADAPTER_TOKEN itself and its  */
+/* refusal on `version` (no existing row uses an unsafe version) are pinned;  */
+/* a construction-refusal keyed on `adapterId` containing `:` is deliberately */
+/* NOT added here — see this file's own report to the requester for the      */
+/* explicit call-out.                                                         */
+/* ============================================================================ */
+
+/* -------------------------------------------------------------------------- */
+/* review round 1 fixtures — assembled at runtime, per                        */
+/* .claude/scripts/lib/secrets.mjs's vocabulary                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A multi-line PEM body and footer, paired with the existing `fixturePemHeader`
+ * above, to build a full private-key block for the whole-block redaction pin
+ * (security blocker 1). Assembled from parts like this file's other
+ * credential-shaped fixtures, even though the body lines alone match none of
+ * `.claude/scripts/lib/secrets.mjs`'s own patterns.
+ */
+const fixturePemBodyLine1 = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'BKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj'].join('');
+const fixturePemBodyLine2 = ['MQIDAQABAoIBAQCoOFV6mfM', 'nMtLzUBLMRRlPGQTQQ8pqI7GTHnCa1Ub'].join('');
+const fixturePemFooter = ['-----END ', 'RSA PRIVATE KEY-----'].join('');
+
+/** Inline URL credential parts for a non-http(s) scheme (security advisory 7). */
+const fixturePostgresUrlCredentialParts = ['postgres://', 'dbuser', ':', 'dbpass', '@db.internal:5432/app'];
+
+/**
+ * A free-text refusal reason an adapter might return instead of one of the
+ * six typed reasons (code-reviewer blocker 5) — built from the existing
+ * assembled GitHub-token fixture, never written as one literal.
+ */
+const fixtureFreeTextRefusalReason = `denied for ${fixtureGithubToken}`;
+
+/**
+ * Bad adapterId/version tokens for `SAFE_ADAPTER_TOKEN` (code-reviewer
+ * blocker 6). `fixtureUrlCredentialPart` (already assembled above, containing
+ * a `:`) doubles as this row's "assembled credential" example.
+ */
+const fixtureBadTokenWithSpace = 'bad version';
+const fixtureBadTokenWithAt = 'bad@version';
+
+/**
+ * Like `buildOkSource`/`buildThrowingSource` above, but the adapter's own
+ * `execute()` RETURNS a `refused` outcome (rather than throwing) carrying a
+ * caller-chosen `reason` — the shape code-reviewer blocker 5 is about: an
+ * adapter that hands the registry a `refused` outcome whose `reason` is not
+ * one of `EVIDENCE_SOURCE_REFUSAL_REASONS`.
+ */
+function buildSourceReturningRefusal(
+  reason,
+  { adapterId = 'fixture-adapter', version = '1.0.0', operations = ['fetch-logs'] } = {},
+) {
+  const calls = [];
+  return {
+    calls,
+    describe: () => ({ adapterId, version, operations }),
+    check: async () => ({ status: 'ready' }),
+    execute: async (operation, input, budgetHints) => {
+      calls.push({ operation, input, budgetHints });
+      return {
+        status: 'refused',
+        reason,
+        // Deliberately foreign provenance, matching buildOkSource's own
+        // convention — pins that the registry stays the single writer of
+        // provenance even for a caller-returned refusal.
+        provenance: {
+          sourceBindingId: 'not-the-real-binding',
+          adapter: 'not-the-real-adapter@0.0.0',
+          credentialRefId: 'wrongcredentialplaceholder',
+          fetchedAt: '1970-01-01T00:00:00.000Z',
+          requestFingerprint: 'sha256:not-the-real-fingerprint',
+        },
+      };
+    },
+  };
+}
+
+function safeAdapterTokenFactory() {
+  assert.ok(
+    tools.SAFE_ADAPTER_TOKEN instanceof RegExp,
+    '@aic/tools must export SAFE_ADAPTER_TOKEN: RegExp, the safe-token pattern an adapterId/version must match before it is trusted in provenance.adapter (AIC-100 slice c review round 1, code-reviewer blocker 6)',
+  );
+  return tools.SAFE_ADAPTER_TOKEN;
+}
+
+/* -------------------------------------------------------------------------- */
+/* security blocker 1 — the WHOLE PEM private-key block is redacted           */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts the WHOLE PEM private-key block, including a multi-line base64 body — the body never survives anywhere in the output (review round 1, security blocker 1)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = [
+    'key material:',
+    fixturePemHeader,
+    fixturePemBodyLine1,
+    fixturePemBodyLine2,
+    fixturePemFooter,
+    'end',
+  ].join('\n');
+
+  const output = redactEvidenceOutput(input);
+
+  assert.equal(
+    output.includes(fixturePemBodyLine1),
+    false,
+    'the PEM body must never survive redaction, anywhere in the output',
+  );
+  assert.equal(
+    output.includes(fixturePemBodyLine2),
+    false,
+    'the PEM body must never survive redaction, anywhere in the output',
+  );
+  assert.equal(
+    output.includes(fixturePemFooter),
+    false,
+    'the footer is part of the redacted block too, not left dangling beside a redacted header',
+  );
+  assert.ok(output.includes('[REDACTED'), 'the redacted block must be replaced with a redaction marker');
+});
+
+/* -------------------------------------------------------------------------- */
+/* security + code-reviewer blocker 2 — replay redacts a stored ok output too */
+/* -------------------------------------------------------------------------- */
+
+test('replay redacts a stored UNREDACTED ok output on a hit: the returned output carries no credential, even though the recording itself was written unredacted (review round 1, security + code-reviewer blocker 2)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  const fingerprint = handBuiltFingerprint('fetch-logs', { service: 'checkout' });
+  const identity = handBuiltIdentity({
+    sourceBindingId: 'binding-a',
+    adapter: 'fixture-adapter@1.0.0',
+    requestFingerprint: fingerprint,
+  });
+
+  // Written UNREDACTED, directly under the registry's own identity scheme —
+  // built by hand exactly like the existing "replay treats a stored record …"
+  // rows above, as if an older recording (made before redaction shipped, or
+  // written by a caller that bypassed the registry) still carries a raw
+  // credential.
+  await store.set(identity, {
+    status: 'ok',
+    output: { lines: [`leaked: ${fixtureGithubToken}`] },
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: '2026-09-24T00:00:00.000Z',
+      requestFingerprint: fingerprint,
+    },
+  });
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const replayed = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(replayed.status, 'ok');
+  assert.equal(
+    JSON.stringify(replayed).includes(fixtureGithubToken),
+    false,
+    'a replay hit must redact a stored ok output\'s credential before returning it, even when the stored recording itself was unredacted',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* security + code-reviewer blocker 3 — unsupported container types fail      */
+/* closed to a fixed sentinel, never walked as numeric keys, never emptied    */
+/* -------------------------------------------------------------------------- */
+
+const UNSUPPORTED_REDACTION_VALUE_ROWS = [
+  { label: 'a Buffer', build: () => Buffer.from('buffer content is not JSON-shaped') },
+  { label: 'a Map', build: () => new Map([['key', 'value']]) },
+  { label: 'a Set', build: () => new Set(['value']) },
+  { label: 'a Date', build: () => new Date('2026-09-24T00:00:00.000Z') },
+  { label: 'an Error', build: () => new Error('adapter-thrown value embedded in output') },
+];
+
+for (const { label, build } of UNSUPPORTED_REDACTION_VALUE_ROWS) {
+  test(`redactEvidenceOutput replaces ${label} anywhere in the walked value with the fixed sentinel [REDACTED:unsupported] — fail closed, never walked as numeric keys, never silently emptied to {} (review round 1, security + code-reviewer blocker 3)`, () => {
+    const redactEvidenceOutput = redactEvidenceOutputFactory();
+    const value = build();
+
+    assert.equal(
+      redactEvidenceOutput(value),
+      '[REDACTED:unsupported]',
+      `${label} at the top level must fail closed to the fixed sentinel`,
+    );
+
+    const nested = { safe: 'kept', unsupported: value, list: [value] };
+    const output = redactEvidenceOutput(nested);
+
+    assert.equal(output.safe, 'kept', 'a plain object is still walked normally alongside an unsupported value');
+    assert.equal(output.unsupported, '[REDACTED:unsupported]');
+    assert.equal(output.list[0], '[REDACTED:unsupported]', 'arrays are still walked normally too');
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* code-reviewer blocker 4 — __proto__ is kept as an own key, never consumed  */
+/* as a prototype reassignment                                                */
+/* -------------------------------------------------------------------------- */
+
+test('a __proto__ own key in adapter output is KEPT as an own key in the returned and persisted output, and the output\'s prototype is never adapter-controlled (review round 1, code-reviewer blocker 4)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  // Built from JSON TEXT, not a JS object literal — `{ __proto__: x }` in JS
+  // source reassigns the object's real prototype at construction time, which
+  // would prove nothing about the WALK. JSON.parse always creates '__proto__'
+  // as an ordinary OWN data property, exactly the shape an adapter returning
+  // JSON.parse(untrustedText) actually produces.
+  const adapterOutput = JSON.parse('{"kept":1,"__proto__":{"shadow":"yes"}}');
+  const source = buildOkSourceWithOutput(adapterOutput);
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const returned = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(returned.status, 'ok');
+  assert.equal(returned.output.kept, 1);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(returned.output, '__proto__'),
+    true,
+    'a __proto__ own key from the adapter must survive the walk as an own key, not be consumed as a prototype reassignment',
+  );
+  assert.equal(
+    'shadow' in returned.output,
+    false,
+    'the returned output\'s prototype must never be adapter-controlled',
+  );
+  assert.equal(Object.getPrototypeOf(returned.output), Object.prototype);
+
+  const keys = await store.keys();
+  assert.equal(keys.length, 1);
+  const stored = await store.get(keys[0]);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(stored.output, '__proto__'),
+    true,
+    'the PERSISTED output must keep the same own key too',
+  );
+  assert.equal('shadow' in stored.output, false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* code-reviewer blocker 5 — an adapter-RETURNED refusal's free-text reason   */
+/* is normalized to adapter_error; a VALID typed reason is kept               */
+/* -------------------------------------------------------------------------- */
+
+test('live: an adapter-RETURNED refused outcome whose reason is free text (outside EVIDENCE_SOURCE_REFUSAL_REASONS) is normalized to refused adapter_error, and the free text never reaches the caller (review round 1, code-reviewer blocker 5)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  assert.equal(
+    tools.EVIDENCE_SOURCE_REFUSAL_REASONS.includes(fixtureFreeTextRefusalReason),
+    false,
+    'setup: the fixture reason must genuinely be outside the six typed reasons',
+  );
+  const source = buildSourceReturningRefusal(fixtureFreeTextRefusalReason);
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'adapter_error');
+  assert.equal(
+    JSON.stringify(outcome).includes(fixtureGithubToken),
+    false,
+    'the adapter\'s own free-text reason must never reach the serialized outcome',
+  );
+});
+
+test('record: an adapter-RETURNED refused outcome with a free-text reason is normalized before store.set too — the stored recording carries no free text (review round 1, code-reviewer blocker 5)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+  const source = buildSourceReturningRefusal(fixtureFreeTextRefusalReason);
+
+  const registry = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'adapter_error');
+
+  const keys = await store.keys();
+  assert.equal(keys.length, 1);
+  const stored = await store.get(keys[0]);
+  assert.equal(stored.reason, 'adapter_error');
+  assert.equal(JSON.stringify(stored).includes(fixtureGithubToken), false);
+});
+
+test('live: an adapter-RETURNED refused outcome with a VALID typed reason keeps it unchanged (review round 1, code-reviewer blocker 5)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const source = buildSourceReturningRefusal('denied');
+
+  const registry = createBoundSourceRegistry({
+    mode: 'live',
+    bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+    store: createMemoryReplayStore(),
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'denied', 'a valid typed reason returned by the adapter must be kept, not overwritten');
+});
+
+/* -------------------------------------------------------------------------- */
+/* code-reviewer blocker 6 — SAFE_ADAPTER_TOKEN and construction-time         */
+/* validation (version only — see this section's header note on the          */
+/* adapterId conflict)                                                       */
+/* -------------------------------------------------------------------------- */
+
+test('publishes SAFE_ADAPTER_TOKEN, accepting ordinary adapterId/version tokens (review round 1, code-reviewer blocker 6)', () => {
+  const SAFE_ADAPTER_TOKEN = safeAdapterTokenFactory();
+  assert.equal(SAFE_ADAPTER_TOKEN.test('fixture-adapter'), true);
+  assert.equal(SAFE_ADAPTER_TOKEN.test('1.0.0'), true);
+});
+
+for (const badToken of [fixtureBadTokenWithSpace, fixtureBadTokenWithAt, fixtureUrlCredentialPart]) {
+  test(`SAFE_ADAPTER_TOKEN refuses ${JSON.stringify(badToken)} (review round 1, code-reviewer blocker 6)`, () => {
+    const SAFE_ADAPTER_TOKEN = safeAdapterTokenFactory();
+    assert.equal(SAFE_ADAPTER_TOKEN.test(badToken), false);
+  });
+}
+
+test('refuses construction with a binding whose describe().version does not match SAFE_ADAPTER_TOKEN (review round 1, code-reviewer blocker 6)', () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const source = buildOkSource({ version: fixtureBadTokenWithSpace });
+
+  assert.throws(() =>
+    createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    }),
+  );
+});
+
+test('accepts construction with a binding whose adapterId and version are both safe tokens (review round 1, code-reviewer blocker 6)', () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const source = buildOkSource({ adapterId: 'fixture-adapter', version: '1.0.0' });
+
+  assert.doesNotThrow(() =>
+    createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [{ sourceBindingId: 'binding-a', source, credentialRefId: null }],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+    }),
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* security advisory 7 (taken) — URL inline credentials redacted for ANY      */
+/* scheme, not only http(s)                                                  */
+/* -------------------------------------------------------------------------- */
+
+test('redactEvidenceOutput redacts inline user:pass credentials in a URL for ANY scheme, keeping the same [REDACTED] shape the http(s) row pins (review round 1, security advisory 7)', () => {
+  const redactEvidenceOutput = redactEvidenceOutputFactory();
+  const input = `connection string: ${fixturePostgresUrlCredentialParts.join('')} in use`;
+  assert.equal(
+    redactEvidenceOutput(input),
+    'connection string: postgres://[REDACTED]@db.internal:5432/app in use',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* advisory 8 (taken) — a source that REJECTS after the timeout budget:       */
+/* still refused timeout, and no unhandledRejection is emitted                */
+/* -------------------------------------------------------------------------- */
+
+test(
+  'live: a source whose execute() REJECTS after the timeout budget is still refused timeout, and no unhandledRejection is emitted (review round 1, advisory 8)',
+  { timeout: 5000 },
+  async (t) => {
+    const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+    const createMemoryReplayStore = memoryReplayStoreFactory();
+
+    const unhandledRejections = [];
+    const onUnhandledRejection = (reason) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    t.after(() => {
+      process.removeListener('unhandledRejection', onUnhandledRejection);
+    });
+
+    const lateRejectingSource = {
+      describe: () => ({ adapterId: 'fixture-adapter', version: '1.0.0', operations: ['fetch-logs'] }),
+      check: async () => ({ status: 'ready' }),
+      execute: async () => {
+        await new Promise((resolveAfterDelay) => setTimeout(resolveAfterDelay, 300));
+        throw new Error('late rejection, after the timeout budget already fired');
+      },
+    };
+
+    const registry = createBoundSourceRegistry({
+      mode: 'live',
+      bindings: [{ sourceBindingId: 'binding-a', source: lateRejectingSource, credentialRefId: null }],
+      store: createMemoryReplayStore(),
+      clock: fixedClock('2026-09-24T00:00:00.000Z'),
+      budgets: { timeoutMs: 50, maxResultBytes: 1_000_000, maxPages: 100 },
+    });
+
+    const outcome = await registry.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+    assert.equal(outcome.status, 'refused');
+    assert.equal(outcome.reason, 'timeout');
+
+    // Give the late rejection's own timer a chance to settle, and for Node to
+    // notice if it were ever unhandled, before asserting none fired.
+    await new Promise((resolveAfterDelay) => setTimeout(resolveAfterDelay, 500));
+    assert.deepEqual(
+      unhandledRejections,
+      [],
+      'a rejection from the losing side of the timeout race must never surface as an unhandledRejection',
+    );
+  },
+);
