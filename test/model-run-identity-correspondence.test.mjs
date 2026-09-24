@@ -135,6 +135,7 @@ function correspondence(declared, allowlisted) {
 
 const observability = parse('packages/observability/src/index.ts');
 const evals = parse('packages/evals/src/benchmark-evaluation.ts');
+const behaviorEvaluators = parse('packages/evals/src/behavior-evaluators.ts');
 
 test('carries every declared run-metadata field in one of the two metadata allowlists', () => {
   const declared = interfaceMembers(observability, 'PersistedBenchmarkRunMetadata');
@@ -196,6 +197,55 @@ test('reads resource evidence at the version the benchmark writes', () => {
     2,
     'adding the token axes moved the resource shape, so the version moved with it',
   );
+});
+
+/**
+ * AIC-117 slice c, spec section 4: the persisted evaluation shape corresponds
+ * to what the benchmark layer's own `BenchmarkEvaluation` declares — in both
+ * directions, on the same `correspondence` helper and the same two generic
+ * mutation-proof rows above prove for every other pair in this file.
+ */
+test('carries every declared benchmark-evaluation field in the persisted evaluation shape', () => {
+  const declared = interfaceMembers(evals, 'BenchmarkEvaluation');
+  const persisted = interfaceMembers(observability, 'PersistedBenchmarkEvaluation');
+
+  assert.deepEqual(correspondence(declared, persisted), {
+    droppedByTheAllowlist: [],
+    publishedWithNoDeclaration: [],
+  });
+});
+
+/**
+ * `UnsupportedClaimRateMetric extends BenchmarkMetric<'unsupported_claim_rate'>`,
+ * so its full declared shape is the union of both interfaces' own members —
+ * the same reasoning `BenchmarkRunMetadata extends BenchmarkVersions` gets
+ * above. The persisted side is a literal rather than a read off
+ * `packages/observability/src/index.ts`: the spec names the shape a published
+ * `unsupported_claim_rate` metric must carry (`key`, `score`, `claimCount`)
+ * directly, so the expectation here is the contract, not a second read of the
+ * projection this file's other rows already hold to allowlists.
+ */
+test('carries the unsupported-claim-rate metric fields (key, score, claimCount) in the persisted metric shape', () => {
+  const declared = [
+    ...interfaceMembers(evals, 'BenchmarkMetric'),
+    ...interfaceMembers(evals, 'UnsupportedClaimRateMetric'),
+  ];
+  const persistedUnsupportedClaimRateShape = ['key', 'score', 'claimCount'];
+
+  assert.deepEqual(correspondence(declared, persistedUnsupportedClaimRateShape), {
+    droppedByTheAllowlist: [],
+    publishedWithNoDeclaration: [],
+  });
+});
+
+test('carries every behavior metric key in the persisted behavior-metric allowlist', () => {
+  const declared = stringArrayConst(behaviorEvaluators, 'BEHAVIOR_METRIC_KEYS');
+  const persisted = stringArrayConst(observability, 'PERSISTED_BEHAVIOR_METRIC_KEYS');
+
+  assert.deepEqual(correspondence(declared, persisted), {
+    droppedByTheAllowlist: [],
+    publishedWithNoDeclaration: [],
+  });
 });
 
 test('reports a field the type declares that no allowlist carries', () => {

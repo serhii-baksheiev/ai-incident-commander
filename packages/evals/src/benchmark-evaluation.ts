@@ -48,7 +48,8 @@ export interface BenchmarkVersions {
   readonly toolMode: 'live' | 'replay';
   readonly knowledgeSetVersion: string;
   readonly memoryEnabled: boolean;
-  readonly temperature: number;
+  /** Absent when no sampling temperature is sent, which is every role today. */
+  readonly temperature?: number;
   readonly seed?: number;
   readonly docsAvailable?: boolean;
   /**

@@ -156,7 +156,6 @@ const baseMetadata = Object.freeze({
   toolMode: 'replay',
   knowledgeSetVersion: 'knowledge-none-v0.1',
   memoryEnabled: false,
-  temperature: 0,
   docsAvailable: false,
 });
 
