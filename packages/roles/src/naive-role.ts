@@ -1,4 +1,5 @@
 import {
+  CauseClaimSchema,
   EvidenceAssessmentSchema,
   IncidentConclusionSchema,
   type EvidenceAssessment,
@@ -196,14 +197,27 @@ function refuse(reason: string): never {
   throw new ModelRoleOutputError(ROLE, reason);
 }
 
-const CONCLUSION_KEYS: ReadonlySet<string> = new Set(['kind', 'causes']);
-const CAUSE_KEYS: ReadonlySet<string> = new Set(['hypothesisId', 'cause', 'evidenceIds']);
-const CAUSE_DESCRIPTION_KEYS: ReadonlySet<string> = new Set(['component', 'mechanism', 'trigger']);
+// Derived from the domain schemas rather than restated: a widened domain field
+// must not be refused here as though the model had invented it.
+const CONCLUSION_KEYS: ReadonlySet<string> = new Set(Object.keys(IncidentConclusionSchema.shape));
+const CAUSE_KEYS: ReadonlySet<string> = new Set(Object.keys(CauseClaimSchema.shape));
+const CAUSE_DESCRIPTION_KEYS: ReadonlySet<string> = new Set(
+  Object.keys(CauseClaimSchema.shape.cause.shape),
+);
+
+const NAMED_KEYS_CAP = 5;
 
 function refuseUnknownKeys(value: unknown, allowed: ReadonlySet<string>, where: string): void {
   if (value === null || typeof value !== 'object') return;
   const unknown = Object.keys(value).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) refuse(`${where} carries keys the answer shape does not declare: ${unknown.join(', ')}`);
+  if (unknown.length === 0) return;
+  // The keys are the model's own text: each is named escaped, and only the
+  // first few, so a hostile answer cannot shape or flood the message.
+  const named = unknown.slice(0, NAMED_KEYS_CAP).map((key) => JSON.stringify(key.slice(0, 80)));
+  const rest = unknown.length - named.length;
+  refuse(
+    `${where} carries keys the answer shape does not declare: ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
+  );
 }
 
 function requireCauseCount(conclusion: IncidentConclusion): void {

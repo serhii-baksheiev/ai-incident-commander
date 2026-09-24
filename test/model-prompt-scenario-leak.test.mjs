@@ -332,3 +332,65 @@ test('shows no REPLAY_SCENARIOS id in the naive role prompt, for every scenario'
   }
   assert.equal(captured.length, evals.REPLAY_SCENARIOS.length);
 });
+
+/**
+ * AIC-116 (v0.2 evidence repair, slice 2): the same sweep, driven through the
+ * BENCHMARK RUNNER rather than by hand-building `NaiveInvestigationInput`
+ * above — `runNaiveBenchmarkExperiment` projects each execution input with
+ * `naiveInputFor` before it ever reaches the role. This row pins only that no
+ * REPLAY_SCENARIOS id reaches a prompt along that path. What the projection
+ * itself carries is pinned elsewhere:
+ * see naive-arm.test.mjs › "naiveInputFor carries no scenario id, ground truth or metadata anywhere in its result"
+ * see naive-arm.test.mjs › "keeps scenario ground truth outside the naive investigation callback, over the calibration plan"
+ */
+test('shows no REPLAY_SCENARIOS id in any prompt when runNaiveBenchmarkExperiment drives the real naive role over a capturing fake port', async () => {
+  const runNaiveBenchmarkExperiment = requireEvalsExport('runNaiveBenchmarkExperiment');
+  const captured = [];
+  const port = {
+    async complete(request) {
+      captured.push(request);
+      return {
+        text: JSON.stringify({
+          hypotheses: [],
+          assessments: [],
+          conclusion: { kind: 'inconclusive', causes: [] },
+          stopKind: 'stalled',
+        }),
+        modelId: 'fake-model-under-test',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
+    },
+  };
+  const investigate = createModelNaiveInvestigation({ port, mechanisms: ['m-one', 'm-two'] });
+
+  for (const scenarios of scenarioBatchesOfFive()) {
+    await runNaiveBenchmarkExperiment({
+      experimentId: 'aic-116-naive-scenario-leak-probe',
+      scenarioSet: 'ad-hoc',
+      scenarios,
+      runsPerScenario: 3,
+      metadata: { ...benchmarkVersions, evaluatorVersion: 'behavior-evaluators-v0.3' },
+      investigate,
+      async recordEvaluation() {},
+    });
+  }
+
+  assert.ok(captured.length > 0, 'expected at least one naive role request, or nothing was exercised');
+
+  for (const request of captured) {
+    for (const scenarioId of ALL_SCENARIO_IDS) {
+      for (const [field, text] of [['system', request.system], ['prompt', request.prompt]]) {
+        assert.equal(
+          text.includes(scenarioId),
+          false,
+          `runNaiveBenchmarkExperiment's naive role ${field} carried REPLAY_SCENARIOS id "${scenarioId}"`,
+        );
+      }
+    }
+    assert.match(
+      request.prompt,
+      /incident-[0-9a-f]{16}/,
+      'the naive prompt driven by runNaiveBenchmarkExperiment must carry an opaque incident id',
+    );
+  }
+});
