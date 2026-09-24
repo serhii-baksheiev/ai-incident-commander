@@ -130,6 +130,40 @@ assumes covers more than it does.
    see four-arm-lane.test.mjs › "derives the per-run and total model-call caps from the budget policy and the partition lengths"
    see lane-arms.test.mjs › "each lane command creates exactly one reference-model port and hands it to both paid arms"
 
+## The measurement is durable before LangSmith is ever touched (AIC-120)
+
+LangSmith is a publication sink for this record, not its transaction
+coordinator. `npm run eval:final-holdout -- --publish` writes the COMPLETE
+record to disk first and only then attempts per-arm LangSmith publication —
+so a refused or unverified publication can never cost the measurement itself.
+see final-evaluation-publication.test.mjs › "T12: a persist that reads the record file AT CALL TIME sees status complete, proving the durable write happens before any publication attempt"
+
+Every publication attempt is appended to a JSONL log beside the record,
+`publications/<first-twelve-hex>.jsonl`, never rewritten and never touching
+the record file — a verified attempt leaves the measurement byte-identical.
+see final-evaluation-publication.test.mjs › "attemptLogPath places the attempt log in a publications/ subdirectory beside the record, named after its basename without .json"
+see final-evaluation-publication.test.mjs › "T7: a successful publishOnly leaves the record file byte-identical to what it was before"
+
+When a required publication does not verify, the command exits non-zero,
+leaves the record exactly as it wrote it, and prints the recovery command:
+
+```sh
+npm run eval:final-holdout:publish -- --record <path>
+```
+
+That command retries publication ALONE, against the record already on disk —
+it imports no role, lane or benchmark runner and cannot execute a scenario or
+spend another hold-out.
+see final-evaluation-publication.test.mjs › "main() reports the recovery command and exits 1 when completeHoldout returns a non-zero exitCode"
+see final-evaluation-publication.test.mjs › "T5: publish-final-holdout.mjs and final-holdout-publication.mjs import no role, lane or benchmark runner, and name no corpus, so publication cannot execute a scenario"
+
+A later successful attempt through that recovery command satisfies only
+AIC-19's LangSmith-ingestion row for the measurement that already exists — it
+appends one more line to the attempt log and never re-runs, re-admits or
+changes the measurement it publishes.
+see final-evaluation-publication.test.mjs › "T6: two failed publishOnly attempts followed by a successful one leave the attempt log holding all three, in order"
+see final-evaluation-publication.test.mjs › "T7: a successful publishOnly leaves the record file byte-identical to what it was before"
+
 ## The invariance, measured rather than argued
 
 The claim above — that committing evidence does not unlock a re-run — was

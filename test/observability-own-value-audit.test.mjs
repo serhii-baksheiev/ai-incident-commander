@@ -1181,6 +1181,7 @@ const EXPECTED_EXPORT_NAMES = [
   'persistBenchmarkExperiment',
   'persistBenchmarkExperiments',
   'resolveTracingConfig',
+  'verifyPersistedBenchmarkReference',
 ];
 
 const EXPECTED_REACHABLE_CALLABLES = [
@@ -1188,6 +1189,7 @@ const EXPECTED_REACHABLE_CALLABLES = [
   'persistBenchmarkExperiment',
   'persistBenchmarkExperiments',
   'resolveTracingConfig',
+  'verifyPersistedBenchmarkReference',
 ];
 
 const reachableCallables = async () => {

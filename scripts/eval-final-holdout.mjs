@@ -33,10 +33,19 @@
  * repository already worked out in `scripts/eval-live-model.mjs`, copied rather
  * than reinvented because each one is there for a measured reason its header
  * records.
+ *
+ * 🔴 **AIC-120: the record is durable before LangSmith is ever touched.**
+ * `completeHoldout` runs the lane exactly once, writes the COMPLETE record to
+ * disk, and only then attempts publication — so a refused publication can
+ * never cost the measurement itself. A required publication that still does
+ * not verify exits non-zero with the record intact and names the recovery
+ * command, `npm run eval:final-holdout:publish -- --record <path>`
+ * (`scripts/publish-final-holdout.mjs`), which retries publication alone
+ * against the record already on disk.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, openSync, closeSync, readdirSync, readFileSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +67,8 @@ import {
 
 import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
 import { childEnv } from '../test/fixtures/child-env.mjs';
-import { naiveArm, oracleArm, publishNaiveArm } from './lane-arms.mjs';
+import { writeRecordDurably, publishRecordedMeasurement } from './final-holdout-publication.mjs';
+import { naiveArm, oracleArm } from './lane-arms.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -244,36 +254,66 @@ function modelNodes(record, port) {
 }
 
 /**
- * The `--publish` step of the one-shot run: the model arm, then the naive arm,
- * each decided on its own state.
+ * Run the lane exactly once, then own the ordering the AIC-120 owner ruling
+ * requires: build the COMPLETE local record, durably persist it, and only
+ * THEN attempt LangSmith publication — so a refused publication never costs
+ * the measurement it is trying to publish.
  *
- * 🔴 An unreportable model arm is SKIPPED with its reason, not thrown. The
- * sibling command throws, which is right for a diagnostic; here a throw would
- * destroy the record — the one artifact the one-shot protocol exists to
- * produce. Publishing the CONTROL arm instead would present harness-only
- * results as model quality, which AIC-19 forbids. The naive arm is published
- * or skipped on its own state, whatever the model arm did.
- * see lane-arms.test.mjs › "publishHoldoutArms persists only the naive arm, and carries the model arms own reason as publicationSkipped, when the model arm is unreportable and the naive arm is reportable"
+ * `execute()` is called exactly once, whatever publication does afterward: a
+ * publication failure must never rerun a model. `writeRecordDurably` runs
+ * BEFORE `publishRecordedMeasurement` is ever called — the ordering this
+ * whole ticket exists to fix — and `publishRequested: false` skips
+ * publication entirely, calling neither `persist` nor `verify`.
+ * see final-evaluation-publication.test.mjs › "T1: even when every persist call rejects, the record on disk is status complete with its report and experiments intact"
+ * see final-evaluation-publication.test.mjs › "T12: a persist that reads the record file AT CALL TIME sees status complete, proving the durable write happens before any publication attempt"
  */
-export async function publishHoldoutArms({ laneReport, modelExperiment, naiveExperiment, headSha, persist }) {
-  let publication = null;
-  let publicationSkipped;
-  if (laneReport.arms.model.reportable !== true || modelExperiment === undefined) {
-    publicationSkipped =
-      laneReport.arms.model.unreportableReason ?? 'the model arm produced no experiment to publish';
-  } else {
-    publication = await persist({
-      datasetName: `aic-19-final-holdout-${headSha.slice(0, 12)}`,
-      experiment: modelExperiment,
+export async function completeHoldout({ path, base, publishRequested, execute, persist, verify, now, newAttemptId }) {
+  const { report, experiments } = await execute();
+
+  const complete = {
+    ...base,
+    status: 'complete',
+    completedAt: now(),
+    report,
+    experiments: { model: experiments.model ?? null, naive: experiments.naive ?? null },
+    publicationPlan: evals.planHoldoutPublication({ report, experiments }),
+    publicationRequested: publishRequested,
+    // The LangSmith acceptance row is deliberately NOT here: whether a
+    // publication verified is decided from the attempt log, by
+    // `summarizeHoldoutPublication`, never baked into this immutable record.
+    acceptance: [
+      {
+        requirement: 'final evidence names the exact candidate SHA',
+        met: true,
+        evidence: 'candidate.headSha',
+      },
+      {
+        requirement: 'the model arm is reportable',
+        met: report.arms.model.reportable === true,
+        evidence:
+          report.arms.model.reportable === true
+            ? 'report.arms.model'
+            : 'report.arms.model.unreportableReason',
+      },
+    ],
+  };
+
+  await writeRecordDurably(path, complete);
+
+  let summary;
+  if (publishRequested) {
+    summary = await publishRecordedMeasurement({
+      recordPath: path,
+      mode: 'with-measurement',
+      persist,
+      verify,
+      now,
+      newAttemptId,
     });
   }
-  const naivePublication = await publishNaiveArm({
-    laneReport,
-    naiveExperiment,
-    datasetName: `aic-19-final-holdout-naive-${headSha.slice(0, 12)}`,
-    persist,
-  });
-  return { publication, publicationSkipped, naivePublication };
+
+  const exitCode = publishRequested && summary?.satisfied !== true ? 1 : 0;
+  return { record: complete, summary, exitCode };
 }
 
 async function main() {
@@ -356,6 +396,10 @@ async function main() {
   const base = {
     schemaVersion: evals.FINAL_EVALUATION_RECORD_VERSION,
     status: 'claimed',
+    // AIC-120: the measurement's own identity, independent of how many times
+    // publication is later attempted against it — one admitted measurement
+    // per candidate fingerprint, many publication attempts.
+    measurementId: randomUUID(),
     candidate: { fingerprint, algorithm: 'sha256-over-git-ls-tree', paths: [...evals.FINAL_EVALUATION_CANDIDATE_PATHS], headSha: head, workingTreeClean: true },
     corpus: {
       scenarioSet: 'final-evaluation',
@@ -386,8 +430,6 @@ async function main() {
     maxCalls: evals.LIVE_MODEL_LANE_MAX_MODEL_CALLS,
     maxOutputTokens: evals.LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS,
   });
-  let modelExperiment;
-  let publication = null;
   // One port for both paid arms: the naive and graph-model arms spend through
   // the same ledger and the same credential read.
   let port;
@@ -399,125 +441,97 @@ async function main() {
     });
     return port;
   };
-  let publicationSkipped;
-  let naiveExperiment;
-  let naivePublication;
 
-  const report = await evals.runLiveModelLane({
-    env,
-    scenarioSet: 'final-evaluation',
-    experimentId: `aic-19-final-holdout-${head.slice(0, 12)}`,
-    headSha: head,
-    runsPerScenario,
-    metadata: baseMetadata(),
-    // 🔴 Declared, or the model arm can never be reportable. The lane refuses to
-    // attribute a moved metric to the model rather than to the harness without
-    // a baseline, and answers `control-baseline-undeclared`. This command passed
-    // none — measured on a post-repair calibration run where the model arm
-    // COMPLETED all 24 examples and the verdict was still that, so a hold-out in
-    // that state would have spent the one shot on an arm unreportable by
-    // construction.
-    //
-    // Read from a committed file rather than observed at run time: observing it
-    // would compare the harness against itself.
-    // see final-evaluation-command.test.mjs › "declares a control baseline for the hold-out, without which the model arm can never be reportable"
-    controlBaseline,
-    modelUsage: () => ledger.read(),
-    async runControlArm(plan) {
-      return evals.runGraphBenchmarkExperiment({
-        experimentId: `aic-19-control-${head.slice(0, 12)}`,
-        scenarioSet: plan.scenarioSet,
-        runsPerScenario: plan.runsPerScenario,
-        metadata: plan.metadata,
-        createNodes: (record) => scriptedNodes(record),
-        async recordEvaluation() {},
-      });
-    },
-    runOracleArm: oracleArm({ experimentId: `aic-19-oracle-${head.slice(0, 12)}` }),
-    // Captured for `publish`, like `modelExperiment` below.
-    async runNaiveArm(plan) {
-      return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan)
-        .then((experiment) => (naiveExperiment = experiment));
-    },
-    async runModelArm(plan) {
-      const port = sharedPort();
-      modelExperiment = await evals.runGraphBenchmarkExperiment({
-        experimentId: `aic-19-model-${head.slice(0, 12)}`,
-        scenarioSet: plan.scenarioSet,
-        runsPerScenario: plan.runsPerScenario,
-        metadata: { ...plan.metadata, modelId: config.modelId, modelProvider: config.provider },
-        createNodes: (record) => modelNodes(record, port),
-        async recordEvaluation() {},
-      });
-      return modelExperiment;
-    },
-    ...(flag('publish')
-      ? {
-          async publish(laneReport) {
-            ({ publication, publicationSkipped, naivePublication } = await publishHoldoutArms({
-              laneReport,
-              modelExperiment,
-              naiveExperiment,
-              headSha: laneReport.headSha,
-              persist: observability.persistBenchmarkExperiment,
-            }));
-          },
-        }
-      : {}),
+  // 7. Execute the lane exactly once. No `publish` option reaches it any
+  //    more: LangSmith publication moved entirely out of the lane call and
+  //    into `completeHoldout`/`publishRecordedMeasurement`, which run only
+  //    AFTER the record below is durably complete.
+  // see final-evaluation-publication.test.mjs › "scripts/eval-final-holdout.mjs passes runLiveModelLane no publish option any more"
+  async function execute() {
+    let modelExperiment;
+    let naiveExperiment;
+    const report = await evals.runLiveModelLane({
+      env,
+      scenarioSet: 'final-evaluation',
+      experimentId: `aic-19-final-holdout-${head.slice(0, 12)}`,
+      headSha: head,
+      runsPerScenario,
+      metadata: baseMetadata(),
+      // 🔴 Declared, or the model arm can never be reportable. The lane refuses to
+      // attribute a moved metric to the model rather than to the harness without
+      // a baseline, and answers `control-baseline-undeclared`. This command passed
+      // none — measured on a post-repair calibration run where the model arm
+      // COMPLETED all 24 examples and the verdict was still that, so a hold-out in
+      // that state would have spent the one shot on an arm unreportable by
+      // construction.
+      //
+      // Read from a committed file rather than observed at run time: observing it
+      // would compare the harness against itself.
+      // see final-evaluation-command.test.mjs › "declares a control baseline for the hold-out, without which the model arm can never be reportable"
+      controlBaseline,
+      modelUsage: () => ledger.read(),
+      async runControlArm(plan) {
+        return evals.runGraphBenchmarkExperiment({
+          experimentId: `aic-19-control-${head.slice(0, 12)}`,
+          scenarioSet: plan.scenarioSet,
+          runsPerScenario: plan.runsPerScenario,
+          metadata: plan.metadata,
+          createNodes: (record) => scriptedNodes(record),
+          async recordEvaluation() {},
+        });
+      },
+      runOracleArm: oracleArm({ experimentId: `aic-19-oracle-${head.slice(0, 12)}` }),
+      // Captured for the record `completeHoldout` builds, like `modelExperiment` below.
+      async runNaiveArm(plan) {
+        return naiveArm({ experimentId: `aic-19-naive-${head.slice(0, 12)}`, port: sharedPort(), config })(plan)
+          .then((experiment) => (naiveExperiment = experiment));
+      },
+      async runModelArm(plan) {
+        const port = sharedPort();
+        modelExperiment = await evals.runGraphBenchmarkExperiment({
+          experimentId: `aic-19-model-${head.slice(0, 12)}`,
+          scenarioSet: plan.scenarioSet,
+          runsPerScenario: plan.runsPerScenario,
+          metadata: { ...plan.metadata, modelId: config.modelId, modelProvider: config.provider },
+          createNodes: (record) => modelNodes(record, port),
+          async recordEvaluation() {},
+        });
+        return modelExperiment;
+      },
+    });
+    return { report, experiments: { model: modelExperiment, naive: naiveExperiment } };
+  }
+
+  // 8. Build the COMPLETE record, durably persist it, and only then — if
+  //    asked — attempt LangSmith publication. `completeHoldout` owns this
+  //    ordering; see its own header for the owner ruling behind it.
+  const { record: complete, summary, exitCode } = await completeHoldout({
+    path,
+    base,
+    publishRequested: flag('publish'),
+    execute,
+    persist: observability.persistBenchmarkExperiment,
+    verify: observability.verifyPersistedBenchmarkReference,
+    now: () => new Date().toISOString(),
+    newAttemptId: () => randomUUID(),
   });
 
-  // 9. Rewrite as complete. `publication` is absent-with-a-reason rather than an
-  //    empty identity: a synthesised id or URL would be a fabricated
-  //    measurement, and the rule that a missing measurement never becomes a zero
-  //    is the same rule.
-  const complete = {
-    ...base,
-    status: 'complete',
-    completedAt: new Date().toISOString(),
-    report,
-    publication:
-      publication === null
-        ? {
-            status: 'absent',
-            absentReason:
-              publicationSkipped ??
-              (flag('publish')
-                ? 'the publish step did not run'
-                : 'the run was not asked to publish (--publish was not passed)'),
-          }
-        : { status: 'published', ...publication },
-    naivePublication:
-      naivePublication ??
-      {
-        status: 'absent',
-        absentReason: flag('publish')
-          ? 'the publish step did not run'
-          : 'the run was not asked to publish (--publish was not passed)',
-      },
-    acceptance: [
-      {
-        requirement: 'final evidence names the exact candidate SHA',
-        met: true,
-        evidence: 'candidate.headSha',
-      },
-      {
-        requirement: 'final evidence carries native LangSmith identities',
-        met: publication !== null,
-        evidence: publication === null ? 'publication.absentReason' : 'publication.datasetId, publication.projects[].projectId, publication.runIds',
-      },
-      {
-        requirement: 'the model arm is reportable',
-        met: report.arms.model.reportable === true,
-        evidence: report.arms.model.reportable === true ? 'report.arms.model' : 'report.arms.model.unreportableReason',
-      },
-    ],
-  };
-  writeFileSync(path, `${JSON.stringify(complete, null, 2)}\n`);
-
-  const serialized = `${JSON.stringify(complete, null, 2)}\n`;
+  const serialized = `${JSON.stringify({ ...complete, publication: summary }, null, 2)}\n`;
   stdout.write(serialized);
   const outPath = option('out');
   if (outPath !== undefined) writeFileSync(outPath, serialized);
+
+  if (exitCode !== 0) {
+    const failedArms = evals.FINAL_EVALUATION_PUBLISHABLE_ARMS.filter(
+      (arm) => summary?.arms[arm]?.state !== 'not-required' && summary?.arms[arm]?.state !== 'verified',
+    );
+    stderr.write(
+      `LangSmith publication did not verify for: ${failedArms.join(', ')}.\n` +
+        `The measurement itself is preserved at ${path}.\n` +
+        `Recovery: npm run eval:final-holdout:publish -- --record ${path}\n`,
+    );
+    exit(1);
+  }
 }
 
 /** Realpath on both sides, for the reason `eval-live-model.mjs` records at length. */

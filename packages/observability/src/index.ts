@@ -977,11 +977,18 @@ async function persistPreparedExperiment({
  *     file's rule is that a present field which cannot be read is refused
  *     rather than defaulted.
  *
- * 🔴 It is shared by both entry points deliberately. The first version guarded
- * only the plural one, and every caller in this repository uses the singular —
- * so the refusal sat on the path nobody takes while the path everybody takes
- * kept the behaviour it was meant to close. A `security-scanner` probe found it
- * by making a real outbound call to the live workspace.
+ * 🔴 It is shared by all three entry points deliberately. The first version
+ * guarded only the plural one, and every caller in this repository uses the
+ * singular — so the refusal sat on the path nobody takes while the path
+ * everybody takes kept the behaviour it was meant to close. A
+ * `security-scanner` probe found it by making a real outbound call to the
+ * live workspace. `verifyPersistedBenchmarkReference` read its slot with plain
+ * `ownValue` until round 2 of AIC-120 found the same gap there: an own
+ * ACCESSOR `client` read as absent and the read-back call fell through to the
+ * live default client.
+ * see persist-boundary-refusals.test.mjs › the CLIENT_SLOT_ENTRY_POINTS entry
+ * named 'verifyPersistedBenchmarkReference', whose generated row
+ * "refuses ${name} options whose client is an own accessor" runs it
  */
 function ownClient(options: unknown): LangSmithPersistenceClient | undefined {
   if (typeof options !== 'object' || options === null) return undefined;
@@ -1120,6 +1127,125 @@ export async function persistBenchmarkExperiment(
       : { client: suppliedClient as LangSmithPersistenceClient }),
     datasetName: requireOwnString(options, 'datasetName', 'persist options'),
     experiments: [experiment as PersistedBenchmarkExperiment],
+  });
+}
+
+/**
+ * The read-back half of a LangSmith publication: confirming that what a
+ * `PersistedBenchmarkReference` claims to have created is still readable, not
+ * merely that `createDataset`/`createRun` returned without throwing.
+ *
+ * AIC-120: a persist call can succeed while the workspace it wrote to is not
+ * the one a later reader queries — a wrong-region endpoint being the concrete
+ * case `resolveTracingConfig` above already documents for tracing. Verifying
+ * the reference this way is what lets `scripts/final-holdout-publication.mjs`
+ * tell `ingestion-failed` (the write itself refused) apart from
+ * `readback-failed` (the write returned identities that do not read back).
+ */
+export interface LangSmithReadbackClient {
+  readDataset(payload: Readonly<{ datasetId: string }>): Promise<unknown>;
+  readProject(payload: Readonly<{ projectId: string }>): Promise<unknown>;
+  listRuns(payload: Readonly<{ projectId: string }>): AsyncIterable<unknown>;
+  listExamples(payload: Readonly<{ datasetId: string }>): AsyncIterable<unknown>;
+}
+
+/** What a successful verification confirms it read back. */
+export interface VerifiedBenchmarkReference {
+  readonly datasetId: string;
+  readonly projectIds: readonly string[];
+  readonly exampleCount: number;
+  readonly runCount: number;
+}
+
+/**
+ * Confirm that every native identity a `PersistedBenchmarkReference` names
+ * reads back from LangSmith. Rejects, naming what was missing BY COUNT rather
+ * than by dumping the payload, when the dataset, a project, a run id or an
+ * example id does not read back. A read that throws propagates — there is no
+ * retry here, the same rule `runLiveModelLane`'s header already states for
+ * publication itself.
+ *
+ * The counts below are accumulated in a loop rather than read off
+ * `Array.prototype.length` on the caller's own arrays: every own-property read
+ * in this file goes through `ownValue`/`requireOwn*`, and a `.length` taken
+ * directly off a caller-supplied array is exactly the plain `[[Get]]`
+ * `test/observability-own-value-audit.test.mjs` exists to catch.
+ * see final-evaluation-publication.test.mjs › "verifyPersistedBenchmarkReference resolves counts when every id in the reference reads back from the fake client"
+ */
+export async function verifyPersistedBenchmarkReference(
+  options: Readonly<{
+    client?: LangSmithReadbackClient;
+    reference: PersistedBenchmarkReference;
+  }>,
+): Promise<VerifiedBenchmarkReference> {
+  const suppliedClient = ownClient(options) as LangSmithReadbackClient | undefined;
+  const client = suppliedClient ?? (createLangSmithClient() as unknown as LangSmithReadbackClient);
+  const reference = ownValue(options, 'reference');
+  if (reference === undefined) {
+    throw new Error('verify options must carry their own reference');
+  }
+
+  const datasetId = requireOwnString(reference, 'datasetId', 'benchmark reference');
+  const projects = requireOwnArray(reference, 'projects', 'benchmark reference');
+  const exampleIds = requireOwnArray(reference, 'exampleIds', 'benchmark reference');
+  const runIds = requireOwnArray(reference, 'runIds', 'benchmark reference');
+
+  const readbackDataset = await client.readDataset({ datasetId });
+  const readbackDatasetId = requireNativeIdentity(readbackDataset, 'id', 'read-back dataset');
+  if (readbackDatasetId !== datasetId) {
+    throw new Error(
+      `read-back dataset id ${readbackDatasetId} disagrees with the requested datasetId ${datasetId}`,
+    );
+  }
+
+  const projectIds: string[] = [];
+  for (const project of projects) {
+    const projectId = requireOwnString(project, 'projectId', 'benchmark reference project');
+    await client.readProject({ projectId });
+    projectIds.push(projectId);
+  }
+
+  const seenRunIds = new Set<string>();
+  for (const projectId of projectIds) {
+    for await (const run of client.listRuns({ projectId })) {
+      const id = ownString(run, 'id');
+      if (id !== undefined) seenRunIds.add(id);
+    }
+  }
+  let runCount = 0;
+  let missingRunCount = 0;
+  for (const runId of runIds) {
+    runCount += 1;
+    if (typeof runId !== 'string' || !seenRunIds.has(runId)) missingRunCount += 1;
+  }
+  if (missingRunCount > 0) {
+    throw new Error(
+      `benchmark reference names ${missingRunCount} run id(s) that did not read back from listRuns`,
+    );
+  }
+
+  const seenExampleIds = new Set<string>();
+  for await (const example of client.listExamples({ datasetId })) {
+    const id = ownString(example, 'id');
+    if (id !== undefined) seenExampleIds.add(id);
+  }
+  let exampleCount = 0;
+  let missingExampleCount = 0;
+  for (const exampleId of exampleIds) {
+    exampleCount += 1;
+    if (typeof exampleId !== 'string' || !seenExampleIds.has(exampleId)) missingExampleCount += 1;
+  }
+  if (missingExampleCount > 0) {
+    throw new Error(
+      `benchmark reference names ${missingExampleCount} example id(s) that did not read back from listExamples`,
+    );
+  }
+
+  return Object.freeze({
+    datasetId: readbackDatasetId,
+    projectIds: Object.freeze(projectIds),
+    exampleCount,
+    runCount,
   });
 }
 
