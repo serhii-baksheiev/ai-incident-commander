@@ -73,7 +73,7 @@ function validateApiBaseUrl(raw: string): URL {
     throw new Error('createGithubEvidenceSource: apiBaseUrl is not a valid URL');
   }
   if (url.protocol !== 'https:') {
-    throw new Error(`createGithubEvidenceSource: apiBaseUrl must use https, got scheme ${JSON.stringify(url.protocol.replace(/:$/, ''))}`);
+    throw new Error('createGithubEvidenceSource: apiBaseUrl must use https');
   }
   if (url.username !== '' || url.password !== '') {
     throw new Error('createGithubEvidenceSource: apiBaseUrl must not carry userinfo');
