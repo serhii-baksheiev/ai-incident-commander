@@ -8,7 +8,7 @@
  * This file never touches the network: it runs `createBoundSourceRegistry`
  * in `replay` mode (`packages/tools/src/bound-source-registry.ts`) over two
  * committed recordings —
- *   - test/fixtures/evidence-sources/github/aic-github-fixture.v2.json
+ *   - test/fixtures/evidence-sources/github/fixture-repo.v2.json
  *   - test/fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json
  * — produced by the manual recorder,
  * `packages/tools/tests/record-evidence-fixtures.live.mjs`, the only place
@@ -62,7 +62,7 @@ import {
 import { findLiveScenario } from '../incident-lab/scenario-definitions.mjs';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
-const GITHUB_FIXTURE_PATH = resolve(testDir, 'fixtures/evidence-sources/github/aic-github-fixture.v2.json');
+const GITHUB_FIXTURE_PATH = resolve(testDir, 'fixtures/evidence-sources/github/fixture-repo.v2.json');
 const LAB_FIXTURE_PATH = resolve(testDir, 'fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json');
 
 const GITHUB_BINDING_ID = 'github-fixture';
@@ -100,7 +100,7 @@ const EXPECTED_PULL_REQUEST_BODY_FRAGMENT = 'peak traffic';
 /* Existence rows — name the missing fixture paths directly                   */
 /* -------------------------------------------------------------------------- */
 
-test('the recorded github@1 fixture is committed at test/fixtures/evidence-sources/github/aic-github-fixture.v2.json (produce it with packages/tools/tests/record-evidence-fixtures.live.mjs)', () => {
+test('the recorded github@1 fixture is committed at test/fixtures/evidence-sources/github/fixture-repo.v2.json (produce it with packages/tools/tests/record-evidence-fixtures.live.mjs)', () => {
   assert.ok(
     existsSync(GITHUB_FIXTURE_PATH),
     `missing ${GITHUB_FIXTURE_PATH} — record it with packages/tools/tests/record-evidence-fixtures.live.mjs`,
@@ -384,7 +384,11 @@ test('every api.github.com/repos/ path recorded in the committed fixture files u
 test('every email address recorded in the committed fixture files is either the synthetic @example.invalid domain or a GitHub noreply address, never a real personal email', () => {
   const raw = readCommittedFixturesRawText();
   const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-  const emails = Array.from(raw.matchAll(emailPattern)).map((match) => match[0]);
+  // `git@github.com` is the SSH remote user GitHub reports in every repo's
+  // `ssh_url`, not a person's address, so it is the one non-email match skipped.
+  const emails = Array.from(raw.matchAll(emailPattern))
+    .map((match) => match[0])
+    .filter((email) => email !== 'git@github.com');
   for (const email of emails) {
     const isSynthetic = email.toLowerCase().endsWith('@example.invalid');
     const isGithubNoreply = /@[a-z0-9.-]*noreply\.github\.com$/i.test(email);

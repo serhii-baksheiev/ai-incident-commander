@@ -1,7 +1,7 @@
 /**
  * AIC-98, slice c: the manual recorder that produces the two committed
  * replay fixtures test/evidence-source-replay-correlation.test.mjs reads —
- *   - test/fixtures/evidence-sources/github/aic-github-fixture.v2.json
+ *   - test/fixtures/evidence-sources/github/fixture-repo.v2.json
  *   - test/fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json
  * — and the only place either one is ever written or refreshed. Neither
  * fixture is produced by any automated build step: a human runs this file by
@@ -93,7 +93,7 @@ import { findLiveScenario } from '../../../incident-lab/scenario-definitions.mjs
 
 const testsDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testsDir, '../../..');
-const GITHUB_FIXTURE_PATH = resolve(repoRoot, 'test/fixtures/evidence-sources/github/aic-github-fixture.v2.json');
+const GITHUB_FIXTURE_PATH = resolve(repoRoot, 'test/fixtures/evidence-sources/github/fixture-repo.v2.json');
 const LAB_FIXTURE_PATH = resolve(repoRoot, 'test/fixtures/evidence-sources/lab/deployment-caused-incident-a.v2.json');
 
 const GITHUB_BINDING_ID = 'github-fixture';
@@ -256,7 +256,7 @@ function writeCommittedFixture(path, recordings) {
 /* The GitHub half                                                            */
 /* -------------------------------------------------------------------------- */
 
-test('records the github@1 fixture at test/fixtures/evidence-sources/github/aic-github-fixture.v2.json by running the deployment/change-correlation chain against the real fixture repository', async (t) => {
+test('records the github@1 fixture at test/fixtures/evidence-sources/github/fixture-repo.v2.json by running the deployment/change-correlation chain against the real fixture repository', async (t) => {
   const pat = requirePat();
   const { owner, repo } = requireFixtureRepo();
 
