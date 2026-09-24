@@ -57,6 +57,7 @@ const baseCredentialRef = () => ({
   id: credentialReadA,
   environmentId: environmentA,
   access: 'read',
+  name: 'checkout-read',
   secretName: 'CHECKOUT_READ',
 });
 

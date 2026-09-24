@@ -62,6 +62,7 @@ const credentialRef = () => ({
   id: credentialReadA,
   environmentId: environmentA,
   access: 'read',
+  name: 'checkout-read',
   secretName: 'CHECKOUT_READ',
 });
 
@@ -69,6 +70,7 @@ const writeCredentialRef = () => ({
   id: credentialWriteA,
   environmentId: environmentA,
   access: 'write',
+  name: 'checkout-write',
   secretName: 'CHECKOUT_WRITE',
 });
 
@@ -77,6 +79,8 @@ const sourceBinding = () => ({
   environmentId: environmentA,
   adapterId: 'github-actions',
   adapterVersion: '1.0.0',
+  name: 'github-actions-primary',
+  config: { owner: 'org', repo: 'checkout-service' },
   credentialRefId: credentialReadA,
 });
 
@@ -108,8 +112,8 @@ const twoEnvironmentRegistry = () => ({
   credentialRefs: [
     credentialRef(),
     writeCredentialRef(),
-    { id: credentialReadB, environmentId: environmentB, access: 'read', secretName: 'BILLING_READ' },
-    { id: credentialWriteB, environmentId: environmentB, access: 'write', secretName: 'BILLING_WRITE' },
+    { id: credentialReadB, environmentId: environmentB, access: 'read', name: 'billing-read', secretName: 'BILLING_READ' },
+    { id: credentialWriteB, environmentId: environmentB, access: 'write', name: 'billing-write', secretName: 'BILLING_WRITE' },
   ],
   actionPolicies: [actionPolicy()],
 });
