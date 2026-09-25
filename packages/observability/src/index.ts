@@ -37,7 +37,8 @@ const PERSISTED_RESOURCE_KEYS = [
  * see model-run-identity-correspondence.test.mjs › "carries every declared
  * resource axis in one of the two resource allowlists"
  * see benchmark-resource-evidence.test.mjs › "refuses a token axis that is
- * present and is not a count"
+ * present and is not a count: inputTokensUsed" and › "refuses a token axis that
+ * is present and is not a count: outputTokensUsed"
  *
  * The version above moved 1 -> 2 with them: the shape a record can carry
  * changed, and a reader that accepted a v1 record under the new shape would be
