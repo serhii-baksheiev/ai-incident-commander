@@ -149,6 +149,25 @@ test("leaves revoking a removed CredentialRef's secret to AIC-46, undecided here
 });
 
 /**
+ * Owner ruling, Jira AIC-99 comment 20973 (2026-09-25): removing a Service
+ * CASCADES through its Environments rather than refusing while one remains —
+ * this is the accepted sentence that ruling keeps, pinned here so a future
+ * edit back toward refuse-while-non-empty (this file's own round-1 wording,
+ * since reverted) goes red instead of silently landing. Nothing above this
+ * row pinned the distinction between the two: the older, generic assertions
+ * ("names the bindings, the policy and the credential references",
+ * "deletes … from the active registry") read as true of either wording.
+ */
+test('states that removing a Service cascades through all its Environments, not that removal is refused while one remains', () => {
+  const removal = section(readAdr(), 'Removal semantics').replace(/\s+/g, ' ').trim();
+  assert.match(
+    removal,
+    /Removing an Environment, or a Service with all its Environments, deletes/,
+    'Removal semantics must state the accepted sentence: a Service is removed together with all its Environments, not refused while one remains',
+  );
+});
+
+/**
  * AIC-99 slice b, round-1 review: the CredentialRef ownership row still
  * reads "a SourceBinding refers to one read `CredentialRef`", which the
  * owner's 2026-09-25 ruling supersedes - `credentialRefId` is nullable, for
