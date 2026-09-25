@@ -155,8 +155,8 @@ test('the fence statement text contains FOR SHARE, all four predicates, and neve
 });
 
 /* -------------------------------------------------------------------------- */
-/* Row 3 — APP_SCHEMA_VERSION is 2, migration 1 is untouched, migration 2     */
-/* exists                                                                     */
+/* Row 3 — APP_SCHEMA_VERSION reflects every migration that exists, and      */
+/* migrations 1 and 2 stay byte-identical once a later one is appended        */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -172,11 +172,22 @@ test('the fence statement text contains FOR SHARE, all four predicates, and neve
  */
 const MIGRATION_1_SQL_SHA256 = 'ab61a5f11df15634d138700b555508bec50abb1bbc788cbe73c38f22d0a8d670';
 
-test('APP_SCHEMA_VERSION is 2, migration 1\'s SQL is byte-identical to what shipped in #97, and migration 2 exists', () => {
+/**
+ * The same independent-oracle discipline as `MIGRATION_1_SQL_SHA256` above,
+ * for migration 2: measured with `shasum -a 256` against the working tree's
+ * copy of `app-schema.ts` on 2026-09-25, the day AIC-99 slice c's migration 3
+ * was appended beside it — not a re-derivation of the hash from the module
+ * under test. Migration 2 shipped in AIC-56 slice C and, by the same
+ * never-changes-after-it-ships rule migration 1 is held to, must stay exactly
+ * that shape now that migration 3 is appended after it.
+ */
+const MIGRATION_2_SQL_SHA256 = '37e6419bf6d000e05aee2414ee2559366fa03a0a1d3af589558d5ab575a71371';
+
+test('APP_SCHEMA_VERSION is 3, migrations 1 and 2 are byte-identical to what shipped before, and migration 3 exists', () => {
   assert.equal(
     persistence.APP_SCHEMA_VERSION,
-    2,
-    'slice C adds migration 2 (node_results, run_events, run_event_counters, run_trials, run_evidence, fence_rejections, and runs.interaction_id): APP_SCHEMA_VERSION must become 2, and migration 1 must stay exactly as shipped',
+    3,
+    'AIC-99 slice c adds migration 3 (the services/environments/credential_refs/source_bindings/action_policies/incidents/registry_events registry tables): APP_SCHEMA_VERSION must become 3, and migrations 1 and 2 must stay exactly as shipped',
   );
 
   const migrations = persistence.APPLICATION_MIGRATIONS;
@@ -187,13 +198,21 @@ test('APP_SCHEMA_VERSION is 2, migration 1\'s SQL is byte-identical to what ship
   assert.equal(
     createHash('sha256').update(migration1.sql).digest('hex'),
     MIGRATION_1_SQL_SHA256,
-    'migration 1\'s SQL text must be byte-identical to what #97 shipped: a migration never changes after it ships (app-schema.ts\'s own module doc) — new tables belong in migration 2, never in an edit to migration 1',
+    'migration 1\'s SQL text must be byte-identical to what #97 shipped: a migration never changes after it ships (app-schema.ts\'s own module doc) — new tables belong in a later migration, never in an edit to migration 1',
   );
 
   const migration2 = migrations.find((migration) => migration?.version === 2);
-  assert.ok(migration2, 'APPLICATION_MIGRATIONS must carry a version-2 entry for slice C\'s new tables and the runs.interaction_id column');
-  assert.equal(typeof migration2.sql, 'string', 'migration 2\'s sql must be a non-empty string');
-  assert.ok(migration2.sql.trim().length > 0, 'migration 2\'s sql must not be empty');
+  assert.ok(migration2, 'APPLICATION_MIGRATIONS must still carry a version-2 entry');
+  assert.equal(
+    createHash('sha256').update(migration2.sql).digest('hex'),
+    MIGRATION_2_SQL_SHA256,
+    'migration 2\'s SQL text must be byte-identical to what AIC-56 slice C shipped: a migration never changes after it ships (app-schema.ts\'s own module doc) — the registry tables belong in migration 3, never in an edit to migration 2',
+  );
+
+  const migration3 = migrations.find((migration) => migration?.version === 3);
+  assert.ok(migration3, 'APPLICATION_MIGRATIONS must carry a version-3 entry for AIC-99 slice c\'s registry tables');
+  assert.equal(typeof migration3.sql, 'string', 'migration 3\'s sql must be a non-empty string');
+  assert.ok(migration3.sql.trim().length > 0, 'migration 3\'s sql must not be empty');
 });
 
 /* -------------------------------------------------------------------------- */

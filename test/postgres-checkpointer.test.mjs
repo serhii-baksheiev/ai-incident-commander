@@ -452,6 +452,17 @@ function sourceFiles(directory) {
  * way `schema_migrations` was: zero matches anywhere in `packages/` or
  * `apps/` outside `packages/persistence` today, so each stays a bare word
  * rather than needing `aic_app.` qualification the way `runs` does.
+ *
+ * AIC-99 slice c extends the list again with the registry tables migration 3
+ * adds — `services`, `environments`, `credential_refs`, `source_bindings`,
+ * `action_policies`, `incidents`, `registry_events` — and this time the
+ * measurement comes out the other way: `services` and `environments` are
+ * ordinary English/domain words that already appear outside
+ * `packages/persistence` (`services` and `environments` each have false-positive
+ * matches elsewhere in the tree today), the same reason `runs` needed the
+ * `aic_app.` qualifier above rather than a bare word. Every one of the seven
+ * new names is added `aic_app.`-qualified, uniformly, so the row's own scan
+ * pattern does not have to be re-measured per-name every time a table joins it.
  */
 const APPLICATION_SCHEMA_SURFACE_PATTERNS = Object.freeze([
   'aic_app\\.runs',
@@ -462,6 +473,13 @@ const APPLICATION_SCHEMA_SURFACE_PATTERNS = Object.freeze([
   'run_trials',
   'run_evidence',
   'fence_rejections',
+  'aic_app\\.services',
+  'aic_app\\.environments',
+  'aic_app\\.credential_refs',
+  'aic_app\\.source_bindings',
+  'aic_app\\.action_policies',
+  'aic_app\\.incidents',
+  'aic_app\\.registry_events',
 ]);
 
 test('keeps checkpointer storage, the application schema\'s tables, and the PostgreSQL driver out of every layer but persistence', () => {

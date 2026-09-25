@@ -195,7 +195,7 @@ packages/domain           framework-free domain contracts
 packages/graph            LangGraph state, nodes, edges, routing
 packages/roles            semantic roles and provider-neutral model port
 packages/tools            live + replay tool adapters
-packages/persistence      checkpoints, PostgreSQL app schema, durable run store
+packages/persistence      checkpoints, PostgreSQL app schema, durable run store, service registry
 packages/evals            benchmarks, evaluators, experiment lanes
 packages/observability    trace and run metadata
 datasets/scenarios        scenario notes (fixtures live in packages/evals)

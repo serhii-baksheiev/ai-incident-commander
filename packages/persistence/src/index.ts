@@ -200,3 +200,15 @@ export {
   MIN_RUN_EVENT_POLL_INTERVAL_MS,
   type RunEventStreamSourceOptions,
 } from './run-event-stream.js';
+
+/**
+ * AIC-99 slice c: the transactional registry store built on migration 3's
+ * normalized tables (`app-schema.ts`). `RegistryValidationError` and
+ * `RegistryConflictError` are deliberately NOT re-exported here: this
+ * repository's only caller so far (registry-store.live.mjs) reads a rejected
+ * mutation by `error.name` and, for a validation failure, `error.issues` —
+ * never by importing the class — so the export list this module already
+ * pins (`durable-run-boundaries.test.mjs`) stays unchanged apart from
+ * `createRegistryStore` itself.
+ */
+export { createRegistryStore, type RegistryStore } from './registry-store.js';
