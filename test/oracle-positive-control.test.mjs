@@ -592,6 +592,28 @@ test('rejects packages/graph importing the @aic/evals root, where the scenarios 
   );
 });
 
+/**
+ * AIC-123 slice 1: the domain now carries the observation vocabulary the
+ * deterministic prediction path reads. It must not be able to read the
+ * benchmark's ground truth to shape that vocabulary, so the same rule is pinned
+ * for packages/domain.
+ */
+test('rejects packages/domain importing the @aic/evals root, so the domain vocabulary cannot be shaped by ground truth', () => {
+  const result = runDepcruiseProbe((fixtureRoot) =>
+    writeProbeSource(fixtureRoot, 'packages/domain', 'import { STRUCTURAL_GROUND_TRUTH } from "@aic/evals";\nexport const leaked = STRUCTURAL_GROUND_TRUTH;\n'),
+  );
+  assert.notEqual(
+    result.status,
+    0,
+    `npm run lint:graph accepted a domain import of the @aic/evals root\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
+  assert.match(
+    result.stdout + result.stderr,
+    /benchmark-ground-truth-is-evaluator-side-only/,
+    `the refusal must come from benchmark-ground-truth-is-evaluator-side-only itself\n${commandDiagnostics('npm run lint:graph', result)}`,
+  );
+});
+
 test('reachesBest does not count a metric no scenario emitted as reached', async () => {
   const { reachesBestOf } = await import('../scripts/eval-oracle.mjs');
   const scenarios = [{ scenarioId: 'only', metrics: { termination_correctness: { score: 1 } } }];

@@ -1254,21 +1254,49 @@ function assertLogicalBudgetCounters(control: IncidentStateControl): void {
  * complete with its spend absent.
  *
  * see hitl-resume-contract.test.mjs › "resuming ${persisted.label} with
- * ${label} fails loudly at the schema version boundary"
+ * ${label} fails loudly at the schema version boundary" and
+ * state-cutover.test.mjs › "refuses to resume a schema-version-4 checkpoint
+ * paused at the HITL interrupt, because it predates typed predictions and
+ * hypothesis cause"
  */
+/**
+ * What each older schema version is missing, keyed by the persisted version.
+ * The next bump adds its own entry. A version with no entry, or one that is
+ * not a number, gets no clause.
+ * see state-cutover.test.mjs › "refuses to resume a checkpoint whose schemaVersion is not the current number: its string form, NaN, or absent"
+ */
+const PRIMARY_SCOPE_CLAUSE =
+  ' State written before this version has no incident primaryScope and cannot be migrated without inventing one; start a new investigation from an intake that names its primaryScope.';
+const MIGRATION_CLAUSES: ReadonlyMap<number, string> = new Map([
+  [1, PRIMARY_SCOPE_CLAUSE],
+  [2, PRIMARY_SCOPE_CLAUSE],
+  [3, PRIMARY_SCOPE_CLAUSE],
+  [
+    4,
+    ' State written under schema version 4 carries untyped predictions and no hypothesis cause and cannot be migrated without inventing them; start a new investigation.',
+  ],
+]);
+
 function assertPersistedStateVersion(control: IncidentStateControl): void {
   if (control.schemaVersion !== INCIDENT_STATE_SCHEMA_VERSION) {
-    // A persisted version BELOW the current one is not merely stale: AIC-96
-    // made `incident.primaryScope` required, and no state written before that
-    // carries one — there is no value to invent that would not be a guess. So
-    // the message adds an actionable clause distinct from the generic mismatch
-    // above it, rather than leaving the caller to rediscover this by reading
-    // the schema history. see state-cutover.test.mjs › "refuses to resume a
-    // schema-version-3 checkpoint paused at the HITL interrupt, because it
-    // predates primaryScope"
+    // A persisted version BELOW the current one is not merely stale, and the
+    // two clauses below are deliberately distinct because they are missing
+    // different things:
+    // - AIC-96 made `incident.primaryScope` required, and no state written
+    //   before that carries one;
+    // - AIC-123 made predictions typed and versioned and added the optional
+    //   hypothesis cause; a schema-version-4 checkpoint already has
+    //   `primaryScope` but carries untyped predictions and no hypothesis
+    //   cause instead.
+    // Neither gap has a value to invent that would not be a guess. see
+    // state-cutover.test.mjs › "refuses to resume a schema-version-3
+    // checkpoint paused at the HITL interrupt, because it predates
+    // primaryScope" and › "refuses to resume a schema-version-4 checkpoint
+    // paused at the HITL interrupt, because it predates typed predictions and
+    // hypothesis cause"
     const migrationClause =
-      control.schemaVersion < INCIDENT_STATE_SCHEMA_VERSION
-        ? ' State written before this version has no incident primaryScope and cannot be migrated without inventing one; start a new investigation from an intake that names its primaryScope.'
+      typeof control.schemaVersion === 'number'
+        ? (MIGRATION_CLAUSES.get(control.schemaVersion) ?? '')
         : '';
     throw new Error(
       `incompatible persisted state: schema version ${String(control.schemaVersion)}, ` +

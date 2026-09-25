@@ -173,7 +173,7 @@ function withoutPrimaryScopeAtVersion(version) {
 const namesTheVersionThisGraphReads = new RegExp(
   `this graph reads schema version ${INCIDENT_STATE_SCHEMA_VERSION}\\b`,
 );
-const namesNoPrimaryScope = /primaryScope|cannot be migrated/i;
+const namesNoPrimaryScope = /no incident primaryScope/i;
 const tellsCallerToStartOver = /start a new investigation/i;
 
 /* -------------------------------------------------------------------------- */
@@ -209,7 +209,12 @@ for (const version of [1, 2, 3]) {
       assert.match(
         outcome.error.message,
         namesNoPrimaryScope,
-        `the refusal must say the persisted incident has no primaryScope or cannot be migrated: ${outcome.error.message}`,
+        `the refusal must say the persisted incident has no primaryScope: ${outcome.error.message}`,
+      );
+      assert.doesNotMatch(
+        outcome.error.message,
+        /untyped predictions|hypothesis cause/i,
+        `a version below 4 predates primaryScope; it must not be given the version-4 clause: ${outcome.error.message}`,
       );
       assert.match(
         outcome.error.message,
@@ -226,6 +231,147 @@ for (const version of [1, 2, 3]) {
     }
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* AIC-123 slice 1: the schema-version 4 -> 5 cutover, a checkpoint           */
+/* that HAS primaryScope but predates typed predictions and hypothesis cause */
+/* -------------------------------------------------------------------------- */
+
+test('publishes INCIDENT_STATE_SCHEMA_VERSION as 5', () => {
+  assert.equal(INCIDENT_STATE_SCHEMA_VERSION, 5);
+});
+
+/**
+ * Unlike `withoutPrimaryScopeAtVersion`, a schema-version-4 checkpoint carries
+ * a perfectly good `incident.primaryScope` — v4 is exactly the version that
+ * required it. Only `control.schemaVersion` needs rewriting: the gap this
+ * cutover is about is untyped predictions and a hypothesis with no cause, not
+ * anything on the `incident` channel.
+ */
+function atControlSchemaVersion(version) {
+  return (channels) => ({
+    ...channels,
+    control: { ...channels.control, schemaVersion: version },
+  });
+}
+
+const namesUntypedPredictionsAndNoCause = /untyped predictions/i;
+const namesNoHypothesisCause = /hypothesis cause/i;
+
+test('refuses to resume a schema-version-4 checkpoint paused at the HITL interrupt, because it predates typed predictions and hypothesis cause', async () => {
+  const harness = createHarness({ runId: 'run-cutover-paused-v4' });
+
+  try {
+    const interrupted = await harness.start();
+    const traceBeforeResume = [...harness.trace];
+    harness.rewritePersistedChannels(atControlSchemaVersion(4));
+
+    const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a schema-version-4 checkpoint predates typed predictions and hypothesis cause and must be refused, not resumed to completion',
+    );
+    assert.match(
+      outcome.error.message,
+      /^incompatible persisted state: schema version 4\b/,
+      `the refusal must start by naming the persisted version it refused on: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheVersionThisGraphReads,
+      `the refusal must name the version this graph reads, taken from the constant: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesUntypedPredictionsAndNoCause,
+      `the v4 clause must say the persisted state carries untyped predictions: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesNoHypothesisCause,
+      `the v4 clause must say the persisted state carries no hypothesis cause: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      /cannot be migrated/i,
+      `the v4 clause must say this cannot be migrated without inventing the missing data: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      tellsCallerToStartOver,
+      `the refusal must tell the caller to start a new investigation: ${outcome.error.message}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /primaryScope/i,
+      `a v4 checkpoint already has primaryScope; the v4 clause must be distinct from the below-v4 primaryScope clause: ${outcome.error.message}`,
+    );
+    assert.deepEqual(
+      harness.trace,
+      traceBeforeResume,
+      'the refusal must land before the resumed run executes another lifecycle node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/**
+ * The resume guard compares the persisted version with `!==` against the
+ * number the graph reads. A value that is not that number is refused whatever
+ * its shape: the string form of the current version, NaN, or no field at all.
+ * None of them gets a migration clause, because none names a version this
+ * graph has a history for.
+ */
+test('refuses to resume a checkpoint whose schemaVersion is not the current number: its string form, NaN, or absent', async () => {
+  for (const [label, rewrite] of [
+    ['the string form of the current version', (channels) => ({ ...channels, control: { ...channels.control, schemaVersion: String(INCIDENT_STATE_SCHEMA_VERSION) } })],
+    ['NaN', (channels) => ({ ...channels, control: { ...channels.control, schemaVersion: Number.NaN } })],
+    ['an absent field', (channels) => {
+      const { schemaVersion, ...control } = channels.control;
+      void schemaVersion;
+      return { ...channels, control };
+    }],
+  ]) {
+    const harness = createHarness({ runId: `run-cutover-nonnumeric-${label.replace(/\W+/g, '-')}` });
+    try {
+      // eslint-disable-next-line no-await-in-loop -- one harness per malformed shape
+      const interrupted = await harness.start();
+      harness.rewritePersistedChannels(rewrite);
+      // eslint-disable-next-line no-await-in-loop -- one harness per malformed shape
+      const outcome = await harness.resume(interrupted, { action: 'confirm' });
+      assert.equal('error' in outcome, true, `${label}: a schemaVersion that is not the current number must be refused`);
+      assert.doesNotMatch(outcome.error.message, /primaryScope|untyped predictions/i, `${label}: no migration clause applies to a version this graph has no history for: ${outcome.error.message}`);
+    } finally {
+      harness.cleanup();
+    }
+  }
+});
+
+test('refuses a kind: start input whose control names schema version 4', async () => {
+  const harness = createHarness({ runId: 'run-cutover-start-schema-4' });
+
+  try {
+    const state = initialState('run-cutover-start-schema-4', { schemaVersion: 4 });
+
+    await assert.rejects(
+      () => harness.execution.execute({ kind: 'start', state }, harness.config),
+      (error) => {
+        assert.equal(
+          error.message,
+          'invalid investigation execution input',
+          `a start input stamped at schema version 4 must be refused as invalid input: ${error.message}`,
+        );
+        return true;
+      },
+      'a kind: start input naming schema version 4 must be refused, not accepted as current',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
 
 /* -------------------------------------------------------------------------- */
 /* a FINISHED run whose checkpoint predates primaryScope                     */
