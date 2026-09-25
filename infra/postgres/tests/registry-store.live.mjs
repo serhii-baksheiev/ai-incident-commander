@@ -162,14 +162,24 @@ const AUDIT_TABLE_READS = Object.freeze({
  * `fence_rejections` is populated the same way `run-write-context.live.mjs`
  * populates it: one row recording a refused write attempt, not tied to a
  * completed run's own lifecycle.
+ *
+ * `scopeIds.serviceId` / `scopeIds.environmentId` are stamped onto the seeded
+ * `incidents` row's `primary_service_id` / `primary_environment_id`: the row
+ * this function replaced left both null, which meant a store-issued
+ * `DELETE FROM aic_app.incidents WHERE primary_service_id = $1` (or the
+ * `primary_environment_id` equivalent) added to `removeService` /
+ * `removeEnvironment` would delete zero rows and
+ * `assertHistoricalAuditRowsUnchanged` would still report "unchanged" —
+ * the oracle needs the removed scope's own ids on the row it is protecting,
+ * or it protects nothing.
  */
-async function insertHistoricalAuditRows(pool, scopeName) {
+async function insertHistoricalAuditRows(pool, scopeName, scopeIds) {
   const incidentId = `incident-${scopeName}`;
   const runId = `run-${scopeName}`;
   await pool.query(
     `insert into aic_app.incidents (id, idempotency_key, primary_service_id, primary_environment_id, body)
-     values ($1, $2, null, null, '{}'::jsonb)`,
-    [incidentId, `idempotency-key-${scopeName}`],
+     values ($1, $2, $3, $4, '{}'::jsonb)`,
+    [incidentId, `idempotency-key-${scopeName}`, scopeIds.serviceId, scopeIds.environmentId],
   );
   await pool.query(`insert into aic_app.runs (run_id, status, input) values ($1, 'completed', '{}'::jsonb)`, [runId]);
   await pool.query(
@@ -578,7 +588,10 @@ test('removeEnvironment deletes its bindings, policy and credential refs, keeps 
   // this file's header names — see "Isolation between rows" for why these
   // tables are not truncated, and this file's header for why none carries a
   // foreign key to services/environments.
-  const auditIds = await insertHistoricalAuditRows(pool, 'environment-removal');
+  const auditIds = await insertHistoricalAuditRows(pool, 'environment-removal', {
+    serviceId: service.id,
+    environmentId: environment.id,
+  });
   const auditRowsBefore = await captureHistoricalAuditRows(pool, auditIds);
   for (const table of Object.keys(auditRowsBefore)) {
     assert.equal(auditRowsBefore[table].length, 1, `this row must have seeded exactly one aic_app.${table} row before removal`);
@@ -700,8 +713,15 @@ test('removeService cascades through both of a Service\'s Environments and their
   const reportingEnvironment = beforeRemoval.environments.find((candidate) => candidate.serviceId === reportingService.id);
 
   // Seeded directly with SQL, one row in every one of the eight audit tables
-  // this file's header names, keyed to the removed scope.
-  const auditIds = await insertHistoricalAuditRows(pool, 'service-cascade-removal');
+  // this file's header names, keyed to the removed scope. The seeded
+  // incidents row names both the removed Service and one of its cascaded
+  // Environments (removedEnvironmentIds[0]), so a store-issued DELETE keyed
+  // on either column would remove it — see insertHistoricalAuditRows' own
+  // header.
+  const auditIds = await insertHistoricalAuditRows(pool, 'service-cascade-removal', {
+    serviceId: service.id,
+    environmentId: removedEnvironmentIds[0],
+  });
   const auditRowsBefore = await captureHistoricalAuditRows(pool, auditIds);
   for (const table of Object.keys(auditRowsBefore)) {
     assert.equal(auditRowsBefore[table].length, 1, `this row must have seeded exactly one aic_app.${table} row before removal`);
@@ -817,6 +837,11 @@ test('removeService cascades through both of a Service\'s Environments and their
   );
   assert.equal(serviceRemovalEvents.length, 1, 'registry_events must record exactly one event naming the removed Service as subject_id');
   assert.ok(/remov/i.test(serviceRemovalEvents[0].kind), 'the Service\'s own event must mention a removal');
+  assert.equal(
+    eventRows[eventRows.length - 1]?.subject_id,
+    service.id,
+    'the last event this cascade appends must name the removed Service: every cascaded Environment\'s environment.removed row precedes the Service\'s own service.removed (registry-store.ts documents this order and cites this row)',
+  );
 
   await assertHistoricalAuditRowsUnchanged(
     pool,
@@ -1214,7 +1239,7 @@ test('removeService deletes a Service that has no Environment, and records the r
   assert.equal(
     snapshot.services.some((candidate) => candidate.id === service.id),
     false,
-    'removeService must delete the Service row once it has no Environment left to protect',
+    'removeService must delete the Service row even when it has no Environment',
   );
 
   const { rows: eventRows } = await pool.query(
