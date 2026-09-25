@@ -78,7 +78,11 @@ export interface RegistryStore {
   }): Promise<ActionPolicy>;
   /** Deletes the Environment and cascades through its own SourceBindings, CredentialRefs and ActionPolicy. */
   removeEnvironment(input: { readonly serviceName: string; readonly environmentName: string }): Promise<void>;
-  /** Refuses (RegistryValidationError) while the Service still has an Environment. */
+  /**
+   * CASCADES through every Environment the Service still has, and through
+   * each of THEIR own SourceBindings, CredentialRefs and ActionPolicy — the
+   * owner's 2026-09-25 ruling, Jira AIC-99 comment 20973.
+   */
   removeService(input: { readonly serviceName: string }): Promise<void>;
 }
 
@@ -200,6 +204,19 @@ function resolveCredentialRefId(snapshot: RegistrySnapshot, environmentId: strin
 }
 
 /**
+ * One `registry_events` row. A mutation appends its events in the order
+ * given: `removeService` appends one `environment.removed` per cascaded
+ * Environment, then its own `service.removed` (registry-store.live.mjs ›
+ * "removeService cascades through both of a Service's Environments and their
+ * SourceBindings, CredentialRefs and ActionPolicy, records one
+ * environment.removed per Environment plus one service.removed, keeps every
+ * historical audit table's row for that scope byte-for-byte unchanged, and
+ * leaves an unrelated Service and its Environment untouched"); every other
+ * mutation appends exactly one.
+ */
+type MutationEvent = { readonly kind: string; readonly subjectId: string; readonly body: unknown };
+
+/**
  * A name that does not resolve (unknown Service, unknown Environment, unknown
  * CredentialRef in scope) is deliberately given a FRESH random id rather than
  * throwing immediately: `RegistrySnapshotSchema`'s own cross-reference checks
@@ -217,16 +234,17 @@ function resolveCredentialRefId(snapshot: RegistrySnapshot, environmentId: strin
  * unchanged and pass validation vacuously, reporting success for a removal
  * that removed nothing. Each of those two checks its own name resolves to an
  * existing row in the loaded snapshot and throws `RegistryValidationError`
- * itself, before either produces a `newSnapshot`, a `write`, or an `event` —
- * `removeService`'s refusal while its Service still has an Environment
- * remains the one case that DOES fall out of the generic validation step
- * below (an Environment whose `serviceId` no longer names a Service in the
- * snapshot with that Service removed).
+ * itself, before either produces a `newSnapshot`, a `write`, or `events`.
+ * `removeService` removes the Service together with every Environment it
+ * has and each of their SourceBindings, CredentialRefs and ActionPolicy —
+ * the owner's 2026-09-25 ruling (Jira AIC-99 comment 20973) is CASCADE — so
+ * the snapshot it hands to the validation step below carries no Environment
+ * pointing at the removed Service.
  */
 type MutationOutcome<T> = {
   readonly newSnapshot: RegistrySnapshot;
   readonly result: T;
-  readonly event: { readonly kind: string; readonly subjectId: string; readonly body: unknown };
+  readonly events: readonly MutationEvent[];
   readonly write: (client: PoolClient) => Promise<void>;
 };
 
@@ -255,7 +273,7 @@ async function mutate<T>(
     try {
       await client.query('SELECT pg_advisory_xact_lock($1)', [REGISTRY_LOCK_KEY]);
       const snapshot = await loadSnapshot(client);
-      const { newSnapshot, result, event, write } = await run(snapshot);
+      const { newSnapshot, result, events, write } = await run(snapshot);
 
       const parsed = RegistrySnapshotSchema.safeParse(newSnapshot);
       if (!parsed.success) {
@@ -266,10 +284,14 @@ async function mutate<T>(
       }
 
       await write(client);
-      await client.query(
-        `INSERT INTO "${APPLICATION_SCHEMA}".registry_events (kind, subject_id, body) VALUES ($1, $2, $3::jsonb)`,
-        [event.kind, event.subjectId, JSON.stringify(event.body)],
-      );
+      // Sequential, in the order the mutation gave them: one client runs
+      // one query at a time, and `seq` then follows that order.
+      for (const event of events) {
+        await client.query(
+          `INSERT INTO "${APPLICATION_SCHEMA}".registry_events (kind, subject_id, body) VALUES ($1, $2, $3::jsonb)`,
+          [event.kind, event.subjectId, JSON.stringify(event.body)],
+        );
+      }
       await client.query('COMMIT');
       return result;
     } catch (error) {
@@ -326,6 +348,34 @@ async function readConsistentSnapshot(pool: Pool): Promise<RegistrySnapshot> {
   }
 }
 
+/**
+ * Deletes one Environment and everything that belongs to it — its
+ * SourceBindings, CredentialRefs and ActionPolicy, in that dependency order —
+ * inside the caller's transaction. Shared by `removeEnvironment` (one
+ * Environment) and `removeService`'s cascade (the owner's 2026-09-25 ruling,
+ * Jira AIC-99 comment 20973: removing a Service removes every Environment it
+ * still has, each with its own SourceBindings, CredentialRefs and
+ * ActionPolicy), so the per-Environment delete logic is written once.
+ */
+async function deleteEnvironmentCascade(client: PoolClient, environmentId: string): Promise<void> {
+  await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".source_bindings WHERE environment_id = $1`, [
+    environmentId,
+  ]);
+  await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".credential_refs WHERE environment_id = $1`, [
+    environmentId,
+  ]);
+  await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".action_policies WHERE environment_id = $1`, [
+    environmentId,
+  ]);
+  const { rowCount } = await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".environments WHERE id = $1`, [
+    environmentId,
+  ]);
+  if (rowCount !== 1) {
+    const message = `expected to delete exactly one Environment row for id "${environmentId}", deleted ${rowCount}`;
+    throw new RegistryValidationError(message, [{ message, path: ['environmentName'] }]);
+  }
+}
+
 /** Builds a store against `pool` — an already-open `pg.Pool` a caller holds, unlike `createRunStore`'s connection string. */
 export function createRegistryStore(pool: Pool): RegistryStore {
   return {
@@ -346,7 +396,7 @@ export function createRegistryStore(pool: Pool): RegistryStore {
         return {
           newSnapshot: { ...snapshot, services: [...snapshot.services, service] },
           result: service,
-          event: { kind: 'service.added', subjectId: service.id, body: { name: service.name } },
+          events: [{ kind: 'service.added', subjectId: service.id, body: { name: service.name } }],
           write: async (client) => {
             await client.query(
               `INSERT INTO "${APPLICATION_SCHEMA}".services (id, name, repository_aliases) VALUES ($1, $2, $3)`,
@@ -369,7 +419,7 @@ export function createRegistryStore(pool: Pool): RegistryStore {
         return {
           newSnapshot: { ...snapshot, environments: [...snapshot.environments, environment] },
           result: environment,
-          event: { kind: 'environment.added', subjectId: environment.id, body: { name: environment.name, serviceId } },
+          events: [{ kind: 'environment.added', subjectId: environment.id, body: { name: environment.name, serviceId } }],
           write: async (client) => {
             await client.query(
               `INSERT INTO "${APPLICATION_SCHEMA}".environments (id, service_id, name) VALUES ($1, $2, $3)`,
@@ -399,11 +449,13 @@ export function createRegistryStore(pool: Pool): RegistryStore {
         return {
           newSnapshot: { ...snapshot, credentialRefs: [...snapshot.credentialRefs, credentialRef] },
           result: credentialRef,
-          event: {
-            kind: 'credentialRef.added',
-            subjectId: credentialRef.id,
-            body: { name: credentialRef.name, environmentId },
-          },
+          events: [
+            {
+              kind: 'credentialRef.added',
+              subjectId: credentialRef.id,
+              body: { name: credentialRef.name, environmentId },
+            },
+          ],
           write: async (client) => {
             await client.query(
               `INSERT INTO "${APPLICATION_SCHEMA}".credential_refs (id, environment_id, name, access, secret_name)
@@ -438,11 +490,13 @@ export function createRegistryStore(pool: Pool): RegistryStore {
         return {
           newSnapshot: { ...snapshot, sourceBindings: [...snapshot.sourceBindings, sourceBinding] },
           result: sourceBinding,
-          event: {
-            kind: 'sourceBinding.added',
-            subjectId: sourceBinding.id,
-            body: { name: sourceBinding.name, environmentId },
-          },
+          events: [
+            {
+              kind: 'sourceBinding.added',
+              subjectId: sourceBinding.id,
+              body: { name: sourceBinding.name, environmentId },
+            },
+          ],
           write: async (client) => {
             await client.query(
               `INSERT INTO "${APPLICATION_SCHEMA}".source_bindings
@@ -480,7 +534,7 @@ export function createRegistryStore(pool: Pool): RegistryStore {
         return {
           newSnapshot: { ...snapshot, actionPolicies: [...otherPolicies, actionPolicy] },
           result: actionPolicy,
-          event: { kind: 'actionPolicy.set', subjectId: actionPolicy.id, body: { environmentId } },
+          events: [{ kind: 'actionPolicy.set', subjectId: actionPolicy.id, body: { environmentId } }],
           write: async (client) => {
             await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".action_policies WHERE environment_id = $1`, [
               environmentId,
@@ -519,25 +573,9 @@ export function createRegistryStore(pool: Pool): RegistryStore {
             actionPolicies: snapshot.actionPolicies.filter((policy) => policy.environmentId !== environmentId),
           },
           result: undefined as void,
-          event: { kind: 'environment.removed', subjectId: environmentId, body: { serviceId } },
+          events: [{ kind: 'environment.removed', subjectId: environmentId, body: { serviceId } }],
           write: async (client) => {
-            await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".source_bindings WHERE environment_id = $1`, [
-              environmentId,
-            ]);
-            await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".credential_refs WHERE environment_id = $1`, [
-              environmentId,
-            ]);
-            await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".action_policies WHERE environment_id = $1`, [
-              environmentId,
-            ]);
-            const { rowCount } = await client.query(
-              `DELETE FROM "${APPLICATION_SCHEMA}".environments WHERE id = $1`,
-              [environmentId],
-            );
-            if (rowCount !== 1) {
-              const message = `expected to delete exactly one Environment row for id "${environmentId}", deleted ${rowCount}`;
-              throw new RegistryValidationError(message, [{ message, path: ['environmentName'] }]);
-            }
+            await deleteEnvironmentCascade(client, environmentId);
           },
         };
       });
@@ -551,11 +589,41 @@ export function createRegistryStore(pool: Pool): RegistryStore {
           throw new RegistryValidationError(message, [{ message, path: ['serviceName'] }]);
         }
         const serviceId = service.id;
+        // CASCADE, per the owner's 2026-09-25 ruling (Jira AIC-99 comment
+        // 20973): removing a Service removes every Environment it still has,
+        // and each Environment's own SourceBindings, CredentialRefs and
+        // ActionPolicy — see this module's header and
+        // docs/decisions/integration-boundary.md, "Removal semantics".
+        const removedEnvironments = snapshot.environments.filter((candidate) => candidate.serviceId === serviceId);
+        const removedEnvironmentIds = removedEnvironments.map((environment) => environment.id);
         return {
-          newSnapshot: { ...snapshot, services: snapshot.services.filter((candidate) => candidate.id !== serviceId) },
+          newSnapshot: {
+            ...snapshot,
+            services: snapshot.services.filter((candidate) => candidate.id !== serviceId),
+            environments: snapshot.environments.filter((candidate) => candidate.serviceId !== serviceId),
+            sourceBindings: snapshot.sourceBindings.filter(
+              (binding) => !removedEnvironmentIds.includes(binding.environmentId),
+            ),
+            credentialRefs: snapshot.credentialRefs.filter(
+              (ref) => !removedEnvironmentIds.includes(ref.environmentId),
+            ),
+            actionPolicies: snapshot.actionPolicies.filter(
+              (policy) => !removedEnvironmentIds.includes(policy.environmentId),
+            ),
+          },
           result: undefined as void,
-          event: { kind: 'service.removed', subjectId: serviceId, body: {} },
+          events: [
+            ...removedEnvironments.map((environment) => ({
+              kind: 'environment.removed',
+              subjectId: environment.id,
+              body: { serviceId },
+            })),
+            { kind: 'service.removed', subjectId: serviceId, body: {} },
+          ],
           write: async (client) => {
+            for (const environmentId of removedEnvironmentIds) {
+              await deleteEnvironmentCascade(client, environmentId);
+            }
             const { rowCount } = await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".services WHERE id = $1`, [
               serviceId,
             ]);
