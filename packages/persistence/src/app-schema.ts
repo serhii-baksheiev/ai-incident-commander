@@ -14,8 +14,14 @@ export const APPLICATION_SCHEMA = 'aic_app' as const;
  * `run_event_counters`, `run_trials`, `run_evidence`, `fence_rejections`) and
  * `runs.interaction_id` (decision 4: a run waiting for a human still carries
  * the interaction it is waiting on).
+ *
+ * AIC-99 slice c adds the third: the normalized registry tables (`services`,
+ * `environments`, `credential_refs`, `source_bindings`, `action_policies`,
+ * `incidents`, `registry_events`) the owner's 2026-09-25 ruling approved
+ * (`docs/decisions/integration-boundary.md`), written to by
+ * `registry-store.ts`'s `createRegistryStore`.
  */
-export const APP_SCHEMA_VERSION = 2 as const;
+export const APP_SCHEMA_VERSION = 3 as const;
 
 interface ApplicationMigration {
   readonly version: number;
@@ -161,6 +167,104 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
         ON "aic_app".fence_rejections (run_id, at);
       CREATE UNIQUE INDEX IF NOT EXISTS runs_interaction_id_key
         ON "aic_app".runs (interaction_id) WHERE interaction_id IS NOT NULL;
+    `,
+  }),
+  /**
+   * AIC-99 slice c: the normalized registry tables the owner's 2026-09-25
+   * ruling approved (`docs/decisions/integration-boundary.md`) — written to
+   * exclusively by `registry-store.ts`'s `createRegistryStore`.
+   *
+   * `REFERENCES` targets below are deliberately UNQUALIFIED (`"services"`,
+   * not `"aic_app"."services"`): test/registry-schema.test.mjs's
+   * `source_bindings.credential_ref_id` assertion matches
+   * `REFERENCES\s+"?credential_refs"?` literally, with no schema prefix.
+   * `SET LOCAL search_path` just below resolves each unqualified reference
+   * against `aic_app` for the rest of this migration's transaction only —
+   * every `CREATE TABLE` target itself stays schema-qualified.
+   *
+   * - `services` / `environments` / `credential_refs` / `source_bindings` /
+   *   `action_policies` mirror `@aic/domain`'s `Service` / `Environment` /
+   *   `CredentialRef` / `SourceBinding` / `ActionPolicy` — normalized rows a
+   *   `RegistrySnapshot` is assembled from. `credential_refs` carries exactly
+   *   `id, environment_id, name, access, secret_name`: a secret's NAME, never
+   *   its value (docs/decisions/integration-boundary.md, "Trust boundary").
+   *   `source_bindings.credential_ref_id` is nullable (a credential-less
+   *   adapter like lab@1) and, when set, must reference `credential_refs`.
+   *   `action_policies.environment_id` is UNIQUE: at most one ActionPolicy
+   *   per Environment, the same rule `RegistrySnapshotSchema` enforces.
+   * - `incidents` carries NO foreign key to `services` or `environments`:
+   *   `primary_service_id` / `primary_environment_id` are plain columns, so
+   *   `removeEnvironment` / `removeService` never cascade into deleting an
+   *   Incident. `idempotency_key` is UNIQUE: repeated intake with the same
+   *   key never creates a second Incident.
+   * - `registry_events` is the append-only ledger `createRegistryStore`
+   *   records one row into per mutation: a `bigserial seq` primary key (the
+   *   same shape `fence_rejections` above already uses) and a `body jsonb`
+   *   column, with no foreign key of its own — an event about a removed
+   *   Service or Environment must stay readable after the row it names is
+   *   gone.
+   */
+  Object.freeze({
+    version: 3,
+    sql: `
+      SET LOCAL search_path TO "aic_app", public;
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."services" (
+        id uuid PRIMARY KEY,
+        name text NOT NULL UNIQUE,
+        repository_aliases text[] NOT NULL DEFAULT '{}'::text[]
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."environments" (
+        id uuid PRIMARY KEY,
+        service_id uuid NOT NULL REFERENCES "services"(id),
+        name text NOT NULL,
+        UNIQUE (service_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."credential_refs" (
+        id uuid PRIMARY KEY,
+        environment_id uuid NOT NULL REFERENCES "environments"(id),
+        name text NOT NULL,
+        access text NOT NULL CHECK (access IN ('read', 'write')),
+        secret_name text NOT NULL,
+        UNIQUE (environment_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."source_bindings" (
+        id uuid PRIMARY KEY,
+        environment_id uuid NOT NULL REFERENCES "environments"(id),
+        name text NOT NULL,
+        adapter_id text NOT NULL,
+        adapter_version text NOT NULL,
+        config jsonb NOT NULL DEFAULT '{}'::jsonb,
+        credential_ref_id uuid REFERENCES "credential_refs"(id),
+        UNIQUE (environment_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."action_policies" (
+        id uuid PRIMARY KEY,
+        environment_id uuid NOT NULL UNIQUE REFERENCES "environments"(id),
+        allowed_action_types text[] NOT NULL DEFAULT '{}'::text[],
+        write_credential_ref_ids uuid[] NOT NULL DEFAULT '{}'::uuid[]
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."incidents" (
+        id text PRIMARY KEY,
+        idempotency_key text NOT NULL UNIQUE,
+        primary_service_id uuid,
+        primary_environment_id uuid,
+        body jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+      );
+
+      CREATE TABLE IF NOT EXISTS "aic_app"."registry_events" (
+        seq bigserial PRIMARY KEY,
+        kind text NOT NULL,
+        subject_id uuid,
+        body jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+      );
     `,
   }),
 ]);
