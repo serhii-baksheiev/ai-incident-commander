@@ -174,13 +174,11 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
    * ruling approved (`docs/decisions/integration-boundary.md`) — written to
    * exclusively by `registry-store.ts`'s `createRegistryStore`.
    *
-   * `REFERENCES` targets below are deliberately UNQUALIFIED (`"services"`,
-   * not `"aic_app"."services"`): test/registry-schema.test.mjs's
-   * `source_bindings.credential_ref_id` assertion matches
-   * `REFERENCES\s+"?credential_refs"?` literally, with no schema prefix.
-   * `SET LOCAL search_path` just below resolves each unqualified reference
-   * against `aic_app` for the rest of this migration's transaction only —
-   * every `CREATE TABLE` target itself stays schema-qualified.
+   * `REFERENCES` targets below are schema-qualified
+   * (`"aic_app"."services"`, not `"services"`), the same as every
+   * `CREATE TABLE` target: a migration's statements are self-contained SQL
+   * text, never dependent on a session-level `search_path` a caller's own
+   * connection settings could override.
    *
    * - `services` / `environments` / `credential_refs` / `source_bindings` /
    *   `action_policies` mirror `@aic/domain`'s `Service` / `Environment` /
@@ -207,8 +205,6 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
   Object.freeze({
     version: 3,
     sql: `
-      SET LOCAL search_path TO "aic_app", public;
-
       CREATE TABLE IF NOT EXISTS "aic_app"."services" (
         id uuid PRIMARY KEY,
         name text NOT NULL UNIQUE,
@@ -217,14 +213,14 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
 
       CREATE TABLE IF NOT EXISTS "aic_app"."environments" (
         id uuid PRIMARY KEY,
-        service_id uuid NOT NULL REFERENCES "services"(id),
+        service_id uuid NOT NULL REFERENCES "aic_app"."services"(id),
         name text NOT NULL,
         UNIQUE (service_id, name)
       );
 
       CREATE TABLE IF NOT EXISTS "aic_app"."credential_refs" (
         id uuid PRIMARY KEY,
-        environment_id uuid NOT NULL REFERENCES "environments"(id),
+        environment_id uuid NOT NULL REFERENCES "aic_app"."environments"(id),
         name text NOT NULL,
         access text NOT NULL CHECK (access IN ('read', 'write')),
         secret_name text NOT NULL,
@@ -233,18 +229,18 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
 
       CREATE TABLE IF NOT EXISTS "aic_app"."source_bindings" (
         id uuid PRIMARY KEY,
-        environment_id uuid NOT NULL REFERENCES "environments"(id),
+        environment_id uuid NOT NULL REFERENCES "aic_app"."environments"(id),
         name text NOT NULL,
         adapter_id text NOT NULL,
         adapter_version text NOT NULL,
         config jsonb NOT NULL DEFAULT '{}'::jsonb,
-        credential_ref_id uuid REFERENCES "credential_refs"(id),
+        credential_ref_id uuid REFERENCES "aic_app"."credential_refs"(id),
         UNIQUE (environment_id, name)
       );
 
       CREATE TABLE IF NOT EXISTS "aic_app"."action_policies" (
         id uuid PRIMARY KEY,
-        environment_id uuid NOT NULL UNIQUE REFERENCES "environments"(id),
+        environment_id uuid NOT NULL UNIQUE REFERENCES "aic_app"."environments"(id),
         allowed_action_types text[] NOT NULL DEFAULT '{}'::text[],
         write_credential_ref_ids uuid[] NOT NULL DEFAULT '{}'::uuid[]
       );

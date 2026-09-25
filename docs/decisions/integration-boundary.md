@@ -96,12 +96,14 @@ consumer; AIC owns only its own records about them.
 
 ## Removal semantics
 
-Removing an Environment, or a Service with all its Environments, deletes what
-lets AIC act on it — its SourceBindings, its ActionPolicy and its
-CredentialRefs — from the active registry (AIC-99, acceptance 5). Nothing can
-then select, check or use them. What becomes of the secret a removed
-CredentialRef named — revoking it in the secret backend — is part of the
-credential lifecycle AIC-46 owns, and this record does not decide it.
+Removing an Environment deletes what lets AIC act on it — its SourceBindings,
+its ActionPolicy and its CredentialRefs — from the active registry (AIC-99,
+acceptance 5). Nothing can then select, check or use them. Removing a Service
+is refused while it still has an Environment, rather than cascading through
+each one: a Service is only ever removed once it has none left to protect.
+What becomes of the secret a removed CredentialRef named — revoking it in the
+secret backend — is part of the credential lifecycle AIC-46 owns, and this
+record does not decide it.
 
 What audits the past is kept: incidents, runs, Evidence and action history,
 under the audit rules AIC-99 preserves and AIC-46 hardens. Deleting them would

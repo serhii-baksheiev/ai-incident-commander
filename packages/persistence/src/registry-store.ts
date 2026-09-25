@@ -206,11 +206,22 @@ function resolveCredentialRefId(snapshot: RegistrySnapshot, environmentId: strin
  * then refuse it (`... does not name a known ...`) when the resulting
  * snapshot is validated below, which is what turns every such case into a
  * `RegistryValidationError` carrying real zod issues, with no special-casing
- * per caller. The same mechanism is what makes `removeService`'s refusal (a
- * Service that still has an Environment) fall out of the same generic
- * validation step, with no dedicated check of its own: removing the Service
- * from the snapshot while its Environment stays behind is exactly the
- * "Environment.serviceId does not name a known Service" issue.
+ * per caller. **This is the ADD paths' mechanism only** (`addEnvironment`,
+ * `addCredentialRef`, `addSourceBinding`, `setActionPolicy`): a fresh id
+ * lands in the new snapshot right alongside the row that references it, so
+ * the cross-reference check has something to refuse.
+ *
+ * The REMOVE paths (`removeEnvironment`, `removeService`) cannot rely on the
+ * same mechanism: filtering a snapshot by an id nothing carries removes
+ * nothing, so a snapshot built from an unresolved name would look
+ * unchanged and pass validation vacuously, reporting success for a removal
+ * that removed nothing. Each of those two checks its own name resolves to an
+ * existing row in the loaded snapshot and throws `RegistryValidationError`
+ * itself, before either produces a `newSnapshot`, a `write`, or an `event` —
+ * `removeService`'s refusal while its Service still has an Environment
+ * remains the one case that DOES fall out of the generic validation step
+ * below (an Environment whose `serviceId` no longer names a Service in the
+ * snapshot with that Service removed).
  */
 type MutationOutcome<T> = {
   readonly newSnapshot: RegistrySnapshot;
@@ -218,6 +229,20 @@ type MutationOutcome<T> = {
   readonly event: { readonly kind: string; readonly subjectId: string; readonly body: unknown };
   readonly write: (client: PoolClient) => Promise<void>;
 };
+
+/**
+ * `client.release(err)` (pg) destroys the pooled connection instead of
+ * returning it to the pool whenever `err` is truthy — correct for a broken
+ * connection (a failed ROLLBACK, a network error), wrong for a mutation this
+ * store itself refused on purpose. `RegistryValidationError` and
+ * `RegistryConflictError` are exactly that: the transaction rolled back
+ * cleanly and the connection is fine, so releasing it as broken would only
+ * shrink the pool on ordinary, expected refusals.
+ */
+function releaseClient(client: PoolClient, failure: unknown): void {
+  const isExpectedRefusal = failure instanceof RegistryValidationError || failure instanceof RegistryConflictError;
+  client.release(failure !== undefined && !isExpectedRefusal ? failure : undefined);
+}
 
 async function mutate<T>(
   pool: Pool,
@@ -234,7 +259,6 @@ async function mutate<T>(
 
       const parsed = RegistrySnapshotSchema.safeParse(newSnapshot);
       if (!parsed.success) {
-        await client.query('ROLLBACK');
         throw new RegistryValidationError(
           `the resulting registry snapshot is invalid: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`,
           parsed.error.issues.map((issue) => ({ message: issue.message, path: issue.path })),
@@ -259,7 +283,46 @@ async function mutate<T>(
       throw error;
     }
   } finally {
-    client.release(failure);
+    releaseClient(client, failure);
+  }
+}
+
+/**
+ * `snapshot()`'s five SELECTs run on one dedicated client inside
+ * `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY … COMMIT`, so all five see
+ * the same instant of the registry (PostgreSQL's MVCC snapshot, taken at
+ * `BEGIN`) rather than each read racing an interleaved mutation — see
+ * registry-store.live.mjs › "snapshot() never returns a SourceBinding whose
+ * credentialRefId survives from before a removeEnvironment that fully
+ * commits partway through the read".
+ *
+ * Deliberately does NOT take `REGISTRY_LOCK_KEY`: a lock-serialized read
+ * would block a concurrent `mutate()` (e.g. a committing `removeEnvironment`)
+ * for as long as the read takes, which a plain read has no business doing.
+ * REPEATABLE READ's own MVCC snapshot is the mechanism that keeps the read
+ * consistent without serializing against writers.
+ */
+async function readConsistentSnapshot(pool: Pool): Promise<RegistrySnapshot> {
+  const client = await pool.connect();
+  let failure: unknown;
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    try {
+      const snapshot = await loadSnapshot(client);
+      await client.query('COMMIT');
+      return snapshot;
+    } catch (error) {
+      failure = error;
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // The original error is what gets reported; a connection that cannot
+        // even roll back is released as broken below.
+      }
+      throw error;
+    }
+  } finally {
+    releaseClient(client, failure);
   }
 }
 
@@ -267,7 +330,7 @@ async function mutate<T>(
 export function createRegistryStore(pool: Pool): RegistryStore {
   return {
     async snapshot() {
-      return loadSnapshot(pool);
+      return readConsistentSnapshot(pool);
     },
 
     async addService(input) {
@@ -435,12 +498,22 @@ export function createRegistryStore(pool: Pool): RegistryStore {
 
     async removeEnvironment(input) {
       return mutate(pool, async (snapshot) => {
-        const serviceId = resolveServiceId(snapshot, input.serviceName);
-        const environmentId = resolveEnvironmentId(snapshot, serviceId, input.environmentName);
+        const service = snapshot.services.find((candidate) => candidate.name === input.serviceName);
+        const environment = service
+          ? snapshot.environments.find(
+              (candidate) => candidate.serviceId === service.id && candidate.name === input.environmentName,
+            )
+          : undefined;
+        if (!service || !environment) {
+          const message = `no Environment named "${input.environmentName}" exists for service "${input.serviceName}"`;
+          throw new RegistryValidationError(message, [{ message, path: ['environmentName'] }]);
+        }
+        const serviceId = service.id;
+        const environmentId = environment.id;
         return {
           newSnapshot: {
             ...snapshot,
-            environments: snapshot.environments.filter((environment) => environment.id !== environmentId),
+            environments: snapshot.environments.filter((candidate) => candidate.id !== environmentId),
             sourceBindings: snapshot.sourceBindings.filter((binding) => binding.environmentId !== environmentId),
             credentialRefs: snapshot.credentialRefs.filter((ref) => ref.environmentId !== environmentId),
             actionPolicies: snapshot.actionPolicies.filter((policy) => policy.environmentId !== environmentId),
@@ -457,7 +530,14 @@ export function createRegistryStore(pool: Pool): RegistryStore {
             await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".action_policies WHERE environment_id = $1`, [
               environmentId,
             ]);
-            await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".environments WHERE id = $1`, [environmentId]);
+            const { rowCount } = await client.query(
+              `DELETE FROM "${APPLICATION_SCHEMA}".environments WHERE id = $1`,
+              [environmentId],
+            );
+            if (rowCount !== 1) {
+              const message = `expected to delete exactly one Environment row for id "${environmentId}", deleted ${rowCount}`;
+              throw new RegistryValidationError(message, [{ message, path: ['environmentName'] }]);
+            }
           },
         };
       });
@@ -465,13 +545,24 @@ export function createRegistryStore(pool: Pool): RegistryStore {
 
     async removeService(input) {
       return mutate(pool, async (snapshot) => {
-        const serviceId = resolveServiceId(snapshot, input.serviceName);
+        const service = snapshot.services.find((candidate) => candidate.name === input.serviceName);
+        if (!service) {
+          const message = `no Service named "${input.serviceName}" exists`;
+          throw new RegistryValidationError(message, [{ message, path: ['serviceName'] }]);
+        }
+        const serviceId = service.id;
         return {
-          newSnapshot: { ...snapshot, services: snapshot.services.filter((service) => service.id !== serviceId) },
+          newSnapshot: { ...snapshot, services: snapshot.services.filter((candidate) => candidate.id !== serviceId) },
           result: undefined as void,
           event: { kind: 'service.removed', subjectId: serviceId, body: {} },
           write: async (client) => {
-            await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".services WHERE id = $1`, [serviceId]);
+            const { rowCount } = await client.query(`DELETE FROM "${APPLICATION_SCHEMA}".services WHERE id = $1`, [
+              serviceId,
+            ]);
+            if (rowCount !== 1) {
+              const message = `expected to delete exactly one Service row for id "${serviceId}", deleted ${rowCount}`;
+              throw new RegistryValidationError(message, [{ message, path: ['serviceName'] }]);
+            }
           },
         };
       });
