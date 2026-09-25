@@ -76,6 +76,8 @@ const sourceBinding: SourceBinding = {
   environmentId,
   adapterId: 'github-actions',
   adapterVersion: '1.0.0',
+  name: 'github-actions-primary',
+  config: { owner: 'org', repo: 'checkout' },
   credentialRefId: readCredRefId,
 };
 
@@ -83,6 +85,7 @@ const credentialRef: CredentialRef = {
   id: readCredRefId,
   environmentId,
   access: 'read',
+  name: 'checkout-read',
   secretName: 'CHECKOUT_READ',
 };
 
@@ -90,6 +93,7 @@ const credentialRefWithValue: CredentialRef = {
   id: readCredRefId,
   environmentId,
   access: 'read',
+  name: 'checkout-read',
   secretName: 'CHECKOUT_READ',
   // @ts-expect-error a CredentialRef never carries the secret's own value
   value: 'not-a-real-secret',

@@ -57,6 +57,7 @@ const baseCredentialRef = () => ({
   id: credentialReadA,
   environmentId: environmentA,
   access: 'read',
+  name: 'checkout-read',
   secretName: 'CHECKOUT_READ',
 });
 
@@ -75,10 +76,10 @@ const baseIntake = () => ({
   signals: [baseSignal()],
 });
 
-test('CredentialRef declares exactly id, environmentId, access, secretName', () => {
+test('CredentialRef declares exactly id, environmentId, access, name, secretName', () => {
   assert.deepEqual(
     Object.keys(domain.CredentialRefSchema.shape).sort(),
-    ['access', 'environmentId', 'id', 'secretName'].sort(),
+    ['access', 'environmentId', 'id', 'name', 'secretName'].sort(),
   );
 });
 
