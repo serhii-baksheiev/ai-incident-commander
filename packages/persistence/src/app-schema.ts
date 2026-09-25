@@ -81,8 +81,8 @@ export const APPLICATION_MIGRATIONS: readonly ApplicationMigration[] = Object.fr
    * AIC-56 slice C: the fenced write context's own tables, and
    * `runs.interaction_id` (decision 4). Migration 1 above stays
    * byte-identical — see run-write-context.test.mjs › "APP_SCHEMA_VERSION is
-   * 2, migration 1's SQL is byte-identical to what shipped in #97, and
-   * migration 2 exists".
+   * 3, migrations 1 and 2 are byte-identical to what shipped before, and
+   * migration 3 exists".
    *
    * - `node_results` is the committed-result ledger decision 6 asks for: one
    *   row per `(run_id, exec_key)`, never updated after insert (`run-write-context.ts`
