@@ -75,7 +75,7 @@ type Prediction = {
 };
 
 // A closed union, one of three forms (packages/domain/src/contracts.ts):
-// deployment-in-window, log-class-in-window and signal-state.
+// deployment-in-window, log-class-in-window and signal-state. `subject` is 1 to 200 characters.
 type ExpectedObservation =
   | { form: "deployment-in-window"; subject: string; window: ObservationWindow; presence: "present" | "absent" }
   | { form: "log-class-in-window"; subject: string; window: ObservationWindow; logClass: LogClass; presence: "present" | "absent" }
@@ -142,7 +142,15 @@ type Evidence = {
   statement: string;
   rawRef: string;
   reliability?: "high" | "medium" | "low";
+  observation?: { version: 1; facts: ObservedFact[] }; // 1 to 16 facts; nothing populates it yet
 };
+
+// Typed data about one evidence item, in the same three forms as ExpectedObservation.
+// A presence form counts matches, and says whether the read covered the whole window.
+type ObservedFact =
+  | { form: "deployment-in-window"; subject: string; window: ObservationWindow; count: number; coverage: "complete" | "partial" }
+  | { form: "log-class-in-window"; subject: string; window: ObservationWindow; logClass: LogClass; count: number; coverage: "complete" | "partial" }
+  | { form: "signal-state"; subject: string; window: ObservationWindow; signal: SignalKind; state: SignalState };
 ```
 
 `Evidence` does not know whether it supports or contradicts any hypothesis. `statement` is produced deterministically by the tool. `reliability`, if present, is source-derived rather than LLM judgement.
@@ -322,9 +330,10 @@ invented usage, scope or observation. On the `kind: 'start'` path the schema's
 version literal refuses it. On the resume path the graph's own version guard
 refuses it, because a restored checkpoint is never parsed by the schema. The
 resume guard also runs at the resume entry, so a finished older run is
-refused rather than returned. Its message names what that version lacks. Below
-v4 that is the `primaryScope`:
+refused rather than returned:
 see state-cutover.test.mjs › "refuses a resume of a FINISHED v3 checkpoint that predates primaryScope, rather than treating it as a no-op"
+The message names what that version lacks. Below v4 that is the `primaryScope`:
+see state-cutover.test.mjs › "refuses to resume a schema-version-3 checkpoint paused at the HITL interrupt, because it predates primaryScope"
 At v4 it is the typed predictions and the hypothesis cause:
 see state-cutover.test.mjs › "refuses to resume a schema-version-4 checkpoint paused at the HITL interrupt, because it predates typed predictions and hypothesis cause"
 The `aic start` / `aic resume` spike runner's checkpoints carry no incident and

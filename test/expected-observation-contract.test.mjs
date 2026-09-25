@@ -1,16 +1,16 @@
 /**
- * AIC-123 slice 1 (owner ruling D1, item 4; `aic123-design.md` section 2): the
+ * AIC-123 slice 1 (the owner's AIC-123 ruling of 2026-09-25, D1 and D2): the
  * structured hypothesis cause and the typed, versioned `ExpectedObservation` /
  * `ObservedFact` contracts.
  *
  * `CauseDescriptionSchema` replaces the inline `{component, mechanism,
  * trigger?}` object `CauseClaimSchema.cause` already declared, and
  * `HypothesisSchema` gains an optional reference to that same schema object —
- * "one shape, two users" (`aic123-design.md` section 2). `ExpectedObservation`
+ * "one shape, two users". `ExpectedObservation`
  * moves from `z.unknown()` to a closed, versioned vocabulary of three forms,
- * each covering one class of evidence the corpus actually carries (R2, R3 —
- * owner ruling D1). `ObservedFact` is the same vocabulary's typed-data half on
- * `Evidence`, added but populated by nothing yet (D2).
+ * each covering one class of evidence the corpus actually carries (the AIC-128
+ * dispositions R2 and R3). `ObservedFact` is the same vocabulary's typed-data
+ * half on `Evidence`, added but populated by nothing yet (decision D2).
  *
  * Every expectation below is a hand-written literal: none is read back off the
  * schema or function it checks (`.claude/rules/invariants.md`, "the
@@ -70,7 +70,7 @@ test('StructuredHypothesisSchema requires a cause that HypothesisSchema leaves o
   );
 });
 
-test('accepts a human-added hypothesis with an optional cause, and still accepts one with none (owner ruling D1, item 20)', () => {
+test('accepts a human-added hypothesis with an optional cause, and still accepts one with none', () => {
   const withoutCause = {
     id: 'human-1',
     statement: 'a dependency outside the initial candidate set is failing',

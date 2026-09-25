@@ -173,7 +173,7 @@ function withoutPrimaryScopeAtVersion(version) {
 const namesTheVersionThisGraphReads = new RegExp(
   `this graph reads schema version ${INCIDENT_STATE_SCHEMA_VERSION}\\b`,
 );
-const namesNoPrimaryScope = /primaryScope|cannot be migrated/i;
+const namesNoPrimaryScope = /no incident primaryScope/i;
 const tellsCallerToStartOver = /start a new investigation/i;
 
 /* -------------------------------------------------------------------------- */
@@ -209,7 +209,12 @@ for (const version of [1, 2, 3]) {
       assert.match(
         outcome.error.message,
         namesNoPrimaryScope,
-        `the refusal must say the persisted incident has no primaryScope or cannot be migrated: ${outcome.error.message}`,
+        `the refusal must say the persisted incident has no primaryScope: ${outcome.error.message}`,
+      );
+      assert.doesNotMatch(
+        outcome.error.message,
+        /untyped predictions|hypothesis cause/i,
+        `a version below 4 predates primaryScope; it must not be given the version-4 clause: ${outcome.error.message}`,
       );
       assert.match(
         outcome.error.message,
@@ -228,7 +233,7 @@ for (const version of [1, 2, 3]) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* AIC-123 slice 1 (owner ruling D1): the v0.4 -> v0.5 cutover, a checkpoint  */
+/* AIC-123 slice 1: the schema-version 4 -> 5 cutover, a checkpoint           */
 /* that HAS primaryScope but predates typed predictions and hypothesis cause */
 /* -------------------------------------------------------------------------- */
 

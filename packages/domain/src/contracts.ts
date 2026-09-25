@@ -41,7 +41,7 @@ export const LogicalCountSchema = z.number().int().nonnegative();
 
 /* -------------------------------------------------------------------------- */
 /* ExpectedObservation / ObservedFact: a closed, versioned vocabulary          */
-/* (AIC-123 slice 1, owner ruling D1 items 2 and 9; aic123-design.md section 2)*/
+/* (AIC-123 slice 1; the owner's AIC-123 ruling of 2026-09-25, D1 and D2)     */
 /* -------------------------------------------------------------------------- */
 
 export const EXPECTED_OBSERVATION_VERSION = 1 as const;
@@ -163,7 +163,7 @@ export const HypothesisStatusSchema = z.enum([
 ]);
 
 /**
- * One shape, two users (AIC-123 slice 1, aic123-design.md section 2):
+ * One shape, two users (AIC-123 slice 1):
  * `CauseClaimSchema.cause` and `Hypothesis.cause` both reference this exact
  * schema object, never two copies of the same shape — see
  * test/expected-observation-contract.test.mjs › "gives Hypothesis.cause the
@@ -215,7 +215,7 @@ export const PredictionSchema = z.strictObject({
   statement: ContractStringSchema,
   observationVersion: z.literal(EXPECTED_OBSERVATION_VERSION),
   // A prediction that commits to nothing is not a prediction; expectedIfFalse
-  // carries no such minimum (aic123-design.md section 2).
+  // carries no such minimum.
   expectedIfTrue: z.array(ExpectedObservationSchema).min(1).max(MAX_OBSERVATIONS),
   expectedIfFalse: z.array(ExpectedObservationSchema).max(MAX_OBSERVATIONS),
   status: z.enum(['untested', 'confirmed', 'refuted', 'untestable']),

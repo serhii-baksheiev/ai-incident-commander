@@ -8,12 +8,11 @@
  *   `incident.primaryScope` (AIC-96), and 4 -> 5 for the required
  *   `Prediction.observationVersion` with a typed `ExpectedObservation`
  *   (AIC-123);
- * - an optional field would be carried unvalidated by older code: 4 -> 5 also
- *   covers the hypothesis `cause`. The resume path parses nothing, so without
- *   the bump an older graph would pass a cause it cannot check into its model
- *   prompts. Nothing coerces a missing counter to a default
- * — a run that resumed with an invented usage count would under-report what it
- * had spent.
+ * - older code would carry an optional field it does not validate: 4 -> 5
+ *   also covers the hypothesis `cause`.
+ *
+ * Nothing coerces a missing counter to a default — a run that resumed with an
+ * invented usage count would under-report what it had spent.
  *
  * ⚠ **This literal alone guards one path, not both.** It is reached through
  * `IncidentStateSchema`, which the graph applies to a `kind: 'start'` input and
