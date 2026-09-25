@@ -46,7 +46,20 @@ export const LogicalCountSchema = z.number().int().nonnegative();
 
 export const EXPECTED_OBSERVATION_VERSION = 1 as const;
 
-const SubjectSchema = z.string().min(1);
+/**
+ * A subject names a service or component as the telemetry names it. It is
+ * bounded, because a model or HITL caller will supply it and it is persisted
+ * verbatim.
+ * see expected-observation-contract.test.mjs › "refuses a subject longer than 200 characters as an ExpectedObservation"
+ */
+export const SubjectSchema = z.string().min(1).max(200);
+
+/**
+ * The most observations one prediction or one evidence item may carry, in
+ * each list.
+ * see expected-observation-contract.test.mjs › "bounds each observation list at 16 entries: expectedIfTrue, expectedIfFalse and observation.facts"
+ */
+const MAX_OBSERVATIONS = 16;
 export const ObservationWindowSchema = z.enum(['pre-onset', 'incident', 'recovery']);
 export const LogClassSchema = z.enum(['error', 'timeout', 'activity']);
 export const SignalKindSchema = z.enum([
@@ -57,7 +70,7 @@ export const SignalKindSchema = z.enum([
   'dependency-health',
 ]);
 export const SignalStateSchema = z.enum(['normal', 'elevated', 'at-limit']);
-const PresenceSchema = z.enum(['present', 'absent']);
+export const PresenceSchema = z.enum(['present', 'absent']);
 
 /**
  * What a prediction commits to observing. A discriminated union of exactly the
@@ -129,7 +142,7 @@ export const ObservedFactSchema = z.discriminatedUnion('form', [
  */
 export function observedPresence(
   fact: z.infer<typeof ObservedFactSchema>,
-): 'present' | 'absent' | 'unknown' {
+): z.infer<typeof PresenceSchema> | 'unknown' {
   if (fact.form === 'signal-state') return 'unknown';
   if (fact.count > 0) return 'present';
   if (fact.count === 0 && fact.coverage === 'complete') return 'absent';
@@ -203,8 +216,8 @@ export const PredictionSchema = z.strictObject({
   observationVersion: z.literal(EXPECTED_OBSERVATION_VERSION),
   // A prediction that commits to nothing is not a prediction; expectedIfFalse
   // carries no such minimum (aic123-design.md section 2).
-  expectedIfTrue: z.array(ExpectedObservationSchema).min(1),
-  expectedIfFalse: z.array(ExpectedObservationSchema),
+  expectedIfTrue: z.array(ExpectedObservationSchema).min(1).max(MAX_OBSERVATIONS),
+  expectedIfFalse: z.array(ExpectedObservationSchema).max(MAX_OBSERVATIONS),
   status: z.enum(['untested', 'confirmed', 'refuted', 'untestable']),
 });
 
@@ -255,7 +268,7 @@ export const EvidenceSchema = z.strictObject({
   observation: z
     .strictObject({
       version: z.literal(EXPECTED_OBSERVATION_VERSION),
-      facts: z.array(ObservedFactSchema).min(1),
+      facts: z.array(ObservedFactSchema).min(1).max(MAX_OBSERVATIONS),
     })
     .optional(),
 });

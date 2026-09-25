@@ -48,10 +48,12 @@ type Hypothesis = {
   id: string;
   statement: string;
   createdBy: "initial" | "challenge";
+  cause?: { component: string; mechanism: string; trigger?: string }; // the same shape as CauseClaim.cause
 };
 
 type HypothesisStatus =
   | "candidate"
+  | "corroborated"
   | "supported"
   | "weakened"
   | "rejected";
@@ -66,10 +68,18 @@ type Prediction = {
   id: string;
   hypothesisId: string;
   statement: string;
-  expectedIfTrue: ExpectedObservation[];
-  expectedIfFalse: ExpectedObservation[];
+  observationVersion: 1;
+  expectedIfTrue: ExpectedObservation[]; // 1 to 16
+  expectedIfFalse: ExpectedObservation[]; // 0 to 16
   status: "untested" | "confirmed" | "refuted" | "untestable";
 };
+
+// A closed union, one of three forms (packages/domain/src/contracts.ts):
+// deployment-in-window, log-class-in-window and signal-state.
+type ExpectedObservation =
+  | { form: "deployment-in-window"; subject: string; window: ObservationWindow; presence: "present" | "absent" }
+  | { form: "log-class-in-window"; subject: string; window: ObservationWindow; logClass: LogClass; presence: "present" | "absent" }
+  | { form: "signal-state"; subject: string; window: ObservationWindow; signal: SignalKind; state: SignalState };
 ```
 
 A prediction must state what observation would support it and what observation would falsify it.
@@ -299,17 +309,24 @@ the test tree returns. The per-budget calibration statements are published by
 `summarizeBudgetPolicyEvidence`.
 see budget-policy.test.mjs › "states in the report that llmCallBudget is not empirically calibrated, and why"
 
-`schemaVersion` is `4`: it moves whenever a required field is added to the
-strict control object or to the persisted incident — `2` for the logical budget
-counters, `3` for `resumeCount`, `4` for `incident.primaryScope` (AIC-96, the
-v0.2 → v0.3 cutover). State persisted under an older version is refused rather
-than coerced to an invented usage of zero or an invented scope — on the
-`kind: 'start'` path by the schema's version literal, and on the resume path by
-the graph's own version guard, because a restored checkpoint is never parsed by
-the schema. The resume guard also runs at the resume entry, so a finished
-pre-v4 run is refused rather than returned, and its message tells the caller to
-start a new investigation from an intake that names its `primaryScope`:
+`schemaVersion` is `5`. It moves whenever state written under one version
+would be read wrongly by the other:
+- `2` for the logical budget counters;
+- `3` for `resumeCount`;
+- `4` for `incident.primaryScope` (AIC-96, the v0.2 → v0.3 cutover);
+- `5` for typed expected observations and the optional hypothesis `cause`
+  (AIC-123).
+
+State persisted under an older version is refused rather than coerced to an
+invented usage, scope or observation. On the `kind: 'start'` path the schema's
+version literal refuses it. On the resume path the graph's own version guard
+refuses it, because a restored checkpoint is never parsed by the schema. The
+resume guard also runs at the resume entry, so a finished older run is
+refused rather than returned. Its message names what that version lacks. Below
+v4 that is the `primaryScope`:
 see state-cutover.test.mjs › "refuses a resume of a FINISHED v3 checkpoint that predates primaryScope, rather than treating it as a no-op"
+At v4 it is the typed predictions and the hypothesis cause:
+see state-cutover.test.mjs › "refuses to resume a schema-version-4 checkpoint paused at the HITL interrupt, because it predates typed predictions and hypothesis cause"
 The `aic start` / `aic resume` spike runner's checkpoints carry no incident and
 are read unchanged:
 see state-cutover.test.mjs › "resumes a spike-runner checkpoint stamped at schema version 3 and returns its trials/evidence unchanged (pin: this state carries no incident)"

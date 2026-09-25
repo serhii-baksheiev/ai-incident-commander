@@ -1,12 +1,17 @@
 /**
- * The persisted shape of `IncidentState`. It moves whenever a required field is
- * added to `IncidentStateControlSchema` — a strict object — or to the persisted
- * `incident` itself, so state persisted under an older version is missing
- * something the current one requires: 1 -> 2 for the graph-owned logical budget
- * counters (`iterationsUsed`, `llmCallsUsed`), 2 -> 3 for `resumeCount`,
- * 3 -> 4 for the now-required `incident.primaryScope` (AIC-96), and 4 -> 5 for
- * typed `ExpectedObservation` (`observationVersion`) and the optional
- * hypothesis `cause` (AIC-123). Nothing coerces a missing counter to a default
+ * The persisted shape of `IncidentState`. It moves whenever state written under
+ * one version would be read wrongly by the other. There are two ways that
+ * happens:
+ * - a field the current version requires is missing from older state:
+ *   1 -> 2 for the graph-owned logical budget counters (`iterationsUsed`,
+ *   `llmCallsUsed`), 2 -> 3 for `resumeCount`, 3 -> 4 for the now-required
+ *   `incident.primaryScope` (AIC-96), and 4 -> 5 for the required
+ *   `Prediction.observationVersion` with a typed `ExpectedObservation`
+ *   (AIC-123);
+ * - an optional field would be carried unvalidated by older code: 4 -> 5 also
+ *   covers the hypothesis `cause`. The resume path parses nothing, so without
+ *   the bump an older graph would pass a cause it cannot check into its model
+ *   prompts. Nothing coerces a missing counter to a default
  * — a run that resumed with an invented usage count would under-report what it
  * had spent.
  *
