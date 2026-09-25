@@ -709,6 +709,18 @@ test('removeService cascades through both of a Service\'s Environments and their
     assert.equal(auditRowsBefore[table].length, 1, `this row must have seeded exactly one aic_app.${table} row before removal`);
   }
 
+  // registry_events is append-only, and addService/addEnvironment above
+  // already appended their own service.added/environment.added rows naming
+  // these same subject_ids — so a query scoped by subject_id would also
+  // match those earlier rows, not only the ones this removal is about to
+  // append. Reading the ledger's own high-water mark immediately before the
+  // removal, and later selecting only what landed after it, isolates
+  // exactly the events removeService itself appends.
+  const { rows: seqRowsBefore } = await pool.query(
+    'select coalesce(max(seq), 0) as seq from aic_app.registry_events',
+  );
+  const seqBeforeRemoval = Number(seqRowsBefore[0].seq);
+
   await store.removeService({ serviceName: 'checkout' });
 
   // Independent of snapshot(): the raw tables must carry none of the removed
@@ -778,10 +790,16 @@ test('removeService cascades through both of a Service\'s Environments and their
   // registry_events: exactly one event per cascaded Environment plus one for
   // the Service — this file's design choice keeps `kind` a free-text mention
   // of "remov" (see this file's header), so the shape pinned here is the
-  // COUNT and the SUBJECT of each event, not a literal string.
+  // COUNT and the SUBJECT of each event, not a literal string. Scoped by
+  // seq > seqBeforeRemoval rather than by subject_id: the ledger is
+  // append-only, and addService/addEnvironment above already appended
+  // service.added/environment.added rows naming these same subject_ids, so a
+  // subject_id filter would also match those earlier rows. Scoping by seq
+  // isolates exactly the events this removal appended, and — being unfiltered
+  // by subject_id — also catches a stray event about any other subject.
   const { rows: eventRows } = await pool.query(
-    `select kind, subject_id from aic_app.registry_events where subject_id = any($1::uuid[]) order by seq`,
-    [[...removedEnvironmentIds, service.id]],
+    `select kind, subject_id from aic_app.registry_events where seq > $1 order by seq`,
+    [seqBeforeRemoval],
   );
   const environmentRemovalEvents = eventRows.filter((row) => removedEnvironmentIds.includes(row.subject_id));
   const serviceRemovalEvents = eventRows.filter((row) => row.subject_id === service.id);
