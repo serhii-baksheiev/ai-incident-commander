@@ -219,6 +219,10 @@ const ALLOWED_APPLICATION_SCHEMA_WRITERS = Object.freeze([
   'run-store.ts',
   'run-write-context.ts',
   'retention.ts',
+  // AIC-99 slice c: the registry store writes the registry tables migration 3
+  // creates (services, environments, credential_refs, source_bindings,
+  // action_policies, registry_events).
+  'registry-store.ts',
 ]);
 
 test('only the allow-listed modules in packages/persistence/src write an aic_app table', () => {
