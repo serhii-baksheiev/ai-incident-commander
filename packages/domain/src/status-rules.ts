@@ -3,10 +3,12 @@
  * added to `IncidentStateControlSchema` — a strict object — or to the persisted
  * `incident` itself, so state persisted under an older version is missing
  * something the current one requires: 1 -> 2 for the graph-owned logical budget
- * counters (`iterationsUsed`, `llmCallsUsed`), 2 -> 3 for `resumeCount`, and
- * 3 -> 4 for the now-required `incident.primaryScope` (AIC-96). Nothing
- * coerces a missing counter to a default — a run that resumed with an invented
- * usage count would under-report what it had spent.
+ * counters (`iterationsUsed`, `llmCallsUsed`), 2 -> 3 for `resumeCount`,
+ * 3 -> 4 for the now-required `incident.primaryScope` (AIC-96), and 4 -> 5 for
+ * typed `ExpectedObservation` (`observationVersion`) and the optional
+ * hypothesis `cause` (AIC-123). Nothing coerces a missing counter to a default
+ * — a run that resumed with an invented usage count would under-report what it
+ * had spent.
  *
  * ⚠ **This literal alone guards one path, not both.** It is reached through
  * `IncidentStateSchema`, which the graph applies to a `kind: 'start'` input and
@@ -26,16 +28,15 @@
  * domain-contract.test.mjs › "rejects control state persisted under the
  * previous schema version"
  *
- * `STATUS_RULES_VERSION` moves independently of this one: AIC-119 bumps it to
- * `'v0.2'` to add the `corroborated` hypothesis status (owner ruling D1), while
- * `INCIDENT_STATE_SCHEMA_VERSION` stays at 4. Status is derived from
- * predictions and assessments on every read (`deriveHypothesisStatus`) and is
- * never itself persisted, so a status-rules version bump has nothing to
- * migrate in `IncidentStateControlSchema` — see status-rules-v02.test.mjs ›
- * "publishes STATUS_RULES with the historical v0.1 table and the new v0.2
- * table".
+ * `STATUS_RULES_VERSION` moves independently of this one: AIC-119 bumped it to
+ * `'v0.2'` to add the `corroborated` hypothesis status (owner ruling D1) on its
+ * own schedule. Status is derived from predictions and assessments on every
+ * read (`deriveHypothesisStatus`) and is never itself persisted, so a
+ * status-rules version bump has nothing to migrate in
+ * `IncidentStateControlSchema` — see status-rules-v02.test.mjs › "publishes
+ * STATUS_RULES with the historical v0.1 table and the new v0.2 table".
  */
-export const INCIDENT_STATE_SCHEMA_VERSION = 4 as const;
+export const INCIDENT_STATE_SCHEMA_VERSION = 5 as const;
 export const STATUS_RULES_VERSION = 'v0.2' as const;
 
 export const BASELINE_STATUS_RULES = {

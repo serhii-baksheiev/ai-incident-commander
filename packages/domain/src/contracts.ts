@@ -9,8 +9,132 @@ const NonEmptyStringSchema = z.string().min(1);
 const StrengthSchema = z.enum(['high', 'medium', 'low']);
 
 export const ToolIdSchema = NonEmptyStringSchema;
-export const ExpectedObservationSchema = z.unknown();
 export const InvestigationPhaseSchema = NonEmptyStringSchema;
+
+/**
+ * A budget or a usage count: a non-negative safe integer, and nothing else.
+ *
+ * Exported because the graph re-validates these same counters at runtime and
+ * must not restate the rule — a schema that admits `-1` while the graph rejects
+ * it is one fact spelled two ways, and the copy nobody is looking at is the one
+ * that is wrong (`.claude/rules/invariants.md`, "one mechanism, one
+ * implementation"). The challenge counters carried a hand-written second
+ * spelling of this rule until AIC-76 and no longer do — see
+ * `assertChallengeCounters` in `packages/graph/src/investigation.ts`. Which
+ * fields carry the rule is not listed here, because a list in a comment is the
+ * copy that goes stale: read the schema below. The one that did go stale said "four"
+ * while the graph checked five, and two more have just been added.
+ *
+ * The graph's re-validation is not redundant, and this is the distinction worth
+ * keeping. It runs where this schema cannot: a `kind: 'resume'` takes its state
+ * from the checkpointer and is never parsed by `IncidentStateSchema` at all. And
+ * for `challengeRounds` it enforces something no schema here expresses — the
+ * `MAX_CHALLENGE_ROUNDS` cap, which is the graph's business because the graph is
+ * what spends the rounds. A value one past the cap parses cleanly here on
+ * purpose: investigation-graph.test.mjs › "refuses a start state one past the
+ * challenge round cap, which the domain schema accepts".
+ *
+ * Moved above `ObservedFactSchema` and `IncidentStateControlSchema`, its two
+ * users, rather than declared between them (AIC-123 slice 1).
+ */
+export const LogicalCountSchema = z.number().int().nonnegative();
+
+/* -------------------------------------------------------------------------- */
+/* ExpectedObservation / ObservedFact: a closed, versioned vocabulary          */
+/* (AIC-123 slice 1, owner ruling D1 items 2 and 9; aic123-design.md section 2)*/
+/* -------------------------------------------------------------------------- */
+
+export const EXPECTED_OBSERVATION_VERSION = 1 as const;
+
+const SubjectSchema = z.string().min(1);
+export const ObservationWindowSchema = z.enum(['pre-onset', 'incident', 'recovery']);
+export const LogClassSchema = z.enum(['error', 'timeout', 'activity']);
+export const SignalKindSchema = z.enum([
+  'error-rate',
+  'latency',
+  'connection-pool',
+  'worker-saturation',
+  'dependency-health',
+]);
+export const SignalStateSchema = z.enum(['normal', 'elevated', 'at-limit']);
+const PresenceSchema = z.enum(['present', 'absent']);
+
+/**
+ * What a prediction commits to observing. A discriminated union of exactly the
+ * three forms the corpus's evidence carries (R2, R3 in the owner ruling) —
+ * replacing the previous `z.unknown()`, which accepted and round-tripped
+ * anything, including the untyped `{observation: string}` bag every producer
+ * used until this slice. See test/expected-observation-contract.test.mjs for
+ * the accepted and refused shapes.
+ */
+export const ExpectedObservationSchema = z.discriminatedUnion('form', [
+  z.strictObject({
+    form: z.literal('deployment-in-window'),
+    subject: SubjectSchema,
+    window: ObservationWindowSchema,
+    presence: PresenceSchema,
+  }),
+  z.strictObject({
+    form: z.literal('log-class-in-window'),
+    subject: SubjectSchema,
+    window: ObservationWindowSchema,
+    logClass: LogClassSchema,
+    presence: PresenceSchema,
+  }),
+  z.strictObject({
+    form: z.literal('signal-state'),
+    subject: SubjectSchema,
+    window: ObservationWindowSchema,
+    signal: SignalKindSchema,
+    state: SignalStateSchema,
+  }),
+]);
+
+/**
+ * The same vocabulary's typed-data half, carried on `Evidence.observation`
+ * (owner ruling D2): a count and a coverage claim rather than a presence
+ * verdict, so the verdict itself is derived once, by `observedPresence` below,
+ * rather than asserted by whatever populates this field.
+ */
+export const ObservedFactSchema = z.discriminatedUnion('form', [
+  z.strictObject({
+    form: z.literal('deployment-in-window'),
+    subject: SubjectSchema,
+    window: ObservationWindowSchema,
+    count: LogicalCountSchema,
+    coverage: z.enum(['complete', 'partial']),
+  }),
+  z.strictObject({
+    form: z.literal('log-class-in-window'),
+    subject: SubjectSchema,
+    window: ObservationWindowSchema,
+    logClass: LogClassSchema,
+    count: LogicalCountSchema,
+    coverage: z.enum(['complete', 'partial']),
+  }),
+  z.strictObject({
+    form: z.literal('signal-state'),
+    subject: SubjectSchema,
+    window: ObservationWindowSchema,
+    signal: SignalKindSchema,
+    state: SignalStateSchema,
+  }),
+]);
+
+/**
+ * Rule (a), defined once: a fact is `absent` only when it was counted at zero
+ * under complete coverage. Anything else that carries no presence semantics at
+ * all (`signal-state`) is `unknown`, never `absent` — see
+ * test/expected-observation-contract.test.mjs, the `observedPresence` rows.
+ */
+export function observedPresence(
+  fact: z.infer<typeof ObservedFactSchema>,
+): 'present' | 'absent' | 'unknown' {
+  if (fact.form === 'signal-state') return 'unknown';
+  if (fact.count > 0) return 'present';
+  if (fact.count === 0 && fact.coverage === 'complete') return 'absent';
+  return 'unknown';
+}
 
 export const IncidentSchema = z.looseObject({
   id: IdentifierSchema,
@@ -25,10 +149,38 @@ export const HypothesisStatusSchema = z.enum([
   'corroborated',
 ]);
 
+/**
+ * One shape, two users (AIC-123 slice 1, aic123-design.md section 2):
+ * `CauseClaimSchema.cause` and `Hypothesis.cause` both reference this exact
+ * schema object, never two copies of the same shape — see
+ * test/expected-observation-contract.test.mjs › "gives Hypothesis.cause the
+ * exact same schema object CauseClaimSchema.cause uses, not a second copy of
+ * the same shape". Vocabulary membership of `mechanism` is checked by the
+ * caller, as it already was for `CauseClaimSchema.cause`.
+ */
+export const CauseDescriptionSchema = z.strictObject({
+  component: ContractStringSchema,
+  mechanism: ContractStringSchema,
+  trigger: ContractStringSchema.optional(),
+});
+
 export const HypothesisSchema = z.strictObject({
   id: IdentifierSchema,
   statement: ContractStringSchema,
   createdBy: z.enum(['initial', 'challenge']),
+  // Present only if the producer supplied one; slice 1 wires the contract, and
+  // no producer sets it yet (slice 2 wires the model roles).
+  cause: CauseDescriptionSchema.optional(),
+});
+
+/**
+ * What the new, cause-carrying path reads: the same `Hypothesis` shape, with
+ * `cause` required rather than optional — see
+ * test/expected-observation-contract.test.mjs › "StructuredHypothesisSchema
+ * requires a cause that HypothesisSchema leaves optional".
+ */
+export const StructuredHypothesisSchema = HypothesisSchema.extend({
+  cause: CauseDescriptionSchema,
 });
 
 export const HumanAddedHypothesisSchema = HypothesisSchema.extend({
@@ -48,7 +200,10 @@ export const PredictionSchema = z.strictObject({
   id: IdentifierSchema,
   hypothesisId: IdentifierSchema,
   statement: ContractStringSchema,
-  expectedIfTrue: z.array(ExpectedObservationSchema),
+  observationVersion: z.literal(EXPECTED_OBSERVATION_VERSION),
+  // A prediction that commits to nothing is not a prediction; expectedIfFalse
+  // carries no such minimum (aic123-design.md section 2).
+  expectedIfTrue: z.array(ExpectedObservationSchema).min(1),
   expectedIfFalse: z.array(ExpectedObservationSchema),
   status: z.enum(['untested', 'confirmed', 'refuted', 'untestable']),
 });
@@ -93,6 +248,16 @@ export const EvidenceSchema = z.strictObject({
   statement: ContractStringSchema,
   rawRef: ContractStringSchema,
   reliability: StrengthSchema.optional(),
+  // Typed data for the observation vocabulary above (owner ruling D2): optional
+  // because nothing populates it yet — see
+  // test/expected-observation-contract.test.mjs › "accepts Evidence with no
+  // observation field, since nothing populates it yet (owner ruling D2)".
+  observation: z
+    .strictObject({
+      version: z.literal(EXPECTED_OBSERVATION_VERSION),
+      facts: z.array(ObservedFactSchema).min(1),
+    })
+    .optional(),
 });
 
 export const EvidenceAssessmentSchema = z.strictObject({
@@ -110,11 +275,7 @@ export const EvidenceAssessmentSchema = z.strictObject({
 
 export const CauseClaimSchema = z.strictObject({
   hypothesisId: IdentifierSchema,
-  cause: z.strictObject({
-    component: ContractStringSchema,
-    mechanism: ContractStringSchema,
-    trigger: ContractStringSchema.optional(),
-  }),
+  cause: CauseDescriptionSchema,
   evidenceIds: z.array(IdentifierSchema),
 });
 
@@ -131,31 +292,6 @@ export const InvestigationStopSchema = z.enum([
   'tools-unavailable',
   'human-stop',
 ]);
-
-/**
- * A budget or a usage count: a non-negative safe integer, and nothing else.
- *
- * Exported because the graph re-validates these same counters at runtime and
- * must not restate the rule — a schema that admits `-1` while the graph rejects
- * it is one fact spelled two ways, and the copy nobody is looking at is the one
- * that is wrong (`.claude/rules/invariants.md`, "one mechanism, one
- * implementation"). The challenge counters carried a hand-written second
- * spelling of this rule until AIC-76 and no longer do — see
- * `assertChallengeCounters` in `packages/graph/src/investigation.ts`. Which
- * fields carry the rule is not listed here, because a list in a comment is the
- * copy that goes stale: read the schema below. The one that did go stale said "four"
- * while the graph checked five, and two more have just been added.
- *
- * The graph's re-validation is not redundant, and this is the distinction worth
- * keeping. It runs where this schema cannot: a `kind: 'resume'` takes its state
- * from the checkpointer and is never parsed by `IncidentStateSchema` at all. And
- * for `challengeRounds` it enforces something no schema here expresses — the
- * `MAX_CHALLENGE_ROUNDS` cap, which is the graph's business because the graph is
- * what spends the rounds. A value one past the cap parses cleanly here on
- * purpose: investigation-graph.test.mjs › "refuses a start state one past the
- * challenge round cap, which the domain schema accepts".
- */
-export const LogicalCountSchema = z.number().int().nonnegative();
 
 export const IncidentStateControlSchema = z.strictObject({
   runId: IdentifierSchema,
@@ -198,10 +334,13 @@ export const IncidentStateSchema = z.strictObject({
 
 export type ToolId = z.infer<typeof ToolIdSchema>;
 export type ExpectedObservation = z.infer<typeof ExpectedObservationSchema>;
+export type ObservedFact = z.infer<typeof ObservedFactSchema>;
 export type InvestigationPhase = z.infer<typeof InvestigationPhaseSchema>;
 export type Incident = z.infer<typeof IncidentSchema>;
 export type HypothesisStatus = z.infer<typeof HypothesisStatusSchema>;
+export type CauseDescription = z.infer<typeof CauseDescriptionSchema>;
 export type Hypothesis = z.infer<typeof HypothesisSchema>;
+export type StructuredHypothesis = z.infer<typeof StructuredHypothesisSchema>;
 export type HumanAddedHypothesis = z.infer<
   typeof HumanAddedHypothesisSchema
 >;
