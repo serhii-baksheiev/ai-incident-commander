@@ -33,12 +33,10 @@
  *   AIC_POSTGRES_HOST_PORT=5433 docker compose \
  *     --file infra/postgres/compose.yaml down
  *
- * ## Design choices this file assumes — none of these shapes is chosen yet
+ * ## Design choices this file pins
  *
  * The task spec names `createRegistryStore(pool)`'s methods but leaves a few
- * things open; each is stated here rather than discovered mid-assertion, and
- * each is a fine implementation choice to shape differently as long as the
- * PR description says so:
+ * things open; each is stated here rather than discovered mid-assertion:
  *
  *   - `createRegistryStore` takes an already-open `pg.Pool`, unlike
  *     `createRunStore`'s connection string — this file builds its own `Pool`
