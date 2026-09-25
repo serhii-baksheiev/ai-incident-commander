@@ -252,6 +252,9 @@ test('only the allow-listed modules in packages/persistence/src write an aic_app
  * export — including the two this slice is expected to add,
  * `readRunProductSnapshot` and `pruneTerminalRun` — is a visible, deliberate
  * change to this list rather than a silent addition.
+ *
+ * AIC-99 slice c adds a third name to that same list: `createRegistryStore`,
+ * the factory for the transactional registry store migration 3's tables back.
  */
 const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'APPLICATION_MIGRATIONS',
@@ -273,6 +276,7 @@ const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'assertCheckpointerSchemaVersion',
   'createFencedCheckpointer',
   'createPostgresCheckpointer',
+  'createRegistryStore',
   'createRunEventStreamSource',
   'createRunStore',
   'createSqliteCheckpointer',
