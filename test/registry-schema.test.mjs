@@ -150,8 +150,22 @@ test('source_bindings.credential_ref_id is nullable, so a credential-less adapte
   );
   assert.match(
     sourceBindingsFragment,
-    /credential_ref_id.*REFERENCES\s+"?credential_refs"?/is,
-    'source_bindings.credential_ref_id must reference credential_refs when it is not null',
+    /credential_ref_id.*REFERENCES\s+(?:"?aic_app"?\.)?"?credential_refs"?/is,
+    'source_bindings.credential_ref_id must reference credential_refs when it is not null, whether or not the REFERENCES target is schema-qualified',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* migration 3 never relies on SET LOCAL search_path                          */
+/* -------------------------------------------------------------------------- */
+
+test('migration 3 never sets search_path: every REFERENCES target is schema-qualified instead', () => {
+  const sql = migration3Sql();
+
+  assert.doesNotMatch(
+    sql,
+    /search_path/i,
+    'migration 3 must not rely on SET LOCAL search_path to resolve its unqualified REFERENCES targets: a migration\'s statements are self-contained SQL text (app-schema.ts\'s own module doc), so every REFERENCES target here must be schema-qualified ("aic_app"."<table>") instead of depending on a session-level search_path that a caller\'s own connection settings could override',
   );
 });
 

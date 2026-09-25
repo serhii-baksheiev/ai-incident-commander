@@ -155,8 +155,8 @@ test('the fence statement text contains FOR SHARE, all four predicates, and neve
 });
 
 /* -------------------------------------------------------------------------- */
-/* Row 3 — APP_SCHEMA_VERSION is 2, migration 1 is untouched, migration 2     */
-/* exists                                                                     */
+/* Row 3 — APP_SCHEMA_VERSION reflects every migration that exists, and      */
+/* migrations 1 and 2 stay byte-identical once a later one is appended        */
 /* -------------------------------------------------------------------------- */
 
 /**

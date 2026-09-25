@@ -131,11 +131,11 @@ test('refuses to run without a PostgreSQL connection string instead of skipping'
 });
 
 /* -------------------------------------------------------------------------- */
-/* Row 5 — setupApplicationSchema reaches version 2, every new table exists,  */
-/* migration 1's own partial indexes carry over                              */
+/* Row 5 — setupApplicationSchema creates every migration-2 table and column, */
+/* and migration 1's own partial indexes carry over                          */
 /* -------------------------------------------------------------------------- */
 
-test('setupApplicationSchema brings the database to version 2 with every new table, and the catalog shows them', async (t) => {
+test('setupApplicationSchema creates every migration-2 table and column, and the catalog shows them', async (t) => {
   const connectionString = requireConnectionString();
   await persistence.setupApplicationSchema(connectionString);
   const store = await persistence.createRunStore(connectionString, DEFAULT_OPTIONS);
@@ -143,7 +143,7 @@ test('setupApplicationSchema brings the database to version 2 with every new tab
 
   await assert.doesNotReject(
     () => persistence.assertApplicationSchemaVersion(store.pool),
-    'after setupApplicationSchema the application schema must report exactly APP_SCHEMA_VERSION (2)',
+    'after setupApplicationSchema the application schema must report exactly the current APP_SCHEMA_VERSION',
   );
 
   const { rows: tableRows } = await store.pool.query(
@@ -160,7 +160,7 @@ test('setupApplicationSchema brings the database to version 2 with every new tab
     'fence_rejections',
     'schema_migrations',
   ]) {
-    assert.ok(tableNames.has(expected), `aic_app.${expected} must exist after setupApplicationSchema reaches version 2`);
+    assert.ok(tableNames.has(expected), `aic_app.${expected} must exist after setupApplicationSchema runs`);
   }
 
   const { rows: columnRows } = await store.pool.query(
@@ -187,11 +187,11 @@ test('setupApplicationSchema brings the database to version 2 with every new tab
   );
   assert.ok(
     indexNames.has('runs_queued_created_at_idx'),
-    'migration 1\'s partial index over queued runs (slice B) must still exist at schema version 2',
+    'migration 1\'s partial index over queued runs (slice B) must still exist once migration 2 (and any migration appended after it) is applied',
   );
   assert.ok(
     indexNames.has('runs_running_lease_idx'),
-    'migration 1\'s partial index over running leases (slice B) must still exist at schema version 2',
+    'migration 1\'s partial index over running leases (slice B) must still exist once migration 2 (and any migration appended after it) is applied',
   );
   for (const table of ['node_results', 'run_events', 'run_event_counters', 'run_trials', 'run_evidence']) {
     assert.ok(indexNames.has(`${table}_pkey`), `aic_app.${table} must carry its own primary key`);

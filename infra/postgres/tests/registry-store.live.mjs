@@ -60,6 +60,19 @@
  *     CHECK); rows below assert only that a removal's `kind` mentions removal
  *     (`/remov/i`), not an exact literal, so this file does not pin a naming
  *     scheme the acceptance work has not chosen.
+ *   - `removeEnvironment` / `removeService` given a `serviceName` /
+ *     `environmentName` that names nothing must REFUSE with
+ *     `RegistryValidationError`, the same typed error every other invalid
+ *     mutation in this file already carries, rather than treating the call as
+ *     a no-op: `resolve*` in `registry-store.ts` hands an unresolved name a
+ *     fresh, never-matching id precisely so a resulting snapshot that still
+ *     references it fails `RegistrySnapshotSchema`'s cross-reference checks —
+ *     but a *removal* built from that same fresh id never lands in any such
+ *     snapshot: filtering by an id nothing carries removes nothing, so the
+ *     mutation's own generic validate-the-result step sees no change at all
+ *     and lets it through. Each row below in "refuses an unresolved name"
+ *     also checks that no `registry_events` row was appended for the id that
+ *     was never real.
  *
  * ## A note on the fixture values below
  *
@@ -604,5 +617,241 @@ test('credential_refs stores only a secretName, never a secret value: verified b
     dataRows,
     [{ access: 'read', secret_name: expectedSecretName }],
     'the raw row must carry exactly the secretName passed to addCredentialRef, never a value derived from or resembling a real secret',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* removeEnvironment refuses an unresolved environmentName, and changes       */
+/* nothing: no cascade, no registry_events row                                */
+/* -------------------------------------------------------------------------- */
+
+test('removeEnvironment refuses an environmentName that names no Environment of the Service, and leaves the real Environment\'s write CredentialRef, ActionPolicy and registry_events untouched', async (t) => {
+  const { store, pool } = await freshRegistryStore(t);
+  await store.addService({ name: 'billing', repositoryAliases: [] });
+  await store.addEnvironment({ serviceName: 'billing', name: 'production' });
+  const writeCredential = await store.addCredentialRef({
+    serviceName: 'billing',
+    environmentName: 'production',
+    name: 'billing-write',
+    access: 'write',
+    secretName: secretName('BILLING', 'WRITE', 'TOKEN'),
+  });
+  await store.setActionPolicy({
+    serviceName: 'billing',
+    environmentName: 'production',
+    allowedActionTypes: ['restart-pod'],
+    writeCredentialRefNames: ['billing-write'],
+  });
+
+  const { rows: eventsBefore } = await pool.query('select count(*)::int as n from aic_app.registry_events');
+
+  await assert.rejects(
+    () => store.removeEnvironment({ serviceName: 'billing', environmentName: 'production-typo' }),
+    (error) => {
+      assert.equal(
+        error.name,
+        'RegistryValidationError',
+        '"production-typo" names no Environment of "billing": removeEnvironment must refuse rather than resolving it to a fresh id that matches no row and then reporting success for a removal that removed nothing',
+      );
+      return true;
+    },
+    'removeEnvironment given a misspelled environmentName must reject rather than resolve to fulfilled',
+  );
+
+  const snapshot = await store.snapshot();
+  const survivingCredential = snapshot.credentialRefs.find((ref) => ref.id === writeCredential.id);
+  assert.ok(
+    survivingCredential,
+    'the real Environment\'s write CredentialRef must still exist after the refused removal',
+  );
+  const survivingPolicy = snapshot.actionPolicies.find(
+    (policy) => policy.environmentId === survivingCredential.environmentId,
+  );
+  assert.ok(survivingPolicy, 'the real Environment\'s ActionPolicy must still exist after the refused removal');
+
+  const { rows: eventsAfter } = await pool.query('select count(*)::int as n from aic_app.registry_events');
+  assert.equal(
+    eventsAfter[0].n,
+    eventsBefore[0].n,
+    'a refused removeEnvironment must append no registry_events row for the environmentName that named nothing',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* removeService refuses an unresolved serviceName, and changes nothing       */
+/* -------------------------------------------------------------------------- */
+
+test('removeService refuses a serviceName that names no Service, and leaves the real Service and registry_events untouched', async (t) => {
+  const { store, pool } = await freshRegistryStore(t);
+  await store.addService({ name: 'billing', repositoryAliases: [] });
+
+  const { rows: eventsBefore } = await pool.query('select count(*)::int as n from aic_app.registry_events');
+
+  await assert.rejects(
+    () => store.removeService({ serviceName: 'billing-typo' }),
+    (error) => {
+      assert.equal(
+        error.name,
+        'RegistryValidationError',
+        '"billing-typo" names no Service: removeService must refuse rather than resolving it to a fresh id that matches no row and then reporting success for a removal that removed nothing',
+      );
+      return true;
+    },
+    'removeService given a misspelled serviceName must reject rather than resolve to fulfilled',
+  );
+
+  const snapshot = await store.snapshot();
+  assert.ok(
+    snapshot.services.some((service) => service.name === 'billing'),
+    'the real Service must still exist after the refused removal',
+  );
+
+  const { rows: eventsAfter } = await pool.query('select count(*)::int as n from aic_app.registry_events');
+  assert.equal(
+    eventsAfter[0].n,
+    eventsBefore[0].n,
+    'a refused removeService must append no registry_events row for the serviceName that named nothing',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* snapshot() is a consistent read across its five underlying SELECTs         */
+/* -------------------------------------------------------------------------- */
+
+test('snapshot() never returns a SourceBinding whose credentialRefId survives from before a removeEnvironment that fully commits partway through the read', async (t) => {
+  const { store, pool } = await freshRegistryStore(t);
+  await store.addService({ name: 'billing', repositoryAliases: [] });
+  await store.addEnvironment({ serviceName: 'billing', name: 'production' });
+  await store.addCredentialRef({
+    serviceName: 'billing',
+    environmentName: 'production',
+    name: 'billing-read',
+    access: 'read',
+    secretName: secretName('BILLING', 'READ', 'TOKEN'),
+  });
+  await store.addSourceBinding({
+    serviceName: 'billing',
+    environmentName: 'production',
+    name: 'github-source',
+    adapterId: 'github',
+    adapterVersion: '1',
+    config: {},
+    credentialRefName: 'billing-read',
+  });
+
+  // loadSnapshot(pool) — what snapshot() calls — issues exactly five
+  // sequential SELECTs over the plain pool, in this fixed order:
+  // services, environments, source_bindings, credential_refs,
+  // action_policies (registry-store.ts). Wrapping pool.query lands a real,
+  // fully-committed removeEnvironment exactly between the 3rd (source_bindings)
+  // and 4th (credential_refs) of those reads — deterministically, by counting
+  // calls rather than by any wall-clock wait, so this row cannot be flaky.
+  // removeEnvironment itself never goes through this wrapper: it opens its own
+  // client via pool.connect(), a different object from `pool` with its own
+  // `.query`, so intercepting `pool.query` here affects only what snapshot()
+  // sees.
+  const originalQuery = pool.query.bind(pool);
+  let queryCount = 0;
+  pool.query = async (...args) => {
+    const result = await originalQuery(...args);
+    queryCount += 1;
+    if (queryCount === 3) {
+      await store.removeEnvironment({ serviceName: 'billing', environmentName: 'production' });
+    }
+    return result;
+  };
+  t.after(() => {
+    pool.query = originalQuery;
+  });
+
+  const snapshot = await store.snapshot();
+
+  assert.doesNotThrow(
+    () => domain.RegistrySnapshotSchema.parse(snapshot),
+    'snapshot() must read the registry as of one instant: composing its source_bindings read from before removeEnvironment\'s commit with its credential_refs read from after that same commit produced a SourceBinding.credentialRefId naming a CredentialRef that snapshot()\'s own credentialRefs array no longer carries, which RegistrySnapshotSchema refuses as "SourceBinding.credentialRefId does not name a known CredentialRef" — proof that this read spanned two different, inconsistent states of the registry',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* removeService on a Service with no Environment deletes it and records the  */
+/* removal                                                                    */
+/* -------------------------------------------------------------------------- */
+
+test('removeService deletes a Service that has no Environment, and records the removal in registry_events', async (t) => {
+  const { store, pool } = await freshRegistryStore(t);
+  const service = await store.addService({ name: 'reporting', repositoryAliases: [] });
+
+  await store.removeService({ serviceName: 'reporting' });
+
+  const snapshot = await store.snapshot();
+  assert.equal(
+    snapshot.services.some((candidate) => candidate.id === service.id),
+    false,
+    'removeService must delete the Service row once it has no Environment left to protect',
+  );
+
+  const { rows: eventRows } = await pool.query(
+    `select kind from aic_app.registry_events where subject_id = $1 order by seq`,
+    [service.id],
+  );
+  assert.ok(
+    eventRows.some((row) => /remov/i.test(row.kind)),
+    'registry_events must record removeService\'s removal, with the removed Service as subject_id',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* setActionPolicy called twice for one Environment leaves exactly one row,   */
+/* carrying the second call's content                                        */
+/* -------------------------------------------------------------------------- */
+
+test('setActionPolicy called twice for the same Environment leaves exactly one action_policies row, carrying the second call\'s content', async (t) => {
+  const { store, pool } = await freshRegistryStore(t);
+  await store.addService({ name: 'billing', repositoryAliases: [] });
+  await store.addEnvironment({ serviceName: 'billing', name: 'production' });
+  await store.addCredentialRef({
+    serviceName: 'billing',
+    environmentName: 'production',
+    name: 'billing-write',
+    access: 'write',
+    secretName: secretName('BILLING', 'WRITE', 'TOKEN'),
+  });
+
+  await store.setActionPolicy({
+    serviceName: 'billing',
+    environmentName: 'production',
+    allowedActionTypes: ['restart-pod'],
+    writeCredentialRefNames: [],
+  });
+  const secondPolicy = await store.setActionPolicy({
+    serviceName: 'billing',
+    environmentName: 'production',
+    allowedActionTypes: ['rotate-credential'],
+    writeCredentialRefNames: ['billing-write'],
+  });
+
+  const { rows } = await pool.query(
+    `select id, allowed_action_types, write_credential_ref_ids from aic_app.action_policies where environment_id = $1`,
+    [secondPolicy.environmentId],
+  );
+  assert.equal(
+    rows.length,
+    1,
+    'two setActionPolicy calls for the same Environment must leave exactly one action_policies row, never two',
+  );
+  assert.equal(
+    rows[0].id,
+    secondPolicy.id,
+    'the surviving row must be the second call\'s own row',
+  );
+  assert.deepEqual(
+    rows[0].allowed_action_types,
+    ['rotate-credential'],
+    'the surviving row must carry the second call\'s allowed_action_types, not the first call\'s',
+  );
+  assert.deepEqual(
+    rows[0].write_credential_ref_ids,
+    [secondPolicy.writeCredentialRefIds[0]],
+    'the surviving row must carry the second call\'s write_credential_ref_ids, not the first call\'s (empty)',
   );
 });
