@@ -718,7 +718,39 @@ test('removeService refuses a serviceName that names no Service, and leaves the 
 /* snapshot() is a consistent read across its five underlying SELECTs         */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * This row must keep discriminating a consistent read from an inconsistent
+ * one NO MATTER which connection surface `snapshot()`'s five reads end up
+ * using: one valid implementation runs them as five bare `pool.query(...)`
+ * calls; an equally valid one opens one dedicated client (`pool.connect()`)
+ * and wraps them in their own `BEGIN … COMMIT`. If this row interposed only
+ * `pool.query`, that second shape would move every read behind a
+ * `client.query` this row never
+ * sees, the interposed removeEnvironment below would never fire, and the row
+ * would pass whether or not the read is actually consistent — green for the
+ * wrong reason, indistinguishable from a real fix. So BOTH surfaces on the
+ * SAME `pool` object the store under test holds are wrapped: `pool.query`
+ * directly, and `pool.connect()` so that whatever `PoolClient` it hands back
+ * also has its own `.query` wrapped before the caller ever sees it. Either
+ * shape is caught by the shared `afterSelect` counter below, keyed on which
+ * registry table a SELECT names rather than on a raw call count, so it does
+ * not care how many other statements (a lock acquisition, a `BEGIN`) an
+ * implementation interleaves.
+ *
+ * The removeEnvironment that must land mid-read runs on a SEPARATE `Pool`
+ * (`writerPool` / `writerStore`) this wrapper never touches — calling it
+ * through the store under test would recurse into the very wrapper we are
+ * using to observe it, since that store's own internal mutation also opens a
+ * client via `pool.connect()`.
+ *
+ * Finally, two assertions below exist only to keep this row honest: if
+ * `snapshot()`'s reads ever stopped naming a registry table in a SELECT this
+ * matcher recognises (or moved off `pool` entirely), the race would silently
+ * stop firing and the row would again pass vacuously. `sawSourceBindingsSelect`
+ * and `removalCommitted` fail loudly instead of letting that happen quietly.
+ */
 test('snapshot() never returns a SourceBinding whose credentialRefId survives from before a removeEnvironment that fully commits partway through the read', async (t) => {
+  const connectionString = requireConnectionString();
   const { store, pool } = await freshRegistryStore(t);
   await store.addService({ name: 'billing', repositoryAliases: [] });
   await store.addEnvironment({ serviceName: 'billing', name: 'production' });
@@ -739,36 +771,128 @@ test('snapshot() never returns a SourceBinding whose credentialRefId survives fr
     credentialRefName: 'billing-read',
   });
 
-  // loadSnapshot(pool) — what snapshot() calls — issues exactly five
-  // sequential SELECTs over the plain pool, in this fixed order:
-  // services, environments, source_bindings, credential_refs,
-  // action_policies (registry-store.ts). Wrapping pool.query lands a real,
-  // fully-committed removeEnvironment exactly between the 3rd (source_bindings)
-  // and 4th (credential_refs) of those reads — deterministically, by counting
-  // calls rather than by any wall-clock wait, so this row cannot be flaky.
-  // removeEnvironment itself never goes through this wrapper: it opens its own
-  // client via pool.connect(), a different object from `pool` with its own
-  // `.query`, so intercepting `pool.query` here affects only what snapshot()
-  // sees.
-  const originalQuery = pool.query.bind(pool);
-  let queryCount = 0;
+  // A pool the wrapping below never touches: the interposed removeEnvironment
+  // races the read on a connection of its own, exactly as an unrelated
+  // concurrent caller would.
+  const writerPool = new Pool({ connectionString });
+  const writerStore = persistence.createRegistryStore(writerPool);
+  t.after(() => writerPool.end());
+
+  const REGISTRY_TABLES = ['source_bindings', 'credential_refs', 'action_policies', 'environments', 'services'];
+  function selectedRegistryTable(sql) {
+    if (typeof sql !== 'string' || !/^\s*select/i.test(sql)) return null;
+    return REGISTRY_TABLES.find((table) => new RegExp(`\\b${table}\\b`, 'i').test(sql)) ?? null;
+  }
+
+  function withTimeout(promise, ms, message) {
+    let timer;
+    const timedOut = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    });
+    return Promise.race([promise, timedOut]).finally(() => clearTimeout(timer));
+  }
+
+  let sawSourceBindingsSelect = false;
+  let removalCommitted = false;
+  let triggered = false;
+
+  async function afterSelect(sql) {
+    if (triggered || selectedRegistryTable(sql) !== 'source_bindings') return;
+    triggered = true;
+    sawSourceBindingsSelect = true;
+    await withTimeout(
+      writerStore.removeEnvironment({ serviceName: 'billing', environmentName: 'production' }),
+      5000,
+      'the interposed removeEnvironment did not commit within 5s of the source_bindings SELECT: this row cannot prove anything about snapshot() consistency without that commit actually landing mid-read',
+    );
+    removalCommitted = true;
+  }
+
+  // A client `pool.connect()` hands out is a plain pg `Client`, whose own
+  // `.query` supports both call shapes pg itself uses: promise style
+  // (`client.query(text, values)`, what a dedicated-client snapshot()
+  // implementation would use) and callback style (`client.query(text, values,
+  // cb)`, what `pg`'s OWN `Pool.prototype.query` uses internally on the client
+  // it checks out — see node_modules/pg's `lib/pool.js`). Both must be
+  // wrapped, or the callback-style path used internally by plain
+  // `pool.query()` calls would fire `afterSelect` before the real query even
+  // starts (awaiting a callback-style call's `undefined` return resolves
+  // immediately), which would trigger the interposed removal too early and
+  // break every timing guarantee this row depends on. `__snapshotRaceWrapped`
+  // guards against re-wrapping the same client twice: `pg.Pool` reuses a
+  // checked-in client for a later `connect()`/`query()` call, and wrapping an
+  // already-wrapped `.query` a second time would fire `afterSelect` twice.
+  function wrapClientQuery(client) {
+    if (!client || client.__snapshotRaceWrapped) return;
+    client.__snapshotRaceWrapped = true;
+    const originalClientQuery = client.query.bind(client);
+    client.query = (...queryArgs) => {
+      const maybeCallback = queryArgs[queryArgs.length - 1];
+      if (typeof maybeCallback === 'function') {
+        return originalClientQuery(...queryArgs.slice(0, -1), (err, res, ...rest) => {
+          if (err) return maybeCallback(err, res, ...rest);
+          afterSelect(queryArgs[0])
+            .then(() => maybeCallback(err, res, ...rest))
+            .catch((hookError) => maybeCallback(hookError));
+        });
+      }
+      return (async () => {
+        const result = await originalClientQuery(...queryArgs);
+        await afterSelect(queryArgs[0]);
+        return result;
+      })();
+    };
+  }
+
+  const originalPoolQuery = pool.query.bind(pool);
   pool.query = async (...args) => {
-    const result = await originalQuery(...args);
-    queryCount += 1;
-    if (queryCount === 3) {
-      await store.removeEnvironment({ serviceName: 'billing', environmentName: 'production' });
-    }
+    const result = await originalPoolQuery(...args);
+    await afterSelect(args[0]);
     return result;
   };
+
+  // `pool.connect()` is itself dual-shaped: promise style when called with no
+  // callback (what this file's own setup and `mutate()` use), and callback
+  // style when `pg`'s own `Pool.prototype.query` calls `this.connect(cb)`
+  // internally to service the plain, argument-only `pool.query(text, values)`
+  // form wrapped above. Both branches route the client they hand back through
+  // the same `wrapClientQuery`.
+  const originalConnect = pool.connect.bind(pool);
+  pool.connect = (...args) => {
+    const maybeCallback = args[args.length - 1];
+    if (typeof maybeCallback === 'function') {
+      return originalConnect(...args.slice(0, -1), (err, client, release) => {
+        wrapClientQuery(client);
+        maybeCallback(err, client, release);
+      });
+    }
+    return (async () => {
+      const client = await originalConnect(...args);
+      wrapClientQuery(client);
+      return client;
+    })();
+  };
+
   t.after(() => {
-    pool.query = originalQuery;
+    pool.query = originalPoolQuery;
+    pool.connect = originalConnect;
   });
 
   const snapshot = await store.snapshot();
 
+  assert.equal(
+    sawSourceBindingsSelect,
+    true,
+    'this row never observed a SELECT against source_bindings on either connection surface of the pool under test, so it never exercised the race it exists to prove: snapshot() must be reading source_bindings through `pool` (directly or via `pool.connect()`), not through some other connection this wrapper cannot see',
+  );
+  assert.equal(
+    removalCommitted,
+    true,
+    'the interposed removeEnvironment must have fully committed mid-read for this row to prove anything about snapshot() consistency',
+  );
   assert.doesNotThrow(
     () => domain.RegistrySnapshotSchema.parse(snapshot),
-    'snapshot() must read the registry as of one instant: composing its source_bindings read from before removeEnvironment\'s commit with its credential_refs read from after that same commit produced a SourceBinding.credentialRefId naming a CredentialRef that snapshot()\'s own credentialRefs array no longer carries, which RegistrySnapshotSchema refuses as "SourceBinding.credentialRefId does not name a known CredentialRef" — proof that this read spanned two different, inconsistent states of the registry',
+    'snapshot() must read the registry as of one instant: a removeEnvironment that fully committed right after the source_bindings read must not surface, later in the SAME read, as a SourceBinding.credentialRefId naming a CredentialRef the credential_refs read no longer carries — which RegistrySnapshotSchema refuses as "SourceBinding.credentialRefId does not name a known CredentialRef" — proof that this read spanned two different, inconsistent states of the registry',
   );
 });
 
