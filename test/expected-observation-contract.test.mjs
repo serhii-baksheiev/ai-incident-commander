@@ -172,7 +172,23 @@ const invalidExpectedObservations = [
     'a presence form missing presence',
     { form: 'deployment-in-window', subject: 'checkout', window: 'incident' },
   ],
+  [
+    'a subject longer than 200 characters',
+    { form: 'deployment-in-window', subject: 's'.repeat(201), window: 'incident', presence: 'present' },
+  ],
 ];
+
+test('accepts a subject of exactly 200 characters, the bound', () => {
+  assert.equal(
+    domain.ExpectedObservationSchema.safeParse({
+      form: 'deployment-in-window',
+      subject: 's'.repeat(200),
+      window: 'incident',
+      presence: 'present',
+    }).success,
+    true,
+  );
+});
 
 for (const [label, value] of invalidExpectedObservations) {
   test(`refuses ${label} as an ExpectedObservation`, () => {
@@ -254,6 +270,26 @@ function baseEvidence(overrides = {}) {
     ...overrides,
   };
 }
+
+const OBSERVATION = Object.freeze({ form: 'deployment-in-window', subject: 'checkout', window: 'incident', presence: 'present' });
+const FACT = Object.freeze({ form: 'deployment-in-window', subject: 'checkout', window: 'incident', count: 1, coverage: 'complete' });
+
+test('bounds each observation list at 16 entries: expectedIfTrue, expectedIfFalse and observation.facts', () => {
+  const sixteen = (item) => Array.from({ length: 16 }, () => ({ ...item }));
+  const seventeen = (item) => Array.from({ length: 17 }, () => ({ ...item }));
+
+  assert.equal(domain.PredictionSchema.safeParse(validPrediction({ expectedIfTrue: sixteen(OBSERVATION) })).success, true);
+  assert.equal(domain.PredictionSchema.safeParse(validPrediction({ expectedIfTrue: seventeen(OBSERVATION) })).success, false);
+  assert.equal(domain.PredictionSchema.safeParse(validPrediction({ expectedIfFalse: seventeen(OBSERVATION) })).success, false);
+  assert.equal(
+    domain.EvidenceSchema.safeParse(baseEvidence({ observation: { version: domain.EXPECTED_OBSERVATION_VERSION, facts: sixteen(FACT) } })).success,
+    true,
+  );
+  assert.equal(
+    domain.EvidenceSchema.safeParse(baseEvidence({ observation: { version: domain.EXPECTED_OBSERVATION_VERSION, facts: seventeen(FACT) } })).success,
+    false,
+  );
+});
 
 test('accepts Evidence with no observation field, since nothing populates it yet (owner ruling D2)', () => {
   assert.equal(
@@ -444,6 +480,7 @@ test('names no scenario id or structural-ground-truth root-cause component in th
   };
 
   for (const [name, members] of Object.entries(vocabularies)) {
+    assert.ok(members.length > 0, `${name} must declare members, or this sweep passes vacuously`);
     for (const member of members) {
       assert.equal(
         scenarioIds.has(member),

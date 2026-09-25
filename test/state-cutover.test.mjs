@@ -313,6 +313,38 @@ test('refuses to resume a schema-version-4 checkpoint paused at the HITL interru
   }
 });
 
+/**
+ * The resume guard compares the persisted version with `!==` against the
+ * number the graph reads. A value that is not that number is refused whatever
+ * its shape: the string form of the current version, NaN, or no field at all.
+ * None of them gets a migration clause, because none names a version this
+ * graph has a history for.
+ */
+test('refuses to resume a checkpoint whose schemaVersion is not the current number: its string form, NaN, or absent', async () => {
+  for (const [label, rewrite] of [
+    ['the string form of the current version', (channels) => ({ ...channels, control: { ...channels.control, schemaVersion: String(INCIDENT_STATE_SCHEMA_VERSION) } })],
+    ['NaN', (channels) => ({ ...channels, control: { ...channels.control, schemaVersion: Number.NaN } })],
+    ['an absent field', (channels) => {
+      const { schemaVersion, ...control } = channels.control;
+      void schemaVersion;
+      return { ...channels, control };
+    }],
+  ]) {
+    const harness = createHarness({ runId: `run-cutover-nonnumeric-${label.replace(/\W+/g, '-')}` });
+    try {
+      // eslint-disable-next-line no-await-in-loop -- one harness per malformed shape
+      const interrupted = await harness.start();
+      harness.rewritePersistedChannels(rewrite);
+      // eslint-disable-next-line no-await-in-loop -- one harness per malformed shape
+      const outcome = await harness.resume(interrupted, { action: 'confirm' });
+      assert.equal('error' in outcome, true, `${label}: a schemaVersion that is not the current number must be refused`);
+      assert.doesNotMatch(outcome.error.message, /primaryScope|untyped predictions/i, `${label}: no migration clause applies to a version this graph has no history for: ${outcome.error.message}`);
+    } finally {
+      harness.cleanup();
+    }
+  }
+});
+
 test('refuses a kind: start input whose control names schema version 4', async () => {
   const harness = createHarness({ runId: 'run-cutover-start-schema-4' });
 
