@@ -89,7 +89,7 @@ const MAX_CONFIG_VALUE_LENGTH = 512;
  * registry-names-and-config.test.mjs › "every SECRET_VALUE_PATTERNS family is
  * either mirrored by the correspondence corpus or explicitly excluded, with a
  * reason" and › "refuses a config value if and only if findSecretValues
- * flags it, over a shared corpus of credential-shaped and benign values".
+ * flags it, over the shared corpus of credential-shaped and benign values".
  *
  * Mirrors every `SECRET_VALUE_PATTERNS` family except `assigned-secret` - a
  * KEYWORD+SEPARATOR+VALUE construction with its own bounded candidate walk,
@@ -173,14 +173,16 @@ const looksLikeCredential = (value: string) =>
  * "refuses constructor, toString, valueOf, hasOwnProperty and prototype as
  * config keys". A key that is itself slug-shaped is still screened for a
  * credential shape anywhere within it - › "refuses a config key that is
- * itself slug-shaped but reads as a credential anywhere within it".
+ * itself slug-shaped but reads as a credential anywhere within it, and never
+ * echoes the refused key into the reported issues".
  *
  * A refused key or value is never echoed into the issue it reports: every
  * issue carries a fixed message and `path: []`, which zod resolves to
  * `['config']` on the parent `SourceBindingSchema` - never the key or value
- * text itself. See › "refuses a credential-shaped config key, and never
- * echoes the refused key into the reported issues" and › "never carries a
- * refused secret-shaped config value into the error".
+ * text itself. See › "refuses a config key that is itself slug-shaped but
+ * reads as a credential anywhere within it, and never echoes the refused key
+ * into the reported issues" and › "never carries a refused secret-shaped
+ * config value into the error".
  */
 const SourceBindingConfigSchema = z.unknown().superRefine((value, ctx) => {
   const fail = (message: string) => ctx.addIssue({ code: 'custom', message, path: [] });
