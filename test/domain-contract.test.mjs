@@ -16,8 +16,17 @@ const state = {
       id: 'prediction-1',
       hypothesisId: 'hypothesis-1',
       statement: 'Failures began after deployment',
-      expectedIfTrue: [{ observation: 'onset matches deployment' }],
-      expectedIfFalse: [{ observation: 'failures predate deployment' }],
+      // AIC-123 slice 1: a Prediction's observations are typed and versioned
+      // rather than an opaque `{observation: string}` bag — see
+      // test/expected-observation-contract.test.mjs for the shapes
+      // ExpectedObservationSchema accepts and refuses.
+      observationVersion: 1,
+      expectedIfTrue: [
+        { form: 'deployment-in-window', subject: 'checkout', window: 'incident', presence: 'present' },
+      ],
+      expectedIfFalse: [
+        { form: 'deployment-in-window', subject: 'checkout', window: 'pre-onset', presence: 'present' },
+      ],
       status: 'confirmed',
     },
   ],
@@ -227,7 +236,10 @@ test('upserts collection members by replacing in place and appending new ids', (
 });
 
 test('publishes explicit state and baseline status-rule versions', () => {
-  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 4);
+  // AIC-123 slice 1 (owner ruling D1): the schema bumps 4 -> 5 for typed,
+  // versioned predictions and the hypothesis cause, with no migration — see
+  // test/state-cutover.test.mjs for the resume-side refusal this bump forces.
+  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 5);
   // AIC-119 slice 1 bumps the current status-rules version to v0.2, while
   // `BASELINE_STATUS_RULES` stays the historical v0.1 table (a literal here,
   // not `domain.STATUS_RULES_VERSION`, or this pin would float with the

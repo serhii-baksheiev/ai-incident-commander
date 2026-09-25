@@ -228,6 +228,115 @@ for (const version of [1, 2, 3]) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* AIC-123 slice 1 (owner ruling D1): the v0.4 -> v0.5 cutover, a checkpoint  */
+/* that HAS primaryScope but predates typed predictions and hypothesis cause */
+/* -------------------------------------------------------------------------- */
+
+test('publishes INCIDENT_STATE_SCHEMA_VERSION as 5', () => {
+  assert.equal(INCIDENT_STATE_SCHEMA_VERSION, 5);
+});
+
+/**
+ * Unlike `withoutPrimaryScopeAtVersion`, a schema-version-4 checkpoint carries
+ * a perfectly good `incident.primaryScope` — v4 is exactly the version that
+ * required it. Only `control.schemaVersion` needs rewriting: the gap this
+ * cutover is about is untyped predictions and a hypothesis with no cause, not
+ * anything on the `incident` channel.
+ */
+function atControlSchemaVersion(version) {
+  return (channels) => ({
+    ...channels,
+    control: { ...channels.control, schemaVersion: version },
+  });
+}
+
+const namesUntypedPredictionsAndNoCause = /untyped predictions/i;
+const namesNoHypothesisCause = /hypothesis cause/i;
+
+test('refuses to resume a schema-version-4 checkpoint paused at the HITL interrupt, because it predates typed predictions and hypothesis cause', async () => {
+  const harness = createHarness({ runId: 'run-cutover-paused-v4' });
+
+  try {
+    const interrupted = await harness.start();
+    const traceBeforeResume = [...harness.trace];
+    harness.rewritePersistedChannels(atControlSchemaVersion(4));
+
+    const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a schema-version-4 checkpoint predates typed predictions and hypothesis cause and must be refused, not resumed to completion',
+    );
+    assert.match(
+      outcome.error.message,
+      /^incompatible persisted state: schema version 4\b/,
+      `the refusal must start by naming the persisted version it refused on: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheVersionThisGraphReads,
+      `the refusal must name the version this graph reads, taken from the constant: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesUntypedPredictionsAndNoCause,
+      `the v4 clause must say the persisted state carries untyped predictions: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesNoHypothesisCause,
+      `the v4 clause must say the persisted state carries no hypothesis cause: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      /cannot be migrated/i,
+      `the v4 clause must say this cannot be migrated without inventing the missing data: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      tellsCallerToStartOver,
+      `the refusal must tell the caller to start a new investigation: ${outcome.error.message}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /primaryScope/i,
+      `a v4 checkpoint already has primaryScope; the v4 clause must be distinct from the below-v4 primaryScope clause: ${outcome.error.message}`,
+    );
+    assert.deepEqual(
+      harness.trace,
+      traceBeforeResume,
+      'the refusal must land before the resumed run executes another lifecycle node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('refuses a kind: start input whose control names schema version 4', async () => {
+  const harness = createHarness({ runId: 'run-cutover-start-schema-4' });
+
+  try {
+    const state = initialState('run-cutover-start-schema-4', { schemaVersion: 4 });
+
+    await assert.rejects(
+      () => harness.execution.execute({ kind: 'start', state }, harness.config),
+      (error) => {
+        assert.equal(
+          error.message,
+          'invalid investigation execution input',
+          `a start input stamped at schema version 4 must be refused as invalid input: ${error.message}`,
+        );
+        return true;
+      },
+      'a kind: start input naming schema version 4 must be refused, not accepted as current',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
 /* a FINISHED run whose checkpoint predates primaryScope                     */
 /* -------------------------------------------------------------------------- */
 
