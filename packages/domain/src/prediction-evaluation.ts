@@ -68,7 +68,10 @@ import { canonicalJson } from './execution.js';
  *    — see › "refutes a prediction when an expectedIfFalse observation
  *    holds, even while expectedIfTrue is unresolved".
  * 6. **`expectedIfTrue` confirms only once every observation in it holds**,
- *    each from its own matching evidence — see › "leaves a prediction
+ *    and an empty `expectedIfTrue` never confirms — see › "never confirms a
+ *    prediction whose expectedIfTrue list is empty, whatever evidence is
+ *    supplied, and keeps its input status". Each observation holds from its
+ *    own matching evidence — see › "leaves a prediction
  *    status unchanged when only one of two expectedIfTrue observations
  *    holds and nothing matches the other" and › "confirms a prediction only
  *    once every expectedIfTrue observation holds, and produces one
@@ -86,11 +89,17 @@ import { canonicalJson } from './execution.js';
  * 8. **No fact settling anything leaves the status unchanged**, not reset to
  *    `'untested'` — the input prediction's own `status` is returned when
  *    nothing above decided the call, which is what makes rule 1 sound for a
- *    reopened `'untestable'` prediction that still finds nothing.
+ *    reopened `'untestable'` prediction that still finds nothing — see ›
+ *    "leaves an untestable prediction untestable, not reset to untested,
+ *    when no evidence matches anything (rule 8: no fact settling anything
+ *    leaves the status unchanged)".
  *
  * One assessment per contributing evidence item, never per observation — an
  * evidence item that settles two observations of the same prediction still
- * contributes one assessment. Assessment ids are deterministic:
+ * contributes one assessment — see › "confirms a prediction from a single
+ * evidence item whose observation carries facts settling both expectedIfTrue
+ * observations, producing exactly one assessment for that evidence item".
+ * Assessment ids are deterministic:
  * `'rule-' + sha256 hex of JSON.stringify(canonicalJson([predictionId,
  * evidenceId, PREDICTION_EVALUATION_VERSION]))`, and every rationale names
  * `PREDICTION_EVALUATION_VERSION` — see › "confirms a prediction when the
@@ -264,7 +273,7 @@ function evaluateSinglePrediction(
     };
   }
 
-  if (trueSummaries.every((summary) => summary.holds.length > 0)) {
+  if (trueSummaries.length > 0 && trueSummaries.every((summary) => summary.holds.length > 0)) {
     return {
       status: 'confirmed',
       effect: 'supports',

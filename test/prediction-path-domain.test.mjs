@@ -536,6 +536,61 @@ test('the identical zero-count fact refutes once coverage is complete, proving t
 });
 
 /* -------------------------------------------------------------------------- */
+/* evaluatePredictionObservations: log-class-in-window form                  */
+/* -------------------------------------------------------------------------- */
+
+test('confirms a prediction when the observed log-class presence equals the expected presence for the same logClass', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const prediction = basePrediction({
+    id: 'p-logclass-confirm',
+    hypothesisId: 'h-logclass-confirm',
+    expectedIfTrue: [
+      { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'error', presence: 'present' },
+    ],
+  });
+  const evidence = evidenceItem('e-logclass-confirm', [
+    { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'error', count: 1, coverage: 'complete' },
+  ]);
+
+  const result = evaluatePredictionObservations({ predictions: [prediction], evidence: [evidence], asOf: ASOF });
+
+  assert.equal(result.predictions[0].status, 'confirmed');
+  assert.equal(result.assessments.length, 1);
+});
+
+test('leaves a prediction status unchanged (untested) on a logClass mismatch between the fact and the expected log-class-in-window observation, even though form, subject and window all agree', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const prediction = basePrediction({
+    id: 'p-logclass-mismatch',
+    hypothesisId: 'h-logclass-mismatch',
+    expectedIfTrue: [
+      { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'error', presence: 'present' },
+    ],
+  });
+  const evidence = evidenceItem('e-logclass-mismatch', [
+    { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'timeout', count: 1, coverage: 'complete' },
+  ]);
+
+  const result = evaluatePredictionObservations({ predictions: [prediction], evidence: [evidence], asOf: ASOF });
+
+  assert.equal(result.predictions[0].status, 'untested');
+  assert.equal(result.assessments.length, 0);
+});
+
+test('leaves a prediction status unchanged (untested) when the only matching-subject-and-window fact is a log-class-in-window fact and the expected observation is deployment-in-window', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const prediction = basePrediction({ id: 'p-cross-form-mismatch', hypothesisId: 'h-cross-form-mismatch' });
+  const evidence = evidenceItem('e-cross-form-mismatch', [
+    { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'error', count: 1, coverage: 'complete' },
+  ]);
+
+  const result = evaluatePredictionObservations({ predictions: [prediction], evidence: [evidence], asOf: ASOF });
+
+  assert.equal(result.predictions[0].status, 'untested');
+  assert.equal(result.assessments.length, 0);
+});
+
+/* -------------------------------------------------------------------------- */
 /* evaluatePredictionObservations: signal-state forms                        */
 /* -------------------------------------------------------------------------- */
 
@@ -774,6 +829,30 @@ test('confirms a prediction only once every expectedIfTrue observation holds, an
   );
 });
 
+test('confirms a prediction from a single evidence item whose observation carries facts settling both expectedIfTrue observations, producing exactly one assessment for that evidence item', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const prediction = twoObservationPrediction();
+  const bothObservationsEvidence = evidenceItem('e-both-observations', [
+    { form: 'deployment-in-window', subject: 'checkout', window: 'pre-onset', count: 1, coverage: 'complete' },
+    { form: 'signal-state', subject: 'checkout', window: 'incident', signal: 'error-rate', state: 'elevated' },
+  ]);
+
+  const result = evaluatePredictionObservations({
+    predictions: [prediction],
+    evidence: [bothObservationsEvidence],
+    asOf: ASOF,
+  });
+
+  assert.equal(result.predictions[0].status, 'confirmed');
+  assert.equal(result.assessments.length, 1);
+  assert.equal(result.assessments[0].evidenceId, bothObservationsEvidence.id);
+  assert.equal(
+    new Set(result.assessments.map((assessment) => assessment.id)).size,
+    result.assessments.length,
+    'assessment ids in the result must be unique',
+  );
+});
+
 test('refutes a prediction when an expectedIfFalse observation holds, even while expectedIfTrue is unresolved', () => {
   const evaluatePredictionObservations = requireEvaluatePredictionObservations();
   const prediction = basePrediction({
@@ -795,6 +874,32 @@ test('refutes a prediction when an expectedIfFalse observation holds, even while
   assert.equal(result.predictions[0].status, 'refuted');
   assert.equal(result.assessments.length, 1);
   assert.equal(result.assessments[0].effect, 'contradicts');
+});
+
+test('leaves a prediction untestable when an expectedIfFalse observation is ambiguous under partial coverage, even while a separate fact makes every expectedIfTrue observation hold', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const prediction = basePrediction({
+    id: 'p-iffalse-ambiguous-iftrue-holds',
+    hypothesisId: 'h-iffalse-ambiguous-iftrue-holds',
+    expectedIfFalse: [
+      { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'error', presence: 'absent' },
+    ],
+  });
+  const trueHoldingEvidence = evidenceItem('e-iftrue-holds-despite-ambiguous-iffalse', [
+    { form: 'deployment-in-window', subject: 'checkout', window: 'incident', count: 1, coverage: 'complete' },
+  ]);
+  const falseAmbiguousEvidence = evidenceItem('e-iffalse-ambiguous', [
+    { form: 'log-class-in-window', subject: 'checkout', window: 'incident', logClass: 'error', count: 0, coverage: 'partial' },
+  ]);
+
+  const result = evaluatePredictionObservations({
+    predictions: [prediction],
+    evidence: [trueHoldingEvidence, falseAmbiguousEvidence],
+    asOf: ASOF,
+  });
+
+  assert.equal(result.predictions[0].status, 'untestable');
+  assert.equal(result.assessments.length, 0);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -873,6 +978,60 @@ test('re-evaluates an untestable prediction, unlike confirmed and refuted, and c
 
   assert.equal(result.predictions[0].status, 'confirmed');
   assert.equal(result.assessments.length, 1);
+});
+
+test('leaves an untestable prediction untestable, not reset to untested, when no evidence matches anything (rule 8: no fact settling anything leaves the status unchanged)', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const untestablePrediction = basePrediction({
+    id: 'p-untestable-no-match',
+    hypothesisId: 'h-untestable-no-match',
+    status: 'untestable',
+  });
+  const unrelatedEvidence = evidenceItem('e-untestable-no-match', [
+    { form: 'signal-state', subject: 'other-service', window: 'incident', signal: 'latency', state: 'elevated' },
+  ]);
+
+  const result = evaluatePredictionObservations({
+    predictions: [untestablePrediction],
+    evidence: [unrelatedEvidence],
+    asOf: ASOF,
+  });
+
+  assert.equal(result.predictions[0].status, 'untestable');
+  assert.equal(result.assessments.length, 0);
+});
+
+/* -------------------------------------------------------------------------- */
+/* evaluatePredictionObservations: an empty expectedIfTrue list               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A caller can build a Prediction object by hand, bypassing PredictionSchema
+ * (which requires expectedIfTrue.min(1)), and hand it to
+ * evaluatePredictionObservations directly. With zero observations to hold,
+ * `every` over an empty list is vacuously true, so such a prediction must
+ * never confirm: an empty expectedIfTrue confirming with no evidence at all
+ * would make `supported` reachable without any observation ever having held.
+ */
+test('never confirms a prediction whose expectedIfTrue list is empty, whatever evidence is supplied, and keeps its input status', () => {
+  const evaluatePredictionObservations = requireEvaluatePredictionObservations();
+  const emptyExpectedIfTruePrediction = basePrediction({
+    id: 'p-empty-expected-if-true',
+    hypothesisId: 'h-empty-expected-if-true',
+    expectedIfTrue: [],
+  });
+  const evidence = evidenceItem('e-empty-expected-if-true', [
+    { form: 'deployment-in-window', subject: 'checkout', window: 'incident', count: 1, coverage: 'complete' },
+  ]);
+
+  const result = evaluatePredictionObservations({
+    predictions: [emptyExpectedIfTruePrediction],
+    evidence: [evidence],
+    asOf: ASOF,
+  });
+
+  assert.equal(result.predictions[0].status, 'untested');
+  assert.equal(result.assessments.length, 0);
 });
 
 /* -------------------------------------------------------------------------- */
