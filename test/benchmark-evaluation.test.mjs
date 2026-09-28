@@ -1769,6 +1769,7 @@ test('runs all fifteen fresh records through createInvestigationGraph and replay
   const expectedGraphTrace = [
     ...expectedLifecycleNodes.slice(0, 10),
     'challenge_hypothesis',
+    'derive_predictions',
     ...expectedLifecycleNodes.slice(5, 10),
     'propose_conclusion',
   ];
