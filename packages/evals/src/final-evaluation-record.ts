@@ -56,21 +56,31 @@
  * two lane scripts load contains a dynamic import(), so what importing them
  * loads is what running them loads".
  *
- * AIC-137: the command line around the scripts is declared too —
- * `package.json` (the npm scripts that build it), `tsconfig.base.json` (every
- * package's tsconfig extends it, and both commands build first), and the
- * `--import` preload, now `scripts/lib/no-ambient-tracing.mjs` — see
- * final-evaluation-candidate-fingerprint.test.mjs › "every --import preload
- * the eval:live-model and eval:final-holdout npm scripts declare falls under
- * a path FINAL_EVALUATION_CANDIDATE_PATHS declares" and › "the candidate
- * fingerprint moves when tsconfig.base.json changes".
+ * AIC-137: `tsconfig.base.json` and the root `tsconfig.json` are declared
+ * because they change the emitted JS — `tsc -b`, the `build` script both
+ * `eval:` commands run first, reads the root `tsconfig.json`, which extends
+ * the base config and lists the project references — see
+ * final-evaluation-candidate-fingerprint.test.mjs › "the candidate fingerprint
+ * moves when tsconfig.json changes" and › "the candidate fingerprint moves
+ * when tsconfig.base.json changes". The `--import` preload the `eval:`
+ * scripts declare, `scripts/lib/no-ambient-tracing.mjs`, already falls under
+ * the declared `scripts` path — see › "every --import preload the
+ * eval:live-model and eval:final-holdout npm scripts declare falls under a
+ * path FINAL_EVALUATION_CANDIDATE_PATHS declares". `package.json` is
+ * deliberately NOT declared, by the asymmetry stated above: a `version` or
+ * `description` edit would otherwise re-admit the hold-out. Its command lines
+ * are pinned instead by an exact-string row, so changing them reddens that row
+ * rather than moving the fingerprint — see › "the build, eval:live-model and
+ * eval:final-holdout npm scripts are exactly the command lines the candidate
+ * fingerprint was reviewed against" and › "the candidate fingerprint does not
+ * move when package.json's version changes".
  */
 export const FINAL_EVALUATION_CANDIDATE_PATHS = Object.freeze([
   'packages',
   'apps',
   'scripts',
   'package-lock.json',
-  'package.json',
+  'tsconfig.json',
   'tsconfig.base.json',
 ] as const);
 

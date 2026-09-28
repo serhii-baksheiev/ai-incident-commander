@@ -30,12 +30,21 @@
  * thread-safe write, and the test parses them back out of the child's
  * captured stderr.
  *
- * ⚠ What this does not see: the npm commands' own `--import` preload
- * (`test/fixtures/no-ambient-tracing.mjs`, which only turns ambient tracing
- * off); a module reached only through a dynamic `import()` at run time (the
- * dynamic-import row below keeps that set empty); and a workspace package
- * consumed as a real copy under `node_modules` rather than a symlink, which
- * `isWorkspaceExternalDependency` would drop.
+ * ⚠ What this does not see: a module reached only through a dynamic
+ * `import()` at run time (the dynamic-import row below keeps that set
+ * empty); a workspace package consumed as a real copy under `node_modules`
+ * rather than a symlink, which `isWorkspaceExternalDependency` would drop;
+ * and `package.json` itself, which is undeclared on purpose — a `version` or
+ * `description` edit must not move the one-shot fingerprint, so its command
+ * lines are pinned instead by "the build, eval:live-model and
+ * eval:final-holdout npm scripts are exactly the command lines the candidate
+ * fingerprint was reviewed against" below, an exact-string row a reviewer
+ * sees turn red rather than a fingerprint that silently moves. The npm
+ * commands' own `--import` preload IS measured, by "every repository file
+ * Node loads importing scripts/eval-live-model.mjs and
+ * scripts/eval-final-holdout.mjs together with the --import preload those npm
+ * scripts declare falls under a path FINAL_EVALUATION_CANDIDATE_PATHS
+ * declares" below; it lives at `scripts/lib/no-ambient-tracing.mjs`.
  *
  * 🔴 Mutation note: this row is the one thing that would catch
  * `scripts/lane-arms.mjs` quietly reimporting a `test/` fixture in the
@@ -215,8 +224,9 @@ test('FINAL_EVALUATION_CANDIDATE_PATHS no longer lists test/fixtures/benchmark-e
 
 /* -------------------------------------------------------------------------- */
 /* 3. AIC-137: the candidate list covers the command line, not just the       */
-/*    module graph — package.json, tsconfig.base.json and the --import       */
-/*    preload the eval: npm scripts declare                                  */
+/*    module graph — tsconfig.json, tsconfig.base.json and the --import      */
+/*    preload the eval: npm scripts declare; package.json's own command      */
+/*    lines are pinned by an exact-string row instead                        */
 /* -------------------------------------------------------------------------- */
 
 /** Every `--import` specifier an npm script string declares, in the order it names them. */
@@ -301,15 +311,89 @@ test('every repository file Node loads importing scripts/eval-live-model.mjs and
   );
 });
 
-test('FINAL_EVALUATION_CANDIDATE_PATHS declares package.json and tsconfig.base.json', () => {
+test('FINAL_EVALUATION_CANDIDATE_PATHS declares tsconfig.json and tsconfig.base.json, and not package.json', () => {
   const candidatePaths = evals.FINAL_EVALUATION_CANDIDATE_PATHS;
 
-  for (const required of ['package.json', 'tsconfig.base.json']) {
+  for (const required of ['tsconfig.json', 'tsconfig.base.json']) {
     assert.ok(
       candidatePaths.includes(required),
-      `${required} builds the command line the two lane scripts run under — npm run build compiles against tsconfig.base.json, and both eval: scripts and their --import preload are declared in package.json — so omitting it would let a real change to it re-use a spent candidate: ${JSON.stringify(candidatePaths)}`,
+      `${required} builds the command line the two lane scripts run under — npm run build is tsc -b, which reads tsconfig.json, which extends tsconfig.base.json — so omitting it would let a real change to it re-use a spent candidate: ${JSON.stringify(candidatePaths)}`,
     );
   }
+
+  assert.equal(
+    candidatePaths.includes('package.json'),
+    false,
+    "package.json carries its own version and description alongside the command line it declares, so declaring it would let a version/description-only edit move the fingerprint and re-admit a hold-out run — the documented asymmetry (omitting a behaviour-affecting path is a false refusal; including one that does not affect behaviour is a false unlock, final-evaluation-record.ts and docs/evidence/final-evaluation/README.md) rules it out. Its command lines are pinned instead by the exact-string row 'the build, eval:live-model and eval:final-holdout npm scripts are exactly the command lines the candidate fingerprint was reviewed against'",
+  );
+});
+
+/**
+ * Derived from `tsconfig.json` itself rather than hard-coded, the same way as
+ * the `packages/*` and `apps/*` row above: whatever the root config declares
+ * as `extends`, and every `references[].path` it lists, resolved relative to
+ * the repo root, must fall under a declared candidate path — `tsc -b`, the
+ * `build` script both eval: npm scripts run first, reads exactly these.
+ */
+test('the root tsconfig.json extends target and every references path fall under a path FINAL_EVALUATION_CANDIDATE_PATHS declares', () => {
+  const candidatePaths = evals.FINAL_EVALUATION_CANDIDATE_PATHS;
+  const tsconfigPath = join(REPO_ROOT, 'tsconfig.json');
+  const parsed = JSON.parse(readFileSync(tsconfigPath, 'utf8'));
+
+  assert.equal(
+    typeof parsed.extends,
+    'string',
+    'tsconfig.json must declare an "extends" string, or this row cannot derive its target',
+  );
+  assert.ok(
+    Array.isArray(parsed.references) && parsed.references.length > 0,
+    'sanity: tsconfig.json must declare at least one reference',
+  );
+
+  const targets = [
+    relative(REPO_ROOT, resolve(dirname(tsconfigPath), parsed.extends)).split(sep).join('/'),
+    ...parsed.references.map((reference) =>
+      relative(REPO_ROOT, resolve(dirname(tsconfigPath), reference.path)).split(sep).join('/'),
+    ),
+  ];
+
+  const uncovered = targets.filter(
+    (path) => !candidatePaths.some((candidate) => path === candidate || path.startsWith(`${candidate}/`)),
+  );
+
+  assert.deepEqual(
+    uncovered,
+    [],
+    `tsconfig.json's extends target and every references path must fall under a declared candidate path, or a change there would go unfingerprinted: ${JSON.stringify(uncovered)}`,
+  );
+});
+
+/**
+ * `package.json` is deliberately undeclared in `FINAL_EVALUATION_CANDIDATE_PATHS`
+ * (the row above states why), so nothing fingerprints the command lines it
+ * carries. This row is what stands in instead: it pins the exact text of the
+ * three lines a change to package.json cannot silently move the candidate
+ * fingerprint through, so an edit to any of them reddens this row where a
+ * reviewer sees it, rather than moving a hash nobody is looking at.
+ */
+test('the build, eval:live-model and eval:final-holdout npm scripts are exactly the command lines the candidate fingerprint was reviewed against', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+
+  assert.deepEqual(
+    {
+      build: manifest.scripts.build,
+      'eval:live-model': manifest.scripts['eval:live-model'],
+      'eval:final-holdout': manifest.scripts['eval:final-holdout'],
+    },
+    {
+      build: 'tsc -b',
+      'eval:live-model':
+        'npm run build --silent && node --import ./scripts/lib/no-ambient-tracing.mjs scripts/eval-live-model.mjs',
+      'eval:final-holdout':
+        'npm run build --silent && node --import ./scripts/lib/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs',
+    },
+    'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a change to these three lines cannot move the candidate fingerprint at all — it must instead redden this row',
+  );
 });
 
 /**
@@ -357,8 +441,9 @@ test('every packages/*/tsconfig.json and apps/*/tsconfig.json extends target fal
 });
 
 /* -------------------------------------------------------------------------- */
-/* 4. AIC-137: the candidate fingerprint actually moves when the command      */
-/*    line around the lane scripts changes                                   */
+/* 4. AIC-137: the candidate fingerprint moves with the tsconfigs that shape  */
+/*    the build, and stays put on package.json — whose command line is       */
+/*    pinned by the exact-string row above instead                           */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -396,14 +481,19 @@ function commitMutation(dir, relativePath, mutate) {
   const filePath = join(dir, relativePath);
   writeFileSync(filePath, mutate(readFileSync(filePath, 'utf8')));
   execFileSync('git', ['add', relativePath], { cwd: dir, encoding: 'utf8', env: childEnv() });
-  execFileSync('git', ['commit', '-m', `aic-137 test mutation of ${relativePath}`], {
-    cwd: dir,
-    encoding: 'utf8',
-    env: childEnv(),
-  });
+  execFileSync(
+    'git',
+    [
+      '-c', 'user.name=aic-test',
+      '-c', 'user.email=aic-test@example.invalid',
+      '-c', 'commit.gpgsign=false',
+      'commit', '-m', `aic-137 test mutation of ${relativePath}`,
+    ],
+    { cwd: dir, encoding: 'utf8', env: childEnv() },
+  );
 }
 
-test("the candidate fingerprint moves when package.json's scripts block changes", async () => {
+test("the candidate fingerprint does not move when package.json's version changes", async () => {
   await withScratchWorktree(async (dir) => {
     const { candidateFingerprint } = await import(
       pathToFileURL(join(dir, 'scripts', 'eval-final-holdout.mjs')).href
@@ -412,15 +502,37 @@ test("the candidate fingerprint moves when package.json's scripts block changes"
     const before = candidateFingerprint();
     commitMutation(dir, 'package.json', (text) => {
       const manifest = JSON.parse(text);
-      manifest.scripts['aic-137-probe'] = 'true';
+      manifest.version = '0.0.0-aic-137-probe';
       return `${JSON.stringify(manifest, null, 2)}\n`;
+    });
+    const after = candidateFingerprint();
+
+    assert.equal(
+      before,
+      after,
+      'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a version-only edit must not move the candidate fingerprint and re-admit a spent hold-out run',
+    );
+  });
+});
+
+test('the candidate fingerprint moves when tsconfig.json changes', async () => {
+  await withScratchWorktree(async (dir) => {
+    const { candidateFingerprint } = await import(
+      pathToFileURL(join(dir, 'scripts', 'eval-final-holdout.mjs')).href
+    );
+
+    const before = candidateFingerprint();
+    commitMutation(dir, 'tsconfig.json', (text) => {
+      const config = JSON.parse(text);
+      config.aic137Probe = true;
+      return `${JSON.stringify(config, null, 2)}\n`;
     });
     const after = candidateFingerprint();
 
     assert.notEqual(
       before,
       after,
-      "package.json's scripts block declares the command line eval:live-model and eval:final-holdout run under, so a change to it must move the candidate fingerprint",
+      'tsconfig.json is the tsc -b entry point both eval: npm scripts build through, so a change to it must move the candidate fingerprint',
     );
   });
 });
