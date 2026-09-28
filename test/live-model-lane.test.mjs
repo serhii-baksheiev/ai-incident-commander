@@ -892,28 +892,30 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
 
   // 🔴 The control arm's sensitivity, measured rather than enumerated by hand.
   //
-  // An earlier version of the prose said the replay-backed control "sits at
-  // zero on evidence_coverage and termination_correctness" — two of six.
-  // `prose-reviewer` ran the arm and found ALL SIX at 0.0000. Since 1 is the
-  // perfect score for five of them, the control arm is at the INSENSITIVE floor
-  // almost everywhere: a harness change that pushes any of those down cannot
-  // move it, so the lane's control cannot see that direction at all.
+  // AIC-125 supplement 7 restates this once more. Before it, `termination_correctness`
+  // was the one axis excluded from the floor below (AIC-119 slice 3):
+  // `scriptedNodes` wired the canonical, state-driven `termination_check`
+  // while its own `interpret_residual_evidence` stayed the fixture's no-op,
+  // so every run read T6 and stopped `stalled` — a stop kind that matched
+  // SOME final-evaluation scenarios' own expectation and not others, scoring
+  // both 0 and 1.
   //
-  // That is a real limit of the evidence this lane produces and the prose now
-  // points here instead of counting. Which metrics sit at the floor is a fact
+  // `scriptedNodes` now shares `modelNodes`'s own canonical
+  // `plan_investigation`/`execute_investigation`, and its own
+  // `generate_hypotheses` (the fixture's `replayBackedNodes`) mints a
+  // hypothesis with no `cause` at all — so it derives no prediction, plans no
+  // test and fetches no evidence, from any scenario. Measured here rather
+  // than assumed: every final-evaluation run now stops `tools-unavailable`
+  // instead (the challenge round's own hard-coded probe, see
+  // investigation-plan-execute-wiring.test.mjs's "...ends with no evidence at
+  // all" row), which matches NO scenario's own expected stop kind, so
+  // `termination_correctness` now also sits at a constant zero. All SIX
+  // metrics the scripted control arm emits are now floored at zero — a
+  // strictly weaker signal than the five-of-six floor this row used to
+  // measure, not a different one. Which metrics sit at the floor is a fact
   // about the corpus and the scripted nodes, so it is asserted rather than
-  // described — a metric that stops being at the floor reddens this row, which
-  // is the day the prose has to be re-read.
-  //
-  // `termination_correctness` is the one axis this floor list excludes
-  // (AIC-119 slice 3): `scriptedNodes` wires the canonical, state-driven
-  // `termination_check`, and this row's own `interpret_residual_evidence`
-  // stays the fixture's no-op — no hypothesis is ever assessed — so every run
-  // reads T6 and stops `stalled`. Over the final-evaluation corpus that
-  // matches SOME scenarios' own expected stop kind and not others, so the
-  // metric scores both 0 and 1 rather than sitting at a single value. The
-  // other five metrics are unaffected by which termination node runs: their
-  // floor is unchanged.
+  // described — a metric that stops being at the floor reddens this row,
+  // which is the day the prose has to be re-read.
   const floors = {};
   for (const result of experiment.results) {
     for (const [key, metric] of [
@@ -936,9 +938,10 @@ test('measures the harness zero that makes evidence_coverage unreportable', asyn
       'evidence_coverage',
       'false_alert_correctness',
       'misleading_evidence_handling',
+      'termination_correctness',
       'unsupported_claim_rate',
     ],
-    'every metric the scripted control arm emits sits at a single score of zero except termination_correctness, which the canonical state-driven termination node moves off the floor — the control arm is at the insensitive floor on the remaining five, all of which except unsupported_claim_rate score zero as their WORST outcome',
+    'AIC-125 supplement 7: every metric the scripted control arm emits, including termination_correctness now that the arm fetches no evidence and always stops tools-unavailable, sits at a single score of zero — the control arm is at the insensitive floor everywhere it reports, all six metrics scoring zero as their WORST outcome except unsupported_claim_rate',
   );
 });
 
@@ -1026,24 +1029,60 @@ test('swaps exactly the four reasoning roles and leaves the rest of the lifecycl
   assert.deepEqual(asked, [], 'no row in this file may call the model port');
 });
 
-test('counts the same tool calls on both arms of the lane', async () => {
+/**
+ * AIC-125 supplement 7: `scriptedNodes` no longer keeps its own full-corpus
+ * sweep — its `execute_investigation` is now the very same
+ * `createExecuteInvestigation({ execute: createPlannedReplayExecutor(...) })`
+ * `modelNodes` uses (`scripts/lane-arms.mjs`), so "the control arm replayed
+ * every recorded tool call" is no longer true of either arm: both now run
+ * only the tests already `planned` in state. What the retitled row below
+ * keeps is the claim that mattered — the two arms count tool calls the same
+ * way, because they now run through the identical node rather than two
+ * separately-counted ones. A state with no planned test writes a MEASURED
+ * zero on both arms (an empty `trials` array), never an unwritten channel;
+ * a state with one planned test yields exactly one identical trial on both.
+ */
+test('given the same planned state, scriptedNodes and modelNodes run the same execute_investigation and produce identical trials, and a state with no planned test writes no trial — a measured zero, not an unwritten channel — on either arm', async () => {
   const input = calibrationExecutionInput();
   const asked = [];
   const control = scriptedNodes(input);
   const model = modelNodes(input, refusingPort(asked));
 
-  const controlUpdate = await control.execute_investigation({ evidence: [] });
-  const modelUpdate = await model.execute_investigation({ evidence: [] });
+  const noTestsState = { tests: [], trials: [], evidence: [], control: { runId: input.runId } };
+  const controlNoTests = await control.execute_investigation(noTestsState);
+  const modelNoTests = await model.execute_investigation(noTestsState);
 
-  assert.equal(
-    controlUpdate.trials?.length,
-    input.fixture.entries.length,
-    `the control arm replayed ${String(input.fixture.entries.length)} recorded tool calls and wrote ${String(controlUpdate.trials?.length)} trials: the axis that reports what a run spent reads that channel, so an arm that leaves it unwritten publishes a measured-looking zero`,
+  assert.deepEqual(
+    controlNoTests.trials,
+    [],
+    'with no planned test, the control arm must write a measured zero — an empty trials array, not an unwritten channel',
   );
+  assert.deepEqual(
+    modelNoTests.trials,
+    [],
+    'with no planned test, the model arm must write the same measured zero',
+  );
+
+  assert.ok(input.fixture.entries.length > 0, 'fixture sanity: the calibration record must carry at least one recorded entry');
+  const [firstEntry] = input.fixture.entries;
+  const plannedTest = {
+    id: `${input.runId}-aic125e-planned-test-1`,
+    predictionId: `${input.runId}-aic125e-planned-prediction-1`,
+    tool: firstEntry.toolId,
+    input: firstEntry.input,
+    cost: 'cheap',
+    status: 'planned',
+  };
+  const plannedState = { tests: [plannedTest], trials: [], evidence: [], control: { runId: input.runId } };
+
+  const controlUpdate = await control.execute_investigation(plannedState);
+  const modelUpdate = await model.execute_investigation(plannedState);
+
+  assert.equal(controlUpdate.trials.length, 1, 'exactly one planned test must yield exactly one trial');
   assert.deepEqual(
     modelUpdate.trials,
     controlUpdate.trials,
-    'both arms replay the same recorded calls through the same node, so the lane compares two numbers that mean the same thing — a model arm counting differently would read as model behaviour',
+    'both arms now run the identical execute_investigation node over the same planned state, so the lane compares two numbers that mean the same thing — a model arm counting differently would read as model behaviour',
   );
   assert.deepEqual(asked, [], 'no row in this file may call the model port');
 });

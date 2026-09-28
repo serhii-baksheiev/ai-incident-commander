@@ -3,9 +3,10 @@
  * named as "a later slice" — `ReplayToolAdapter` gains an optional second
  * constructor argument that annotates a replayed `ok` evidence array with
  * `Evidence.observation`, `@aic/evals` gains `createObservationAnnotator()`
- * reading `OBSERVATION_ANNOTATIONS`, the shared `replayBackedNodes` fixture
- * (`test/fixtures/benchmark-experiment.mjs`) wires the two together so both
- * the scripted and the model graph arm see the same annotated evidence, and
+ * reading `OBSERVATION_ANNOTATIONS`, which the replay port both graph arms
+ * execute through (AIC-125, `createPlannedReplayExecutor`) passes to the
+ * adapter, so whatever evidence an arm fetches carries its observation — the
+ * arms no longer fetch the same evidence (supplement 7) — and
  * `describeState` (`packages/roles/src/investigation-roles.ts`) omits
  * `evidence[].observation` from the prompt every model role sends — the
  * naive arm never sees the typed channel, so the graph model must not either
@@ -314,25 +315,36 @@ test("createObservationAnnotator throws a plain Error naming the evidence id whe
  * The lane: scriptedNodes(record) / modelNodes(record, port), wired
  * ==========================================================================*/
 
-function executionInputFor(scenario) {
-  return {
-    experimentId: 'aic-123s3b-observation-merge',
-    exampleId: `example-${scenario.id}`,
-    scenarioId: scenario.id,
-    fixture: scenario.fixture,
-    runId: `run-observation-merge-${scenario.id}`,
-    threadId: `thread-observation-merge-${scenario.id}`,
-    metadata: {},
-  };
-}
-
-test('scriptedNodes(record) and modelNodes(record, port), replayed through execute_investigation for every calibration and hold-out scenario, produce identical state.evidence between the two arms, carrying an observation exactly on the items OBSERVATION_ANNOTATIONS gives non-empty facts', async () => {
-  const { scriptedNodes, modelNodes } = await import('../scripts/lane-arms.mjs');
-  const refusingPort = {
-    async complete() {
-      throw new Error('execute_investigation must never reach a model port');
-    },
-  };
+/**
+ * AIC-125 supplement 7: `scriptedNodes(record)`'s own `execute_investigation`
+ * no longer sweeps the fixture at all — it now shares `modelNodes`'s
+ * canonical, planned-only executor (`createExecuteInvestigation({ execute:
+ * createPlannedReplayExecutor(...) })`, `scripts/lane-arms.mjs`), so driving
+ * it with an empty state plans and replays nothing (see
+ * investigation-plan-execute-wiring.test.mjs › "scriptedNodes(record)
+ * executes only planned tests, through the same canonical executor
+ * modelNodes uses: a state with no planned test replays nothing from the
+ * fixture, and a state with one planned test yields exactly one trial"). The
+ * cross-arm identity claim this row used to make is gone with it; the subset
+ * relation that replaces it lives in
+ * test/investigation-plan-execute-wiring.test.mjs's own row.
+ *
+ * What still merges an observation onto EVERY recorded entry, regardless of
+ * what anything planned, is the component underneath both executors:
+ * `ReplayToolAdapter` constructed with `{ observations: annotate }`. This row
+ * — retitled from "scriptedNodes(record) and modelNodes(record, port),
+ * replayed through execute_investigation for every calibration and hold-out
+ * scenario, produce identical state.evidence between the two arms, carrying
+ * an observation exactly on the items OBSERVATION_ANNOTATIONS gives non-empty
+ * facts", which named a mechanism this row no longer drives —
+ * exercises that adapter directly over every entry in every scenario's own
+ * fixture (calibration and hold-out alike, replayed here only to check
+ * annotation placement, never to evaluate an investigation), and keeps the
+ * original claim unchanged: an observation lands exactly on the items
+ * `OBSERVATION_ANNOTATIONS` gives non-empty facts.
+ */
+test("ReplayToolAdapter, constructed with the observation annotator and driven over every fixture entry in every calibration and hold-out scenario, carries an observation exactly on the items OBSERVATION_ANNOTATIONS gives non-empty facts", async () => {
+  const annotate = evals.createObservationAnnotator();
   const rowsByKey = new Map(
     evals.OBSERVATION_ANNOTATIONS.map((row) => [`${row.identity}|${row.evidenceId}`, row]),
   );
@@ -340,43 +352,34 @@ test('scriptedNodes(record) and modelNodes(record, port), replayed through execu
   assert.ok(evals.REPLAY_SCENARIOS.length > 0, 'REPLAY_SCENARIOS must not be empty, or this sweep checks nothing');
 
   for (const scenario of evals.REPLAY_SCENARIOS) {
-    const scripted = scriptedNodes(executionInputFor(scenario));
-    const model = modelNodes(executionInputFor(scenario), refusingPort);
+    const adapter = new ReplayToolAdapter(fixtureFromScenario(scenario), { observations: annotate });
 
-    // eslint-disable-next-line no-await-in-loop -- one scenario's replay at a time
-    const scriptedUpdate = await scripted.execute_investigation({ evidence: [] });
-    // eslint-disable-next-line no-await-in-loop -- one scenario's replay at a time
-    const modelUpdate = await model.execute_investigation({ evidence: [] });
+    for (const entry of scenario.fixture.entries) {
+      if (entry.result.status !== 'ok') continue;
 
-    assert.deepEqual(
-      scriptedUpdate.evidence,
-      modelUpdate.evidence,
-      `${scenario.id}: the scripted and model arms must replay identical evidence`,
-    );
+      // eslint-disable-next-line no-await-in-loop -- one recorded entry at a time, matching this suite's other sweeps
+      const replayed = await adapter.execute(entry.toolId, entry.input);
+      assert.equal(replayed.status, 'ok');
 
-    for (const item of scriptedUpdate.evidence) {
-      const entry = scenario.fixture.entries.find(
-        (candidate) =>
-          candidate.result.status === 'ok' && candidate.result.output.some((output) => output.id === item.id),
-      );
-      assert.ok(entry, `${scenario.id}: replayed item ${item.id} must trace back to one recorded fixture entry`);
-      const identity = replayIdentity(entry.toolId, entry.input);
-      const row = rowsByKey.get(`${identity}|${item.id}`);
-      assert.ok(row, `${scenario.id}: no OBSERVATION_ANNOTATIONS row for evidence ${item.id}`);
+      for (const item of replayed.output) {
+        const identity = replayIdentity(entry.toolId, entry.input);
+        const row = rowsByKey.get(`${identity}|${item.id}`);
+        assert.ok(row, `${scenario.id}: no OBSERVATION_ANNOTATIONS row for evidence ${item.id}`);
 
-      if (row.facts.length === 0) {
-        assert.equal(
-          'observation' in item,
-          false,
-          `${scenario.id}: ${item.id} has no facts in the table and must carry no observation key`,
-        );
-      } else {
-        assert.deepEqual(
-          item.observation,
-          { version: domain.EXPECTED_OBSERVATION_VERSION, facts: row.facts },
-          `${scenario.id}: ${item.id} must carry the table's facts as its observation`,
-        );
-        domain.EvidenceSchema.parse(item);
+        if (row.facts.length === 0) {
+          assert.equal(
+            'observation' in item,
+            false,
+            `${scenario.id}: ${item.id} has no facts in the table and must carry no observation key`,
+          );
+        } else {
+          assert.deepEqual(
+            item.observation,
+            { version: domain.EXPECTED_OBSERVATION_VERSION, facts: row.facts },
+            `${scenario.id}: ${item.id} must carry the table's facts as its observation`,
+          );
+          domain.EvidenceSchema.parse(item);
+        }
       }
     }
   }

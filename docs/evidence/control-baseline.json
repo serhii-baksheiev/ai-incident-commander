@@ -1,7 +1,7 @@
 {
-  "_why": "The scripted control arm's expected metric means over the FINAL-EVALUATION corpus, DECLARED so a harness regression is detectable. Without a declared baseline the lane refuses to call the model arm reportable at all — a metric that moved could not be attributed to the model rather than to the harness — so a hold-out run with no baseline can never satisfy AIC-19 however well the model does. AIC-119 slice 3 split this file from the calibration baseline: wiring the canonical, state-driven termination node into scriptedNodes moves termination_correctness for this corpus off zero, and the two corpora no longer share one declared baseline.",
-  "_measured": "Measured by running the scripted control arm with no provider call under behavior-evaluators-v0.3, over the final-evaluation corpus: every axis below is 0 except termination_correctness. Pinned: see lane-arms.test.mjs › 'the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra'.",
-  "_limit": "Zero is no longer the floor on every axis of this file: termination_correctness sits at 0.1, so this baseline can detect a change to that metric in EITHER direction, not only upward. The remaining five axes are still at their floor — 0, which is the WORST score for four of them and the BEST score for unsupported_claim_rate — so for those five this baseline still only catches a harness change that moves the metric up or stops emitting it, never one that pushes it further down. See live-model-lane.test.mjs › 'measures the harness zero that makes evidence_coverage unreportable' for which axes that floor list covers.",
+  "_why": "The scripted control arm's expected metric means over the FINAL-EVALUATION corpus, DECLARED so a harness regression is detectable. Without a declared baseline the lane refuses to call the model arm reportable at all — a metric that moved could not be attributed to the model rather than to the harness — so a hold-out run with no baseline can never satisfy AIC-19 however well the model does. AIC-119 slice 3 split this file from the calibration baseline when the canonical termination node moved termination_correctness for this corpus to 0.1; since AIC-125 the control arm fetches no evidence and that axis is back at 0 (see _history).",
+  "_measured": "Measured by running the scripted control arm with no provider call under behavior-evaluators-v0.3, over the final-evaluation corpus, on the shared plan-only harness AIC-125 gave both graph arms: every axis below is 0. Pinned: see lane-arms.test.mjs › 'the committed control baseline files each equal what the scripted control arm observes under v0.3 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra'.",
+  "_limit": "Zero is the numeric FLOOR on all six axes again: since AIC-125 the scripted control arm plans no test and fetches no evidence, and termination_correctness fell from 0.1 to 0 with it. This baseline therefore detects a harness change that moves a metric UP and cannot detect one that pushes it further down. Zero is the BEST score for unsupported_claim_rate and the WORST score for the other five. See live-model-lane.test.mjs › 'measures the harness zero that makes evidence_coverage unreportable' for which axes that floor list covers.",
   "_completeness": "Every axis the control arm observes must appear here. That is enforced, not remembered: see live-model-lane.test.mjs > 'refuses a control baseline that leaves an observed axis undeclared, naming the axes and what to do'. The first version of this file declared two of the five while the lane compared two, which published a harness regression as model quality.",
   "_history": [
     {
@@ -12,11 +12,20 @@
       "false_alert_correctness": 0,
       "misleading_evidence_handling": 0,
       "challenge_effect": 0
+    },
+    {
+      "_note": "What this file declared between AIC-119 slice 3 and AIC-125: termination_correctness 0.1, measured while the scripted control arm replayed every recorded call (the harness sweep of test/fixtures/benchmark-experiment.mjs). AIC-125 slice e gave both graph arms the same plan-only harness (scripts/lane-arms.mjs scriptedNodes: canonical plan_investigation and execute_investigation over the planned-request replay port); a causeless scripted hypothesis plans nothing, the control arm fetches no evidence, and termination_correctness for this corpus fell to 0. Registered in docs/evidence/preregistration/v0.2-four-arm-supplement-7.md.",
+      "unsupported_claim_rate": 0,
+      "evidence_coverage": 0,
+      "termination_correctness": 0.1,
+      "false_alert_correctness": 0,
+      "misleading_evidence_handling": 0,
+      "challenge_effect": 0
     }
   ],
   "unsupported_claim_rate": 0,
   "evidence_coverage": 0,
-  "termination_correctness": 0.1,
+  "termination_correctness": 0,
   "false_alert_correctness": 0,
   "misleading_evidence_handling": 0,
   "challenge_effect": 0

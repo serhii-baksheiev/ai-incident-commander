@@ -158,20 +158,33 @@ function fourArmLaneOptions(overrides = {}) {
 
 test('carries the report schema version as an own property, at the exported value', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
-  assert.equal(requireExport('LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION'), 2);
+  // AIC-125 supplement 7: the graph arms stopped reading a full dump of the
+  // fixture (they now plan their own tests and execute only those), so
+  // "informationMode: 'full-dump' on every report" stopped being true of the
+  // whole report — see the retitled row below. The schema version moves to 3
+  // for that reason.
+  assert.equal(requireExport('LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION'), 3);
 
   const report = await runLiveModelLane(fourArmLaneOptions());
 
   assert.ok(Object.hasOwn(report, 'schemaVersion'));
-  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.schemaVersion, 3);
 });
 
-test('declares informationMode full-dump on every report', async () => {
+/**
+ * Retitled from "declares informationMode full-dump on every report" —
+ * AIC-125 supplement 7: the graph arms (control and model) now plan their own
+ * tests from their own derived predictions and execute only those through the
+ * planned-replay port (`scripts/lane-arms.mjs`), so they no longer read a full
+ * dump of the fixture the way the naive arm still does. `informationMode` is
+ * now per-arm rather than one value for the whole report.
+ */
+test('declares informationMode per arm: the graph arms planned, the naive arm full-dump', async () => {
   const runLiveModelLane = requireExport('runLiveModelLane');
 
   const report = await runLiveModelLane(fourArmLaneOptions());
 
-  assert.equal(report.informationMode, 'full-dump');
+  assert.deepEqual(report.informationMode, { graph: 'planned', naive: 'full-dump' });
 });
 
 /* -------------------------------------------------------------------------- */

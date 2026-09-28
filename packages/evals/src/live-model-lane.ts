@@ -82,18 +82,14 @@ import type { GateMetricKey } from './benchmark-regression-gate.js';
  *     see live-model-lane.test.mjs › "refuses to report model quality when no control baseline was declared"
  *   - 🔴 **The control arm's sensitivity is the sensitivity of whatever nodes
  *     the caller passes as the control, and the one this repository wires up
- *     (`scripts/lane-arms.mjs`'s `scriptedNodes`) is at the floor on five of the
- *     six metrics it emits, over the final-evaluation corpus.** Measured, not
- *     counted: `termination_correctness` moved off zero to 0.1 once AIC-119
- *     slice 3 wired the canonical, state-driven `termination_check` in; the
- *     other five still score a single value of zero, which is the worst score
- *     for four of them and the best for `unsupported_claim_rate`. So the
- *     control arm can catch a harness change that moves one of those five UP
- *     or that stops emitting one, and it cannot catch one that pushes any of
- *     those five further down — there is no further down.
- *     `termination_correctness` is off the floor, so a `harness-regression`
- *     verdict on it covers both directions; read every other verdict as
- *     covering the first direction only.
+ *     (`scripts/lane-arms.mjs`'s `scriptedNodes`) is at the floor on all six
+ *     metrics it emits.** Since AIC-125 it plans nothing and fetches no
+ *     evidence, so every metric scores a single value of zero — the worst
+ *     score for five of them and the best for `unsupported_claim_rate`. The
+ *     control arm can therefore catch a harness change that moves a metric UP
+ *     or stops emitting one, and cannot catch one that pushes a metric further
+ *     down: there is no further down. Read every `harness-regression` verdict
+ *     as covering the first direction only.
  *     see live-model-lane.test.mjs › "measures the harness zero that makes evidence_coverage unreportable"
  */
 
@@ -193,7 +189,20 @@ export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 1_200_000;
  * nothing here reads them.
  * see four-arm-lane.test.mjs › "carries the report schema version as an own property, at the exported value"
  */
-export const LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION = 2 as const;
+export const LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION = 3 as const;
+
+/**
+ * What each kind of arm is shown. Version 3 of the report makes this per arm
+ * (it was the single value `full-dump`): since AIC-125 both graph arms see only
+ * the evidence their planned tests fetch, while the naive arm still reads every
+ * recorded entry. Registered in
+ * docs/evidence/preregistration/v0.2-four-arm-supplement-7.md.
+ * see four-arm-lane.test.mjs › "declares informationMode per arm: the graph arms planned, the naive arm full-dump"
+ */
+export const LIVE_MODEL_LANE_INFORMATION_MODE = Object.freeze({
+  graph: 'planned',
+  naive: 'full-dump',
+} as const);
 
 /**
  * The metric this lane refuses to publish as model quality under the accepted
@@ -379,7 +388,7 @@ export interface LiveModelLaneGraphVsNaiveEntry {
 
 export interface LiveModelLaneReport {
   readonly schemaVersion: typeof LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION;
-  readonly informationMode: 'full-dump';
+  readonly informationMode: typeof LIVE_MODEL_LANE_INFORMATION_MODE;
   readonly headSha: string;
   readonly experimentId: string;
   readonly credential: Readonly<{ variable: string; provider: string; modelId: string }>;
@@ -1100,7 +1109,7 @@ export async function runLiveModelLane(
 
   const report: LiveModelLaneReport = {
     schemaVersion: LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION,
-    informationMode: 'full-dump',
+    informationMode: LIVE_MODEL_LANE_INFORMATION_MODE,
     headSha: options.headSha,
     experimentId: options.experimentId,
     credential: {

@@ -381,8 +381,8 @@ function describeState(state: IncidentState): string {
   const { primaryScope: _primaryScope, ...incident } = state.incident;
   // AIC-123 slice 3b: `evidence[].observation` is stripped here too. It is the
   // deterministic evaluator's channel, not the model's — the naive arm never
-  // sees it, so the graph model must not either, or the two arms would stop
-  // seeing the same evidence (information parity). see
+  // sees it, so the graph model must not either, or a model role would read a
+  // channel the naive arm is never given (information parity). see
   // observation-merge.test.mjs › "describeState strips evidence[].observation
   // from what a model role is shown: interpret_residual_evidence's prompt is
   // byte-identical whether or not the state's evidence item carries an
