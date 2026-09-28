@@ -243,13 +243,21 @@ test('generate_hypotheses: a hostile id the run already carries is named escaped
   const port = {
     async complete() {
       return {
-        text: JSON.stringify({ hypotheses: [{ id: HOSTILE, statement: 'hijacked' }] }),
+        text: JSON.stringify({
+          hypotheses: [
+            {
+              id: HOSTILE,
+              statement: 'hijacked',
+              cause: { component: 'checkout-service', mechanism: 'config-drift' },
+            },
+          ],
+        }),
         modelId: 'claude-under-test',
         usage: { inputTokens: 10, outputTokens: 5 },
       };
     },
   };
-  const node = createModelGenerateHypotheses({ port });
+  const node = createModelGenerateHypotheses({ port, mechanisms: MECHANISMS });
 
   await assert.rejects(
     () => node(state),

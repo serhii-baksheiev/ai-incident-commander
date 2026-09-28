@@ -365,6 +365,66 @@ test('modelNodes(record, port).propose_conclusion is a model role: the fake port
 });
 
 /**
+ * AIC-123 slice 2: `generate_hypotheses` and `challenge_hypothesis` gain the
+ * same mechanism vocabulary `propose_conclusion` already receives above —
+ * `evals.ROOT_CAUSE_MECHANISMS` — so every cause a run produces, at every
+ * stage, is classified against the one vocabulary the lane measures against.
+ * The provider schema's cause mechanism enum is checked directly against
+ * `evals.ROOT_CAUSE_MECHANISMS`, the same independent-of-the-role-internals
+ * style the row above already uses.
+ */
+test("modelNodes(record, port).generate_hypotheses and .challenge_hypothesis are given the mechanism vocabulary evals.ROOT_CAUSE_MECHANISMS: the provider schema's cause mechanism enum equals it exactly, and the system prompt carries the vocabulary sentence", async () => {
+  const { modelNodes } = await import('../scripts/lane-arms.mjs');
+  const input = calibrationExecutionInput();
+
+  const requests = [];
+  const port = {
+    async complete(request) {
+      requests.push(request);
+      throw new Error('stop here: this row reads the request the node sent, not an answer');
+    },
+  };
+
+  const nodes = modelNodes(input, port);
+  const state = {
+    incident: { id: 'aic-123s2-fake-incident' },
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [],
+    control: { stopKind: 'sufficient', challengeRounds: 0 },
+  };
+
+  await nodes.generate_hypotheses(state).catch(() => {});
+  await nodes.challenge_hypothesis(state, 'h-1').catch(() => {});
+
+  assert.equal(requests.length, 2, 'both roles must reach the port exactly once each');
+  const vocabularySentence = `Classify each cause's mechanism as one of: ${evals.ROOT_CAUSE_MECHANISMS.join(', ')}.`;
+  const [generateRequest, challengeRequest] = requests;
+
+  assert.ok(
+    generateRequest.system.includes(vocabularySentence),
+    `generate_hypotheses: expected the system prompt to carry the vocabulary sentence: ${JSON.stringify(generateRequest.system)}`,
+  );
+  assert.ok(
+    challengeRequest.system.includes(vocabularySentence),
+    `challenge_hypothesis: expected the system prompt to carry the vocabulary sentence: ${JSON.stringify(challengeRequest.system)}`,
+  );
+  assert.deepEqual(
+    generateRequest.outputSchema.properties.hypotheses.items.properties.cause.properties.mechanism.enum,
+    [...evals.ROOT_CAUSE_MECHANISMS],
+    'generate_hypotheses must declare the cause mechanism enum from evals.ROOT_CAUSE_MECHANISMS, not a role-invented list',
+  );
+  assert.deepEqual(
+    challengeRequest.outputSchema.properties.alternative.properties.cause.properties.mechanism.enum,
+    [...evals.ROOT_CAUSE_MECHANISMS],
+    'challenge_hypothesis must declare the cause mechanism enum from evals.ROOT_CAUSE_MECHANISMS, not a role-invented list',
+  );
+});
+
+/**
  * `.claude/rules/invariants.md` ("one mechanism, one implementation"):
  * `modelNodes` used to exist twice, once per script. Both scripts must now
  * reach it through `scripts/lane-arms.mjs` — by `import` when the binding is

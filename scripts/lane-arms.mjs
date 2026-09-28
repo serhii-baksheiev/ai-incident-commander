@@ -68,13 +68,26 @@ export function scriptedNodes(record) {
  * model-backed ones. `execute_investigation` still replays the recorded tool
  * calls, so the evidence both arms see is identical and the only difference
  * is who reasoned over it.
+ *
+ * AIC-123 slice 2: `generate_hypotheses` and `challenge_hypothesis` now also
+ * take `mechanisms`, the same `evals.ROOT_CAUSE_MECHANISMS` vocabulary
+ * `propose_conclusion` already received, so every cause a run produces — at
+ * every stage — is classified against the one vocabulary the lane measures
+ * against.
+ * see lane-arms.test.mjs › "modelNodes(record, port).generate_hypotheses and .challenge_hypothesis are given the mechanism vocabulary evals.ROOT_CAUSE_MECHANISMS: the provider schema's cause mechanism enum equals it exactly, and the system prompt carries the vocabulary sentence"
  */
 export function modelNodes(record, port) {
   return {
     ...scriptedNodes(record),
-    generate_hypotheses: createModelGenerateHypotheses({ port }),
+    generate_hypotheses: createModelGenerateHypotheses({
+      port,
+      mechanisms: evals.ROOT_CAUSE_MECHANISMS,
+    }),
     interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
-    challenge_hypothesis: createModelChallengeHypothesis({ port }),
+    challenge_hypothesis: createModelChallengeHypothesis({
+      port,
+      mechanisms: evals.ROOT_CAUSE_MECHANISMS,
+    }),
     propose_conclusion: createModelProposeConclusion({ port, mechanisms: evals.ROOT_CAUSE_MECHANISMS }),
   };
 }

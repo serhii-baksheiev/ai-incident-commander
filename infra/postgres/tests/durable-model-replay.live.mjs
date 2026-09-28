@@ -66,6 +66,9 @@ function requireConnectionString() {
 
 const DEFAULT_OPTIONS = Object.freeze({ leaseMs: 30_000, maxExecutionAttempts: 5 });
 
+/** The closed mechanism vocabulary generate_hypotheses classifies causes in. */
+const MECHANISMS = Object.freeze(['deployment-regression', 'connection-pool-exhaustion']);
+
 /**
  * A store against a freshly (idempotently) provisioned `aic_app` schema, with
  * every table this row touches truncated, and the pool closed at the end of
@@ -186,10 +189,16 @@ test(
     const contextA = await persistence.openRunWriteContext(store, claimA);
 
     const port = countingPort(
-      jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+      jsonCompletion({
+        hypotheses: [{
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout', mechanism: 'deployment-regression' },
+        }],
+      }),
     );
     const state = buildState(runId);
-    const nodeA = roles.createModelGenerateHypotheses({ port, execution: contextA });
+    const nodeA = roles.createModelGenerateHypotheses({ port, execution: contextA, mechanisms: MECHANISMS });
 
     const resultA = await nodeA(state);
 
@@ -199,7 +208,7 @@ test(
     assert.equal(claimB.executionAttempt, 2, 'the takeover must be a second attempt');
     const contextB = await persistence.openRunWriteContext(store, claimB);
 
-    const nodeB = roles.createModelGenerateHypotheses({ port, execution: contextB });
+    const nodeB = roles.createModelGenerateHypotheses({ port, execution: contextB, mechanisms: MECHANISMS });
     const resultB = await nodeB(state);
 
     assert.equal(
@@ -261,10 +270,16 @@ test(
     const contextA = await persistence.openRunWriteContext(store, claimA);
 
     const port = countingPort(
-      jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+      jsonCompletion({
+        hypotheses: [{
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout', mechanism: 'deployment-regression' },
+        }],
+      }),
     );
     const stateA = buildState(runId);
-    const nodeA = roles.createModelGenerateHypotheses({ port, execution: contextA });
+    const nodeA = roles.createModelGenerateHypotheses({ port, execution: contextA, mechanisms: MECHANISMS });
     await nodeA(stateA);
     assert.equal(port.calls, 1);
 
@@ -278,7 +293,7 @@ test(
     // the domain's IncidentSchema (a looseObject) accepts but which changes
     // what generate_hypotheses's own prompt describes.
     const stateB = buildState(runId, { note: 'a fact the first request never carried' });
-    const nodeB = roles.createModelGenerateHypotheses({ port, execution: contextB });
+    const nodeB = roles.createModelGenerateHypotheses({ port, execution: contextB, mechanisms: MECHANISMS });
 
     await assert.rejects(
       () => nodeB(stateB),

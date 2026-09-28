@@ -1206,8 +1206,14 @@ test("propose_conclusion's system prompt contains every sentence describeStatusR
  * definition sentences above), so the version this module ships bumps a
  * second time — the same reasoning `roles-model-nodes.test.mjs`'s own v0.3
  * bump recorded for the conclusion role's addition. The v0.3 pin in that file
- * moves to v0.4 alongside this row; see that file's own comment.
+ * moved to v0.4 alongside this row.
+ *
+ * AIC-123 slice 2: the prompt set changed a third time — `generate_hypotheses`
+ * and `challenge_hypothesis` now emit a structured `cause` on every hypothesis
+ * and alternative, and carry the mechanism vocabulary sentence in their own
+ * system prompts, the same sentence this role's prompt already carried. The
+ * pin moves again, to v0.5, alongside `roles-model-nodes.test.mjs`'s own row.
  */
-test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4', () => {
-  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.4');
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.5');
 });
