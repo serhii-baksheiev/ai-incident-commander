@@ -939,21 +939,23 @@ function isRoutingInstruction(value: unknown): boolean {
  * round reads only an own "tests" property off what plan_investigation
  * returns, never one its prototype supplies", › "the challenge round never
  * invokes an own getter for "tests" on what plan_investigation returns, and
- * takes nothing from it" and › "the challenge round rejects a
- * plan_investigation result whose tests key is not an array"
+ * takes nothing from it", › "the challenge round rejects a
+ * plan_investigation result whose tests key is not an array" and › "the
+ * challenge round refuses a derive_predictions result that is not an object,
+ * by name, before plan_investigation is ever called for the round"
  */
 function readOwnArrayResult<T>(
   result: unknown,
   key: string,
-  errors: Readonly<{ routing: string; nonArray: string }>,
+  errors: Readonly<{ routing: string; nonObject: string; nonArray: string }>,
 ): T[] {
   if (isRoutingInstruction(result)) {
     throw new Error(errors.routing);
   }
-  const descriptor =
-    typeof result === 'object' && result !== null
-      ? Object.getOwnPropertyDescriptor(result, key)
-      : undefined;
+  if (typeof result !== 'object' || result === null) {
+    throw new Error(errors.nonObject);
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(result, key);
   const value =
     descriptor === undefined || !Object.hasOwn(descriptor, 'value')
       ? []
@@ -1593,6 +1595,7 @@ export function createInvestigationGraph({
     const alternativePredictions = readOwnArrayResult<Prediction>(derived, 'predictions', {
       routing:
         'derive_predictions returned routing (Command or Send) on the challenge round: routing is the graph\'s, not a node\'s',
+      nonObject: 'derive_predictions returned a non-object result on the challenge round',
       nonArray:
         'derive_predictions returned a non-array predictions on the challenge round',
     });
@@ -1632,6 +1635,7 @@ export function createInvestigationGraph({
     const plannedTests = readOwnArrayResult<InvestigationTest>(planned, 'tests', {
       routing:
         'plan_investigation returned routing (Command or Send) on the challenge round: routing is the graph\'s, not a node\'s',
+      nonObject: 'plan_investigation returned a non-object result on the challenge round',
       nonArray:
         'plan_investigation returned a non-array tests on the challenge round',
     });

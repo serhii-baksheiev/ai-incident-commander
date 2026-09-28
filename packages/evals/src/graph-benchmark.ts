@@ -270,11 +270,9 @@ export async function runGraphBenchmarkExperiment(
       // round's own tests (the challenge role's proposed ones, and whatever
       // `plan_investigation` plans inline for the alternative — see
       // challenge-planning.test.mjs) have not landed in `state.tests` yet.
-      // `undefined` until the first (and only counted) capture — AIC-125
-      // slice d never credits a second round's tests against a first-round
-      // baseline, matching the challenge round's own leader-change axis,
-      // which also only ever compares the first challenge round's before and
-      // after.
+      // `undefined` until the first challenge begins, and taken only then:
+      // every test that enters state from the first challenge round on —
+      // a second round's included — counts as challenge work.
       // see challenge-discriminating-credit.test.mjs
       let preChallengeTestIds: ReadonlySet<string> | undefined;
       const graph = createInvestigationGraph({

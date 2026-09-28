@@ -1042,19 +1042,17 @@ async function graphExperimentWithDiscriminatingTrialStatus(trialStatus) {
         plan_investigation: empty,
         execute_investigation: async (state) => {
           if (state.control.challengeRounds === 0) return {};
-          // Discriminating credit needs an ok trial that fetched evidence the
-          // run did not hold (graph-benchmark.ts); only the ok arm fetches one.
-          const fetched = trialStatus === 'ok'
-            ? [{
-              id: `challenge-evidence-${input.runId}`,
-              trialId,
-              kind: 'metric',
-              source: tool,
-              observedAt: '2026-01-01T00:00:00.000Z',
-              statement: 'the discriminating test returned a new observation',
-              rawRef: `replay://${tool}/challenge-evidence-${input.runId}`,
-            }]
-            : [];
+          // Every arm fetches a new evidence item, so the trial's status is the
+          // only thing that differs between the ok, error and unavailable rows.
+          const fetched = [{
+            id: `challenge-evidence-${input.runId}`,
+            trialId,
+            kind: 'metric',
+            source: tool,
+            observedAt: '2026-01-01T00:00:00.000Z',
+            statement: 'the discriminating test returned a new observation',
+            rawRef: `replay://${tool}/challenge-evidence-${input.runId}`,
+          }];
           return {
             evidence: fetched,
             tests: [{

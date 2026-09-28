@@ -435,6 +435,29 @@ test('the challenge round rejects a plan_investigation result whose tests key is
   );
 });
 
+test('the challenge round refuses a derive_predictions result that is not an object, by name, before plan_investigation is ever called for the round', async () => {
+  let planCallsWithAlternative = 0;
+  const nodes = planningWrapperNodes({
+    generateHypotheses: causelessLeaderHypotheses,
+    deriveePredictions: (state) =>
+      state.hypotheses.some((hypothesis) => hypothesis.createdBy === 'challenge') ? null : { predictions: [] },
+    planInvestigationNode: (state) => {
+      if (state.hypotheses.some((hypothesis) => hypothesis.createdBy === 'challenge')) planCallsWithAlternative += 1;
+      return { tests: [] };
+    },
+    challengeHypothesisResult: STUB_CHALLENGE_RESULT,
+    executeSpy: () => {},
+  });
+
+  const investigationGraph = graph.createInvestigationGraph({ nodes });
+
+  await assert.rejects(
+    investigationGraph.execute({ kind: 'start', state: planningWrapperInitialState() }),
+    /derive_predictions returned a non-object result/,
+  );
+  assert.equal(planCallsWithAlternative, 0, 'a doomed round must not spend a plan_investigation call');
+});
+
 test('the challenge-time plan_investigation call does not count a logical iteration: iterationsUsed is unchanged by it', async () => {
   const executeCalls = [];
   let planInvestigationCalls = 0;
