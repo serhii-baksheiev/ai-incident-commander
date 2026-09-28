@@ -170,11 +170,28 @@ export const HypothesisStatusSchema = z.enum([
  * exact same schema object CauseClaimSchema.cause uses, not a second copy of
  * the same shape". Vocabulary membership of `mechanism` is checked by the
  * caller, as it already was for `CauseClaimSchema.cause`.
+ *
+ * `component` and `mechanism` are bounded the same way `SubjectSchema` above
+ * is — non-empty and capped, because a model or HITL caller supplies them and
+ * they are persisted verbatim; `trigger` is optional free text with a wider
+ * cap (AIC-123 slice 2).
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: a component of exactly 200 characters is accepted, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: a component of 201 characters is refused, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: an empty component is refused, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: a mechanism of exactly 200 characters is accepted, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: a mechanism of 201 characters is refused, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: an empty mechanism is refused, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: a trigger of exactly 500 characters is accepted, through both HypothesisSchema.cause and CauseClaimSchema.cause"
+ * see cause-emitting-roles.test.mjs › "CauseDescriptionSchema: a trigger of 501 characters is refused, through both HypothesisSchema.cause and CauseClaimSchema.cause"
  */
+const CAUSE_COMPONENT_MAX = 200;
+const CAUSE_MECHANISM_MAX = 200;
+const CAUSE_TRIGGER_MAX = 500;
+
 export const CauseDescriptionSchema = z.strictObject({
-  component: ContractStringSchema,
-  mechanism: ContractStringSchema,
-  trigger: ContractStringSchema.optional(),
+  component: z.string().min(1).max(CAUSE_COMPONENT_MAX),
+  mechanism: z.string().min(1).max(CAUSE_MECHANISM_MAX),
+  trigger: z.string().max(CAUSE_TRIGGER_MAX).optional(),
 });
 
 export const HypothesisSchema = z.strictObject({

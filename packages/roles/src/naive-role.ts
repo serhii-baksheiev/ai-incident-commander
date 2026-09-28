@@ -1,5 +1,6 @@
 import {
   CauseClaimSchema,
+  causeMechanismViolation,
   conclusionCauseCountViolation,
   EvidenceAssessmentSchema,
   IncidentConclusionSchema,
@@ -8,6 +9,7 @@ import {
   type IncidentConclusion,
 } from '@aic/domain';
 
+import { describeMechanismVocabulary } from './mechanism-vocabulary.js';
 import { ModelRoleOutputError } from './model-errors.js';
 import type { ModelPort } from './reference-model-port.js';
 import { ownValue } from './own-value.js';
@@ -235,7 +237,7 @@ export function createModelNaiveInvestigation(
         'You are an incident investigator. You are given every piece of telemetry collected for one incident, including the calls that returned nothing.',
         'Propose the candidate explanations, say how each piece of evidence bears on them, conclude, and say why you stopped.',
         'A conclusion is root-cause (exactly one cause), multiple-causes (two or more), inconclusive or no-incident (no cause). Cite evidence only by the ids shown, and hypotheses only by ids you declared.',
-        `Classify each cause's mechanism as one of: ${vocabulary.join(', ')}.`,
+        describeMechanismVocabulary(vocabulary),
         `Stop kinds: ${NAIVE_STOP_KINDS.join(', ')}.`,
         JSON_ONLY,
       ].join('\n'),
@@ -298,13 +300,30 @@ export function createModelNaiveInvestigation(
         refuseUnknownKeys(ROLE, cause, CAUSE_KEYS, 'a cause');
         const claimed = ownValue(cause, 'cause');
         refuseUnknownKeys(ROLE, claimed, CAUSE_DESCRIPTION_KEYS, "a cause's description");
+        // The vocabulary RULE is delegated to `causeMechanismViolation`
+        // (AIC-123 slice 2), checked on the raw own `mechanism` before this
+        // cause ever reaches `IncidentConclusionSchema.parse` below —
+        // `CauseDescriptionSchema` caps `mechanism` at 200 characters, so a
+        // hostile, off-vocabulary mechanism longer than that would otherwise
+        // be reported as a length-cap schema refusal rather than the
+        // vocabulary refusal this check exists to give, the same reasoning
+        // `createModelProposeConclusion` orders its own check by. The
+        // MESSAGE stays this role's own historical wording (`model-text-escaping.test.mjs`
+        // pins it), not `causeMechanismViolation`'s: only the RULE is shared.
+        const mechanism = ownValue(claimed, 'mechanism');
+        if (
+          typeof mechanism === 'string' &&
+          causeMechanismViolation({ mechanism }, vocabulary) !== undefined
+        ) {
+          refuse(`a cause's mechanism is outside the vocabulary: ${quoteModelText(mechanism)}`);
+        }
         return {
           hypothesisId: ownValue(cause, 'hypothesisId'),
           // An own key even when absent, so the schema cannot read an
           // inherited trigger through a key the rebuild left out.
           cause: {
             component: ownValue(claimed, 'component'),
-            mechanism: ownValue(claimed, 'mechanism'),
+            mechanism,
             trigger: ownValue(claimed, 'trigger'),
           },
           evidenceIds: ownValue(cause, 'evidenceIds'),
@@ -314,15 +333,12 @@ export function createModelNaiveInvestigation(
     for (const { cause } of conclusion.causes) {
       if (cause.trigger === undefined) delete (cause as { trigger?: string }).trigger;
     }
-    for (const { hypothesisId, cause, evidenceIds } of conclusion.causes) {
+    for (const { hypothesisId, evidenceIds } of conclusion.causes) {
       if (!hypothesisIds.has(hypothesisId)) {
         refuse(`a cause names a hypothesis the answer did not declare: ${quoteModelText(hypothesisId)}`);
       }
       const unshown = evidenceIds.find((evidenceId) => !shownEvidenceIds.has(evidenceId));
       if (unshown !== undefined) refuse(`a cause cites evidence that was not shown: ${quoteModelText(unshown)}`);
-      if (!vocabulary.includes(cause.mechanism)) {
-        refuse(`a cause's mechanism is outside the vocabulary: ${quoteModelText(cause.mechanism)}`);
-      }
     }
     requireCauseCount(conclusion);
 

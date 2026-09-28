@@ -46,11 +46,16 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  * `v0.2-four-arm-supplement-2.md` (dated 2026-09-25) is AIC-119 slice 5's
  * addition, the preregistration addendum owner ruling D1 item 6 requires before
  * the first calibration. Its entry follows the same rule.
+ *
+ * `v0.2-four-arm-supplement-3.md` (dated 2026-09-28) is AIC-123 slice 2's
+ * addition: prompt `reference-roles-prompt-v0.5`, under the owner's AIC-123
+ * decision D4. Its entry follows the same rule.
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
   'v0.2-four-arm-supplement-1.md': 'sha256:e3b3e9751a2da8e74197b10b6bb50afa70c7f9e5e62899c2371aa1b5c1f27b85',
   'v0.2-four-arm-supplement-2.md': 'sha256:99f0779261ac57763e44f5bfb092bdf4aa16081b34f36b076ab8f2d6e7d18ba1',
+  'v0.2-four-arm-supplement-3.md': 'sha256:20667b18ae82116b7023121c2eb0113f1813833662b3279f8546d9c87f5ea4ff',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');

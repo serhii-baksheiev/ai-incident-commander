@@ -116,7 +116,14 @@ function createFakeModelPort() {
         if (role === 'generate_hypotheses') {
           document = {
             hypotheses: [
-              { id: `fake-hypothesis-${counter}`, statement: 'a fake candidate cause' },
+              {
+                id: `fake-hypothesis-${counter}`,
+                statement: 'a fake candidate cause',
+                // AIC-123 slice 2: mechanism is a VOCABULARY CLASS
+                // (evals.ROOT_CAUSE_MECHANISMS), never a scenario id — the
+                // leak sweep below must find nothing here either.
+                cause: { component: 'fake-component', mechanism: evals.ROOT_CAUSE_MECHANISMS[0] },
+              },
             ],
           };
         } else if (role === 'interpret_residual_evidence') {
@@ -126,6 +133,7 @@ function createFakeModelPort() {
             alternative: {
               id: `fake-alternative-${counter}`,
               statement: 'a fake alternative cause',
+              cause: { component: 'fake-component', mechanism: evals.ROOT_CAUSE_MECHANISMS[1] },
             },
             discriminatingTests: [
               {

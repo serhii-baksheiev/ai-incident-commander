@@ -90,7 +90,11 @@ const initialState = () => ({
 
 const at = () => '2026-01-01T01:00:00.000Z';
 
-/** The closed root-cause mechanism vocabulary `propose_conclusion` is exercised with. */
+/**
+ * The closed root-cause mechanism vocabulary every mechanism-vocabulary role
+ * (`propose_conclusion`, and since AIC-123 slice 2 `generate_hypotheses` and
+ * `challenge_hypothesis` too) is exercised with.
+ */
 const CONCLUSION_MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
 
 /** A `ModelCompletion` carrying a scripted JSON document as its `text`. */
@@ -140,12 +144,21 @@ function expectedFingerprint(value) {
  */
 const ROLE_CASES = [
   {
+    // AIC-123 slice 2: `mechanisms` is required, the same reason it is
+    // injected via closure for `propose_conclusion` below.
     roleName: 'generate_hypotheses',
-    create: (options) => roles.createModelGenerateHypotheses(options),
+    create: (options) =>
+      roles.createModelGenerateHypotheses({ mechanisms: CONCLUSION_MECHANISMS, ...options }),
     buildState: () => initialState(),
     call: (node, state) => node(state),
     completion: jsonCompletion({
-      hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }],
+      hypotheses: [
+        {
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
     }),
   },
   {
@@ -156,8 +169,11 @@ const ROLE_CASES = [
     completion: jsonCompletion({ assessments: [] }),
   },
   {
+    // AIC-123 slice 2: `mechanisms` is required, the same reason it is
+    // injected via closure for `propose_conclusion` below.
     roleName: 'challenge_hypothesis',
-    create: (options) => roles.createModelChallengeHypothesis(options),
+    create: (options) =>
+      roles.createModelChallengeHypothesis({ mechanisms: CONCLUSION_MECHANISMS, ...options }),
     buildState: () => {
       const state = initialState();
       state.hypotheses = [
@@ -167,7 +183,11 @@ const ROLE_CASES = [
     },
     call: (node, state) => node(state, 'h-1'),
     completion: jsonCompletion({
-      alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency upgrade, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [
         { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
       ],
@@ -397,10 +417,22 @@ function createRecordingExecution() {
 
 test('records a distinct model.role exec key for every model call across generate -> interpret -> challenge -> interpret, and no key ever repeats', async () => {
   const answers = [
-    jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+    jsonCompletion({
+      hypotheses: [
+        {
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    }),
     jsonCompletion({ assessments: [] }),
     jsonCompletion({
-      alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency upgrade, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [
         { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
       ],
@@ -420,13 +452,23 @@ test('records a distinct model.role exec key for every model call across generat
   const recording = createRecordingExecution();
 
   const nodes = Object.fromEntries(LIFECYCLE_NODES.map((name) => [name, async () => ({})]));
-  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({ port, execution: recording, at });
+  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({
+    port,
+    execution: recording,
+    at,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
   nodes.interpret_residual_evidence = roles.createModelInterpretResidualEvidence({
     port,
     execution: recording,
     at,
   });
-  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({ port, execution: recording, at });
+  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({
+    port,
+    execution: recording,
+    at,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
 
   let terminationCalls = 0;
   nodes.termination_check = async (state) => {
@@ -471,10 +513,22 @@ test('records a distinct model.role exec key for every model call across generat
  */
 test('records a distinct model.role exec key for propose_conclusion too, one edge past the row above, and no key ever repeats', async () => {
   const answers = [
-    jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+    jsonCompletion({
+      hypotheses: [
+        {
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    }),
     jsonCompletion({ assessments: [] }),
     jsonCompletion({
-      alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency upgrade, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [
         { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
       ],
@@ -504,13 +558,23 @@ test('records a distinct model.role exec key for propose_conclusion too, one edg
   const recording = createRecordingExecution();
 
   const nodes = Object.fromEntries(LIFECYCLE_NODES.map((name) => [name, async () => ({})]));
-  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({ port, execution: recording, at });
+  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({
+    port,
+    execution: recording,
+    at,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
   nodes.interpret_residual_evidence = roles.createModelInterpretResidualEvidence({
     port,
     execution: recording,
     at,
   });
-  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({ port, execution: recording, at });
+  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({
+    port,
+    execution: recording,
+    at,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
   nodes.propose_conclusion = roles.createModelProposeConclusion({
     port,
     execution: recording,
@@ -580,10 +644,22 @@ function requireStateTerminationCheck() {
 test('AIC-119 slice 2: the canonical state-derived termination_check forces a second challenge round once leadership passes to the newest alternative, reaching propose_conclusion exactly once after seven model calls with seven distinct exec keys', async () => {
   const createStateTerminationCheck = requireStateTerminationCheck();
   const answers = [
-    jsonCompletion({ hypotheses: [{ id: 'h-1', statement: 'the checkout deploy changed the db endpoint' }] }),
+    jsonCompletion({
+      hypotheses: [
+        {
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    }),
     jsonCompletion({ assessments: [] }),
     jsonCompletion({
-      alternative: { id: 'alt-1', statement: 'the dependency upgrade, not the deploy' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency upgrade, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [
         { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
       ],
@@ -609,7 +685,11 @@ test('AIC-119 slice 2: the canonical state-derived termination_check forces a se
       ],
     }),
     jsonCompletion({
-      alternative: { id: 'alt-2', statement: 'a third-party outage, not the dependency upgrade' },
+      alternative: {
+        id: 'alt-2',
+        statement: 'a third-party outage, not the dependency upgrade',
+        cause: { component: 'third-party-dependency', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [
         { id: 'dt-2', predictionId: 'p-2', tool: 'logs.search', input: {}, cost: 'cheap' },
       ],
@@ -639,13 +719,23 @@ test('AIC-119 slice 2: the canonical state-derived termination_check forces a se
   const recording = createRecordingExecution();
 
   const nodes = Object.fromEntries(LIFECYCLE_NODES.map((name) => [name, async () => ({})]));
-  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({ port, execution: recording, at });
+  nodes.generate_hypotheses = roles.createModelGenerateHypotheses({
+    port,
+    execution: recording,
+    at,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
   nodes.interpret_residual_evidence = roles.createModelInterpretResidualEvidence({
     port,
     execution: recording,
     at,
   });
-  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({ port, execution: recording, at });
+  nodes.challenge_hypothesis = roles.createModelChallengeHypothesis({
+    port,
+    execution: recording,
+    at,
+    mechanisms: CONCLUSION_MECHANISMS,
+  });
   let proposeConclusionCalls = 0;
   const proposeConclusionNode = roles.createModelProposeConclusion({
     port,

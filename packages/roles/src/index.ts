@@ -1,6 +1,7 @@
 import { DOMAIN_LAYER } from '@aic/domain';
 import { GRAPH_DEPENDENCIES } from '@aic/graph';
 
+export * from './mechanism-vocabulary.js';
 export * from './model-config.js';
 export * from './model-errors.js';
 export * from './model-usage-ledger.js';

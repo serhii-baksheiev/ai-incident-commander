@@ -4,15 +4,16 @@ import {
   buildExecKey,
   canonicalJson,
   CauseClaimSchema,
+  causeMechanismViolation,
   conclusionViolation,
   deriveHypothesisStatus,
   EvidenceAssessmentSchema,
-  HypothesisSchema,
   IncidentConclusionSchema,
   InvestigationTestSchema,
   quoteModelText,
   STATUS_RULES,
   STATUS_RULES_VERSION,
+  StructuredHypothesisSchema,
   type CommittedExecution,
   type EvidenceAssessment,
   type Hypothesis,
@@ -21,6 +22,7 @@ import {
 } from '@aic/domain';
 import type { ChallengeResult, InvestigationNodeResult } from '@aic/graph';
 
+import { describeMechanismVocabulary } from './mechanism-vocabulary.js';
 import { ModelRoleOutputError } from './model-errors.js';
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -143,22 +145,51 @@ import { ownValue } from './own-value.js';
  * see roles-port-contract.test.mjs › "constrains the answer shape at the provider when a role declares one"
  */
 
-const HYPOTHESES_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    hypotheses: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { id: { type: 'string' }, statement: { type: 'string' } },
-        required: ['id', 'statement'],
-        additionalProperties: false,
+/**
+ * The `cause` object every mechanism-vocabulary answer shape declares
+ * (AIC-123 slice 2): `generate_hypotheses`'s hypothesis item, `propose_conclusion`'s cause, and
+ * `challenge_hypothesis`'s alternative all share this one shape rather than
+ * three copies — the mechanism enum comes from the caller-supplied
+ * vocabulary, never restated by hand
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: the provider schema declares a closed cause object on every hypothesis item, required, with the mechanism enum equal to the supplied vocabulary exactly"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: the provider schema declares a closed cause object on alternative, required, with the mechanism enum equal to the supplied vocabulary exactly"
+ */
+function causeSchema(mechanisms: readonly string[]) {
+  return Object.freeze({
+    type: 'object',
+    properties: {
+      component: { type: 'string' },
+      mechanism: { type: 'string', enum: [...mechanisms] },
+      trigger: { type: 'string' },
+    },
+    required: ['component', 'mechanism'],
+    additionalProperties: false,
+  });
+}
+
+function hypothesesSchema(mechanisms: readonly string[]) {
+  return Object.freeze({
+    type: 'object',
+    properties: {
+      hypotheses: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            statement: { type: 'string' },
+            cause: causeSchema(mechanisms),
+          },
+          required: ['id', 'statement', 'cause'],
+          additionalProperties: false,
+        },
       },
     },
-  },
-  required: ['hypotheses'],
-  additionalProperties: false,
-});
+    required: ['hypotheses'],
+    additionalProperties: false,
+  });
+}
 
 const ASSESSMENTS_SCHEMA = Object.freeze({
   type: 'object',
@@ -185,66 +216,80 @@ const ASSESSMENTS_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-const CHALLENGE_SCHEMA = Object.freeze({
-  type: 'object',
-  properties: {
-    alternative: {
-      type: 'object',
-      properties: { id: { type: 'string' }, statement: { type: 'string' } },
-      required: ['id', 'statement'],
-      additionalProperties: false,
-    },
-    discriminatingTests: {
-      type: 'array',
-      items: {
+function challengeSchema(mechanisms: readonly string[]) {
+  return Object.freeze({
+    type: 'object',
+    properties: {
+      alternative: {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          predictionId: { type: 'string' },
-          // `minLength` matches the domain's `ToolIdSchema` (`z.string().min(1)`).
-          // Without it a schema-valid empty tool id reached the domain and was
-          // refused there — the schema permitting what the domain rejects, which
-          // is the shape this whole repair exists to remove.
-          tool: { type: 'string', minLength: 1 },
-          input: {
-            type: 'object',
-            properties: {
-              service: { type: 'string' },
-              window: { type: 'string' },
-              query: { type: 'string' },
-              metric: { type: 'string' },
-            },
-            additionalProperties: false,
-          },
-          cost: { type: 'string', enum: enumOf(InvestigationTestSchema, 'cost') },
-          // `planned` only: a test the model PROPOSES has not run, so the other
-          // three statuses the domain allows would be claims about execution.
-          status: { type: 'string', enum: ['planned'] },
+          statement: { type: 'string' },
+          cause: causeSchema(mechanisms),
         },
-        required: ['id', 'predictionId', 'tool', 'input', 'cost', 'status'],
+        required: ['id', 'statement', 'cause'],
         additionalProperties: false,
       },
+      discriminatingTests: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            predictionId: { type: 'string' },
+            // `minLength` matches the domain's `ToolIdSchema` (`z.string().min(1)`).
+            // Without it a schema-valid empty tool id reached the domain and was
+            // refused there — the schema permitting what the domain rejects, which
+            // is the shape this whole repair exists to remove.
+            tool: { type: 'string', minLength: 1 },
+            input: {
+              type: 'object',
+              properties: {
+                service: { type: 'string' },
+                window: { type: 'string' },
+                query: { type: 'string' },
+                metric: { type: 'string' },
+              },
+              additionalProperties: false,
+            },
+            cost: { type: 'string', enum: enumOf(InvestigationTestSchema, 'cost') },
+            // `planned` only: a test the model PROPOSES has not run, so the other
+            // three statuses the domain allows would be claims about execution.
+            status: { type: 'string', enum: ['planned'] },
+          },
+          required: ['id', 'predictionId', 'tool', 'input', 'cost', 'status'],
+          additionalProperties: false,
+        },
+      },
     },
-  },
-  required: ['alternative', 'discriminatingTests'],
-  additionalProperties: false,
-});
+    required: ['alternative', 'discriminatingTests'],
+    additionalProperties: false,
+  });
+}
 
 /**
  * The prompt set this module ships, versioned so a run can record which it
  * used. AIC-119 slice E bumped this to v0.3: `propose_conclusion` is now
  * wired into the graph arm (`scripts/lane-arms.mjs`'s `modelNodes`), and
  * `interpret_residual_evidence`'s system prompt states the id contract below.
- * AIC-119 slice 5 (owner ruling D1, item 6) bumps it again, to v0.4:
+ * AIC-119 slice 5 (owner ruling D1, item 6) bumped it again, to v0.4:
  * `propose_conclusion`'s system prompt now also carries one definition
  * sentence per hypothesis status, generated by `describeStatusRules`
  * (`./status-rules-prompt.js`) from `STATUS_RULES[STATUS_RULES_VERSION]`, so
  * the model is told what `corroborated` (and every other derived status)
  * means rather than being shown the bare word.
+ *
+ * AIC-123 slice 2 bumps it again, to v0.5: `generate_hypotheses` and
+ * `challenge_hypothesis` now emit a structured `cause` on every hypothesis and
+ * alternative, classified against the caller-supplied mechanism vocabulary
+ * through `causeMechanismViolation` (`@aic/domain`), and their system prompts
+ * carry `describeMechanismVocabulary`'s sentence — the same sentence
+ * `propose_conclusion`'s prompt already carried.
  * see docs/evidence/preregistration/v0.2-four-arm-supplement-1.md
- * see conclusion-role.test.mjs › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4"
+ * see docs/evidence/preregistration/v0.2-four-arm-supplement-3.md
+ * see conclusion-role.test.mjs › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5"
  */
-export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.4' as const;
+export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.5' as const;
 
 export { DEFAULT_MAX_OUTPUT_TOKENS } from './role-output.js';
 
@@ -262,6 +307,19 @@ export interface ModelRoleOptions {
   readonly maxOutputTokens?: number;
   /** The clock, injected so an assessment's `at` is decidable in a test. */
   readonly at?: () => string;
+}
+
+/**
+ * `ModelRoleOptions`, plus the closed root-cause mechanism vocabulary a
+ * mechanism-vocabulary role's cause must be classified in. Shared by
+ * `createModelGenerateHypotheses`, `createModelChallengeHypothesis` and
+ * `createModelProposeConclusion` (AIC-123 slice 2) rather than three copies of
+ * the same one-field extension (`.claude/rules/invariants.md`, "one
+ * mechanism, one implementation").
+ */
+export interface ModelMechanismRoleOptions extends ModelRoleOptions {
+  /** The closed root-cause mechanism vocabulary a cause must be classified in. */
+  readonly mechanisms: readonly string[];
 }
 
 /**
@@ -342,27 +400,45 @@ function describeState(state: IncidentState): string {
  * `'challenge'` hypothesis.
  * see roles-model-nodes.test.mjs › "produces hypotheses the domain schema accepts
  * and declares the call it made"
+ *
+ * AIC-123 slice 2: every hypothesis now carries a structured `cause`, required
+ * by the provider schema (`hypothesesSchema`) and by `StructuredHypothesisSchema`
+ * (`@aic/domain`) once parsed. A cause's mechanism is checked against the
+ * supplied vocabulary through `causeMechanismViolation` — read off the RAW own
+ * value, before the schema parse, the same order `createModelProposeConclusion`
+ * uses below, so a hostile off-vocabulary mechanism is reported as a vocabulary
+ * refusal rather than a length-cap refusal from the schema.
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: a valid answer with a cause carrying a trigger returns a hypothesis carrying that exact cause"
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: a cause with no trigger carries no own trigger key on the hypothesis, not trigger: undefined"
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: refuses a hypothesis carrying no cause"
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: refuses a cause whose mechanism is outside the supplied vocabulary, naming it escaped and truncated to 80 characters"
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: refuses a cause carrying an unknown key"
+ * see cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: the system prompt contains exactly the mechanism vocabulary sentence"
  */
 export function createModelGenerateHypotheses({
   port,
   execution,
   promptVersion = REFERENCE_PROMPT_VERSION,
   maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
-}: ModelRoleOptions): (
+  mechanisms,
+}: ModelMechanismRoleOptions): (
   state: IncidentState,
 ) => Promise<InvestigationNodeResult> {
   const role = 'generate_hypotheses';
+  const vocabulary = Object.freeze([...mechanisms]);
+  const outputSchema = hypothesesSchema(vocabulary);
   return async (state) => {
     const completion = await completeOnce({ port, execution, promptVersion }, role, state, {
       system: [
         'You are an incident investigator proposing candidate explanations.',
         'Propose distinct, falsifiable causal hypotheses for the incident below.',
-        `Answer shape: {"hypotheses":[{"id":"<stable id>","statement":"<one sentence>"}]}`,
+        'Answer shape: {"hypotheses":[{"id":"<stable id>","statement":"<one sentence>","cause":{"component":"<component>","mechanism":"<mechanism>","trigger":"<optional trigger>"}}]}',
+        describeMechanismVocabulary(vocabulary),
         JSON_ONLY,
       ].join('\n'),
       prompt: `prompt-version: ${promptVersion}\n\n${describeState(state)}`,
       maxOutputTokens,
-      outputSchema: HYPOTHESES_SCHEMA,
+      outputSchema,
     });
 
     refuseTruncated(role, completion);
@@ -388,11 +464,26 @@ export function createModelGenerateHypotheses({
     const taken = new Set(state.hypotheses.map(({ id }) => id));
     const hypotheses: Hypothesis[] = ownArray(role, document, 'hypotheses').map(
       (candidate) => {
-        const hypothesis = parseWith(role, HypothesisSchema, {
+        const causeCandidate = ownValue(candidate, 'cause');
+        refuseUnknownKeys(role, causeCandidate, CAUSE_DESCRIPTION_KEYS, "a cause's description");
+        const mechanism = ownValue(causeCandidate, 'mechanism');
+        if (typeof mechanism === 'string') {
+          const violation = causeMechanismViolation({ mechanism }, vocabulary);
+          if (violation !== undefined) throw new ModelRoleOutputError(role, violation);
+        }
+        const hypothesis = parseWith(role, StructuredHypothesisSchema, {
           id: ownValue(candidate, 'id'),
           statement: ownValue(candidate, 'statement'),
           createdBy: 'initial',
+          cause: {
+            component: ownValue(causeCandidate, 'component'),
+            mechanism,
+            trigger: ownValue(causeCandidate, 'trigger'),
+          },
         });
+        if (hypothesis.cause.trigger === undefined) {
+          delete (hypothesis.cause as { trigger?: string }).trigger;
+        }
         if (taken.has(hypothesis.id)) {
           throw new ModelRoleOutputError(
             role,
@@ -545,24 +636,40 @@ export function createModelInterpretResidualEvidence({
  * happened.
  * see roles-model-nodes.test.mjs › "refuses a challenge whose alternative repeats
  * the hypothesis it was asked to challenge"
+ *
+ * AIC-123 slice 2: the alternative now carries a structured `cause`, validated
+ * the same way `createModelGenerateHypotheses` validates one — the vocabulary
+ * check runs on the RAW own mechanism before the schema parse, so a hostile
+ * off-vocabulary mechanism is reported as a vocabulary refusal rather than a
+ * length-cap refusal from the schema.
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: a valid answer with a cause carrying a trigger returns an alternative carrying that exact cause"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: a cause with no trigger carries no own trigger key on the alternative, not trigger: undefined"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative carrying no cause"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative cause whose mechanism is outside the supplied vocabulary, naming it escaped and truncated to 80 characters"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative cause carrying an unknown key"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: the system prompt contains exactly the mechanism vocabulary sentence"
  */
 export function createModelChallengeHypothesis({
   port,
   execution,
   promptVersion = REFERENCE_PROMPT_VERSION,
   maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
-}: ModelRoleOptions): (
+  mechanisms,
+}: ModelMechanismRoleOptions): (
   state: IncidentState,
   leaderId: string,
 ) => Promise<ChallengeResult> {
   const role = 'challenge_hypothesis';
+  const vocabulary = Object.freeze([...mechanisms]);
+  const outputSchema = challengeSchema(vocabulary);
   return async (state, leaderId) => {
     const leader = state.hypotheses.find(({ id }) => id === leaderId);
     const completion = await completeOnce({ port, execution, promptVersion }, role, state, {
       system: [
         'You are a red-team reviewer challenging the leading explanation of an incident.',
         'Propose ONE genuinely different alternative cause, and tests that discriminate between it and the leader.',
-        'Answer shape: {"alternative":{"id":"<stable id>","statement":"<one sentence>"},"discriminatingTests":[{"id":"<id>","predictionId":"<id>","tool":"<tool id>","input":{},"cost":"cheap|medium|expensive"}]}',
+        'Answer shape: {"alternative":{"id":"<stable id>","statement":"<one sentence>","cause":{"component":"<component>","mechanism":"<mechanism>","trigger":"<optional trigger>"}},"discriminatingTests":[{"id":"<id>","predictionId":"<id>","tool":"<tool id>","input":{},"cost":"cheap|medium|expensive"}]}',
+        describeMechanismVocabulary(vocabulary),
         JSON_ONLY,
       ].join('\n'),
       prompt: [
@@ -572,17 +679,32 @@ export function createModelChallengeHypothesis({
         describeState(state),
       ].join('\n'),
       maxOutputTokens,
-      outputSchema: CHALLENGE_SCHEMA,
+      outputSchema,
     });
 
     refuseTruncated(role, completion);
     const document = parseJsonDocument(role, completion.text);
     const candidate = ownValue(document, 'alternative');
-    const alternative = parseWith(role, HypothesisSchema, {
+    const causeCandidate = ownValue(candidate, 'cause');
+    refuseUnknownKeys(role, causeCandidate, CAUSE_DESCRIPTION_KEYS, "a cause's description");
+    const mechanism = ownValue(causeCandidate, 'mechanism');
+    if (typeof mechanism === 'string') {
+      const violation = causeMechanismViolation({ mechanism }, vocabulary);
+      if (violation !== undefined) throw new ModelRoleOutputError(role, violation);
+    }
+    const alternative = parseWith(role, StructuredHypothesisSchema, {
       id: ownValue(candidate, 'id'),
       statement: ownValue(candidate, 'statement'),
       createdBy: 'challenge',
+      cause: {
+        component: ownValue(causeCandidate, 'component'),
+        mechanism,
+        trigger: ownValue(causeCandidate, 'trigger'),
+      },
     });
+    if (alternative.cause.trigger === undefined) {
+      delete (alternative.cause as { trigger?: string }).trigger;
+    }
     if (alternative.id === leaderId || alternative.statement === leader?.statement) {
       throw new ModelRoleOutputError(
         role,
@@ -646,16 +768,7 @@ function proposeConclusionSchema(mechanisms: readonly string[]) {
           type: 'object',
           properties: {
             hypothesisId: { type: 'string' },
-            cause: {
-              type: 'object',
-              properties: {
-                component: { type: 'string' },
-                mechanism: { type: 'string', enum: [...mechanisms] },
-                trigger: { type: 'string' },
-              },
-              required: ['component', 'mechanism'],
-              additionalProperties: false,
-            },
+            cause: causeSchema(mechanisms),
             evidenceIds: { type: 'array', items: { type: 'string' } },
           },
           required: ['hypothesisId', 'cause', 'evidenceIds'],
@@ -677,10 +790,12 @@ const CAUSE_DESCRIPTION_KEYS: ReadonlySet<string> = new Set(
   Object.keys(CauseClaimSchema.shape.cause.shape),
 );
 
-export interface ModelProposeConclusionOptions extends ModelRoleOptions {
-  /** The closed root-cause mechanism vocabulary a cause must be classified in. */
-  readonly mechanisms: readonly string[];
-}
+/**
+ * AIC-123 slice 2: `propose_conclusion` now shares `ModelMechanismRoleOptions`
+ * with `createModelGenerateHypotheses` and `createModelChallengeHypothesis`,
+ * rather than declaring its own one-field extension of `ModelRoleOptions`.
+ */
+export type ModelProposeConclusionOptions = ModelMechanismRoleOptions;
 
 /**
  * `propose_conclusion`, backed by the model (AIC-119 slice D): the
@@ -696,9 +811,15 @@ export interface ModelProposeConclusionOptions extends ModelRoleOptions {
  *
  * Validation runs in this order, each failure a `ModelRoleOutputError`:
  * (1) a truncated completion, (2) unparseable JSON, (3) an unknown key at
- * any level, (4) an own-read rebuild that does not satisfy
- * `IncidentConclusionSchema`, (5) a cause mechanism outside the supplied
- * vocabulary, (6) `conclusionViolation`.
+ * any level, (4) a cause mechanism outside the supplied vocabulary — checked
+ * on the RAW own value, per cause, before the schema parse below, so a
+ * hostile off-vocabulary mechanism is reported as a vocabulary refusal
+ * rather than a length-cap refusal from `CauseDescriptionSchema`'s
+ * `mechanism.max(200)` (AIC-123 slice 2) — (5) an own-read rebuild that does
+ * not satisfy `IncidentConclusionSchema`, (6) `conclusionViolation`. The test
+ * titles below still number the vocabulary refusal "5" and the schema
+ * refusal "4"; the numbers name which ROW pins each refusal, not the order
+ * they run in.
  * see conclusion-role.test.mjs › "refuses a truncated completion as a truncation, not as malformed output (refusal 1)"
  * see conclusion-role.test.mjs › "refuses an answer that carries no JSON document at all (refusal 2)"
  * see conclusion-role.test.mjs › "refuses an unknown key on the top-level answer, on a cause, and on a cause description (refusal 3)"
@@ -824,7 +945,7 @@ export function createModelProposeConclusion(
       system: [
         'You are an incident investigator composing the final conclusion from the investigation gathered so far.',
         'A conclusion is root-cause (exactly one cause), multiple-causes (two or more), inconclusive or no-incident (no cause). Cite evidence only by the ids shown, and hypotheses only by ids shown.',
-        `Classify each cause's mechanism as one of: ${vocabulary.join(', ')}.`,
+        describeMechanismVocabulary(vocabulary),
         'What each derived status means:',
         ...statusRuleSentences,
         JSON_ONLY,
@@ -851,13 +972,26 @@ export function createModelProposeConclusion(
         refuseUnknownKeys(role, cause, CAUSE_KEYS, 'a cause');
         const claimed = ownValue(cause, 'cause');
         refuseUnknownKeys(role, claimed, CAUSE_DESCRIPTION_KEYS, "a cause's description");
+        // 🔴 The vocabulary check runs HERE, on the raw own `mechanism`,
+        // before this cause ever reaches `IncidentConclusionSchema.parse`
+        // below (AIC-123 slice 2). `CauseDescriptionSchema` now caps
+        // `mechanism` at 200 characters, so a hostile, off-vocabulary
+        // mechanism longer than that would otherwise be reported as a
+        // length-cap schema refusal rather than the vocabulary refusal this
+        // row exists to give.
+        // see conclusion-role.test.mjs › "escapes and truncates a hostile cause mechanism before it reaches the refusal message (refusal 5)"
+        const mechanism = ownValue(claimed, 'mechanism');
+        if (typeof mechanism === 'string') {
+          const violation = causeMechanismViolation({ mechanism }, vocabulary);
+          if (violation !== undefined) throw new ModelRoleOutputError(role, violation);
+        }
         return {
           hypothesisId: ownValue(cause, 'hypothesisId'),
           // An own key even when absent, so the schema cannot read an
           // inherited trigger through a key the rebuild left out.
           cause: {
             component: ownValue(claimed, 'component'),
-            mechanism: ownValue(claimed, 'mechanism'),
+            mechanism,
             trigger: ownValue(claimed, 'trigger'),
           },
           evidenceIds: ownValue(cause, 'evidenceIds'),
@@ -866,15 +1000,6 @@ export function createModelProposeConclusion(
     });
     for (const { cause } of conclusion.causes) {
       if (cause.trigger === undefined) delete (cause as { trigger?: string }).trigger;
-    }
-
-    for (const { cause } of conclusion.causes) {
-      if (!vocabulary.includes(cause.mechanism)) {
-        throw new ModelRoleOutputError(
-          role,
-          `a cause's mechanism is outside the supplied vocabulary: ${quoteModelText(cause.mechanism)}`,
-        );
-      }
     }
 
     const reason = conclusionViolation({

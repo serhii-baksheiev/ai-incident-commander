@@ -93,6 +93,28 @@ export function conclusionCauseCountViolation(
   return undefined;
 }
 
+/**
+ * The mechanism-vocabulary rule alone, shared by every mechanism-vocabulary
+ * role (`propose_conclusion`, `naive-role.ts`'s naive investigation, and —
+ * since AIC-123 slice 2 — `generate_hypotheses` and `challenge_hypothesis`):
+ * a cause's mechanism must be one of the caller-supplied, closed vocabulary,
+ * or the answer is refused. One implementation rather than four copies
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — the
+ * text is `quoteModelText`-escaped and truncated the same way every other
+ * model-supplied value in a refusal message is.
+ * see cause-emitting-roles.test.mjs › "causeMechanismViolation: undefined for a cause whose mechanism is in the vocabulary"
+ * see cause-emitting-roles.test.mjs › "causeMechanismViolation: a hostile off-vocabulary mechanism (quotes, a newline, 500 chars) is named escaped and truncated to 80 chars"
+ * see cause-emitting-roles.test.mjs › "causeMechanismViolation: the conclusion role's off-vocabulary refusal message carries exactly what causeMechanismViolation returns for the same cause and vocabulary — one implementation"
+ * see cause-emitting-roles.test.mjs › "causeMechanismViolation: generate_hypotheses' off-vocabulary refusal message carries exactly what causeMechanismViolation returns for the same cause and vocabulary — one implementation"
+ */
+export function causeMechanismViolation(
+  cause: { readonly mechanism: string },
+  vocabulary: readonly string[],
+): string | undefined {
+  if (vocabulary.includes(cause.mechanism)) return undefined;
+  return `a cause's mechanism is outside the supplied vocabulary: ${quoteModelText(cause.mechanism)}`;
+}
+
 export interface ConclusionViolationInput {
   readonly conclusion: IncidentConclusion;
   readonly hypotheses: readonly Hypothesis[];

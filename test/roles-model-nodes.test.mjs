@@ -101,12 +101,19 @@ function requireExport(name) {
  * status-rules definition sentences (`describeStatusRules`,
  * `conclusion-role.test.mjs` › "propose_conclusion's system prompt contains
  * every sentence describeStatusRules(STATUS_RULES[STATUS_RULES_VERSION])
- * returns") — so this pin moves from `reference-roles-prompt-v0.3` to
- * `reference-roles-prompt-v0.4`, the same version `conclusion-role.test.mjs`
- * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4" pins.
+ * returns") — so the pin moved from `reference-roles-prompt-v0.3` to
+ * `reference-roles-prompt-v0.4`.
+ *
+ * AIC-123 slice 2: the prompt set changed a third time — `generate_hypotheses`
+ * and `challenge_hypothesis` now emit a structured `cause` on every hypothesis
+ * and alternative, and their system prompts carry the mechanism vocabulary
+ * sentence `describeMechanismVocabulary` builds, the same sentence
+ * `propose_conclusion`'s prompt already carried. The pin moves again, to
+ * `reference-roles-prompt-v0.5`, the same version `conclusion-role.test.mjs`
+ * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5" pins.
  */
-test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.4', () => {
-  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.4');
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.5');
 });
 
 /**
@@ -137,6 +144,14 @@ function fakePort(answers) {
 
 const at = () => '2026-01-01T01:00:00.000Z';
 
+/**
+ * AIC-123 slice 2: the closed root-cause mechanism vocabulary this suite
+ * exercises `generate_hypotheses` and `challenge_hypothesis` with — the same
+ * shape `conclusion-role.test.mjs` and `naive-role.test.mjs` already use for
+ * the other two mechanism-vocabulary roles.
+ */
+const MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
+
 /* -------------------------------------------------------------------------- */
 /* generate_hypotheses                                                        */
 /* -------------------------------------------------------------------------- */
@@ -146,18 +161,36 @@ test('produces hypotheses the domain schema accepts and declares the call it mad
   const { port, requests } = fakePort([
     {
       hypotheses: [
-        { id: 'h-1', statement: 'the checkout deploy changed the db endpoint' },
-        { id: 'h-2', statement: 'the dependency upgrade broke pooling' },
+        {
+          id: 'h-1',
+          statement: 'the checkout deploy changed the db endpoint',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+        {
+          id: 'h-2',
+          statement: 'the dependency upgrade broke pooling',
+          cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+        },
       ],
     },
   ]);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   const update = await node(initialState());
 
   assert.deepEqual(update.hypotheses, [
-    { id: 'h-1', statement: 'the checkout deploy changed the db endpoint', createdBy: 'initial' },
-    { id: 'h-2', statement: 'the dependency upgrade broke pooling', createdBy: 'initial' },
+    {
+      id: 'h-1',
+      statement: 'the checkout deploy changed the db endpoint',
+      createdBy: 'initial',
+      cause: { component: 'checkout-service', mechanism: 'config-drift' },
+    },
+    {
+      id: 'h-2',
+      statement: 'the dependency upgrade broke pooling',
+      createdBy: 'initial',
+      cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+    },
   ]);
   for (const hypothesis of update.hypotheses) {
     HypothesisSchema.parse(hypothesis);
@@ -186,9 +219,17 @@ test('produces hypotheses the domain schema accepts and declares the call it mad
 test('does not show the model the incident primaryScope, only its id', async () => {
   const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
   const { port, requests } = fakePort([
-    { hypotheses: [{ id: 'h-1', statement: 'a plausible cause' }] },
+    {
+      hypotheses: [
+        {
+          id: 'h-1',
+          statement: 'a plausible cause',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    },
   ]);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   await node(initialState());
 
@@ -234,9 +275,17 @@ test('refuses a hypothesis id the run already carries, rather than overwriting i
   state.hypotheses = [...state.hypotheses, existing];
 
   const { port } = fakePort([
-    { hypotheses: [{ id: 'h-existing', statement: 'hijacked' }] },
+    {
+      hypotheses: [
+        {
+          id: 'h-existing',
+          statement: 'hijacked',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    },
   ]);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   await assert.rejects(
     () => node(state),
@@ -253,12 +302,20 @@ test('refuses two hypotheses the model gave the same id', async () => {
   const { port } = fakePort([
     {
       hypotheses: [
-        { id: 'h-1', statement: 'the first' },
-        { id: 'h-1', statement: 'the second, which would replace the first' },
+        {
+          id: 'h-1',
+          statement: 'the first',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+        {
+          id: 'h-1',
+          statement: 'the second, which would replace the first',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
       ],
     },
   ]);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   await assert.rejects(() => node(initialState()), ModelRoleOutputError);
 });
@@ -267,7 +324,7 @@ test('refuses a hypothesis set the domain schema does not accept', async () => {
   const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
   const ModelRoleOutputError = requireExport('ModelRoleOutputError');
   const { port } = fakePort([{ hypotheses: [{ id: 'h-1' }] }]);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   await assert.rejects(() => node(initialState()), ModelRoleOutputError);
 });
@@ -275,14 +332,19 @@ test('refuses a hypothesis set the domain schema does not accept', async () => {
 test('reads a JSON answer the model wrapped in prose or a fenced block', async () => {
   const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
   const { port } = fakePort([
-    'Here is my answer:\n```json\n{"hypotheses":[{"id":"h-1","statement":"a cause"}]}\n```\nHope that helps.',
+    'Here is my answer:\n```json\n{"hypotheses":[{"id":"h-1","statement":"a cause","cause":{"component":"checkout-service","mechanism":"config-drift"}}]}\n```\nHope that helps.',
   ]);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   const update = await node(initialState());
 
   assert.deepEqual(update.hypotheses, [
-    { id: 'h-1', statement: 'a cause', createdBy: 'initial' },
+    {
+      id: 'h-1',
+      statement: 'a cause',
+      createdBy: 'initial',
+      cause: { component: 'checkout-service', mechanism: 'config-drift' },
+    },
   ]);
 });
 
@@ -290,7 +352,7 @@ test('refuses an answer that carries no JSON document at all', async () => {
   const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
   const ModelRoleOutputError = requireExport('ModelRoleOutputError');
   const { port } = fakePort(['I would rather not answer that.']);
-  const node = createModelGenerateHypotheses({ port, at });
+  const node = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
 
   await assert.rejects(() => node(initialState()), ModelRoleOutputError);
 });
@@ -619,7 +681,11 @@ test('produces a valid challenge result with an alternative created by the chall
   const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
   const { port, requests } = fakePort([
     {
-      alternative: { id: 'alt-1', statement: 'the dependency, not the deploy' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [
         {
           id: 'dt-1',
@@ -631,7 +697,7 @@ test('produces a valid challenge result with an alternative created by the chall
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -644,6 +710,7 @@ test('produces a valid challenge result with an alternative created by the chall
       id: 'alt-1',
       statement: 'the dependency, not the deploy',
       createdBy: 'challenge',
+      cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
     },
     discriminatingTests: [
       {
@@ -671,13 +738,17 @@ test('refuses a challenge whose alternative repeats the hypothesis it was asked 
   const ModelRoleOutputError = requireExport('ModelRoleOutputError');
   const { port } = fakePort([
     {
-      alternative: { id: 'h-1', statement: 'the checkout deploy did it' },
+      alternative: {
+        id: 'h-1',
+        statement: 'the checkout deploy did it',
+        cause: { component: 'checkout-service', mechanism: 'config-drift' },
+      },
       discriminatingTests: [
         { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -699,11 +770,15 @@ test('refuses a challenge carrying no discriminating test in the role, where a m
   const ModelRoleOutputError = requireExport('ModelRoleOutputError');
   const { port } = fakePort([
     {
-      alternative: { id: 'alt-1', statement: 'the dependency, not the deploy' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -737,14 +812,22 @@ test('folds the two wrapped roles into llmCallsUsed through the graph', async ()
     'createModelInterpretResidualEvidence',
   );
   const { port } = fakePort([
-    { hypotheses: [{ id: 'h-1', statement: 'a cause' }] },
+    {
+      hypotheses: [
+        {
+          id: 'h-1',
+          statement: 'a cause',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    },
     { assessments: [] },
   ]);
 
   const nodes = Object.fromEntries(
     lifecycleNodes.map((name) => [name, async () => ({})]),
   );
-  nodes.generate_hypotheses = createModelGenerateHypotheses({ port, at });
+  nodes.generate_hypotheses = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
   nodes.interpret_residual_evidence = createModelInterpretResidualEvidence({ port, at });
   nodes.termination_check = async () => ({ route: 'terminal', stopKind: 'stalled' });
   nodes.challenge_hypothesis = async () => ({});
@@ -780,7 +863,11 @@ test('records the challenge role usage in the ledger while the graph counter can
               {
                 type: 'text',
                 text: JSON.stringify({
-                  alternative: { id: 'alt-1', statement: 'another cause entirely' },
+                  alternative: {
+                    id: 'alt-1',
+                    statement: 'another cause entirely',
+                    cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+                  },
                   discriminatingTests: [
                     {
                       id: 'dt-1',
@@ -803,7 +890,7 @@ test('records the challenge role usage in the ledger while the graph counter can
     },
   });
 
-  const challenge = createModelChallengeHypothesis({ port, at });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -862,13 +949,21 @@ test('declares the asymmetry between the two consumption channels in the ledger 
 test('routes a model-backed run to its challenge, with the leader the graph can see', async () => {
   const createModelGenerateHypotheses = requireExport('createModelGenerateHypotheses');
   const { port } = fakePort([
-    { hypotheses: [{ id: 'h-model-1', statement: 'a cause the model named' }] },
+    {
+      hypotheses: [
+        {
+          id: 'h-model-1',
+          statement: 'a cause the model named',
+          cause: { component: 'checkout-service', mechanism: 'config-drift' },
+        },
+      ],
+    },
   ]);
 
   const nodes = Object.fromEntries(
     lifecycleNodes.map((name) => [name, async () => ({})]),
   );
-  nodes.generate_hypotheses = createModelGenerateHypotheses({ port, at });
+  nodes.generate_hypotheses = createModelGenerateHypotheses({ port, at, mechanisms: MECHANISMS });
   // The shape the replay fixture uses: a terminal decision that names a leader.
   // Derived from the state rather than from a constant, which is the whole
   // difference between a harness that survives a role swap and one that does not.
@@ -1098,7 +1193,7 @@ test('derives every answer-schema enum from the domain rather than restating it'
 
   for (const make of [createModelChallengeHypothesis, createModelInterpretResidualEvidence]) {
     try {
-      const node = make({ port: capturingPort, at });
+      const node = make({ port: capturingPort, at, mechanisms: MECHANISMS });
       await node(initialState(), 'h-1');
     } catch {
       // The port throws by design; the schema was captured first.
@@ -1114,6 +1209,7 @@ test('derives every answer-schema enum from the domain rather than restating it'
   const hypothesesNode = requireExport('createModelGenerateHypotheses')({
     port: capturingPort,
     at,
+    mechanisms: MECHANISMS,
   });
   try {
     await hypothesesNode(initialState());
@@ -1175,14 +1271,18 @@ test('hands the provider a token budget large enough that the reference model wa
   roles.push([
     'createModelChallengeHypothesis',
     {
-      alternative: { id: 'alt-1', statement: 'a different cause' },
+      alternative: {
+        id: 'alt-1',
+        statement: 'a different cause',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
       discriminatingTests: [],
     },
   ]);
 
   for (const [name, answer] of roles) {
     const { port, requests } = fakePort([answer]);
-    const node = requireExport(name)({ port, at });
+    const node = requireExport(name)({ port, at, mechanisms: MECHANISMS });
     await node(initialState(), 'h-1').catch(() => {});
 
     assert.equal(requests.length, 1, `${name} must have reached the port exactly once`);
