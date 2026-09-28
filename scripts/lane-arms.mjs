@@ -18,7 +18,12 @@
  */
 import * as evals from '@aic/evals';
 import { runOracleBenchmarkExperiment } from '@aic/evals/oracle';
-import { createDeriveHypothesisState, createStateTerminationCheck } from '@aic/graph';
+import {
+  createDeriveHypothesisState,
+  createDerivePredictions,
+  createEvaluatePredictions,
+  createStateTerminationCheck,
+} from '@aic/graph';
 import {
   createModelChallengeHypothesis,
   createModelGenerateHypotheses,
@@ -51,6 +56,14 @@ import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
  * see lane-arms.test.mjs › "scriptedNodes(record) and modelNodes(record, port) both carry the canonical derive_hypothesis_state and termination_check nodes, proven by behaviour rather than identity or source text"
  * see lane-arms.test.mjs › "scriptedNodes(record)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a sparse-evidence variant reaches a different one"
  *
+ * AIC-124 slice c: `derive_predictions`/`evaluate_predictions` are the same
+ * kind of override — the fixture's own copies (`replayBackedNodes`, trace-only
+ * no-ops that always answer `{}`) are replaced with the canonical nodes
+ * (slice b), evaluated at `evals.REPLAY_AS_OF`, the instant the whole replay
+ * corpus was recorded.
+ * see prediction-wiring.test.mjs › "scriptedNodes(record) and modelNodes(record, port) carry the canonical derive_predictions and evaluate_predictions: a matching connection-pool-exhaustion fact observed at REPLAY_AS_OF confirms the derived prediction with one rule assessment, and the same fact one millisecond later confirms nothing"
+ * see prediction-wiring.test.mjs › "running the real kernel over a calibration record with scriptedNodes ends with predictions: [] and no producedBy: "rule" assessment"
+ *
  * ⚠ `replayBackedNodes` takes three arguments, and an earlier hold-out command
  * passed one. The crash came at the first record of the control arm, before any
  * model call, and it is why record `04cf86236c2f` is void.
@@ -60,6 +73,8 @@ export function scriptedNodes(record) {
     ...replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]])),
     derive_hypothesis_state: createDeriveHypothesisState(),
     termination_check: createStateTerminationCheck(),
+    derive_predictions: createDerivePredictions(),
+    evaluate_predictions: createEvaluatePredictions({ asOf: () => evals.REPLAY_AS_OF }),
   };
 }
 

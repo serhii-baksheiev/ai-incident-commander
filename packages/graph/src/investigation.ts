@@ -1510,11 +1510,59 @@ export function createInvestigationGraph({
       state,
     );
 
+    // The challenge round has no `derive_predictions` edge of its own —
+    // `challenge_hypothesis -> execute_investigation` — so the alternative's
+    // predictions are derived here, before execution, which is what lets a
+    // test be planned for them rather than grading them unplanned.
+    // `derivePredictions` skips a hypothesis that already has a prediction,
+    // so passing the leader alongside the alternative leaves the leader's
+    // prediction untouched.
+    // see prediction-wiring.test.mjs › "the challenge round derives
+    // predictions for the alternative, through createDerivePredictions,
+    // before the challenge edge reaches execute_investigation for the round
+    // — and leaves the leader's already-derived prediction unchanged"
+    //
+    // The node is called unwrapped, so this call holds the line
+    // `preserveGraphOwnedControl` holds on the ordinary edge: routing is
+    // refused, the node's own `declaredLlmCalls` is spent, and only an own
+    // `predictions` array is read — no other key, and nothing the prototype
+    // chain supplies.
+    // see prediction-wiring.test.mjs › "the challenge round applies only the
+    // predictions key from what derive_predictions returns, ignoring any
+    // other key a derive node might carry", › "the challenge round refuses a
+    // derive_predictions node that returns routing (Command or Send) instead
+    // of a state update, the way the wrapped lifecycle edge does", › "the
+    // challenge round adds the derive node's own declaredLlmCalls to
+    // control.llmCallsUsed, the same channel the wrapped lifecycle edge
+    // reads", › "the challenge round reads only an own "predictions"
+    // property off what derive_predictions returns, never one its prototype
+    // supplies" and › "the challenge round rejects a
+    // derive_predictions result whose predictions key is not an array"
+    const derived = await nodes.derive_predictions({
+      ...incidentStateOf(state),
+      hypotheses: [...state.hypotheses, result.alternative],
+    });
+    if (isRoutingInstruction(derived)) {
+      throw new Error(
+        'derive_predictions returned routing (Command or Send) on the challenge round: routing is the graph\'s, not a node\'s',
+      );
+    }
+    const predictionsDescriptor = Object.getOwnPropertyDescriptor(derived, 'predictions');
+    const alternativePredictions =
+      predictionsDescriptor === undefined || !Object.hasOwn(predictionsDescriptor, 'value')
+        ? []
+        : predictionsDescriptor.value;
+    if (!Array.isArray(alternativePredictions)) {
+      throw new Error('derive_predictions returned a non-array predictions on the challenge round');
+    }
+
     return {
       hypotheses: [result.alternative],
+      predictions: alternativePredictions,
       tests: [...result.discriminatingTests],
       control: {
         ...controlWithoutStopKind(state.control),
+        llmCallsUsed: state.control.llmCallsUsed + readDeclaredLlmCalls(derived),
         challengeRounds: state.control.challengeRounds + 1,
         reservedChallengeBudget: state.control.reservedChallengeBudget - 1,
       },

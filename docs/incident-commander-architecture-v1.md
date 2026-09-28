@@ -418,6 +418,8 @@ termination_check
   ├─ need-more-evidence → plan_investigation
   ├─ challenge-required → challenge_hypothesis
   │                         ↓
+  │                   derive predictions for the alternative
+  │                         ↓
   │                   discriminating tests
   │                         ↓
   │                   execute/evaluate
@@ -430,11 +432,11 @@ termination_check
 
 ### Deterministic responsibilities
 
-Normalization, tool execution, Trial/Evidence creation, dedupe, mechanical prediction evaluation, derived-status rules, reducers, budgets, challenge routing, termination, persistence and safety.
+Normalization, tool execution, Trial/Evidence creation, dedupe, prediction derivation from a hypothesis's structured cause (`PREDICTION_TEMPLATES`), mechanical prediction evaluation against typed observations, derived-status rules, reducers, budgets, challenge routing, termination, persistence and safety.
 
 ### LLM responsibilities
 
-Hypothesis generation, semantic prediction decomposition, investigation planning, residual semantic evidence interpretation, challenge alternative generation, and evidence-constrained conclusion composition.
+Hypothesis generation (including each hypothesis's structured cause), investigation planning, residual semantic evidence interpretation, challenge alternative generation, and evidence-constrained conclusion composition.
 
 **LLM nodes do not have tools attached.** They return structured outputs. Tools are invoked only by deterministic nodes from typed `InvestigationTest` plans.
 

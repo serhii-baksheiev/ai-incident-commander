@@ -55,6 +55,16 @@ export interface ScenarioReplayFixture {
   readonly entries: readonly ScenarioReplayEntry[];
 }
 
+/**
+ * The instant the whole replay corpus was recorded: every evidence item this
+ * file's own `evidence()` builder produces carries this exact `observedAt`.
+ * It is the as-of cut the lane evaluates predictions at, not a
+ * scenario-specific value — see
+ * `test/prediction-wiring.test.mjs` ›
+ * "@aic/evals exports REPLAY_AS_OF as the exact instant the whole replay corpus was recorded".
+ */
+export const REPLAY_AS_OF = '2026-08-26T15:00:00.000Z';
+
 const replayFixture = (
   ...entries: readonly ScenarioReplayEntry[]
 ): ScenarioReplayFixture => ({
@@ -72,7 +82,7 @@ const evidence = (
   trialId: `trial-${id}`,
   kind,
   source,
-  observedAt: '2026-08-26T15:00:00.000Z',
+  observedAt: REPLAY_AS_OF,
   statement,
   rawRef: `replay://${source}/${id}`,
 });
