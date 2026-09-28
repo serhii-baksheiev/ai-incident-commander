@@ -291,7 +291,7 @@ test('bounds each observation list at 16 entries: expectedIfTrue, expectedIfFals
   );
 });
 
-test('accepts Evidence with no observation field, since nothing populates it yet (owner ruling D2)', () => {
+test('accepts Evidence with no observation field, because only evidence the observation table annotates carries one (owner ruling D2)', () => {
   assert.equal(
     domain.EvidenceSchema.safeParse(baseEvidence()).success,
     true,

@@ -1,7 +1,11 @@
-import { DOMAIN_LAYER, type Evidence } from '@aic/domain';
+import { DOMAIN_LAYER, EXPECTED_OBSERVATION_VERSION, type Evidence, type ObservedFact } from '@aic/domain';
 
 import type { BoundSourceBinding, BoundSourceRegistry } from '../src/bound-source-registry.js';
-import { createBoundSourceRegistry, createMemoryReplayStore } from '../src/bound-source-registry.js';
+import {
+  buildReplayIdentity,
+  createBoundSourceRegistry,
+  createMemoryReplayStore,
+} from '../src/bound-source-registry.js';
 import {
   isReadOnlyToolId,
   isToolResult,
@@ -26,6 +30,34 @@ export interface ReplayFixture<Output = Evidence[]> {
 const MIGRATION_FETCHED_AT = '1970-01-01T00:00:00.000Z';
 
 /**
+ * AIC-123 slice 3b: the optional second constructor argument that merges
+ * `Evidence.observation` onto a replayed `ok` array output, without altering
+ * anything about a plain `new ReplayToolAdapter(fixture)`. See
+ * observation-merge.test.mjs › "ReplayToolAdapter without a second
+ * constructor argument replays deployment-caused-incident-a byte-identical
+ * to its fixture, with no observation key on any evidence item, even though
+ * OBSERVATION_ANNOTATIONS carries facts for it".
+ */
+export interface ReplayToolAdapterOptions {
+  /**
+   * Consulted once per evidence item in an `ok` array output, keyed by the
+   * call's own v2 replay identity (`buildReplayIdentity`, never re-derived
+   * here) and the item itself. A non-empty list merges as
+   * `observation: { version: EXPECTED_OBSERVATION_VERSION, facts }`; an
+   * empty or `undefined` answer leaves the item unchanged. See
+   * observation-merge.test.mjs › "ReplayToolAdapter given { observations }
+   * merges facts only onto the item the annotator returns a non-empty list
+   * for, as a new object equal to the item plus observation:{version,facts},
+   * leaves the other item untouched, and never mutates the caller's own
+   * fixture object".
+   */
+  readonly observations?: (
+    identity: string,
+    evidence: Evidence,
+  ) => readonly ObservedFact[] | undefined;
+}
+
+/**
  * AIC-100, slice d: a wrapper over `createBoundSourceRegistry`'s `replay` mode,
  * over the v1 fixture migrated once by `migrateReplayFixtureV1`. The stub
  * sources only give each read-only tool id a binding. `createReplayFixtureKey`
@@ -35,11 +67,14 @@ const MIGRATION_FETCHED_AT = '1970-01-01T00:00:00.000Z';
  */
 export class ReplayToolAdapter<Output = Evidence[]> {
   readonly #registry: BoundSourceRegistry;
+  readonly #observations: ReplayToolAdapterOptions['observations'];
 
-  constructor(fixture: ReplayFixture<Output>) {
+  constructor(fixture: ReplayFixture<Output>, options?: ReplayToolAdapterOptions) {
     if (fixture.version !== REPLAY_FIXTURE_VERSION) {
       throw new Error(`unsupported replay fixture version: ${fixture.version}`);
     }
+
+    this.#observations = options?.observations;
 
     const { recordings } = migrateReplayFixtureV1(fixture, { fetchedAt: MIGRATION_FETCHED_AT });
 
@@ -82,7 +117,22 @@ export class ReplayToolAdapter<Output = Evidence[]> {
     const outcome = await this.#registry.execute(toolId, toolId, input);
 
     if (outcome.status === 'ok' && isToolResult<Output>(outcome.output)) {
-      return outcome.output;
+      const result = outcome.output;
+      if (this.#observations && result.status === 'ok' && Array.isArray(result.output)) {
+        const annotate = this.#observations;
+        const identity = buildReplayIdentity({
+          sourceBindingId: outcome.provenance.sourceBindingId,
+          adapter: outcome.provenance.adapter,
+          requestFingerprint: outcome.provenance.requestFingerprint,
+        });
+        const annotatedOutput = (result.output as readonly Evidence[]).map((item) => {
+          const facts = annotate(identity, item);
+          if (!facts || facts.length === 0) return item;
+          return { ...item, observation: { version: EXPECTED_OBSERVATION_VERSION, facts: [...facts] } };
+        });
+        return { ...result, output: annotatedOutput as Output };
+      }
+      return result;
     }
 
     return {

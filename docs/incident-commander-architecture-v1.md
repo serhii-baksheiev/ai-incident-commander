@@ -142,7 +142,7 @@ type Evidence = {
   statement: string;
   rawRef: string;
   reliability?: "high" | "medium" | "low";
-  observation?: { version: 1; facts: ObservedFact[] }; // 1 to 16 facts; nothing populates it yet
+  observation?: { version: 1; facts: ObservedFact[] }; // 1 to 16 facts; set at the replay boundary from the observation table
 };
 
 // Typed data about one evidence item, in the same three forms as ExpectedObservation.

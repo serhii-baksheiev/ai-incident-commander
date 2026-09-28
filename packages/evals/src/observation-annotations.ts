@@ -236,3 +236,37 @@ const RAW_OBSERVATION_ANNOTATIONS: readonly ObservationAnnotationRow[] = [
 export const OBSERVATION_ANNOTATIONS: readonly ObservationAnnotationRow[] = deepFreeze(
   RAW_OBSERVATION_ANNOTATIONS,
 );
+
+/**
+ * AIC-123 slice 3b: the merge at the replay boundary reads this table through
+ * this factory rather than the table directly. Built once per call, keyed by
+ * `${identity}|${evidenceId}` (the same key shape
+ * `test/observation-annotations.test.mjs`'s `corpusRows` already checks the
+ * table against). See observation-merge.test.mjs › "createObservationAnnotator
+ * returns a function that, for every (replay identity, evidence id) pair the
+ * ok corpus serves, answers the facts of its own OBSERVATION_ANNOTATIONS row",
+ * › "createObservationAnnotator returns undefined for an (identity, evidence
+ * id) pair the table does not carry, such as a call outside the frozen
+ * corpus", and › "createObservationAnnotator throws a plain Error naming the
+ * evidence id when a row matches the (identity, evidence id) pair but the
+ * served evidence's statement differs from the row's statement".
+ */
+export function createObservationAnnotator(): (
+  identity: string,
+  evidence: { readonly id: string; readonly statement: string },
+) => readonly ObservedFact[] | undefined {
+  const rowsByKey = new Map<string, ObservationAnnotationRow>(
+    OBSERVATION_ANNOTATIONS.map((row) => [`${row.identity}|${row.evidenceId}`, row]),
+  );
+
+  return (identity, evidence) => {
+    const row = rowsByKey.get(`${identity}|${evidence.id}`);
+    if (!row) return undefined;
+    if (row.statement !== evidence.statement) {
+      throw new Error(
+        `createObservationAnnotator: evidence ${JSON.stringify(evidence.id)} statement does not match OBSERVATION_ANNOTATIONS row ${JSON.stringify(row.statement)}`,
+      );
+    }
+    return row.facts;
+  };
+}
