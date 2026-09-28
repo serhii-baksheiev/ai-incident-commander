@@ -312,7 +312,7 @@ test("derives attempt as 1 plus the highest attempt already in state for that te
 
   const result = await node(testState);
 
-  assert.equal(execute.calls[0].attempt, 3, 'test-a already has two trials; only test-a\'s own trials count');
+  assert.equal(execute.calls[0].attempt, 3, 'the next attempt is 1 past the highest attempt already recorded for test-a (2), not a count of test-a\'s trials');
   assert.equal(result.trials[0].attempt, 3);
   assert.equal(
     result.trials[0].id,
@@ -327,8 +327,8 @@ test('derives attempt past the highest recorded attempt when a test\'s attempts 
   const testState = state({
     tests: [plannedTest('test-a')],
     trials: [
-      trial('trial-a-1', { testId: 'test-a', attempt: 1, status: 'unavailable' }),
-      trial('trial-a-3', { testId: 'test-a', attempt: 3, status: 'unavailable' }),
+      trial(expectedTrialId({ runId: RUN_ID, testId: 'test-a', attempt: 1 }), { testId: 'test-a', attempt: 1, status: 'unavailable' }),
+      trial(expectedTrialId({ runId: RUN_ID, testId: 'test-a', attempt: 3 }), { testId: 'test-a', attempt: 3, status: 'unavailable' }),
     ],
   });
 

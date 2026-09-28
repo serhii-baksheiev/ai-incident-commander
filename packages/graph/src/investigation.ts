@@ -909,6 +909,62 @@ function isRoutingInstruction(value: unknown): boolean {
 }
 
 /**
+ * Reads one own array-typed key off an UNWRAPPED node's result, the way the
+ * challenge round reads `derive_predictions`'s `predictions` and
+ * `plan_investigation`'s `tests` — the one mechanism both inline calls in
+ * `challengeHypothesis` share rather than two copies of the same three checks.
+ *
+ * Three things in order, matching what `preserveGraphOwnedControl` does for a
+ * wrapped node: refuse routing (a `Command`/`Send` is the graph's, never a
+ * node's), read the key as an OWN DATA PROPERTY only — an inherited value or
+ * an own accessor is never consulted, so neither a prototype-supplied decoy
+ * nor a getter can plant anything — and refuse a present-but-non-array value
+ * rather than silently coercing or dropping it. An absent key reads as `[]`,
+ * the same "declared nothing" reading `readDeclaredLlmCalls` gives an absent
+ * `declaredLlmCalls`.
+ *
+ * see prediction-wiring.test.mjs › "the challenge round applies only the
+ * predictions key from what derive_predictions returns, ignoring any other
+ * key a derive node might carry", › "the challenge round refuses a
+ * derive_predictions node that returns routing (Command or Send) instead of a
+ * state update, the way the wrapped lifecycle edge does", › "the challenge
+ * round reads only an own "predictions" property off what derive_predictions
+ * returns, never one its prototype supplies", › "the challenge round never
+ * invokes an own getter for "predictions" on what derive_predictions returns,
+ * and takes nothing from it" and › "the challenge round rejects a
+ * derive_predictions result whose predictions key is not an array"
+ * see challenge-planning.test.mjs › "the challenge round refuses a
+ * plan_investigation node that returns routing (Command or Send) instead of a
+ * state update, the way the wrapped lifecycle edge does", › "the challenge
+ * round reads only an own "tests" property off what plan_investigation
+ * returns, never one its prototype supplies", › "the challenge round never
+ * invokes an own getter for "tests" on what plan_investigation returns, and
+ * takes nothing from it" and › "the challenge round rejects a
+ * plan_investigation result whose tests key is not an array"
+ */
+function readOwnArrayResult<T>(
+  result: unknown,
+  key: string,
+  errors: Readonly<{ routing: string; nonArray: string }>,
+): T[] {
+  if (isRoutingInstruction(result)) {
+    throw new Error(errors.routing);
+  }
+  const descriptor =
+    typeof result === 'object' && result !== null
+      ? Object.getOwnPropertyDescriptor(result, key)
+      : undefined;
+  const value =
+    descriptor === undefined || !Object.hasOwn(descriptor, 'value')
+      ? []
+      : descriptor.value;
+  if (!Array.isArray(value)) {
+    throw new Error(errors.nonArray);
+  }
+  return value as T[];
+}
+
+/**
  * Writes an own data property, the way object-rest already does — never `[[Set]]`.
  *
  * Plain assignment consults the prototype chain for a setter, so a polluted
@@ -1525,45 +1581,71 @@ export function createInvestigationGraph({
     // `preserveGraphOwnedControl` holds on the ordinary edge: routing is
     // refused, the node's own `declaredLlmCalls` is spent, and only an own
     // `predictions` array is read — no other key, and nothing the prototype
-    // chain supplies.
-    // see prediction-wiring.test.mjs › "the challenge round applies only the
-    // predictions key from what derive_predictions returns, ignoring any
-    // other key a derive node might carry", › "the challenge round refuses a
-    // derive_predictions node that returns routing (Command or Send) instead
-    // of a state update, the way the wrapped lifecycle edge does", › "the
-    // challenge round adds the derive node's own declaredLlmCalls to
-    // control.llmCallsUsed, the same channel the wrapped lifecycle edge
-    // reads", › "the challenge round reads only an own "predictions"
-    // property off what derive_predictions returns, never one its prototype
-    // supplies", › "the challenge round never invokes an own getter for
-    // "predictions" on what derive_predictions returns, and takes nothing
-    // from it" and › "the challenge round rejects a
-    // derive_predictions result whose predictions key is not an array"
+    // chain supplies. `readOwnArrayResult` is the one mechanism both this
+    // call and the `plan_investigation` call just below it share.
+    // see prediction-wiring.test.mjs › "the challenge round adds the derive
+    // node's own declaredLlmCalls to control.llmCallsUsed, the same channel
+    // the wrapped lifecycle edge reads"
     const derived = await nodes.derive_predictions({
       ...incidentStateOf(state),
       hypotheses: [...state.hypotheses, result.alternative],
     });
-    if (isRoutingInstruction(derived)) {
-      throw new Error(
+    const alternativePredictions = readOwnArrayResult<Prediction>(derived, 'predictions', {
+      routing:
         'derive_predictions returned routing (Command or Send) on the challenge round: routing is the graph\'s, not a node\'s',
-      );
-    }
-    const predictionsDescriptor = Object.getOwnPropertyDescriptor(derived, 'predictions');
-    const alternativePredictions =
-      predictionsDescriptor === undefined || !Object.hasOwn(predictionsDescriptor, 'value')
-        ? []
-        : predictionsDescriptor.value;
-    if (!Array.isArray(alternativePredictions)) {
-      throw new Error('derive_predictions returned a non-array predictions on the challenge round');
-    }
+      nonArray:
+        'derive_predictions returned a non-array predictions on the challenge round',
+    });
+
+    // The challenge round also has no `plan_investigation` edge of its own,
+    // so an untested prediction the alternative carries would otherwise never
+    // get a planned test the way the ordinary lifecycle edge plans one for
+    // the leader. Called over the alternative's hypothesis, its freshly
+    // derived predictions above, and the round's own tests so far (the
+    // challenge role's proposed `discriminatingTests`) — so the planner's own
+    // de-dup (`planInvestigation`, `@aic/domain`) sees exactly what the round
+    // has already proposed and never plans a request twice.
+    //
+    // Hardened the same way as the `derive_predictions` call above: routing is
+    // refused, the node's own `declaredLlmCalls` is spent, and only an own
+    // `tests` array is read.
+    // see challenge-planning.test.mjs › "the challenge round calls
+    // plan_investigation inline, over the alternative, its derived
+    // predictions and the challenge role's own discriminating tests: with the
+    // canonical derive_predictions and plan_investigation, an alternative
+    // with cause {component: orders-db, mechanism: connection-pool-exhaustion}
+    // yields a planned metrics test for orders-db/incident/connection-pool,
+    // and the round's execute_investigation sees the challenge role's own
+    // test plus the newly planned one", › "a request the challenge role
+    // already proposed (same tool+input) is not planned twice (planner
+    // de-dup against the round's own tests)", › "the challenge round adds the
+    // plan node's own declaredLlmCalls to control.llmCallsUsed, the same
+    // channel the wrapped lifecycle edge reads" and › "the challenge-time
+    // plan_investigation call does not count a logical iteration:
+    // iterationsUsed is unchanged by it"
+    const planned = await nodes.plan_investigation({
+      ...incidentStateOf(state),
+      hypotheses: [...state.hypotheses, result.alternative],
+      predictions: [...state.predictions, ...alternativePredictions],
+      tests: [...state.tests, ...result.discriminatingTests],
+    });
+    const plannedTests = readOwnArrayResult<InvestigationTest>(planned, 'tests', {
+      routing:
+        'plan_investigation returned routing (Command or Send) on the challenge round: routing is the graph\'s, not a node\'s',
+      nonArray:
+        'plan_investigation returned a non-array tests on the challenge round',
+    });
 
     return {
       hypotheses: [result.alternative],
       predictions: alternativePredictions,
-      tests: [...result.discriminatingTests],
+      tests: [...result.discriminatingTests, ...plannedTests],
       control: {
         ...controlWithoutStopKind(state.control),
-        llmCallsUsed: state.control.llmCallsUsed + readDeclaredLlmCalls(derived),
+        llmCallsUsed:
+          state.control.llmCallsUsed +
+          readDeclaredLlmCalls(derived) +
+          readDeclaredLlmCalls(planned),
         challengeRounds: state.control.challengeRounds + 1,
         reservedChallengeBudget: state.control.reservedChallengeBudget - 1,
       },

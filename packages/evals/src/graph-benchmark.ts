@@ -262,7 +262,21 @@ export async function runGraphBenchmarkExperiment(
       let leaderAfterChallengeId: string | undefined;
       let leaderStatusBeforeChallenge: HypothesisStatus | undefined;
       let leaderStatusAfterChallenge: HypothesisStatus | undefined;
-      const discriminatingTestIds = new Set<string>();
+      // The test-id set discriminating credit compares against: every test id
+      // already in state the first time the wrapped `challenge_hypothesis`
+      // below is invoked. Its input `state` is the pre-challenge state — the
+      // ordinary lifecycle's first pass has already planned and executed
+      // whatever the leader's own predictions earned, and the challenge
+      // round's own tests (the challenge role's proposed ones, and whatever
+      // `plan_investigation` plans inline for the alternative — see
+      // challenge-planning.test.mjs) have not landed in `state.tests` yet.
+      // `undefined` until the first (and only counted) capture — AIC-125
+      // slice d never credits a second round's tests against a first-round
+      // baseline, matching the challenge round's own leader-change axis,
+      // which also only ever compares the first challenge round's before and
+      // after.
+      // see challenge-discriminating-credit.test.mjs
+      let preChallengeTestIds: ReadonlySet<string> | undefined;
       const graph = createInvestigationGraph({
         nodes: {
           ...nodes,
@@ -295,11 +309,10 @@ export async function runGraphBenchmarkExperiment(
           },
           async challenge_hypothesis(state, leaderId) {
             challengeInvocationCount += 1;
-            const result = await nodes.challenge_hypothesis(state, leaderId);
-            for (const test of result.discriminatingTests) {
-              discriminatingTestIds.add(test.id);
+            if (preChallengeTestIds === undefined) {
+              preChallengeTestIds = new Set(state.tests.map((test) => test.id));
             }
-            return result;
+            return nodes.challenge_hypothesis(state, leaderId);
           },
         },
       });
@@ -308,6 +321,15 @@ export async function runGraphBenchmarkExperiment(
         state: initialBenchmarkState(input, budgetPolicy),
       });
       finalStateByRunId.set(input.runId, finalState);
+      // Tests the challenge round created: present at the end, absent from
+      // the snapshot taken when the challenge began. Empty when no challenge ran.
+      const challengeRoundTestIds = new Set(
+        preChallengeTestIds === undefined
+          ? []
+          : finalState.tests
+            .map((test) => test.id)
+            .filter((id) => !preChallengeTestIds!.has(id)),
+      );
       measuredByRunId.set(input.runId, {
         // The line that matters is WHO ORIGINATED THE NUMBER, not which channel
         // the graph owns — the graph owns the control block either way.
@@ -350,23 +372,47 @@ export async function runGraphBenchmarkExperiment(
         leaderAfterChallengeId,
         leaderStatusBeforeChallenge,
         leaderStatusAfterChallenge,
-        // Counted only when the trial SUCCEEDED. `Trial.status` is
-        // 'ok' | 'unavailable' | 'error', and only `ok` produced evidence the
-        // investigation could act on — a tool that was unavailable, or errored,
-        // discriminated nothing. The evaluator reads a non-zero count as "the
-        // challenge changed the investigation" on its own axis
-        // (`evaluateChallengeEffect`, behavior-evaluators.ts), so counting a
-        // failed trial here credits a challenge that produced no evidence —
-        // see behavior-evaluators.test.mjs › "does not credit a discriminating
-        // trial that ended in error" and › "does not credit a discriminating
-        // trial whose tool was unavailable", one per status this excludes.
+        // AIC-125 slice d: two conditions, both required, and neither is the
+        // OLD definition this comment used to state (`status === 'ok'` and the
+        // test id was one of `challenge_hypothesis`'s own proposed
+        // `discriminatingTests`) — an `ok` trial replaying evidence the run
+        // already held earned credit under that rule with nothing new
+        // investigated, and a test `plan_investigation` planned inline for the
+        // alternative (challenge-planning.test.mjs) was never counted at all.
+        //
+        // 1. `status === 'ok'`. `Trial.status` is 'ok' | 'unavailable' |
+        //    'error', and only `ok` produced evidence the investigation could
+        //    act on — a tool that was unavailable, or errored, discriminated
+        //    nothing regardless of the test id — see
+        //    behavior-evaluators.test.mjs › "does not credit a discriminating
+        //    trial that ended in error" and › "does not credit a
+        //    discriminating trial whose tool was unavailable".
+        // 2. the test id names a test the final state's `tests` channel
+        //    carries that `preChallengeTestIds` did not — created in the
+        //    challenge round, by the challenge role's own proposed test or by
+        //    the round's inline `plan_investigation` call. A trial whose test
+        //    id names no test in the channel at all (a harness's own replay
+        //    trials) was never a challenge test — see
+        //    benchmark-resource-evidence.test.mjs › "writing the replayed tool
+        //    calls into the trials channel credits no challenge". AND its
+        //    `evidenceIds` is non-empty: it fetched evidence this run did not
+        //    already hold, never a replay of evidence the run already
+        //    carries. An `ok` trial with empty `evidenceIds` is exactly a
+        //    replay and must not earn credit merely for being `ok` — see
+        //    challenge-discriminating-credit.test.mjs.
+        //
+        // The evaluator reads a non-zero count as "the challenge changed the
+        // investigation" on its own axis (`evaluateChallengeEffect`,
+        // behavior-evaluators.ts).
         //
         // Deliberately narrower than `toolCallsUsed` above, which counts every
         // trial because a failed attempt still SPENT the resource it reports.
         // Success is the question here; spend is the question there.
         executedDiscriminatingTrialCount: finalState.trials.filter(
-          ({ testId, status }) =>
-            status === 'ok' && discriminatingTestIds.has(testId),
+          ({ testId, status, evidenceIds }) =>
+            status === 'ok' &&
+            evidenceIds.length > 0 &&
+            challengeRoundTestIds.has(testId),
         ).length,
       });
     },
