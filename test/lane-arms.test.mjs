@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as domain from '@aic/domain';
 import * as evals from '@aic/evals';
+import * as graph from '@aic/graph';
 import { MODEL_API_KEY_VARIABLE } from '@aic/roles';
 import { NAIVE_PROMPT_VERSION } from '@aic/roles/naive';
 
@@ -716,50 +717,82 @@ test('scripts/eval-live-model.mjs declares graphVersion as graph-v0.3', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* 4d. benchmark-level scenario independence: the lane's scriptedNodes        */
-/*     termination depends on state, never on the scenario id or ground truth */
+/* 4d. benchmark-level scenario independence: termination depends on state,   */
+/*     never on the scenario id or ground truth                              */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Every evidence item supports `state.hypotheses[0]` at `medium` strength,
- * `producedBy: 'rule'`, one assessment id per evidence item — deterministic,
- * scenario-blind, and independent of `@aic/roles`.
+ * AIC-125 supplement 7: `scriptedNodes`' own `generate_hypotheses` (the
+ * fixture's `replayBackedNodes`) mints a hypothesis with no `cause` at all,
+ * so under the shared canonical plan/execute pipeline it derives no
+ * prediction, plans no test and fetches no evidence from any scenario at
+ * all — the two-branch state (enough independent support vs. not enough)
+ * this row used to build by hand can no longer be produced through
+ * `scriptedNodes` at all. The scenario-independence claim below moves to the
+ * arm that still carries state which varies by scenario: `modelNodes(record,
+ * port)`, driven with a FIXED hypothesis cause (`fakePortFor`, the same
+ * shape `prediction-wiring.test.mjs` and
+ * `investigation-plan-execute-wiring.test.mjs` use) so the only thing that
+ * can differ between runs is what a given scenario's own recorded fixture
+ * confirms.
  */
-function deterministicSupportInterpreter(state) {
-  const hypothesisId = state.hypotheses[0]?.id;
-  return {
-    assessments: state.evidence.map((evidenceItem) => ({
-      id: `aic-119s3-deterministic-support-${evidenceItem.id}`,
-      evidenceId: evidenceItem.id,
-      hypothesisId,
-      effect: 'supports',
-      strength: 'medium',
-      rationale: `deterministic interpreter: ${evidenceItem.id} supports ${hypothesisId}`,
-      producedBy: 'rule',
-    })),
-  };
+function roleFromOutputSchema(outputSchema) {
+  const keys = new Set(Object.keys(outputSchema?.properties ?? {}));
+  if (keys.has('hypotheses')) return 'generate_hypotheses';
+  if (keys.has('assessments')) return 'interpret_residual_evidence';
+  if (keys.has('alternative') && keys.has('discriminatingTests')) return 'challenge_hypothesis';
+  if (keys.has('kind') && keys.has('causes')) return 'propose_conclusion';
+  throw new Error(`fake port cannot classify a request from its outputSchema keys: ${[...keys].join(', ')}`);
 }
 
 /**
- * Every calibration scenario supplies at least two independently-identified
- * `ok` fixture entries (distinct evidence ids, over
- * `evals.BENCHMARK_SCENARIO_PARTITIONS.calibration` — asserted at the top of
- * the row below), so
- * `deterministicSupportInterpreter` above corroborates the sole hypothesis
- * `scriptedNodes`' fixture-based `generate_hypotheses` creates, on every one
- * of them: the real corpus alone never exercises the `stalled` branch under
- * this interpreter. `sparseEvidenceVariant` builds a scenario with the same
- * shape as a real one, its fixture trimmed to a single entry, so fewer than
- * two independent supports reach the hypothesis and T6 fires instead — the
- * two branches this row needs both come from `scriptedNodes` reading STATE,
- * never scenario identity.
+ * A fake `ModelPort` that always proposes the SAME cause — a payments
+ * deployment regression — regardless of which scenario drives it. Copied
+ * from prediction-wiring.test.mjs's own `fakePortFor` (this suite's own
+ * convention, stated at its header: a row needing `scripts/lane-arms.mjs`
+ * builds its own copy rather than depending on another test file's private
+ * helper).
  */
-function sparseEvidenceVariant(scenario, id) {
+function fakePortFor({ leaderId, alternativeId }) {
   return {
-    ...scenario,
-    id,
-    groundTruth: { ...scenario.groundTruth, expectedStopKind: 'stalled' },
-    fixture: { ...scenario.fixture, entries: scenario.fixture.entries.slice(0, 1) },
+    async complete(request) {
+      const role = roleFromOutputSchema(request.outputSchema);
+      let document;
+      if (role === 'generate_hypotheses') {
+        document = {
+          hypotheses: [{
+            id: leaderId,
+            statement: 'a payments deployment broke the service',
+            cause: { component: 'payments', mechanism: 'deployment-regression' },
+          }],
+        };
+      } else if (role === 'interpret_residual_evidence') {
+        document = { assessments: [] };
+      } else if (role === 'challenge_hypothesis') {
+        document = {
+          alternative: {
+            id: alternativeId,
+            statement: 'the inventory-api pool stayed occupied instead',
+            cause: { component: 'aic125e-alt-component', mechanism: 'connection-pool-exhaustion' },
+          },
+          discriminatingTests: [{
+            id: 'aic125e-lane-arms-challenge-test-1',
+            predictionId: 'aic125e-lane-arms-challenge-prediction-1',
+            tool: 'metrics',
+            input: {},
+            cost: 'cheap',
+            status: 'planned',
+          }],
+        };
+      } else {
+        document = { kind: 'inconclusive', causes: [] };
+      }
+      return {
+        text: JSON.stringify(document),
+        modelId: 'fake-model-under-test',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
+    },
   };
 }
 
@@ -776,58 +809,89 @@ function renamedClone(scenario, id) {
 }
 
 /**
- * `runGraphBenchmarkExperiment`'s ad-hoc plan requires exactly five scenarios
- * (a v0.1 constraint unrelated to this row); two real calibration scenarios
- * fill the remaining slots and their own results are read too, corroborating
- * the same finding the header above states.
+ * `deployment-caused-incident-a` with every `deployments` fixture entry
+ * removed — the only tool `fakePortFor`'s fixed cause ever plans a test
+ * against (`deployment-before-onset`, routed to `deployments`,
+ * `@aic/graph`'s `INVESTIGATION_ROUTES`). Removing it removes the one
+ * recorded fact the plan-only executor needs to confirm that prediction,
+ * without changing the scenario's identity or any of its other entries.
  */
-test("scriptedNodes(record)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a sparse-evidence variant reaches a different one", async () => {
-  const { scriptedNodes } = await import('../scripts/lane-arms.mjs');
+function withDeploymentsFactRemoved(scenario, id) {
+  return {
+    ...scenario,
+    id,
+    fixture: {
+      ...scenario.fixture,
+      entries: scenario.fixture.entries.filter((entry) => entry.toolId !== 'deployments'),
+    },
+  };
+}
 
-  for (const scenarioId of evals.BENCHMARK_SCENARIO_PARTITIONS.calibration) {
-    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
-    assert.ok(scenario, `the calibration partition names ${scenarioId}, which REPLAY_SCENARIOS must carry`);
-    const okEvidenceIds = new Set(
-      scenario.fixture.entries
-        .filter(({ result }) => result.status === 'ok')
-        .flatMap(({ result }) => result.output.map(({ id }) => id)),
-    );
-    assert.ok(
-      okEvidenceIds.size >= 2,
-      `${scenarioId} must supply at least two distinct ok evidence ids, the premise that makes the sparse variant below necessary`,
-    );
-  }
+/** The full initial `IncidentState` a benchmark run starts from, for a bare `{ fixture, runId }` input — copied from prediction-wiring.test.mjs's own `initialStateFor`. */
+function initialStateForRun(runId) {
+  return {
+    incident: { id: evals.opaqueIncidentId(runId), primaryScope: evals.BENCHMARK_PRIMARY_SCOPE },
+    hypotheses: [],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [],
+    control: {
+      runId,
+      schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
+      statusRulesVersion: domain.STATUS_RULES_VERSION,
+      phase: 'normalizing',
+      maxIterations: evals.BENCHMARK_BUDGET_POLICY.maxIterations,
+      llmCallBudget: evals.BENCHMARK_BUDGET_POLICY.llmCallBudget,
+      reservedChallengeBudget: evals.BENCHMARK_BUDGET_POLICY.reservedChallengeBudget,
+      challengeRounds: 0,
+      iterationsUsed: 0,
+      llmCallsUsed: 0,
+      resumeCount: 0,
+      humanReview: false,
+    },
+  };
+}
 
-  const original = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'bad-deployment');
-  assert.ok(original, 'the calibration corpus must still carry bad-deployment');
-  const clone = renamedClone(original, 'aic-119s3-scenario-independence-clone');
-  const sparse = sparseEvidenceVariant(original, 'aic-119s3-scenario-independence-sparse');
-  const fillerOne = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'db-pool-exhaustion');
-  const fillerTwo = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'false-alert');
-  assert.ok(fillerOne && fillerTwo, 'the calibration corpus must still carry both filler scenarios');
+/**
+ * Retitled from "scriptedNodes(record)'s termination depends on state, never
+ * on the scenario id or ground truth: a renamed clone of a real calibration
+ * scenario reaches the same stop kind as the original, and a sparse-evidence
+ * variant reaches a different one" — `scriptedNodes` no longer reads a
+ * hypothesis cause or fetches any scenario-specific evidence at all (see the
+ * header comment above), so it can no longer exhibit the two branches this
+ * row needs. `modelNodes(record, port)` still can, driven with the fixed
+ * cause `fakePortFor` proposes on every run: what varies is only which
+ * scenario's own fixture the planned request replays against.
+ *
+ * Measured by running the real kernel below (not hand-computed):
+ * `deployment-caused-incident-a` and its renamed clone both end `stalled`
+ * (the deployment-before-onset prediction confirms, but nothing corroborates
+ * the leader any further, so it stays a candidate past the mandatory
+ * challenge round); the variant with every `deployments` entry removed ends
+ * `tools-unavailable` instead — its own planned test, and the challenge
+ * round's own probe, both come back with no matching recorded call.
+ */
+test("modelNodes(record, port)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a variant with its confirming recorded fact removed reaches a different one", async () => {
+  const { modelNodes } = await import('../scripts/lane-arms.mjs');
 
-  const experiment = await evals.runGraphBenchmarkExperiment({
-    experimentId: 'aic-119s3-scenario-independence',
-    scenarioSet: 'ad-hoc',
-    scenarios: [original, clone, sparse, fillerOne, fillerTwo],
-    runsPerScenario: 3,
-    metadata: benchmarkVersions,
-    createNodes: (record) => ({
-      ...scriptedNodes(record),
-      interpret_residual_evidence: deterministicSupportInterpreter,
-    }),
-    async recordEvaluation() {},
-  });
+  const original = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'deployment-caused-incident-a');
+  assert.ok(original, 'the calibration corpus must still carry deployment-caused-incident-a');
+  const clone = renamedClone(original, 'aic125e-scenario-independence-clone');
+  const sparse = withDeploymentsFactRemoved(original, 'aic125e-scenario-independence-sparse');
 
   const stopKindsById = new Map();
-  for (const [index, record] of experiment.records.entries()) {
-    const stopKind = experiment.results[index].actualStopKind;
-    const seenBefore = stopKindsById.get(record.scenario.id);
-    assert.ok(
-      seenBefore === undefined || seenBefore === stopKind,
-      `every run of ${record.scenario.id} must reach the same stop kind: this interpreter and the termination node are both deterministic`,
+  for (const [label, scenario] of [['original', original], ['clone', clone], ['sparse', sparse]]) {
+    const runId = `aic125e-scenario-independence-${label}`;
+    const nodes = modelNodes(
+      { fixture: scenario.fixture, runId },
+      fakePortFor({ leaderId: `${runId}-leader`, alternativeId: `${runId}-alternative` }),
     );
-    stopKindsById.set(record.scenario.id, stopKind);
+    const investigationGraph = graph.createInvestigationGraph({ nodes });
+    // eslint-disable-next-line no-await-in-loop -- one scenario at a time, matching this suite's other sweeps
+    const result = await investigationGraph.execute({ kind: 'start', state: initialStateForRun(runId) });
+    stopKindsById.set(scenario.id, result.control.stopKind);
   }
 
   assert.equal(
@@ -838,19 +902,68 @@ test("scriptedNodes(record)'s termination depends on state, never on the scenari
   assert.notEqual(
     stopKindsById.get(sparse.id),
     stopKindsById.get(original.id),
-    'a state with fewer than two independent supports must reach a different termination decision than one with enough to corroborate — proving the decision tracks evidence in state, not which scenario produced it',
+    "removing the one recorded fact the fixed cause's own planned request needs must change the termination decision — proving the decision tracks evidence in state, not which scenario produced it",
   );
 
-  // Literals derived by hand from T0-T6 (packages/graph/src/nodes/termination.ts):
-  // every ok item supports the sole initial hypothesis at medium strength, so
-  // with at least two of them it is corroborated and, after the mandatory
-  // round, the only member of the competing set -> T5 sufficient; with one it
-  // stays a candidate -> T6 stalled.
-  assert.equal(stopKindsById.get(original.id), 'sufficient', 'bad-deployment under the support-everything interpreter corroborates its leader: T5 sufficient');
-  assert.equal(stopKindsById.get(sparse.id), 'stalled', 'a single supporting item leaves the leader a candidate: T6 stalled');
+  assert.equal(
+    stopKindsById.get(original.id),
+    'stalled',
+    'measured: the confirmed deployment-before-onset prediction alone leaves the leader a candidate past the mandatory challenge round',
+  );
+  assert.equal(
+    stopKindsById.get(sparse.id),
+    'tools-unavailable',
+    "measured: with the deployments entry gone, neither the planned test nor the challenge round's own probe can ever come back ok",
+  );
+});
 
-  const reachable = new Set(stopKindsById.values());
-  assert.ok(reachable.size > 1, 'the reachable stop kinds across this batch must not collapse onto one constant route');
+/**
+ * The half of the old row that survives, in spirit: `scriptedNodes` still
+ * reads no scenario IDENTITY, even though (AIC-125 supplement 7) it now
+ * reads almost no scenario CONTENT either. Measured by running the real
+ * kernel below (not hand-computed): every calibration scenario's own
+ * cause-less hypothesis (the fixture's own `generate_hypotheses`) ends the
+ * same way regardless of which scenario or clone drives it —
+ * `control.stopKind === 'tools-unavailable'`, no evidence, one `unavailable`
+ * trial from the challenge round's own hard-coded probe (see
+ * investigation-plan-execute-wiring.test.mjs's "...the scripted-control arm
+ * run through the real kernel ends with no evidence at all" row) — so a
+ * renamed, ground-truth-flipped clone of a real calibration scenario is
+ * guaranteed to reach the same stop kind as the original. Kept as its own
+ * row rather than folded into the one above, because it is evidence about a
+ * different arm.
+ */
+test("scriptedNodes(record)'s termination is independent of scenario identity: a renamed clone of a real calibration scenario reaches the same stop kind as the original", async () => {
+  const { scriptedNodes } = await import('../scripts/lane-arms.mjs');
+
+  const original = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'bad-deployment');
+  assert.ok(original, 'the calibration corpus must still carry bad-deployment');
+  const clone = renamedClone(original, 'aic125e-scripted-scenario-independence-clone');
+
+  const resultsById = new Map();
+  for (const [label, scenario] of [['original', original], ['clone', clone]]) {
+    const runId = `aic125e-scripted-scenario-independence-${label}`;
+    const nodes = scriptedNodes({ fixture: scenario.fixture, runId });
+    const investigationGraph = graph.createInvestigationGraph({ nodes });
+    // eslint-disable-next-line no-await-in-loop -- one scenario at a time, matching this suite's other sweeps
+    const result = await investigationGraph.execute({ kind: 'start', state: initialStateForRun(runId) });
+    resultsById.set(scenario.id, {
+      stopKind: result.control.stopKind,
+      evidenceCount: result.evidence.length,
+      trialCount: result.trials.length,
+    });
+  }
+
+  assert.deepEqual(
+    resultsById.get(clone.id),
+    resultsById.get(original.id),
+    "renaming the scenario id and flipping groundTruth.expectedStopKind must not change scriptedNodes' termination decision",
+  );
+  assert.equal(
+    resultsById.get(original.id).stopKind,
+    'tools-unavailable',
+    "measured: scriptedNodes' cause-less hypothesis fetches no evidence, and the challenge round's own hard-coded probe always comes back unavailable",
+  );
 });
 
 /* -------------------------------------------------------------------------- */

@@ -27,7 +27,7 @@ import * as roles from '@aic/roles';
 import { createModelNaiveInvestigation } from '@aic/roles';
 
 import { modelNodes, scriptedNodes } from '../scripts/eval-live-model.mjs';
-import { benchmarkVersions } from './fixtures/benchmark-experiment.mjs';
+import { benchmarkVersions, replayBackedNodes } from './fixtures/benchmark-experiment.mjs';
 
 const MODEL_BACKED_ROLES = Object.freeze([
   'generate_hypotheses',
@@ -165,6 +165,26 @@ function createFakeModelPort() {
   return { portFor, captured };
 }
 
+/**
+ * AIC-125 supplement 7: `modelNodes` now plans its own tests from the fake
+ * port's proposed cause and executes only those through the planned-replay
+ * port (`scripts/lane-arms.mjs`). The fake port below always proposes a
+ * `fake-component` cause that names no real scenario's own root cause, so a
+ * plan-only run fetches no evidence at all and the graph can reach
+ * `tools-unavailable` before `challenge_hypothesis` ever runs — which would
+ * make this row's own "every role reached on every run" precondition false
+ * on a completely unrelated design change, not on a leak. `scriptedNodes`
+ * lost its own full-corpus sweep the same way (see
+ * investigation-plan-execute-wiring.test.mjs and lane-arms.test.mjs's
+ * retitled rows), so neither arm's own `execute_investigation` is a sweep to
+ * borrow any more; the fixture's OWN full-corpus sweep
+ * (`replayBackedNodes`, `test/fixtures/benchmark-experiment.mjs`) still is,
+ * and this row swaps it in for `execute_investigation` alone, leaving every
+ * other node — including the four reasoning roles under test — exactly
+ * `modelNodes`'s own. A full sweep shows the model role prompts a SUPERSET of
+ * the evidence text a plan-only run ever could, so the leak sweep below is at
+ * least as strong as it would be under plan-only execution, never weaker.
+ */
 test('shows no REPLAY_SCENARIOS id in any model prompt, for every scenario and every model-backed role', async () => {
   const runGraphBenchmarkExperiment = requireEvalsExport('runGraphBenchmarkExperiment');
   const { portFor, captured } = createFakeModelPort();
@@ -176,8 +196,11 @@ test('shows no REPLAY_SCENARIOS id in any model prompt, for every scenario and e
       scenarios,
       runsPerScenario: 3,
       metadata: benchmarkVersions,
-      createNodes: (record) =>
-        modelNodes(record, portFor({ runId: record.runId, scenarioId: record.scenarioId })),
+      createNodes: (record) => {
+        const nodes = modelNodes(record, portFor({ runId: record.runId, scenarioId: record.scenarioId }));
+        const fullSweep = replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]]));
+        return { ...nodes, execute_investigation: fullSweep.execute_investigation };
+      },
       async recordEvaluation() {},
     });
   }

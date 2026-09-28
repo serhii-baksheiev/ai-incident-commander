@@ -193,7 +193,20 @@ export const LIVE_MODEL_LANE_MAX_OUTPUT_TOKENS = 1_200_000;
  * nothing here reads them.
  * see four-arm-lane.test.mjs › "carries the report schema version as an own property, at the exported value"
  */
-export const LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION = 2 as const;
+export const LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION = 3 as const;
+
+/**
+ * What each kind of arm is shown. Version 3 of the report makes this per arm
+ * (it was the single value `full-dump`): since AIC-125 both graph arms see only
+ * the evidence their planned tests fetch, while the naive arm still reads every
+ * recorded entry. Registered in
+ * docs/evidence/preregistration/v0.2-four-arm-supplement-7.md.
+ * see four-arm-lane.test.mjs › "declares informationMode per arm: the graph arms planned, the naive arm full-dump"
+ */
+export const LIVE_MODEL_LANE_INFORMATION_MODE = Object.freeze({
+  graph: 'planned',
+  naive: 'full-dump',
+} as const);
 
 /**
  * The metric this lane refuses to publish as model quality under the accepted
@@ -379,7 +392,7 @@ export interface LiveModelLaneGraphVsNaiveEntry {
 
 export interface LiveModelLaneReport {
   readonly schemaVersion: typeof LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION;
-  readonly informationMode: 'full-dump';
+  readonly informationMode: typeof LIVE_MODEL_LANE_INFORMATION_MODE;
   readonly headSha: string;
   readonly experimentId: string;
   readonly credential: Readonly<{ variable: string; provider: string; modelId: string }>;
@@ -1100,7 +1113,7 @@ export async function runLiveModelLane(
 
   const report: LiveModelLaneReport = {
     schemaVersion: LIVE_MODEL_LANE_REPORT_SCHEMA_VERSION,
-    informationMode: 'full-dump',
+    informationMode: LIVE_MODEL_LANE_INFORMATION_MODE,
     headSha: options.headSha,
     experimentId: options.experimentId,
     credential: {

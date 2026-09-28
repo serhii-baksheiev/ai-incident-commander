@@ -561,7 +561,22 @@ function computePredictionGapCounts(results) {
   return counts;
 }
 
-test('the live lane reports predictionGapCounts for the control and model arms, equal to a hand-computed aggregate of their own results, and reports the measured calibration control fact that every run stalls with no corroborated hypothesis', async () => {
+/**
+ * Retitled from "...reports the measured calibration control fact that every
+ * run stalls with no corroborated hypothesis" — AIC-125 supplement 7:
+ * `scriptedNodes` no longer sweeps the fixture. Its own `generate_hypotheses`
+ * (the fixture's `replayBackedNodes`) mints a hypothesis with no `cause` at
+ * all, so it derives no prediction, plans no test, and fetches no evidence
+ * from any scenario; the sole trial any calibration control run produces is
+ * the challenge round's own hard-coded probe, which the planned-replay
+ * executor always answers `unavailable`. So every calibration control run now
+ * stops `tools-unavailable`, measured below, rather than `stalled`. That does
+ * not change `predictionGap.stalledOther` — "a tools-unavailable termination
+ * reports stalledOther, never stalledLeaderLacksConfirmedPrediction, whatever
+ * the leader status" (this file's own T8 row above) — so the aggregate claim
+ * this row makes is unchanged; only the literal stop kind moves.
+ */
+test('the live lane reports predictionGapCounts for the control and model arms, equal to a hand-computed aggregate of their own results, and reports the measured calibration control fact that every run stops tools-unavailable with no corroborated hypothesis', async () => {
   const runLiveModelLane = requireFunction(evals, 'runLiveModelLane', '@aic/evals');
   const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
   const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
@@ -614,18 +629,24 @@ test('the live lane reports predictionGapCounts for the control and model arms, 
     'report.arms.model.predictionGapCounts must equal a hand-computed aggregate of the model experiment results',
   );
 
-  // The measured calibration control fact: scriptedNodes' interpret_residual_evidence
-  // writes no assessments, so every hypothesis stays a candidate and every run
-  // stalls with no corroborated hypothesis — stalledOther equals runs.
+  // The measured calibration control fact, AIC-125 supplement 7: scriptedNodes
+  // fetches no evidence from any scenario (see this row's own header), so the
+  // sole trial it ever produces — the challenge round's own hard-coded probe —
+  // always comes back unavailable, and every run stops tools-unavailable with
+  // no corroborated hypothesis. stalledOther still equals runs.
   for (const result of controlExperiment.results) {
-    assert.equal(result.actualStopKind, 'stalled', 'every scripted control run over calibration stalls');
+    assert.equal(
+      result.actualStopKind,
+      'tools-unavailable',
+      "every scripted control run over calibration now stops tools-unavailable — see this row's own header",
+    );
     assert.equal(result.predictionGap.stalledOther, true);
     assert.equal(result.predictionGap.finalCorroborated, false);
   }
   assert.equal(
     report.arms.control.predictionGapCounts.stalledOther,
     report.arms.control.predictionGapCounts.runs,
-    'every scripted control run stalls for an unrelated reason (no assessments are ever produced), so stalledOther must equal runs',
+    "every scripted control run stalls for an unrelated reason (no evidence is ever fetched, and the challenge round's own probe is always unavailable), so stalledOther must equal runs",
   );
 });
 

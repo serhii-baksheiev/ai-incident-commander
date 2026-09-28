@@ -63,6 +63,11 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  * addition: the deterministic prediction path, what the graph arm's model
  * roles now see of it, and the calibration outcome matrix. Its entry follows
  * the same rule.
+ *
+ * `v0.2-four-arm-supplement-7.md` (dated 2026-09-29) is AIC-125 slice e's
+ * addition: the planned investigation, the per-arm information mode, the
+ * replay port's semantics, the control arm's new harness signal and baseline,
+ * and the new discriminating credit. Its entry follows the same rule.
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
@@ -72,6 +77,7 @@ const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm-supplement-4.md': 'sha256:034562946e5b0e9dca087fd30ef4b94de104f3804cce7eaa4696bc4485e24007',
   'v0.2-four-arm-supplement-5.md': 'sha256:48c0ac078079edbde06882e2a47e8be139dbef54fe96b374b0f75fdd44b4b329',
   'v0.2-four-arm-supplement-6.md': 'sha256:d0720a1b7d0095e8216b45a126fe850de89e5919c9bed67ca149349738a4f9c7',
+  'v0.2-four-arm-supplement-7.md': 'sha256:060af069084a4cf8dafdce5bae2d9be34721b48e691a700831d9f29cb16f9434',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');
