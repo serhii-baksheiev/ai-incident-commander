@@ -72,18 +72,15 @@
  *   --out <path>               Write the JSON report here as well as to stdout.
  *
  * 🔴 **What the control arm can and cannot catch — and it is less than it
- * sounds.** It is the replay-backed lifecycle the regression suite runs, plus
- * (AIC-119 slice 3) the canonical, state-driven `termination_check`. Over the
- * final-evaluation corpus `termination_correctness` moved off the zero floor
- * to 0.1; the other five metrics still sit at zero, which is their worst score
- * except for `unsupported_claim_rate`, where zero is the best. So this control
- * arm catches a harness change that moves one of those five metrics UP, or
- * that stops emitting one — and, for those five, it cannot catch one that
- * pushes a metric further down, because there is no further down. A
- * `harness-regression` verdict from this command means the first kind; its
- * silence does not mean the second did not happen. `termination_correctness`
- * is off the floor, so this command's own regression detection covers it in
- * both directions.
+ * sounds.** It is the graph with scripted reasoning on the same planned
+ * investigation the model arm runs; its hypotheses carry no cause, so it
+ * plans nothing and fetches no evidence, and all six metrics sit at zero —
+ * their worst score except for `unsupported_claim_rate`, where zero is the
+ * best. So this control arm catches a harness change that moves a metric UP,
+ * or that stops emitting one, and cannot catch one that pushes a metric
+ * further down, because there is no further down. A `harness-regression`
+ * verdict from this command means the first kind; its silence does not mean
+ * the second did not happen.
  *
  * The set of metrics at the floor is asserted rather than counted here, so it
  * cannot drift again:

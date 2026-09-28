@@ -1,23 +1,14 @@
 /**
- * AIC-125 slice e: the MODEL arm of the lanes wires the real investigation
- * loop — `scripts/lane-arms.mjs`'s `modelNodes(record, port)` overrides
- * `plan_investigation` with `createPlanInvestigation()` and
- * `execute_investigation` with `createExecuteInvestigation({ execute })`,
+ * AIC-125 slice e: both graph arms of the lanes run the real investigation
+ * loop. `scripts/lane-arms.mjs`'s `scriptedNodes(record)` uses
+ * `createPlanInvestigation()` and `createExecuteInvestigation({ execute })`,
  * where `execute` is `createPlannedReplayExecutor({ fixture: record.fixture,
  * routes: INVESTIGATION_ROUTES, annotate: evals.createObservationAnnotator()
- * }).execute` (`@aic/tools/replay`). `scriptedNodes(record)` stays the
- * harness sweep — its own `execute_investigation` (the fixture's
- * `replayBackedNodes`) replays every recorded call regardless of what state
- * planned, so the control baselines it feeds do not move.
- *
- * This is the information-regime change supplement 5 predicted and
- * observation-merge.test.mjs's own header names: before this slice, the two
- * arms read identical evidence because `modelNodes` inherited the harness's
- * full-corpus replay unchanged. Now the model arm sees only what its own
- * derived predictions asked for — a subset of the harness sweep, and on any
- * scenario where a template actually confirms, a strict one. See
- * observation-merge.test.mjs's replaced row for the scripted-arm-only half of
- * that claim.
+ * }).execute` (`@aic/tools/replay`), and `modelNodes(record, port)` inherits
+ * both. The model arm sees only what its own predictions (and the challenge
+ * round) asked for — a subset of the recorded corpus the naive arm reads —
+ * and the scripted-control arm, whose hypotheses carry no cause, fetches
+ * nothing. Registered in docs/evidence/preregistration/v0.2-four-arm-supplement-7.md.
  *
  * Every row below reaches `modelNodes`/`scriptedNodes` through
  * `scripts/lane-arms.mjs`, never a hand-rolled copy — `.claude/rules/

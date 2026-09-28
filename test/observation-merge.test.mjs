@@ -331,10 +331,11 @@ test("createObservationAnnotator throws a plain Error naming the evidence id whe
  * What still merges an observation onto EVERY recorded entry, regardless of
  * what anything planned, is the component underneath both executors:
  * `ReplayToolAdapter` constructed with `{ observations: annotate }`. This row
- * — retitled from "scriptedNodes(record), replayed through
- * execute_investigation for every calibration and hold-out scenario, carries
- * an observation exactly on the items OBSERVATION_ANNOTATIONS gives
- * non-empty facts", which named a mechanism this row no longer drives —
+ * — retitled from "scriptedNodes(record) and modelNodes(record, port),
+ * replayed through execute_investigation for every calibration and hold-out
+ * scenario, produce identical state.evidence between the two arms, carrying
+ * an observation exactly on the items OBSERVATION_ANNOTATIONS gives non-empty
+ * facts", which named a mechanism this row no longer drives —
  * exercises that adapter directly over every entry in every scenario's own
  * fixture (calibration and hold-out alike, replayed here only to check
  * annotation placement, never to evaluate an investigation), and keeps the
