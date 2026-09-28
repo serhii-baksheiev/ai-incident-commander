@@ -1,0 +1,168 @@
+{
+  "version": "observation-annotations-v1",
+  "date": "2026-09-28",
+  "packetSha256": "sha256:a47fc588fa6d3987571d3d6725a058cc1fd65cd3cb8fda2e5d374fd752d0ddd0",
+  "mergeRule": "intersection",
+  "readers": [
+    {
+      "id": "reader-a",
+      "model": "sonnet (Claude Code subagent model alias, no tools, packet only)",
+      "facts": {
+        "1": [],
+        "2": [
+          {
+            "form": "signal-state",
+            "subject": "inventory-api",
+            "window": "incident",
+            "signal": "latency",
+            "state": "elevated"
+          }
+        ],
+        "3": [],
+        "4": [],
+        "5": [],
+        "6": [
+          {
+            "form": "deployment-in-window",
+            "subject": "payments",
+            "window": "pre-onset",
+            "count": 1,
+            "coverage": "partial"
+          }
+        ],
+        "7": [
+          {
+            "form": "signal-state",
+            "subject": "payments",
+            "window": "incident",
+            "signal": "dependency-health",
+            "state": "normal"
+          }
+        ],
+        "8": [],
+        "9": [],
+        "10": [
+          {
+            "form": "signal-state",
+            "subject": "payments",
+            "window": "incident",
+            "signal": "dependency-health",
+            "state": "normal"
+          }
+        ],
+        "11": [],
+        "12": [
+          {
+            "form": "signal-state",
+            "subject": "payment",
+            "window": "incident",
+            "signal": "error-rate",
+            "state": "elevated"
+          }
+        ],
+        "13": [],
+        "14": [],
+        "15": [
+          {
+            "form": "deployment-in-window",
+            "subject": "payments",
+            "window": "incident",
+            "count": 1,
+            "coverage": "partial"
+          }
+        ],
+        "16": [],
+        "17": [
+          {
+            "form": "deployment-in-window",
+            "subject": "payments",
+            "window": "pre-onset",
+            "count": 1,
+            "coverage": "partial"
+          }
+        ],
+        "18": []
+      }
+    },
+    {
+      "id": "reader-b",
+      "model": "opus (Claude Code subagent model alias, no tools, packet only)",
+      "facts": {
+        "1": [],
+        "2": [
+          {
+            "form": "signal-state",
+            "subject": "inventory-api",
+            "window": "incident",
+            "signal": "latency",
+            "state": "elevated"
+          }
+        ],
+        "3": [],
+        "4": [],
+        "5": [],
+        "6": [
+          {
+            "form": "deployment-in-window",
+            "subject": "payments",
+            "window": "pre-onset",
+            "count": 1,
+            "coverage": "partial"
+          }
+        ],
+        "7": [
+          {
+            "form": "signal-state",
+            "subject": "payments",
+            "window": "incident",
+            "signal": "dependency-health",
+            "state": "normal"
+          }
+        ],
+        "8": [],
+        "9": [],
+        "10": [
+          {
+            "form": "signal-state",
+            "subject": "payments",
+            "window": "incident",
+            "signal": "dependency-health",
+            "state": "normal"
+          }
+        ],
+        "11": [],
+        "12": [
+          {
+            "form": "signal-state",
+            "subject": "payment",
+            "window": "incident",
+            "signal": "error-rate",
+            "state": "elevated"
+          }
+        ],
+        "13": [],
+        "14": [],
+        "15": [
+          {
+            "form": "deployment-in-window",
+            "subject": "payments",
+            "window": "incident",
+            "count": 1,
+            "coverage": "partial"
+          }
+        ],
+        "16": [],
+        "17": [
+          {
+            "form": "deployment-in-window",
+            "subject": "payments",
+            "window": "pre-onset",
+            "count": 1,
+            "coverage": "partial"
+          }
+        ],
+        "18": []
+      }
+    }
+  ]
+}

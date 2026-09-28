@@ -50,12 +50,17 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  * `v0.2-four-arm-supplement-3.md` (dated 2026-09-28) is AIC-123 slice 2's
  * addition: prompt `reference-roles-prompt-v0.5`, under the owner's AIC-123
  * decision D4. Its entry follows the same rule.
+ *
+ * `v0.2-four-arm-supplement-4.md` (dated 2026-09-28) is AIC-123 slice 3a's
+ * addition: the observation table `observation-annotations-v1`, under the
+ * owner's AIC-123 decision D3. Its entry follows the same rule.
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
   'v0.2-four-arm-supplement-1.md': 'sha256:e3b3e9751a2da8e74197b10b6bb50afa70c7f9e5e62899c2371aa1b5c1f27b85',
   'v0.2-four-arm-supplement-2.md': 'sha256:99f0779261ac57763e44f5bfb092bdf4aa16081b34f36b076ab8f2d6e7d18ba1',
   'v0.2-four-arm-supplement-3.md': 'sha256:20667b18ae82116b7023121c2eb0113f1813833662b3279f8546d9c87f5ea4ff',
+  'v0.2-four-arm-supplement-4.md': 'sha256:034562946e5b0e9dca087fd30ef4b94de104f3804cce7eaa4696bc4485e24007',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');
@@ -160,7 +165,9 @@ const registrationDirectory = () =>
  * AIC-119 slice 5 (owner ruling D1, item 6): the preregistration addendum
  * names `corroborated`'s semantics against the status-rules version they were
  * defined under, so `STATUS_RULES_VERSION` joins the versions every one of
- * these documents together must name at least once.
+ * these documents together must name at least once. AIC-123 slice 3a adds
+ * the observation table's version (`OBSERVATION_ANNOTATIONS_VERSION`) the same
+ * way.
  */
 test('states the evaluator, ground-truth, prompt, status-rules and model versions the code declares, and its run count', () => {
   const body = registrationDirectory();
@@ -171,6 +178,7 @@ test('states the evaluator, ground-truth, prompt, status-rules and model version
     NAIVE_PROMPT_VERSION,
     REFERENCE_MODEL_ID,
     STATUS_RULES_VERSION,
+    evals.OBSERVATION_ANNOTATIONS_VERSION,
   ]) {
     assert.ok(body.includes(`\`${version}\``), `the preregistration does not name ${version}`);
   }
