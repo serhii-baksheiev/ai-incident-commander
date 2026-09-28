@@ -374,17 +374,20 @@ test('the root tsconfig.json extends target and every references path fall under
  * carries. This row is what stands in instead: it pins the exact text of the
  * three lines a change to package.json cannot silently move the candidate
  * fingerprint through, so an edit to any of them reddens this row where a
- * reviewer sees it, rather than moving a hash nobody is looking at.
+ * reviewer sees it, rather than moving a hash nobody is looking at. npm also
+ * runs a `pre<name>`/`post<name>` script around each of them (the mechanism
+ * final-evaluation-command.test.mjs already pins for `pretest`), so the row
+ * reads every script key that names one of the three with or without such a
+ * prefix: an added hook is a key this comparison does not expect.
  */
 test('the build, eval:live-model and eval:final-holdout npm scripts are exactly the command lines the candidate fingerprint was reviewed against', () => {
   const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
 
+  const laneCommandKeys = /^(?:pre|post)?(?:build|eval:live-model|eval:final-holdout)$/;
   assert.deepEqual(
-    {
-      build: manifest.scripts.build,
-      'eval:live-model': manifest.scripts['eval:live-model'],
-      'eval:final-holdout': manifest.scripts['eval:final-holdout'],
-    },
+    Object.fromEntries(
+      Object.entries(manifest.scripts).filter(([name]) => laneCommandKeys.test(name)),
+    ),
     {
       build: 'tsc -b',
       'eval:live-model':
@@ -392,7 +395,7 @@ test('the build, eval:live-model and eval:final-holdout npm scripts are exactly 
       'eval:final-holdout':
         'npm run build --silent && node --import ./scripts/lib/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs',
     },
-    'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a change to these three lines cannot move the candidate fingerprint at all — it must instead redden this row',
+    'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a change to these three lines, or a pre/post hook added around any of them, cannot move the candidate fingerprint at all — it must instead redden this row',
   );
 });
 
