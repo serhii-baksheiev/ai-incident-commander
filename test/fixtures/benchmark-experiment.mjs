@@ -35,9 +35,9 @@
  */
 import assert from 'node:assert/strict';
 
-import { STATUS_RULES_VERSION } from '@aic/domain';
+import { EXPECTED_OBSERVATION_VERSION, STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
-import { createReplayFixtureKey } from '@aic/tools';
+import { createReplayFixtureKey, createRequestFingerprint } from '@aic/tools';
 import { ReplayToolAdapter } from '@aic/tools/replay';
 
 export const benchmarkVersions = Object.freeze({
@@ -225,8 +225,22 @@ function replayFixtureFor(fixture) {
   };
 }
 
+const OBSERVATION_MERGE_ADAPTER = 'aic.incident-tool@1';
+
+/**
+ * A second, independent construction of the v2 replay identity string,
+ * deliberately not an import of `buildReplayIdentity`
+ * (`packages/tools/src/bound-source-registry.ts`) — the same discipline
+ * `test/observation-merge.test.mjs`'s own `replayIdentity` holds itself to
+ * (`.claude/rules/invariants.md`, "the independent-oracle invariant").
+ */
+function replayIdentityFor(toolId, input) {
+  return `v2:${JSON.stringify([toolId, OBSERVATION_MERGE_ADAPTER, createRequestFingerprint(toolId, input)])}`;
+}
+
 export function replayBackedNodes(record, traces, replayCounts) {
-  const replay = new ReplayToolAdapter(replayFixtureFor(record.fixture));
+  const annotate = evals.createObservationAnnotator();
+  const replay = new ReplayToolAdapter(replayFixtureFor(record.fixture), { observations: annotate });
   const leaderId = `leader-${record.runId}`;
   const visit = (nodeName, update = {}) => async () => {
     traces.get(record.runId).push(nodeName);
@@ -248,6 +262,14 @@ export function replayBackedNodes(record, traces, replayCounts) {
     /**
      * Replays every recorded call and writes both channels: the evidence the
      * call yielded, and a trial recording that the call happened.
+     *
+     * AIC-123 slice 3b: `replay` above is built with `{ observations: annotate }`,
+     * so an `ok` replay's evidence may now carry `observation`. The self-check
+     * below therefore compares `entry.result` against the replayed result with
+     * `observation` stripped back off, and checks the merge itself separately
+     * against what `annotate` gives for the same (identity, item) pair — see
+     * observation-merge.test.mjs's header for the identity discipline this
+     * mirrors.
      *
      * ⚠ The link between the two is one-way. `trial.evidenceIds` names the
      * evidence this call produced, but the corpus evidence carries its own
@@ -316,7 +338,25 @@ export function replayBackedNodes(record, traces, replayCounts) {
       const trials = [];
       for (const [index, entry] of record.fixture.entries.entries()) {
         const replayed = await replay.execute(entry.toolId, entry.input);
-        assert.deepEqual(replayed, entry.result);
+        if (replayed.status === 'ok') {
+          const strippedOutput = replayed.output.map(({ observation: _observation, ...item }) => item);
+          assert.deepEqual({ ...replayed, output: strippedOutput }, entry.result);
+
+          const identity = replayIdentityFor(entry.toolId, entry.input);
+          for (const item of replayed.output) {
+            const expectedFacts = annotate(identity, item) ?? [];
+            if (expectedFacts.length === 0) {
+              assert.equal('observation' in item, false);
+            } else {
+              assert.deepEqual(item.observation, {
+                version: EXPECTED_OBSERVATION_VERSION,
+                facts: [...expectedFacts],
+              });
+            }
+          }
+        } else {
+          assert.deepEqual(replayed, entry.result);
+        }
         replayCounts.set(record.runId, replayCounts.get(record.runId) + 1);
         const produced = replayed.status === 'ok' ? replayed.output : [];
         evidence.push(...produced);
