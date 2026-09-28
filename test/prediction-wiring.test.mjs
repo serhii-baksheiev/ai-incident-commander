@@ -15,11 +15,11 @@
  * `scripts/lane-arms.mjs`'s `scriptedNodes(record)` already overrides
  * `derive_hypothesis_state`/`termination_check` with the canonical,
  * state-driven nodes (AIC-119 slice 3); `modelNodes(record, port)` spreads
- * `scriptedNodes`. This slice's own job is the two prediction nodes:
- * `derive_predictions`/`evaluate_predictions` still come from
- * `replayBackedNodes`'s trace-only no-ops (`test/fixtures/benchmark-experiment.mjs`),
- * which is why every row below that reaches them through `scriptedNodes`/
- * `modelNodes` is red until that wiring lands.
+ * `scriptedNodes`. The same two functions also replace `replayBackedNodes`'s
+ * trace-only `derive_predictions`/`evaluate_predictions`
+ * (`test/fixtures/benchmark-experiment.mjs`) with the canonical nodes, and
+ * the rows below that reach them through `scriptedNodes`/`modelNodes` pin
+ * that.
  *
  * A second, independent wiring belongs to the kernel itself
  * (`packages/graph/src/investigation.ts`'s `challengeHypothesis`): the graph's
@@ -904,7 +904,48 @@ test('the challenge round rejects a derive_predictions result whose predictions 
 
   await assert.rejects(
     investigationGraph.execute({ kind: 'start', state: challengeWrapperInitialState() }),
+    /non-array predictions/,
     'a non-array predictions value from derive_predictions at challenge time must reject rather than corrupt state.predictions',
+  );
+});
+
+test('the challenge round never invokes an own getter for "predictions" on what derive_predictions returns, and takes nothing from it', async () => {
+  const decoyPrediction = Object.freeze({
+    id: 'aic124c-own-getter-decoy-prediction',
+    hypothesisId: ALTERNATIVE_HYPOTHESIS.id,
+    statement: 'a decoy prediction behind an own getter',
+    observationVersion: domain.EXPECTED_OBSERVATION_VERSION,
+    expectedIfTrue: [],
+    expectedIfFalse: [],
+    status: 'untested',
+  });
+  let getterCalls = 0;
+
+  const nodes = challengeWrapperNodes({
+    generateHypotheses: causelessLeaderHypotheses,
+    deriveePredictions: async (state) =>
+      state.hypotheses.some((hypothesis) => hypothesis.createdBy === 'challenge')
+        ? {
+          get predictions() {
+            getterCalls += 1;
+            return [decoyPrediction];
+          },
+        }
+        : {},
+    challengeHypothesisResult: {
+      alternative: ALTERNATIVE_HYPOTHESIS,
+      discriminatingTests: [ALTERNATIVE_DISCRIMINATING_TEST],
+    },
+    executeSpy: () => {},
+  });
+  const investigationGraph = graph.createInvestigationGraph({ nodes });
+
+  const finalState = await investigationGraph.execute({ kind: 'start', state: challengeWrapperInitialState() });
+
+  assert.equal(getterCalls, 0, 'an own accessor for predictions must never be invoked');
+  assert.ok(
+    !finalState.predictions.some((prediction) => prediction.id === decoyPrediction.id),
+    'a prediction behind an own getter must never reach state',
   );
 });
 

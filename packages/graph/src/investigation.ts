@@ -1512,8 +1512,7 @@ export function createInvestigationGraph({
 
     // The challenge round has no `derive_predictions` edge of its own —
     // `challenge_hypothesis -> execute_investigation` — so the alternative's
-    // predictions are derived here, before execution, which is what lets a
-    // test be planned for them rather than grading them unplanned.
+    // predictions are derived here, before the round's execution.
     // `derivePredictions` skips a hypothesis that already has a prediction,
     // so passing the leader alongside the alternative leaves the leader's
     // prediction untouched.
@@ -1536,7 +1535,9 @@ export function createInvestigationGraph({
     // control.llmCallsUsed, the same channel the wrapped lifecycle edge
     // reads", › "the challenge round reads only an own "predictions"
     // property off what derive_predictions returns, never one its prototype
-    // supplies" and › "the challenge round rejects a
+    // supplies", › "the challenge round never invokes an own getter for
+    // "predictions" on what derive_predictions returns, and takes nothing
+    // from it" and › "the challenge round rejects a
     // derive_predictions result whose predictions key is not an array"
     const derived = await nodes.derive_predictions({
       ...incidentStateOf(state),
