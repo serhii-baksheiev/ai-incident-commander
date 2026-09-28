@@ -148,7 +148,19 @@ interface SinglePredictionVerdict {
   readonly rationaleSuffix: string;
 }
 
-function normalizeSubject(subject: string): string {
+/**
+ * The one place a subject is case- and whitespace-normalized (trim +
+ * lowercase) before comparison — exported so a caller outside this module
+ * (`packages/tools/replay/index.ts`'s `createPlannedReplayExecutor` quantity
+ * match) applies the exact same rule rather than a second copy of it
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
+ * planned-replay.test.mjs › "a QUANTITY match compares the subject case- and
+ * whitespace-insensitively, matching normalizeSubject's own rule (trim +
+ * lowercase)" and › "a QUANTITY match normalises the REQUEST subject by the
+ * same rule: a padded, upper-case service in the request still matches a
+ * clean fact subject".
+ */
+export function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase();
 }
 
