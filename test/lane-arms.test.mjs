@@ -1593,3 +1593,32 @@ test("eval-final-holdout.mjs's runNaiveArm still assigns naiveExperiment, and it
     'AIC-120: LangSmith publication moved entirely out of the lane call and into completeHoldout/publishRecordedMeasurement, so the options object handed to runLiveModelLane must carry no publish key',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* 6. AIC-126 slice a: scripts/lane-arms.mjs imports nothing from test/       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `createInvestigationNodes` (`@aic/graph`) and `createScriptedReasoning`
+ * (`@aic/evals`) replace `scripts/lane-arms.mjs`'s own spread of
+ * `replayBackedNodes` (`test/fixtures/benchmark-experiment.mjs`), so this
+ * script — the one both live-model commands wire through — never needs to
+ * reach into the test tree to build a working graph.
+ *
+ * A narrow, source-level check on purpose: what it claims is about the
+ * import graph, and `final-evaluation-candidate-fingerprint.test.mjs`'s own
+ * row measures the stronger, runtime version of the same claim over every
+ * file `scripts/eval-live-model.mjs`/`scripts/eval-final-holdout.mjs`
+ * actually load, `scripts/lane-arms.mjs` included.
+ */
+test('scripts/lane-arms.mjs imports nothing from test/', () => {
+  const source = readFileSync(join(REPO_ROOT, 'scripts/lane-arms.mjs'), 'utf8');
+  const importSpecifiers = [...source.matchAll(/from\s+'([^']+)'/g)].map(([, specifier]) => specifier);
+  const testImports = importSpecifiers.filter((specifier) => specifier.includes('/test/'));
+
+  assert.deepEqual(
+    testImports,
+    [],
+    `scripts/lane-arms.mjs must not import anything from test/: the canonical composition now lives in @aic/graph's createInvestigationNodes and @aic/evals' createScriptedReasoning, found: ${JSON.stringify(testImports)}`,
+  );
+});

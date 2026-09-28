@@ -12,6 +12,11 @@ import { childEnv } from './fixtures/child-env.mjs';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const testRoot = resolve(projectRoot, 'test');
 const fixturePath = resolve(testRoot, 'fixtures/child-env.mjs');
+// AIC-126 slice a: the one implementation moves to scripts/lib/child-env.mjs,
+// and test/fixtures/child-env.mjs becomes a re-export — so the canonical
+// declaration site named by "keeps the child environment allow-list in
+// exactly one implementation" below is this path, not the fixture any more.
+const canonicalChildEnvPath = resolve(projectRoot, 'scripts/lib/child-env.mjs');
 const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
 // A credential SHAPE, assembled at runtime and never written as a literal —
@@ -358,27 +363,52 @@ test('imports node:child_process only as named bindings the spawn scan can see',
 
 test('keeps the child environment allow-list in exactly one implementation', () => {
   const duplicates = testSources()
-    .filter(({ path }) => resolve(projectRoot, path) !== fixturePath)
+    .filter(({ path }) => {
+      const absolute = resolve(projectRoot, path);
+      return absolute !== fixturePath && absolute !== canonicalChildEnvPath;
+    })
     .filter(({ text }) => /(?:function|const|let)\s+childEnv\b/.test(text))
     .map(({ path }) => path);
 
   assert.deepEqual(
     duplicates,
     [],
-    'a second copy of the allow-list is the copy that stops matching the SDK — import the fixture instead',
+    'a second copy of the allow-list is the copy that stops matching the SDK — import scripts/lib/child-env.mjs (or its test/fixtures/child-env.mjs re-export) instead',
   );
 });
 
-test('imports the child-environment fixture in every file that spawns a child process', () => {
+/**
+ * AIC-126 slice a: `childEnv` moves to `scripts/lib/child-env.mjs` — the
+ * canonical location a script under `scripts/` can import without reaching
+ * into `test/` — and `test/fixtures/child-env.mjs` becomes a re-export of it,
+ * not a second declaration. Checked by identity, not by behaviour: two
+ * separately-implemented functions could coincidentally agree on every input
+ * this suite tries and still be two copies that drift apart on the next SDK
+ * change (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ */
+test('test/fixtures/child-env.mjs re-exports the one implementation in scripts/lib/child-env.mjs, rather than declaring a second copy', async () => {
+  const { childEnv: childEnvFromLib } = await import('../scripts/lib/child-env.mjs');
+  const { childEnv: childEnvFromFixture } = await import('./fixtures/child-env.mjs');
+
+  assert.equal(
+    childEnvFromFixture,
+    childEnvFromLib,
+    'test/fixtures/child-env.mjs must export exactly the function scripts/lib/child-env.mjs declares',
+  );
+});
+
+test('imports the child-environment helper in every file that spawns a child process', () => {
   const spawningFiles = new Set(spawnSites().map((site) => site.path));
 
   const notImporting = [...spawningFiles].filter((path) => {
     const text = readFileSync(resolve(projectRoot, path), 'utf8');
-    // The optional `test/` segment is what a file OUTSIDE the test tree needs:
-    // `scripts/` reaches the fixture as `../test/fixtures/child-env.mjs`. Added
-    // with the walk over `scripts/` above — without it the widened audit would
-    // have reported two files that do exactly the right thing.
-    return !/from\s+'(?:\.\.?\/)+(?:test\/)?fixtures\/child-env\.mjs'/.test(text);
+    // Two specifiers reach the one implementation: a file in or reaching into
+    // the test tree imports the fixture (`[test/]fixtures/child-env.mjs`, a
+    // re-export — `infra/` reaches it through `test/`), and a script imports
+    // the helper itself (`lib/child-env.mjs`) — a script may not load a file
+    // under `test/`, because FINAL_EVALUATION_CANDIDATE_PATHS names nothing
+    // there (final-evaluation-candidate-fingerprint.test.mjs).
+    return !/from\s+'(?:\.\.?\/)+(?:(?:test\/)?fixtures|lib)\/child-env\.mjs'/.test(text);
   });
 
   assert.deepEqual(

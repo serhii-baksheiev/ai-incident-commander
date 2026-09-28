@@ -24,6 +24,7 @@ import { deriveEvidenceId, deriveTrialId } from './identity.js';
 export * from './identity.js';
 export * from './investigation.js';
 export * from './investigation-routes.js';
+export * from './nodes/compose.js';
 export * from './nodes/derive-hypothesis-state.js';
 export * from './nodes/derive-predictions.js';
 export * from './nodes/evaluate-predictions.js';

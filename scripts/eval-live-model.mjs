@@ -96,8 +96,10 @@
  * HTTPS endpoint. That is the only destination the lane reaches on its own; `--publish` adds a second,
  * the LangSmith ingestion below. Nothing leaves at all without a credential.
  *
- * The scripted nodes come from `test/fixtures/benchmark-experiment.mjs`, which
- * is the ONE implementation of the replay-backed lifecycle in this repository
+ * Both graph arms come from `./lane-arms.mjs`, which builds them with
+ * `createInvestigationNodes` (`@aic/graph`) and, for the control arm,
+ * `createScriptedReasoning` (`@aic/evals`) — the one implementation the
+ * regression suite's replay-backed fixture also delegates to
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation"). A copy
  * here would be a control arm that could drift away from the arm the regression
  * suite actually runs, which is precisely the harness change this lane exists to
@@ -124,7 +126,7 @@ import {
   resolveModelConfig,
 } from '@aic/roles';
 
-import { childEnv } from '../test/fixtures/child-env.mjs';
+import { childEnv } from './lib/child-env.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 

@@ -62,7 +62,7 @@ import {
   resolveModelConfig,
 } from '@aic/roles';
 
-import { childEnv } from '../test/fixtures/child-env.mjs';
+import { childEnv } from './lib/child-env.mjs';
 import { writeRecordDurably, publishRecordedMeasurement } from './final-holdout-publication.mjs';
 import { modelNodes, naiveArm, oracleArm, scriptedNodes } from './lane-arms.mjs';
 

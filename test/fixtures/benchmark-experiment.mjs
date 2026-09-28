@@ -22,9 +22,9 @@
  *
  * Not here: `currentHeadSha()`. It stays in the test file because it spawns a
  * child process, and `test/child-process-environment.test.mjs` ›
- * "imports the child-environment fixture in every file that spawns a child
+ * "imports the child-environment helper in every file that spawns a child
  * process" recognises the shared allow-list by the specifier
- * `…/fixtures/child-env.mjs` — which a sibling of `child-env.mjs` importing
+ * `…/fixtures/child-env.mjs` or `…/lib/child-env.mjs` — which a sibling of `child-env.mjs` importing
  * `./child-env.mjs` does not write. Moving the spawn here would either turn that
  * audit red or make this file spell its import to satisfy a regex.
  *
@@ -251,17 +251,19 @@ export function replayBackedNodes(record, traces, replayCounts) {
     traces.get(record.runId).push(nodeName);
     return update;
   };
+  // The scripted reasoning's outputs come from the one implementation the
+  // lanes use (`evals.createScriptedReasoning`); this fixture only adds its
+  // own traces and the challenge's leader self-check around them.
+  const scripted = evals.createScriptedReasoning(record);
+  const traced = (nodeName, role) => async (...args) => {
+    traces.get(record.runId).push(nodeName);
+    return scripted[role](...args);
+  };
 
   return {
     normalize_incident: visit('normalize_incident'),
     collect_baseline: visit('collect_baseline'),
-    generate_hypotheses: visit('generate_hypotheses', {
-      hypotheses: [{
-        id: leaderId,
-        statement: 'replay candidate',
-        createdBy: 'initial',
-      }],
-    }),
+    generate_hypotheses: traced('generate_hypotheses', 'generate_hypotheses'),
     derive_predictions: visit('derive_predictions'),
     plan_investigation: visit('plan_investigation'),
     /**
@@ -380,7 +382,7 @@ export function replayBackedNodes(record, traces, replayCounts) {
       return { trials, evidence };
     },
     evaluate_predictions: visit('evaluate_predictions'),
-    interpret_residual_evidence: visit('interpret_residual_evidence'),
+    interpret_residual_evidence: traced('interpret_residual_evidence', 'interpret_residual_evidence'),
     derive_hypothesis_state: visit('derive_hypothesis_state'),
     // 🔴 Read from the state, not from the constant this fixture's own
     // `generate_hypotheses` writes. The two used to share `leaderId`, an
@@ -407,25 +409,9 @@ export function replayBackedNodes(record, traces, replayCounts) {
       // Compared against the same derived value, so the self-check survives a
       // swapped producer instead of asserting which producer ran.
       assert.equal(challengedLeaderId, state.hypotheses[0]?.id ?? leaderId);
-      return {
-        alternative: {
-          id: `alternative-${record.runId}`,
-          statement: 'replay evidence survives a mandatory challenge',
-          createdBy: 'challenge',
-        },
-        discriminatingTests: [{
-          id: `challenge-test-${record.runId}`,
-          predictionId: `challenge-prediction-${record.runId}`,
-          tool: record.fixture.entries[0].toolId,
-          input: { replay: true },
-          cost: 'cheap',
-          status: 'planned',
-        }],
-      };
+      return scripted.challenge_hypothesis(state, challengedLeaderId);
     },
-    propose_conclusion: visit('propose_conclusion', {
-      conclusion: { kind: 'inconclusive', causes: [] },
-    }),
+    propose_conclusion: traced('propose_conclusion', 'propose_conclusion'),
   };
 }
 

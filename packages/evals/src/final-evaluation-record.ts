@@ -40,12 +40,32 @@
  * purpose: a run that writes its own evidence must not thereby earn the next
  * one.
  * see final-evaluation-oneshot.test.mjs › "fingerprints exactly the paths that can change what the graph does"
+ *
+ * AIC-126 slice a: `test/fixtures/benchmark-experiment.mjs` is no longer
+ * listed. `scripts/lane-arms.mjs` used to import `replayBackedNodes` from it
+ * directly; `createInvestigationNodes` (`@aic/graph`) and
+ * `createScriptedReasoning` (`./scripted-reasoning.js`) replace that import,
+ * so the two lane scripts no longer load anything under `test/` and a
+ * `test/` entry here would be exactly the false-unlock this list exists to
+ * avoid. What keeps this list honest against what the scripts actually
+ * load, at runtime rather than by reading import statements, is
+ * `final-evaluation-candidate-fingerprint.test.mjs` › "every repository file
+ * Node loads importing scripts/eval-live-model.mjs and
+ * scripts/eval-final-holdout.mjs falls under a path
+ * FINAL_EVALUATION_CANDIDATE_PATHS declares" and › "no repository file the
+ * two lane scripts load contains a dynamic import(), so what importing them
+ * loads is what running them loads".
+ *
+ * ⚠ Measured is the two scripts' module graph, not the npm commands around
+ * them. The command line those commands build is outside this list and
+ * outside the measurement: `package.json` itself (only `package-lock.json`
+ * is listed), and the `test/fixtures/no-ambient-tracing.mjs` it preloads with
+ * `--import`, which today only turns ambient tracing off.
  */
 export const FINAL_EVALUATION_CANDIDATE_PATHS = Object.freeze([
   'packages',
   'apps',
   'scripts',
-  'test/fixtures/benchmark-experiment.mjs',
   'package-lock.json',
 ] as const);
 
