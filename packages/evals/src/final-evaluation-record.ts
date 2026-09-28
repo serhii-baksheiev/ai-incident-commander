@@ -57,10 +57,10 @@
  * loads is what running them loads".
  *
  * ⚠ Measured is the two scripts' module graph, not the npm commands around
- * them: `npm run eval:live-model` and `eval:final-holdout` also preload
- * `test/fixtures/no-ambient-tracing.mjs` with `--import`. That file only
- * turns ambient tracing off; it is outside this list and outside the
- * measurement.
+ * them. The command line those commands build is outside this list and
+ * outside the measurement: `package.json` itself (only `package-lock.json`
+ * is listed), and the `test/fixtures/no-ambient-tracing.mjs` it preloads with
+ * `--import`, which today only turns ambient tracing off.
  */
 export const FINAL_EVALUATION_CANDIDATE_PATHS = Object.freeze([
   'packages',

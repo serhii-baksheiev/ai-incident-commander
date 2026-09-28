@@ -125,9 +125,14 @@ function repoRelativePath(fileUrl) {
   return relative(REPO_ROOT, real).split(sep).join('/');
 }
 
-/** Source text with block and line comments removed — coarse, and enough to keep a comment that names `import(` from reading as a call. */
+/**
+ * Source text without its comment LINES — lines that start with `//`, `/*` or
+ * `*`, the only comment shapes this repository's sources and emitted JS use.
+ * Line-local on purpose: it can never remove code on another line, so a
+ * string that happens to contain `/*` or `//` cannot hide a real call.
+ */
 function withoutComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  return text.split('\n').filter((line) => !/^\s*(?:\/\/|\/?\*)/.test(line)).join('\n');
 }
 
 /** A path is a workspace-external dependency if `node_modules` names any of its segments once symlinks are resolved — a workspace package's own `node_modules/@aic/*` symlink resolves away to `packages/*` before this check ever sees it. */

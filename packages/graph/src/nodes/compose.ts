@@ -52,10 +52,10 @@ function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
  * `reasoning`'s four roles (`generate_hypotheses`, `interpret_residual_evidence`,
  * `challenge_hypothesis`, `propose_conclusion`) are wired by identity — the
  * caller owns whether they are scripted or model-backed, and this function
- * neither wraps nor inspects them beyond checking the reasoning object carries
- * exactly those four keys. A reasoning object missing a role, or carrying an
- * extra one, throws a `TypeError` naming the offending key(s): a lane that
- * silently ran with seven live roles or five instead of four is a defect this
+ * never wraps them. It checks only their shape: `reasoning` must be an object
+ * carrying exactly those four keys, each a function; anything else throws a
+ * `TypeError` naming the offending key(s) — a lane that silently ran with
+ * three roles, five, or a non-function in place of one is a defect this
  * catches at wiring time rather than at whatever node happens to be called
  * first.
  *
