@@ -5,8 +5,12 @@
  * `evaluatePredictionObservations` a caller-supplied template table. This
  * slice wires it: `PREDICTION_TEMPLATES`, the frozen mechanism -> template
  * table classified against `@aic/evals`'s `ROOT_CAUSE_MECHANISMS`, and the
- * two canonical nodes, `createDerivePredictions` and
- * `createEvaluatePredictions`, that call the slice-a functions with it.
+ * two canonical nodes. `createDerivePredictions` calls `derivePredictions`
+ * with it; `createEvaluatePredictions` only calls
+ * `evaluatePredictionObservations` with it and never derives — derivation is
+ * `createDerivePredictions`'s job alone, and a challenge alternative gets its
+ * predictions from the kernel's challenge wrapper calling `derive_predictions`
+ * before execution.
  *
  * `@aic/graph` cannot import `@aic/evals` (evals depends on graph); this test
  * file can, and uses it as the independent check that the template table's
@@ -339,11 +343,28 @@ test('createDerivePredictions accepts a caller-supplied templates option, overri
 /* 3. createEvaluatePredictions                                               */
 /* -------------------------------------------------------------------------- */
 
-test('createEvaluatePredictions({asOf}) confirms a prediction against a matching typed fact and returns one rule-produced supports assessment', () => {
+/**
+ * Runs `derive` (a `createDerivePredictions()` node) over `baseState` and
+ * merges what it derived into `baseState.predictions` by id, the way a real
+ * caller would apply a `derive_predictions` step before `evaluate_predictions`
+ * runs. `createEvaluatePredictions` itself never derives: see "the evaluate
+ * node never derives predictions itself" below.
+ */
+function deriveInto(baseState, derive) {
+  const { predictions } = derive(baseState);
+  return {
+    ...baseState,
+    predictions: domain.upsertById(baseState.predictions, predictions),
+  };
+}
+
+test('createEvaluatePredictions({asOf}) confirms a derived prediction against a matching typed fact and returns one rule-produced supports assessment', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
   const createEvaluatePredictions = requireExport('createEvaluatePredictions');
   const asOf = () => ASOF;
+  const derive = createDerivePredictions();
   const node = createEvaluatePredictions({ asOf });
-  const testState = state({
+  const baseState = state({
     hypotheses: [hypothesis('h-1')],
     evidence: [
       evidenceItem('e-1', [
@@ -351,10 +372,11 @@ test('createEvaluatePredictions({asOf}) confirms a prediction against a matching
       ]),
     ],
   });
+  const testState = deriveInto(baseState, derive);
 
   const result = node(testState);
 
-  assert.equal(result.predictions.length, 1, 'the newly derived prediction must be returned, since its status changed to confirmed');
+  assert.equal(result.predictions.length, 1, 'the derived prediction must be returned, since its status changed to confirmed');
   const [prediction] = result.predictions;
   assert.equal(prediction.hypothesisId, 'h-1');
   assert.equal(prediction.status, 'confirmed');
@@ -368,90 +390,7 @@ test('createEvaluatePredictions({asOf}) confirms a prediction against a matching
   assert.equal(assessment.evidenceId, 'e-1');
 });
 
-test('derives and evaluates predictions for an alternative hypothesis created without predictions, in the same call, without re-emitting an already-decided prediction of another hypothesis', () => {
-  // This is how a challenge alternative, whose graph edge skips
-  // derive_predictions, gets its predictions: this node must derive AND
-  // evaluate them in one pass, not merely derive them.
-  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
-  const templates = requirePredictionTemplates();
-  const asOf = () => ASOF;
-  const node = createEvaluatePredictions({ asOf });
-
-  const leaderPrediction = {
-    ...domain.derivePredictions({
-      hypotheses: [hypothesis('h-leader')],
-      predictions: [],
-      templates,
-    })[0],
-    status: 'confirmed',
-  };
-
-  const testState = state({
-    hypotheses: [
-      hypothesis('h-leader'),
-      hypothesis('h-alt', {
-        createdBy: 'challenge',
-        cause: { component: 'inventory-api-pool', mechanism: 'connection-pool-exhaustion' },
-      }),
-    ],
-    predictions: [leaderPrediction],
-    evidence: [
-      evidenceItem('e-1', [
-        { form: 'signal-state', subject: 'inventory-api-pool', window: 'incident', signal: 'connection-pool', state: 'at-limit' },
-      ]),
-    ],
-  });
-
-  const result = node(testState);
-
-  assert.equal(
-    result.predictions.length,
-    1,
-    'only the newly derived h-alt prediction changes: the h-leader prediction is already confirmed (decided and monotone) and unchanged',
-  );
-  assert.equal(result.predictions[0].hypothesisId, 'h-alt');
-  assert.equal(result.predictions[0].status, 'confirmed');
-  assert.equal(result.assessments.length, 1);
-  assert.equal(result.assessments[0].hypothesisId, 'h-alt');
-});
-
-test('a hypothesis with no cause gets no predictions and no assessments', () => {
-  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
-  const asOf = () => ASOF;
-  const node = createEvaluatePredictions({ asOf });
-  const testState = state({
-    hypotheses: [hypothesis('h-1', { cause: undefined })],
-  });
-
-  assert.deepEqual(node(testState), { predictions: [], assessments: [] });
-});
-
-test('evidence observed after asOf is ignored: the prediction stays untested and no assessment is produced', () => {
-  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
-  const asOf = () => ASOF;
-  const node = createEvaluatePredictions({ asOf });
-  const afterAsOf = '2026-09-28T09:00:00.001Z';
-  const testState = state({
-    hypotheses: [hypothesis('h-1')],
-    evidence: [
-      evidenceItem(
-        'e-1',
-        [{ form: 'signal-state', subject: 'checkout-db-pool', window: 'incident', signal: 'connection-pool', state: 'at-limit' }],
-        { observedAt: afterAsOf },
-      ),
-    ],
-  });
-
-  const result = node(testState);
-
-  assert.equal(result.assessments.length, 0, 'evidence observed after asOf must contribute no assessment');
-  assert.ok(
-    result.predictions.every((prediction) => prediction.status === 'untested'),
-    'with the confirming evidence excluded by the as-of cut, the newly derived prediction must stay untested',
-  );
-});
-
-test('calling the node twice, applying the first result to the state by id (upsert) between calls, is idempotent: the second call finds no further changes', () => {
+test('the evaluate node never derives predictions itself: a hypothesis with a cause and a matching fact but no predictions in state yields no predictions and no assessments', () => {
   const createEvaluatePredictions = requireExport('createEvaluatePredictions');
   const asOf = () => ASOF;
   const node = createEvaluatePredictions({ asOf });
@@ -463,6 +402,147 @@ test('calling the node twice, applying the first result to the state by id (upse
       ]),
     ],
   });
+
+  assert.deepEqual(
+    node(testState),
+    { predictions: [], assessments: [] },
+    'derivation is createDerivePredictions\'s job alone; with no prediction in state there is nothing for this node to evaluate',
+  );
+});
+
+test('does not re-emit an already-decided prediction of one hypothesis while newly confirming another hypothesis\'s untested prediction, both derived beforehand', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
+  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
+  const asOf = () => ASOF;
+  const derive = createDerivePredictions();
+  const node = createEvaluatePredictions({ asOf });
+
+  const baseState = state({
+    hypotheses: [
+      hypothesis('h-leader'),
+      hypothesis('h-alt', {
+        createdBy: 'challenge',
+        cause: { component: 'inventory-api-pool', mechanism: 'connection-pool-exhaustion' },
+      }),
+    ],
+  });
+  const { predictions: derivedPredictions } = derive(baseState);
+  const leaderDerived = derivedPredictions.find((prediction) => prediction.hypothesisId === 'h-leader');
+  const altDerived = derivedPredictions.find((prediction) => prediction.hypothesisId === 'h-alt');
+  assert.ok(leaderDerived, 'fixture sanity: h-leader must derive a prediction');
+  assert.ok(altDerived, 'fixture sanity: h-alt must derive a prediction');
+  const leaderConfirmed = { ...leaderDerived, status: 'confirmed' };
+
+  const testState = {
+    ...baseState,
+    predictions: domain.upsertById([], [leaderConfirmed, altDerived]),
+    evidence: [
+      evidenceItem('e-1', [
+        { form: 'signal-state', subject: 'inventory-api-pool', window: 'incident', signal: 'connection-pool', state: 'at-limit' },
+      ]),
+    ],
+  };
+
+  const result = node(testState);
+
+  assert.equal(
+    result.predictions.length,
+    1,
+    'only the h-alt prediction changes: the h-leader prediction is already confirmed (decided and monotone) and unchanged',
+  );
+  assert.equal(result.predictions[0].hypothesisId, 'h-alt');
+  assert.equal(result.predictions[0].status, 'confirmed');
+  assert.equal(result.assessments.length, 1);
+  assert.equal(result.assessments[0].hypothesisId, 'h-alt');
+});
+
+test('refutes a derived prediction with exactly one rule-produced contradicts assessment when a fact reads its signal as normal', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
+  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
+  const asOf = () => ASOF;
+  const derive = createDerivePredictions();
+  const node = createEvaluatePredictions({ asOf });
+  const baseState = state({
+    hypotheses: [hypothesis('h-1')],
+    evidence: [
+      evidenceItem('e-1', [
+        { form: 'signal-state', subject: 'checkout-db-pool', window: 'incident', signal: 'connection-pool', state: 'normal' },
+      ]),
+    ],
+  });
+  const testState = deriveInto(baseState, derive);
+
+  const result = node(testState);
+
+  assert.equal(result.predictions.length, 1);
+  const [prediction] = result.predictions;
+  assert.equal(prediction.hypothesisId, 'h-1');
+  assert.equal(prediction.status, 'refuted');
+
+  assert.equal(result.assessments.length, 1);
+  const [assessment] = result.assessments;
+  assert.equal(assessment.producedBy, 'rule');
+  assert.equal(assessment.effect, 'contradicts');
+  assert.equal(assessment.hypothesisId, 'h-1');
+  assert.equal(assessment.predictionId, prediction.id);
+  assert.equal(assessment.evidenceId, 'e-1');
+});
+
+test('deriving then evaluating a hypothesis with no cause yields no predictions and no assessments', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
+  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
+  const asOf = () => ASOF;
+  const derive = createDerivePredictions();
+  const node = createEvaluatePredictions({ asOf });
+  const baseState = state({
+    hypotheses: [hypothesis('h-1', { cause: undefined })],
+  });
+  const testState = deriveInto(baseState, derive);
+
+  assert.deepEqual(node(testState), { predictions: [], assessments: [] });
+});
+
+test('evidence observed after asOf is ignored: the derived prediction stays untested and no assessment is produced', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
+  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
+  const asOf = () => ASOF;
+  const derive = createDerivePredictions();
+  const node = createEvaluatePredictions({ asOf });
+  const afterAsOf = '2026-09-28T09:00:00.001Z';
+  const baseState = state({
+    hypotheses: [hypothesis('h-1')],
+    evidence: [
+      evidenceItem(
+        'e-1',
+        [{ form: 'signal-state', subject: 'checkout-db-pool', window: 'incident', signal: 'connection-pool', state: 'at-limit' }],
+        { observedAt: afterAsOf },
+      ),
+    ],
+  });
+  const testState = deriveInto(baseState, derive);
+  assert.ok(testState.predictions.length > 0, 'fixture sanity: the hypothesis must actually derive a prediction');
+
+  const result = node(testState);
+
+  assert.equal(result.assessments.length, 0, 'evidence observed after asOf must contribute no assessment');
+  assert.deepEqual(result.predictions, [], 'with the confirming evidence excluded by the as-of cut, the derived prediction stays untested, unchanged from state, so nothing is re-emitted');
+});
+
+test('calling the node twice, applying the first result to the state by id (upsert) between calls, is idempotent: the second call finds no further changes', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
+  const createEvaluatePredictions = requireExport('createEvaluatePredictions');
+  const asOf = () => ASOF;
+  const derive = createDerivePredictions();
+  const node = createEvaluatePredictions({ asOf });
+  const baseState = state({
+    hypotheses: [hypothesis('h-1')],
+    evidence: [
+      evidenceItem('e-1', [
+        { form: 'signal-state', subject: 'checkout-db-pool', window: 'incident', signal: 'connection-pool', state: 'at-limit' },
+      ]),
+    ],
+  });
+  const testState = deriveInto(baseState, derive);
 
   const first = node(testState);
   const nextState = {
@@ -478,13 +558,16 @@ test('calling the node twice, applying the first result to the state by id (upse
   assert.deepEqual(second, { predictions: [], assessments: [] });
 });
 
-test('a scripted-control-shaped hypothesis ({id, statement, createdBy}, no cause key at all) yields predictions: [] and assessments: []', () => {
+test('deriving then evaluating a scripted-control-shaped hypothesis ({id, statement, createdBy}, no cause key at all) yields predictions: [] and assessments: []', () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
   const createEvaluatePredictions = requireExport('createEvaluatePredictions');
   const asOf = () => ASOF;
+  const derive = createDerivePredictions();
   const node = createEvaluatePredictions({ asOf });
-  const testState = state({
+  const baseState = state({
     hypotheses: [{ id: 'h-scripted', statement: 'a scripted control hypothesis', createdBy: 'initial' }],
   });
+  const testState = deriveInto(baseState, derive);
 
   assert.deepEqual(node(testState), { predictions: [], assessments: [] });
 });
@@ -494,13 +577,15 @@ test('a scripted-control-shaped hypothesis ({id, statement, createdBy}, no cause
 /* -------------------------------------------------------------------------- */
 
 test("R': a rule assessment alone yields candidate (below the two-independent-support threshold for both supported and corroborated)", () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
   const createEvaluatePredictions = requireExport('createEvaluatePredictions');
   const createDeriveHypothesisState = requireExport('createDeriveHypothesisState');
   const asOf = () => ASOF;
+  const derive = createDerivePredictions();
   const evaluate = createEvaluatePredictions({ asOf });
   const deriveState = createDeriveHypothesisState();
 
-  const testState = state({
+  const baseState = state({
     hypotheses: [hypothesis('h-1')],
     evidence: [
       evidenceItem('e-1', [
@@ -508,6 +593,7 @@ test("R': a rule assessment alone yields candidate (below the two-independent-su
       ]),
     ],
   });
+  const testState = deriveInto(baseState, derive);
 
   const evaluated = evaluate(testState);
   const afterEvaluate = {
@@ -533,11 +619,13 @@ test("R': a rule assessment alone yields candidate (below the two-independent-su
 });
 
 test("R': the rule assessment plus one medium llm-produced support on a different evidence item yields supported", () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
   const createEvaluatePredictions = requireExport('createEvaluatePredictions');
   const asOf = () => ASOF;
+  const derive = createDerivePredictions();
   const evaluate = createEvaluatePredictions({ asOf });
 
-  const testState = state({
+  const baseState = state({
     hypotheses: [hypothesis('h-1')],
     evidence: [
       evidenceItem('e-1', [
@@ -546,6 +634,7 @@ test("R': the rule assessment plus one medium llm-produced support on a differen
       evidenceItem('e-2', undefined),
     ],
   });
+  const testState = deriveInto(baseState, derive);
 
   const evaluated = evaluate(testState);
   const afterEvaluate = {
@@ -583,14 +672,17 @@ test("R': the rule assessment plus one medium llm-produced support on a differen
 });
 
 test("R': the same two supports without the confirming fact (the prediction stays untested) yields corroborated, never supported", () => {
+  const createDerivePredictions = requireExport('createDerivePredictions');
   const createEvaluatePredictions = requireExport('createEvaluatePredictions');
   const asOf = () => ASOF;
+  const derive = createDerivePredictions();
   const evaluate = createEvaluatePredictions({ asOf });
 
-  const testState = state({
+  const baseState = state({
     hypotheses: [hypothesis('h-1')],
     evidence: [evidenceItem('e-1', undefined), evidenceItem('e-2', undefined)],
   });
+  const testState = deriveInto(baseState, derive);
 
   const evaluated = evaluate(testState);
   assert.equal(evaluated.assessments.length, 0, 'fixture sanity: with no typed fact, no rule assessment is produced');

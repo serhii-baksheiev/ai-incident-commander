@@ -2,10 +2,10 @@ import type { PredictionTemplate, PredictionTemplateSet } from '@aic/domain';
 
 /**
  * AIC-124 slice b: `PREDICTION_TEMPLATES`, the mechanism -> template table
- * `createDerivePredictions` and `createEvaluatePredictions` (`./nodes/`)
- * default to. `derivePredictions` and `evaluatePredictionObservations`
- * (`@aic/domain`, slice a) take this table as a caller-supplied parameter;
- * this is the one production table this package registers.
+ * `createDerivePredictions` (`./nodes/derive-predictions.ts`) defaults to.
+ * `derivePredictions` (`@aic/domain`, slice a) takes the table as a
+ * caller-supplied parameter; this is the one production table this package
+ * registers.
  *
  * `@aic/graph` cannot import `@aic/evals` — `@aic/evals` depends on
  * `@aic/graph` — so nothing here can check this table's keys against
