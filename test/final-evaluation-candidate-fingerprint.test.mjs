@@ -45,11 +45,13 @@
  * because `test/fixtures/benchmark-experiment.mjs` is no longer declared.
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as evals from '@aic/evals';
 
@@ -210,3 +212,245 @@ test('FINAL_EVALUATION_CANDIDATE_PATHS no longer lists test/fixtures/benchmark-e
     );
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* 3. AIC-137: the candidate list covers the command line, not just the       */
+/*    module graph — package.json, tsconfig.base.json and the --import       */
+/*    preload the eval: npm scripts declare                                  */
+/* -------------------------------------------------------------------------- */
+
+/** Every `--import` specifier an npm script string declares, in the order it names them. */
+function importPreloadSpecifiers(scriptString) {
+  return [...scriptString.matchAll(/--import(?:=|\s+)(\S+)/g)].map((match) => match[1]);
+}
+
+/** A specifier resolved to a repo-relative, `./`-stripped path. */
+function repoRelativeSpecifier(specifier) {
+  return specifier.replace(/^\.\//, '');
+}
+
+test('every --import preload the eval:live-model and eval:final-holdout npm scripts declare falls under a path FINAL_EVALUATION_CANDIDATE_PATHS declares', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const candidatePaths = evals.FINAL_EVALUATION_CANDIDATE_PATHS;
+
+  for (const scriptName of ['eval:live-model', 'eval:final-holdout']) {
+    const scriptString = manifest.scripts[scriptName];
+    assert.equal(
+      typeof scriptString,
+      'string',
+      `package.json must declare an ${scriptName} script, or this row asserts nothing`,
+    );
+
+    const specifiers = importPreloadSpecifiers(scriptString).map(repoRelativeSpecifier);
+    assert.ok(
+      specifiers.length > 0,
+      `${scriptName} must declare at least one --import preload, or this row asserts nothing`,
+    );
+
+    const uncovered = specifiers.filter(
+      (path) => !candidatePaths.some((candidate) => path === candidate || path.startsWith(`${candidate}/`)),
+    );
+
+    assert.deepEqual(
+      uncovered,
+      [],
+      `${scriptName}'s --import preload must fall under a path FINAL_EVALUATION_CANDIDATE_PATHS declares, or a real change to it would go unfingerprinted: ${JSON.stringify(uncovered)}`,
+    );
+  }
+});
+
+/**
+ * The row above measures the npm-script text; this one measures what running
+ * it actually loads — extending the same runtime resolve-hook technique as
+ * row 1 (importing scripts/eval-live-model.mjs and scripts/eval-final-holdout.mjs)
+ * to also import the preload those two npm scripts declare, in the same child
+ * process, so a file the preload itself loads is checked too.
+ */
+test('every repository file Node loads importing scripts/eval-live-model.mjs and scripts/eval-final-holdout.mjs together with the --import preload those npm scripts declare falls under a path FINAL_EVALUATION_CANDIDATE_PATHS declares', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const preloadSpecifiers = new Set();
+  for (const scriptName of ['eval:live-model', 'eval:final-holdout']) {
+    for (const specifier of importPreloadSpecifiers(manifest.scripts[scriptName] ?? '')) {
+      preloadSpecifiers.add(repoRelativeSpecifier(specifier));
+    }
+  }
+  assert.ok(
+    preloadSpecifiers.size > 0,
+    'sanity: the npm scripts must declare at least one --import preload',
+  );
+
+  const urls = loadedFileUrls([
+    ...preloadSpecifiers,
+    'scripts/eval-live-model.mjs',
+    'scripts/eval-final-holdout.mjs',
+  ]);
+
+  const relativePaths = [...urls]
+    .map(repoRelativePath)
+    .filter((path) => !isWorkspaceExternalDependency(path));
+
+  const candidatePaths = evals.FINAL_EVALUATION_CANDIDATE_PATHS;
+  const uncovered = relativePaths.filter(
+    (path) => !candidatePaths.some((candidate) => path === candidate || path.startsWith(`${candidate}/`)),
+  );
+
+  assert.deepEqual(
+    uncovered,
+    [],
+    `every file loaded together with the npm scripts' own --import preload must fall under a declared candidate path, or the preload itself is unfingerprinted: ${JSON.stringify(uncovered, null, 2)}`,
+  );
+});
+
+test('FINAL_EVALUATION_CANDIDATE_PATHS declares package.json and tsconfig.base.json', () => {
+  const candidatePaths = evals.FINAL_EVALUATION_CANDIDATE_PATHS;
+
+  for (const required of ['package.json', 'tsconfig.base.json']) {
+    assert.ok(
+      candidatePaths.includes(required),
+      `${required} builds the command line the two lane scripts run under — npm run build compiles against tsconfig.base.json, and both eval: scripts and their --import preload are declared in package.json — so omitting it would let a real change to it re-use a spent candidate: ${JSON.stringify(candidatePaths)}`,
+    );
+  }
+});
+
+/**
+ * Derived from the tsconfig files themselves rather than hard-coded: whatever
+ * every package or app `tsconfig.json` declares as `extends`,
+ * resolved relative to each file, must fall under a declared candidate path —
+ * so a base config renamed or relocated is still covered without this row
+ * needing to know its new name.
+ */
+test('every packages/*/tsconfig.json and apps/*/tsconfig.json extends target falls under a path FINAL_EVALUATION_CANDIDATE_PATHS declares', () => {
+  const candidatePaths = evals.FINAL_EVALUATION_CANDIDATE_PATHS;
+
+  const tsconfigPaths = ['packages', 'apps'].flatMap((group) =>
+    readdirSync(join(REPO_ROOT, group), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(REPO_ROOT, group, entry.name, 'tsconfig.json'))
+      .filter((path) => existsSync(path)),
+  );
+
+  assert.ok(
+    tsconfigPaths.length > 0,
+    'sanity: at least one packages/*/tsconfig.json or apps/*/tsconfig.json must exist',
+  );
+
+  const uncovered = tsconfigPaths
+    .map((tsconfigPath) => {
+      const parsed = JSON.parse(readFileSync(tsconfigPath, 'utf8'));
+      assert.equal(
+        typeof parsed.extends,
+        'string',
+        `${relative(REPO_ROOT, tsconfigPath)} must declare an "extends" string, or this row cannot derive its target`,
+      );
+      const resolved = resolve(dirname(tsconfigPath), parsed.extends);
+      return relative(REPO_ROOT, resolved).split(sep).join('/');
+    })
+    .filter(
+      (path) => !candidatePaths.some((candidate) => path === candidate || path.startsWith(`${candidate}/`)),
+    );
+
+  assert.deepEqual(
+    uncovered,
+    [],
+    `every package/app tsconfig's extends target must fall under a declared candidate path, or a compiler-options change there would go unfingerprinted: ${JSON.stringify(uncovered)}`,
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* 4. AIC-137: the candidate fingerprint actually moves when the command      */
+/*    line around the lane scripts changes                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A detached `git worktree` copy of HEAD: real checked-out files (never
+ * symlinks), sharing this repository's object database, so a commit made
+ * inside it costs nothing to discard and never touches this worktree's own
+ * branch. `node_modules` is untracked, so it is symlinked in from this
+ * worktree rather than reinstalled — `@aic/evals`'s
+ * `FINAL_EVALUATION_CANDIDATE_PATHS` is a static value, identical however it
+ * is reached, and `candidateFingerprint()`'s own `git` calls run with the
+ * COPY's `REPO_ROOT` (derived from the `import.meta.url` of the file actually
+ * imported), never this worktree's.
+ */
+async function withScratchWorktree(body) {
+  const dir = join(tmpdir(), `aic-137-worktree-${randomUUID()}`);
+  execFileSync('git', ['worktree', 'add', '--detach', dir, 'HEAD'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: childEnv(),
+  });
+  try {
+    symlinkSync(join(REPO_ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
+    return await body(dir);
+  } finally {
+    execFileSync('git', ['worktree', 'remove', '--force', dir], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: childEnv(),
+    });
+  }
+}
+
+/** Mutates, stages and commits one tracked file inside a scratch worktree. */
+function commitMutation(dir, relativePath, mutate) {
+  const filePath = join(dir, relativePath);
+  writeFileSync(filePath, mutate(readFileSync(filePath, 'utf8')));
+  execFileSync('git', ['add', relativePath], { cwd: dir, encoding: 'utf8', env: childEnv() });
+  execFileSync('git', ['commit', '-m', `aic-137 test mutation of ${relativePath}`], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: childEnv(),
+  });
+}
+
+test("the candidate fingerprint moves when package.json's scripts block changes", async () => {
+  await withScratchWorktree(async (dir) => {
+    const { candidateFingerprint } = await import(
+      pathToFileURL(join(dir, 'scripts', 'eval-final-holdout.mjs')).href
+    );
+
+    const before = candidateFingerprint();
+    commitMutation(dir, 'package.json', (text) => {
+      const manifest = JSON.parse(text);
+      manifest.scripts['aic-137-probe'] = 'true';
+      return `${JSON.stringify(manifest, null, 2)}\n`;
+    });
+    const after = candidateFingerprint();
+
+    assert.notEqual(
+      before,
+      after,
+      "package.json's scripts block declares the command line eval:live-model and eval:final-holdout run under, so a change to it must move the candidate fingerprint",
+    );
+  });
+});
+
+test('the candidate fingerprint moves when tsconfig.base.json changes', async () => {
+  await withScratchWorktree(async (dir) => {
+    const { candidateFingerprint } = await import(
+      pathToFileURL(join(dir, 'scripts', 'eval-final-holdout.mjs')).href
+    );
+
+    const before = candidateFingerprint();
+    commitMutation(dir, 'tsconfig.base.json', (text) => {
+      const config = JSON.parse(text);
+      config.compilerOptions.aic137Probe = true;
+      return `${JSON.stringify(config, null, 2)}\n`;
+    });
+    const after = candidateFingerprint();
+
+    assert.notEqual(
+      before,
+      after,
+      'every packages/*/tsconfig.json and apps/*/tsconfig.json extends tsconfig.base.json, so a change to it must move the candidate fingerprint',
+    );
+  });
+});
+
+// A change under docs/ must still not move the fingerprint. Already pinned by
+// path membership in final-evaluation-oneshot.test.mjs › "refuses a re-run at
+// a candidate whose only change is the evidence record it wrote" (docs/ is
+// asserted absent from FINAL_EVALUATION_CANDIDATE_PATHS there, which is
+// exactly what keeps a docs/ commit from moving this hash) — not re-measured
+// here by mutation, because that row already pins the exact fact this one
+// would prove by a slower route.

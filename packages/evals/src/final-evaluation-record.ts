@@ -56,17 +56,22 @@
  * two lane scripts load contains a dynamic import(), so what importing them
  * loads is what running them loads".
  *
- * ⚠ Measured is the two scripts' module graph, not the npm commands around
- * them. The command line those commands build is outside this list and
- * outside the measurement: `package.json` itself (only `package-lock.json`
- * is listed), and the `test/fixtures/no-ambient-tracing.mjs` it preloads with
- * `--import`, which today only turns ambient tracing off.
+ * AIC-137: the command line around the scripts is declared too —
+ * `package.json` (the npm scripts that build it), `tsconfig.base.json` (every
+ * package's tsconfig extends it, and both commands build first), and the
+ * `--import` preload, now `scripts/lib/no-ambient-tracing.mjs` — see
+ * final-evaluation-candidate-fingerprint.test.mjs › "every --import preload
+ * the eval:live-model and eval:final-holdout npm scripts declare falls under
+ * a path FINAL_EVALUATION_CANDIDATE_PATHS declares" and › "the candidate
+ * fingerprint moves when tsconfig.base.json changes".
  */
 export const FINAL_EVALUATION_CANDIDATE_PATHS = Object.freeze([
   'packages',
   'apps',
   'scripts',
   'package-lock.json',
+  'package.json',
+  'tsconfig.base.json',
 ] as const);
 
 /** The one schema version this code knows how to read. */

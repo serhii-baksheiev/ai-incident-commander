@@ -48,6 +48,40 @@ test('the preload clears every flag the langchain tracer reads', async () => {
   }
 });
 
+/**
+ * AIC-137: the clearing logic itself moves to `scripts/lib/no-ambient-tracing.mjs`
+ * — the canonical location a script under `scripts/` can preload without
+ * reaching into `test/` — and `test/fixtures/no-ambient-tracing.mjs` becomes a
+ * side-effect import of it, not a second declaration of the same four flags.
+ * A narrow source check, on purpose: the behaviour is already pinned by the
+ * test above and by this file's other rows; this row is only about there
+ * being one implementation (`.claude/rules/invariants.md`, "one mechanism,
+ * one implementation"), the same shape `scripts/lib/child-env.mjs` and its
+ * `test/fixtures/child-env.mjs` re-export already use.
+ */
+test('test/fixtures/no-ambient-tracing.mjs calls the one implementation in scripts/lib/no-ambient-tracing.mjs, not a second copy of the clearing logic', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(
+    new URL('./fixtures/no-ambient-tracing.mjs', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(
+    source,
+    /^\s*import\s+(?:\{[^}]*\}\s+from\s+)?['"](?:\.\.\/)+scripts\/lib\/no-ambient-tracing\.mjs['"];?\s*$/m,
+    'the fixture must import the one implementation in scripts/lib/no-ambient-tracing.mjs',
+  );
+  // The fixture calls the imported function rather than relying on the
+  // import's side effect alone: a module body runs once per process, and
+  // › "the preload clears every flag the langchain tracer reads" re-imports
+  // the fixture to prove the clearing happens on its load.
+  assert.doesNotMatch(
+    source,
+    /delete\s+process\.env/,
+    'the fixture must not carry a second copy of the flag-clearing loop',
+  );
+});
+
 test('the npm test script runs through the preload', async () => {
   const { readFile } = await import('node:fs/promises');
   const manifest = JSON.parse(
