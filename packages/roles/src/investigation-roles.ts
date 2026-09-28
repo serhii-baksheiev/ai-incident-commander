@@ -629,6 +629,24 @@ export function createModelInterpretResidualEvidence({
         );
       }
 
+      // AIC-124 slice b: `assessments` (`InvestigationStateAnnotation` in
+      // `@aic/graph`) is reduced with `upsertById`, which REPLACES the record
+      // at a matching id. A model answer reusing the id of a rule-produced
+      // verdict (`evaluatePredictionObservations`) would silently overwrite
+      // it, defeating `producedBy`, the field that keeps the two apart. A
+      // model answer reusing the id of this role's own earlier answer is the
+      // "<stable id>" the prompt asks for, and replacing it is the intended
+      // re-assessment. This role is where both are in hand, so the refusal
+      // belongs here rather than at the reducer.
+      // see roles-model-nodes.test.mjs › "refuses an assessment whose id is already present in state.assessments, held by a rule assessment, naming the id escaped"
+      // see roles-model-nodes.test.mjs › "accepts an assessment whose id is already present in state.assessments, held by a prior llm assessment of this role"
+      if (state.assessments.some(({ id, producedBy }) => id === assessment.id && producedBy === 'rule')) {
+        throw new ModelRoleOutputError(
+          role,
+          `an assessment reuses the id of a rule assessment the run already carries: ${quoteModelText(assessment.id)}`,
+        );
+      }
+
       return assessment;
     });
 
