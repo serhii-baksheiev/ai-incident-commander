@@ -171,8 +171,10 @@ export interface PlannedReplayScenarioFixture {
 
 /**
  * The minimal `PlannedReplayScenarioFixture` -> `ReplayToolAdapter` fixture
- * (`{ version: REPLAY_FIXTURE_VERSION, responses }`, keyed by
- * `createReplayFixtureKey`) conversion. `test/fixtures/benchmark-experiment.mjs`
+ * conversion: `{ version, responses }`, with the scenario fixture's version
+ * carried through unchecked and `responses` keyed by `createReplayFixtureKey`.
+ * The version is typed `number` rather than `REPLAY_FIXTURE_VERSION` because
+ * this function does not check it; `ReplayToolAdapter`'s constructor does. `test/fixtures/benchmark-experiment.mjs`
  * carried this same conversion as its own `replayFixtureFor` before this
  * slice (`git show origin/main:test/fixtures/benchmark-experiment.mjs`); it
  * now imports this export instead of a second copy
@@ -185,16 +187,20 @@ export interface PlannedReplayScenarioFixture {
  * ReplayToolAdapter built from replayFixtureFromScenarioEntries replays a
  * recorded entry byte-identical to the scenario's own recorded result".
  */
+export type ScenarioReplayAdapterFixture = Omit<ReplayFixture, 'version'> & {
+  readonly version: number;
+};
+
 export function replayFixtureFromScenarioEntries(
   fixture: PlannedReplayScenarioFixture,
-): ReplayFixture {
+): ScenarioReplayAdapterFixture {
   return {
     // Carried through, not restamped: an unknown version is the replay
     // adapter's to refuse — see planned-replay.test.mjs ›
     // "replayFixtureFromScenarioEntries carries the scenario fixture version
     // through, so a fixture at an unknown version is refused by the replay
     // adapter rather than silently reinterpreted".
-    version: fixture.version as typeof REPLAY_FIXTURE_VERSION,
+    version: fixture.version,
     responses: Object.fromEntries(
       fixture.entries.map((entry) => [createReplayFixtureKey(entry.toolId, entry.input), entry.result]),
     ),
@@ -268,6 +274,7 @@ function keysMatchExactly(routeInput: Readonly<Record<string, string>>, input: R
 
 interface RequestedQuantity {
   readonly form: string;
+  /** Already passed through `normalizeSubject`; compare it to a normalised fact subject. */
   readonly subject: string;
   readonly window: string;
   readonly discriminants: ReadonlyArray<readonly [string, unknown]>;
@@ -352,7 +359,9 @@ function factMatchesQuantity(fact: ObservedFact, quantity: RequestedQuantity): b
  * QUANTITY match is independent of outcome: a matching fact that contradicts
  * what a hopeful template expected still answers ok with that fact" and › "a
  * QUANTITY match compares the subject case- and whitespace-insensitively,
- * matching normalizeSubject's own rule (trim + lowercase)".
+ * matching normalizeSubject's own rule (trim + lowercase)" and › "a QUANTITY
+ * match normalises the REQUEST subject by the same rule: a padded, upper-case
+ * service in the request still matches a clean fact subject".
  *
  * No match at all — an unrouted tool, a malformed or short/over-specified
  * input, a routed request with no same-tool recording, or same-tool
@@ -373,7 +382,11 @@ export function createPlannedReplayExecutor(
   }
   assertOneFormPerTool(routes);
 
-  const adapter = new ReplayToolAdapter(replayFixtureFromScenarioEntries(fixture), { observations: annotate });
+  // The cast only narrows the version's type; the constructor checks the
+  // value and refuses an unknown one.
+  const adapter = new ReplayToolAdapter(replayFixtureFromScenarioEntries(fixture) as ReplayFixture, {
+    observations: annotate,
+  });
   const exactKeys = new Set(fixture.entries.map((entry) => createReplayFixtureKey(entry.toolId, entry.input)));
 
   async function execute(context: PlannedReplayContext): Promise<ToolResult<Evidence[]>> {

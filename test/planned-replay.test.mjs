@@ -33,8 +33,8 @@
  *
  * `replayFixtureFromScenarioEntries(fixture)`, the second export specified
  * here, converts that same scenario fixture shape into the
- * `ReplayToolAdapter` fixture shape (`{ version: REPLAY_FIXTURE_VERSION,
- * responses }`, keyed by `createReplayFixtureKey`) — the conversion
+ * `ReplayToolAdapter` fixture shape (`{ version, responses }`, the version
+ * carried through and `responses` keyed by `createReplayFixtureKey`) — the conversion
  * `test/fixtures/benchmark-experiment.mjs` carried as its own `replayFixtureFor`
  * before this slice (`git show origin/main:test/fixtures/benchmark-experiment.mjs`),
  * now owned by `@aic/tools/replay` instead of duplicated per caller
@@ -362,6 +362,32 @@ test('a QUANTITY match compares the subject case- and whitespace-insensitively, 
 /* ============================================================================
  * 3. No match at all -> unavailable
  * ==========================================================================*/
+
+test('a QUANTITY match normalises the REQUEST subject by the same rule: a padded, upper-case service in the request still matches a clean fact subject', async () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const fixture = {
+    version: 1,
+    entries: [
+      {
+        toolId: 'metrics',
+        input: { service: 'payments', metric: 'error-rate-probe' },
+        result: ok(evidenceItem('metric-payments-clean', 'payments error rate probe, clean subject')),
+      },
+    ],
+  };
+  const annotate = (_identity, evidence) =>
+    evidence.id === 'metric-payments-clean'
+      ? [{ form: 'signal-state', subject: 'payments', window: 'incident', signal: 'error-rate', state: 'elevated' }]
+      : undefined;
+  const executor = createPlannedReplayExecutor({ fixture, routes: graph.INVESTIGATION_ROUTES, annotate });
+
+  const result = await executor.execute(
+    baseContext({ tool: 'metrics', input: { service: '  PAYMENTS ', window: 'incident', metric: 'error-rate' } }),
+  );
+
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.output.map((item) => item.id), ['metric-payments-clean']);
+});
 
 test('a request whose tool names no entry in routes.byForm answers unavailable, never ok', async () => {
   const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();

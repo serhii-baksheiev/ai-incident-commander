@@ -156,7 +156,9 @@ interface SinglePredictionVerdict {
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
  * planned-replay.test.mjs › "a QUANTITY match compares the subject case- and
  * whitespace-insensitively, matching normalizeSubject's own rule (trim +
- * lowercase)".
+ * lowercase)" and › "a QUANTITY match normalises the REQUEST subject by the
+ * same rule: a padded, upper-case service in the request still matches a
+ * clean fact subject".
  */
 export function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase();
