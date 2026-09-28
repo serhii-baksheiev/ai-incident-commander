@@ -22,9 +22,11 @@ import {
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
 export * from './investigation.js';
+export * from './investigation-routes.js';
 export * from './nodes/derive-hypothesis-state.js';
 export * from './nodes/derive-predictions.js';
 export * from './nodes/evaluate-predictions.js';
+export * from './nodes/plan-investigation.js';
 export * from './nodes/termination.js';
 export * from './prediction-templates.js';
 
