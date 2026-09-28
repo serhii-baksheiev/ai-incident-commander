@@ -198,8 +198,9 @@ export const HypothesisSchema = z.strictObject({
   id: IdentifierSchema,
   statement: ContractStringSchema,
   createdBy: z.enum(['initial', 'challenge']),
-  // Present only if the producer supplied one; slice 1 wires the contract, and
-  // no producer sets it yet (slice 2 wires the model roles).
+  // Optional here, required on the model roles' path (AIC-123 slice 2): see
+  // cause-emitting-roles.test.mjs › "createModelGenerateHypotheses: refuses a
+  // hypothesis carrying no cause".
   cause: CauseDescriptionSchema.optional(),
 });
 
