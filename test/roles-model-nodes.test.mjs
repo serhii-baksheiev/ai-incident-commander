@@ -615,6 +615,143 @@ test('refuses an assessment whose predictionId is not a prediction of the named 
 });
 
 /**
+ * AIC-124 slice b, item 5: the reducer for `assessments`
+ * (`InvestigationStateAnnotation` in `@aic/graph`) is `upsertById`, which
+ * REPLACES the record at a matching id rather than merging into it. A model
+ * answer that reuses an id a rule assessment already holds would silently
+ * overwrite a rule-produced verdict with a model one — exactly the confound
+ * `producedBy` exists to keep apart. This role is the point where the model's
+ * answer and `state.assessments` are both in hand, so the refusal belongs
+ * here rather than at the reducer, which cannot tell a legitimate re-write of
+ * the role's own prior answer from a hijack of a rule's.
+ */
+test('refuses an assessment whose id is already present in state.assessments, held by a rule assessment, naming the id escaped', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileId = `rule-"quoted"\nline-two-${'x'.repeat(500)}`;
+  const { port } = fakePort([
+    {
+      assessments: [
+        {
+          id: hostileId,
+          evidenceId: 'evidence-1',
+          hypothesisId: 'h-1',
+          effect: 'supports',
+          strength: 'high',
+          rationale: 'a model answer reusing the rule assessment id',
+        },
+      ],
+    },
+  ]);
+  const node = createModelInterpretResidualEvidence({ port, at });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+  state.assessments = [
+    {
+      id: hostileId,
+      evidenceId: 'evidence-1',
+      hypothesisId: 'h-1',
+      effect: 'supports',
+      strength: 'medium',
+      rationale: 'a rule already assessed this pair',
+      producedBy: 'rule',
+      at: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+
+  await assert.rejects(
+    () => node(state),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'interpret_residual_evidence');
+      assert.ok(
+        !error.message.includes('\n'),
+        'a raw newline from a hostile id must never reach the refusal message',
+      );
+      const expectedEscaped = JSON.stringify(hostileId.slice(0, 80));
+      assert.ok(
+        error.message.includes(expectedEscaped),
+        `the message must carry the id JSON-escaped and truncated to 80 chars: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+    'an assessment id the run already carries — held by a rule assessment — must be refused rather than overwritten: the reducer is upsertById, which REPLACES at a matching id',
+  );
+});
+
+/**
+ * AIC-124 slice b, item 5 continued: the refusal above protects a RULE
+ * verdict from being silently overwritten by a model answer that reuses its
+ * id. It does not extend to a model reusing the id of ITS OWN earlier answer
+ * — an assessment `state.assessments` already holds with `producedBy: 'llm'`.
+ * The role's own system prompt asks the model for `"id":"<stable id>"`, so a
+ * model that re-assesses the same evidence/hypothesis pair in a later
+ * iteration and repeats that id is doing what it was told, and the
+ * `assessments` reducer (`upsertById`) is meant to replace the row at that id
+ * with the role's fresh reading of it.
+ */
+test('accepts an assessment whose id is already present in state.assessments, held by a prior llm assessment of this role', async () => {
+  const createModelInterpretResidualEvidence = requireExport(
+    'createModelInterpretResidualEvidence',
+  );
+  const { port } = fakePort([
+    {
+      assessments: [
+        {
+          id: 'a-1',
+          evidenceId: 'evidence-1',
+          hypothesisId: 'h-1',
+          effect: 'contradicts',
+          strength: 'medium',
+          rationale: 'a later iteration revised its own earlier reading',
+        },
+      ],
+    },
+  ]);
+  const promptVersion = 'reference-prompt-under-test';
+  const node = createModelInterpretResidualEvidence({ port, promptVersion, at });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+  state.assessments = [
+    {
+      id: 'a-1',
+      evidenceId: 'evidence-1',
+      hypothesisId: 'h-1',
+      effect: 'supports',
+      strength: 'high',
+      rationale: 'an earlier iteration of this same role',
+      producedBy: 'llm',
+      promptVersion: 'reference-prompt-under-test',
+      at: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+
+  const update = await node(state);
+
+  assert.deepEqual(update.assessments, [
+    {
+      id: 'a-1',
+      evidenceId: 'evidence-1',
+      hypothesisId: 'h-1',
+      effect: 'contradicts',
+      strength: 'medium',
+      rationale: 'a later iteration revised its own earlier reading',
+      producedBy: 'llm',
+      promptVersion,
+      at: at(),
+    },
+  ]);
+  EvidenceAssessmentSchema.parse(update.assessments[0]);
+  assert.equal(update.declaredLlmCalls, 1);
+});
+
+/**
  * `.claude/rules/invariants.md` ("State the limits — and test them"): any
  * model-supplied id reaching a refusal message must be escaped and truncated,
  * the same way `refuseUnknownKeys` and `conclusion-rules.ts`'s `quoteModelText`
