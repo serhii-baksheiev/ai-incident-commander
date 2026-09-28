@@ -15,8 +15,8 @@
  * `createExecuteInvestigation({ execute })` (`@aic/graph`) is the node that
  * keeps the two channels in that consistent shape by construction: it runs
  * only the tests still in state `planned`, in state order, derives each
- * trial's identity from `deriveTrialId` (already exported by `@aic/graph`,
- * `packages/graph/src/index.ts`), and re-stamps every newly emitted evidence
+ * trial's identity from `deriveTrialId` (exported by `@aic/graph`, defined in
+ * `packages/graph/src/identity.ts`), and re-stamps every newly emitted evidence
  * item's `trialId` to the trial that produced it — never re-emitting an
  * evidence id the state (or this same call) already holds, which is exactly
  * what keeps a replayed or duplicated tool answer from being credited to two
@@ -25,7 +25,7 @@
  * `packages/tools/src/contracts.ts` only for the `test.status` transitions,
  * not for prediction bookkeeping.
  *
- * `deriveTrialId`'s own formula (`packages/graph/src/index.ts`) is recomputed
+ * `deriveTrialId`'s own formula (`packages/graph/src/identity.ts`) is recomputed
  * independently below (`expectedTrialId`) rather than imported, so a test
  * that pins a produced trial's id is not just asking the node's own
  * dependency what the right answer is.
@@ -223,6 +223,30 @@ test('trialEvidenceViolations escapes and truncates a hostile trialId in its mes
   );
 });
 
+for (const [label, trials, evidence, hostile] of [
+  [
+    'a trial whose evidenceIds lists an id not present in the given evidence',
+    (h) => [trial('trial-1', { testId: 'test-1', evidenceIds: [h] })],
+    () => [],
+  ],
+  [
+    'a trial listing an evidence item whose trialId names a different trial',
+    (h) => [trial('trial-1', { testId: 'test-1', evidenceIds: [h] }), trial('trial-2', { testId: 'test-2', evidenceIds: [] })],
+    (h) => [evidenceItem(h, { trialId: 'trial-2' })],
+  ],
+].map(([l, t, e]) => [l, t, e, `"quoted"\n${'y'.repeat(500)}`])) {
+  test(`trialEvidenceViolations escapes and truncates a hostile evidence id when reporting ${label}`, () => {
+    const trialEvidenceViolations = requireDomainExport('trialEvidenceViolations');
+
+    const violations = trialEvidenceViolations({ trials: trials(hostile), evidence: evidence(hostile) });
+
+    assert.equal(violations.length, 1);
+    const expectedQuoted = JSON.stringify(hostile.slice(0, 80));
+    assert.ok(violations[0].includes(expectedQuoted), `expected ${expectedQuoted} in ${violations[0]}`);
+    assert.ok(!violations[0].includes('\n'), 'a raw newline from a hostile id must never reach the message');
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* 2. createExecuteInvestigation (@aic/graph) — selection and identity        */
 /* -------------------------------------------------------------------------- */
@@ -273,7 +297,7 @@ test('runs only the tests with status planned, in state order, and never calls e
   );
 });
 
-test("derives attempt as 1 plus the number of trials already in state for that test's id", async () => {
+test("derives attempt as 1 plus the highest attempt already in state for that test's id", async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const execute = recordingExecutor(async () => ({ status: 'ok', output: [] }));
   const node = createExecuteInvestigation({ execute });
@@ -293,6 +317,27 @@ test("derives attempt as 1 plus the number of trials already in state for that t
   assert.equal(
     result.trials[0].id,
     expectedTrialId({ runId: RUN_ID, testId: 'test-a', attempt: 3 }),
+  );
+});
+
+test('derives attempt past the highest recorded attempt when a test\'s attempts are not contiguous, so a new trial never lands on an existing trial id', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [] }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({
+    tests: [plannedTest('test-a')],
+    trials: [
+      trial('trial-a-1', { testId: 'test-a', attempt: 1, status: 'unavailable' }),
+      trial('trial-a-3', { testId: 'test-a', attempt: 3, status: 'unavailable' }),
+    ],
+  });
+
+  const result = await node(testState);
+
+  assert.equal(result.trials[0].attempt, 4, 'attempts {1, 3} leave 4 as the next unused attempt');
+  assert.ok(
+    !testState.trials.some((existing) => existing.id === result.trials[0].id),
+    'the new trial id must not collide with a trial already in state',
   );
 });
 

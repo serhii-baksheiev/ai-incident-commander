@@ -10,6 +10,10 @@ const accepted: ExecuteInvestigationOutcome = null as unknown as ToolResult<Evid
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const sameStatuses: Same<ToolResult<Evidence[]>['status'], ExecuteInvestigationOutcome['status']> = true;
+// Every variant, payload included, in both directions: the executor's port is
+// exactly a tool result over a read-only evidence list.
+const sameVariants: Same<ToolResult<readonly Evidence[]>, ExecuteInvestigationOutcome> = true;
 
 void accepted;
 void sameStatuses;
+void sameVariants;

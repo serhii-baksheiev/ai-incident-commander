@@ -15,15 +15,13 @@ import type { ExecuteInvestigationContext } from '../index.js';
 /**
  * The three outcomes one `execute` call can report — the same shape as
  * `ToolResult<Evidence[]>` in `packages/tools/src/contracts.ts`, restated here
- * rather than imported. `@aic/graph` may not depend on `@aic/tools`:
- * `packages/graph/package.json` lists no such dependency, and this package's
- * boundary rules (`dependency-cruiser.config.mjs`) keep the graph layer clear
- * of the concrete tool adapters that live under `@aic/tools`. The port this
- * node depends on is therefore defined on the consumer's side and satisfied
- * structurally by whatever `@aic/tools` builds — the smaller of the two
- * changes the task considered, the other being moving `ToolResult` itself
- * into `@aic/domain` and re-exporting it unchanged from `@aic/tools`, which
- * would touch two packages instead of none.
+ * rather than imported, because `@aic/graph` does not build against
+ * `@aic/tools`: `packages/graph/package.json` declares no such dependency and
+ * `packages/graph/tsconfig.json` references no tools project, so an import
+ * fails the build. The two copies are held together by a compiled
+ * correspondence check — see execute-investigation-outcome-type-contract.test.mjs
+ * › "keeps the executor port's outcome type in step with the tool adapters'
+ * ToolResult: every tool result is accepted and both name the same statuses".
  */
 export type ExecuteInvestigationOutcome =
   | { status: 'ok'; output: readonly Evidence[] }
@@ -42,10 +40,13 @@ export type ExecuteInvestigationOutcome =
  * tests".
  *
  * Each executed test's trial identity comes from `deriveTrialId`
- * (`../identity.js`, already exported by `@aic/graph`), with `attempt` one
- * more than the number of trials already in state for that test's id — see ›
- * "derives attempt as 1 plus the number of trials already in state for that
- * test's id" and › "derives the trial id from the same identity formula
+ * (`../identity.js`, exported by `@aic/graph`), with `attempt` one more
+ * than the highest attempt already in state for that test's id, so a new
+ * trial never lands on an existing trial id — see › "derives attempt as 1
+ * plus the highest attempt already in state for that test's id", › "derives
+ * attempt past the highest recorded attempt when a test's attempts are not
+ * contiguous, so a new trial never lands on an existing trial id" and ›
+ * "derives the trial id from the same identity formula
  * deriveTrialId uses: sha256 of JSON.stringify([runId, testId, attempt])" and
  * › "two planned tests sharing the same tool and input get distinct trial ids,
  * derived from their own test id".
@@ -99,9 +100,12 @@ export function createExecuteInvestigation({
       return { tests: [], trials: [], evidence: [] };
     }
 
-    const priorAttemptsByTestId = new Map<string, number>();
+    const highestAttemptByTestId = new Map<string, number>();
     for (const trial of state.trials) {
-      priorAttemptsByTestId.set(trial.testId, (priorAttemptsByTestId.get(trial.testId) ?? 0) + 1);
+      highestAttemptByTestId.set(
+        trial.testId,
+        Math.max(highestAttemptByTestId.get(trial.testId) ?? 0, trial.attempt),
+      );
     }
 
     // Evidence already held in state, plus every id claimed earlier in this
@@ -115,7 +119,7 @@ export function createExecuteInvestigation({
     const evidence: Evidence[] = [];
 
     for (const test of plannedTests) {
-      const attempt = (priorAttemptsByTestId.get(test.id) ?? 0) + 1;
+      const attempt = (highestAttemptByTestId.get(test.id) ?? 0) + 1;
       const trialId = deriveTrialId({ runId: state.control.runId, testId: test.id, attempt });
       const trialBase = {
         id: trialId,
