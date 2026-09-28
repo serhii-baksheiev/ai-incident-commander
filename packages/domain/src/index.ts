@@ -11,5 +11,6 @@ export * from './reducers.js';
 export * from './run-event-stream.js';
 export * from './scope.js';
 export * from './status-rules.js';
+export * from './trial-evidence-consistency.js';
 
 export const DOMAIN_LAYER = 'domain' as const;

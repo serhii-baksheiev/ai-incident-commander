@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import {
   buildExecKey,
   DOMAIN_LAYER,
@@ -21,11 +19,15 @@ import {
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
+import { deriveEvidenceId, deriveTrialId } from './identity.js';
+
+export * from './identity.js';
 export * from './investigation.js';
 export * from './investigation-routes.js';
 export * from './nodes/derive-hypothesis-state.js';
 export * from './nodes/derive-predictions.js';
 export * from './nodes/evaluate-predictions.js';
+export * from './nodes/execute-investigation.js';
 export * from './nodes/plan-investigation.js';
 export * from './nodes/termination.js';
 export * from './prediction-templates.js';
@@ -80,25 +82,6 @@ const PersistentInvestigationState = Annotation.Root({
     default: () => [],
   }),
 });
-
-function hashIdentity(parts: readonly unknown[]): string {
-  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
-}
-
-export function deriveTrialId({
-  runId,
-  testId,
-  attempt,
-}: Readonly<{ runId: string; testId: string; attempt: number }>): string {
-  return hashIdentity([runId, testId, attempt]);
-}
-
-export function deriveEvidenceId({
-  trialId,
-  payloadFingerprint,
-}: Readonly<{ trialId: string; payloadFingerprint: string }>): string {
-  return hashIdentity([trialId, payloadFingerprint]);
-}
 
 /**
  * ⚠ This runner shares `INCIDENT_STATE_SCHEMA_VERSION` with `IncidentState`,
