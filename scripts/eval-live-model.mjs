@@ -124,7 +124,7 @@ import {
   resolveModelConfig,
 } from '@aic/roles';
 
-import { childEnv } from '../test/fixtures/child-env.mjs';
+import { childEnv } from './lib/child-env.mjs';
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 

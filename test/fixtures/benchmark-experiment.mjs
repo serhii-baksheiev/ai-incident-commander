@@ -22,9 +22,9 @@
  *
  * Not here: `currentHeadSha()`. It stays in the test file because it spawns a
  * child process, and `test/child-process-environment.test.mjs` ›
- * "imports the child-environment fixture in every file that spawns a child
+ * "imports the child-environment helper in every file that spawns a child
  * process" recognises the shared allow-list by the specifier
- * `…/fixtures/child-env.mjs` — which a sibling of `child-env.mjs` importing
+ * `…/fixtures/child-env.mjs` or `…/lib/child-env.mjs` — which a sibling of `child-env.mjs` importing
  * `./child-env.mjs` does not write. Moving the spawn here would either turn that
  * audit red or make this file spell its import to satisfy a regex.
  *

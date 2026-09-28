@@ -18,15 +18,7 @@
  */
 import * as evals from '@aic/evals';
 import { runOracleBenchmarkExperiment } from '@aic/evals/oracle';
-import {
-  INVESTIGATION_ROUTES,
-  createDeriveHypothesisState,
-  createDerivePredictions,
-  createEvaluatePredictions,
-  createExecuteInvestigation,
-  createPlanInvestigation,
-  createStateTerminationCheck,
-} from '@aic/graph';
+import { INVESTIGATION_ROUTES, createInvestigationNodes } from '@aic/graph';
 import {
   createModelChallengeHypothesis,
   createModelGenerateHypotheses,
@@ -36,68 +28,46 @@ import {
 import { NAIVE_PROMPT_VERSION, createModelNaiveInvestigation } from '@aic/roles/naive';
 import { createPlannedReplayExecutor } from '@aic/tools/replay';
 
-import { replayBackedNodes } from '../test/fixtures/benchmark-experiment.mjs';
-
 /**
- * The deterministic arm: the replay-backed nodes, plus the two canonical
- * state-driven nodes AIC-119 slice 2 added (owner ruling D1) —
- * `derive_hypothesis_state` and `termination_check`. The fixture's own copies
- * of those two names are no-ops (`termination_check` always answers
- * `sufficient`, `derive_hypothesis_state` always answers `{}`); wiring the
- * canonical ones here is what lets the control arm and the model arm actually
- * exercise state-driven termination rather than the fixture's constant.
- * `modelNodes` inherits both, because it spreads `scriptedNodes`. This is the
- * one implementation both lane commands use, so the control arm and the model
- * arm's base nodes cannot drift apart.
+ * The deterministic arm: `@aic/graph`'s canonical `createInvestigationNodes`
+ * (AIC-126 slice a), given the scripted-control reasoning
+ * (`evals.createScriptedReasoning`, AIC-126 slice a) and the planned-replay
+ * executor. Before this slice this function assembled the node map itself —
+ * spreading `replayBackedNodes` (`test/fixtures/benchmark-experiment.mjs`)
+ * for the scripted roles and the identity/no-op nodes, then overriding the
+ * six deterministic nodes one by one. `createInvestigationNodes` now owns
+ * that assembly, so this script never has to reach into `test/` to build a
+ * working graph.
+ * see investigation-nodes-composition.test.mjs for the behavioural proof of
+ * every canonical node `createInvestigationNodes` wires.
+ * see scripted-reasoning.test.mjs for the behavioural proof of the four
+ * scripted reasoning roles.
  * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach scriptedNodes from ./lane-arms.mjs, the single implementation"
+ * see lane-arms.test.mjs › "scripts/lane-arms.mjs imports nothing from test/"
  *
- * For the model arm this means a run can stop `stalled` or `ambiguous` where
- * the fixture's constant always answered `sufficient`, and a second challenge
- * round can be required after the first while the round cap allows it.
- * see state-termination.test.mjs › "T6: after a round has run, no hypothesis reaching corroborated or above is stalled, not sufficient by default"
- * see state-termination.test.mjs › "through the real kernel: two corroborated hypotheses at the challenge round cap terminates ambiguous, not challenge-required forever"
- * see state-termination.test.mjs › "T3: two hypotheses at corroborated-or-above after the first round is challenge-required, naming the earlier one in state order as leader on the tie"
+ * `modelNodes` inherits every canonical node, because it spreads
+ * `scriptedNodes` and swaps only the four reasoning roles. This is the one
+ * implementation both lane commands use, so the control arm and the model
+ * arm's base nodes cannot drift apart.
  * see lane-arms.test.mjs › "scriptedNodes(record) and modelNodes(record, port) both carry the canonical derive_hypothesis_state and termination_check nodes, proven by behaviour rather than identity or source text"
  * see lane-arms.test.mjs › "modelNodes(record, port)'s termination depends on state, never on the scenario id or ground truth: a renamed clone of a real calibration scenario reaches the same stop kind as the original, and a variant with its confirming recorded fact removed reaches a different one"
  * see lane-arms.test.mjs › "scriptedNodes(record)'s termination is independent of scenario identity: a renamed clone of a real calibration scenario reaches the same stop kind as the original"
- *
- * AIC-124 slice c: `derive_predictions`/`evaluate_predictions` are the same
- * kind of override — the fixture's own copies (`replayBackedNodes`, trace-only
- * no-ops that always answer `{}`) are replaced with the canonical nodes
- * (slice b), evaluated at `evals.REPLAY_AS_OF`, the instant the whole replay
- * corpus was recorded.
  * see prediction-wiring.test.mjs › "scriptedNodes(record) and modelNodes(record, port) carry the canonical derive_predictions and evaluate_predictions: a matching connection-pool-exhaustion fact observed at REPLAY_AS_OF confirms the derived prediction with one rule assessment, and the same fact one millisecond later confirms nothing"
  * see prediction-wiring.test.mjs › "running the real kernel over a calibration record with scriptedNodes ends with predictions: [] and no producedBy: "rule" assessment"
- *
- * AIC-125: `plan_investigation` and `execute_investigation` are canonical too,
- * the executor answering through the planned-request replay port, so both graph
- * arms run one harness and differ only in the four reasoning roles. A scripted
- * hypothesis carries no cause, so this arm plans nothing and fetches no
- * evidence: its harness signal is what the harness fetches on its own.
  * see investigation-plan-execute-wiring.test.mjs › "scriptedNodes(record) executes only planned tests, through the same canonical executor modelNodes uses: a state with no planned test replays nothing from the fixture, and a state with one planned test yields exactly one trial"
  * see investigation-plan-execute-wiring.test.mjs › "deployment-caused-incident-a is one scenario giving a strict subset: the model arm sees exactly the confirming evidence, the scenario's own recorded corpus also carries the dependencies evidence, and the scripted-control arm run through the real kernel ends with no evidence at all"
  * see live-model-lane.test.mjs › "swaps exactly the four reasoning roles and leaves the rest of the lifecycle shared"
- *
- * ⚠ `replayBackedNodes` takes three arguments, and an earlier hold-out command
- * passed one. The crash came at the first record of the control arm, before any
- * model call, and it is why record `04cf86236c2f` is void.
  */
 export function scriptedNodes(record) {
-  return {
-    ...replayBackedNodes(record, new Map([[record.runId, []]]), new Map([[record.runId, 0]])),
-    derive_hypothesis_state: createDeriveHypothesisState(),
-    termination_check: createStateTerminationCheck(),
-    derive_predictions: createDerivePredictions(),
-    plan_investigation: createPlanInvestigation(),
-    execute_investigation: createExecuteInvestigation({
-      execute: createPlannedReplayExecutor({
-        fixture: record.fixture,
-        routes: INVESTIGATION_ROUTES,
-        annotate: evals.createObservationAnnotator(),
-      }).execute,
-    }),
-    evaluate_predictions: createEvaluatePredictions({ asOf: () => evals.REPLAY_AS_OF }),
-  };
+  return createInvestigationNodes({
+    reasoning: evals.createScriptedReasoning(record),
+    execute: createPlannedReplayExecutor({
+      fixture: record.fixture,
+      routes: INVESTIGATION_ROUTES,
+      annotate: evals.createObservationAnnotator(),
+    }).execute,
+    asOf: () => evals.REPLAY_AS_OF,
+  });
 }
 
 /**

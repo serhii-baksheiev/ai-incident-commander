@@ -40,12 +40,24 @@
  * purpose: a run that writes its own evidence must not thereby earn the next
  * one.
  * see final-evaluation-oneshot.test.mjs › "fingerprints exactly the paths that can change what the graph does"
+ *
+ * AIC-126 slice a: `test/fixtures/benchmark-experiment.mjs` is no longer
+ * listed. `scripts/lane-arms.mjs` used to import `replayBackedNodes` from it
+ * directly; `createInvestigationNodes` (`@aic/graph`) and
+ * `createScriptedReasoning` (`./scripted-reasoning.js`) replace that import,
+ * so the two live-model commands no longer load anything under `test/` and a
+ * `test/` entry here would be exactly the false-unlock this list exists to
+ * avoid. What keeps this list honest against what the commands actually
+ * load, at runtime rather than by reading import statements, is
+ * `final-evaluation-candidate-fingerprint.test.mjs` › "every repository file
+ * Node loads importing scripts/eval-live-model.mjs and
+ * scripts/eval-final-holdout.mjs falls under a path
+ * FINAL_EVALUATION_CANDIDATE_PATHS declares".
  */
 export const FINAL_EVALUATION_CANDIDATE_PATHS = Object.freeze([
   'packages',
   'apps',
   'scripts',
-  'test/fixtures/benchmark-experiment.mjs',
   'package-lock.json',
 ] as const);
 
