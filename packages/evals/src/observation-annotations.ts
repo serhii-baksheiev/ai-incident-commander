@@ -33,15 +33,13 @@ import type { ObservedFact } from '@aic/domain';
  * deep-equality intersection of the two readers' facts for that row's own
  * packet sentence number"
  *
- * No sentence claims an exhaustive check, so no fact here can read as
- * `absent` under `observedPresence` (`@aic/domain`).
- * see observation-annotations.test.mjs › "no fact in the table reads as absent under observedPresence, because no sentence claims an exhaustive check"
+ * No fact here can read as `absent` under `observedPresence` (`@aic/domain`):
+ * the one sentence that claims an exhaustive check names no subject and no
+ * window, so it carries no fact.
+ * see observation-annotations.test.mjs › "no fact in the table reads as absent under observedPresence, and the corpus's one exhaustive-check sentence carries no fact"
  *
  * A content change is a new dated, reviewed version (e.g.
  * `observation-annotations-v2`), never an edit to this file's exports.
- *
- * Nothing reads this table yet — the merge at the replay boundary is a later
- * slice.
  */
 
 export const OBSERVATION_ANNOTATIONS_VERSION = 'observation-annotations-v1' as const;

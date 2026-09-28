@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as domain from '@aic/domain';
 import * as evals from '@aic/evals';
-import { createRequestFingerprint } from '@aic/tools';
+import { createRequestFingerprint, REPLAY_IDENTITY_VERSION } from '@aic/tools';
 
 import { buildObservationReviewPacket } from '../scripts/observation-review-packet.mjs';
 
@@ -356,7 +356,7 @@ test("OBSERVATION_ANNOTATIONS_VERSION equals the review record's own version fie
   assert.equal(evals.OBSERVATION_ANNOTATIONS_VERSION, record.version);
 });
 
-test('no fact in the table reads as absent under observedPresence, because no sentence claims an exhaustive check', () => {
+test("no fact in the table reads as absent under observedPresence, and the corpus's one exhaustive-check sentence carries no fact", () => {
   const { observedPresence } = domain;
   let presenceFacts = 0;
   for (const row of evals.OBSERVATION_ANNOTATIONS) {
@@ -367,4 +367,18 @@ test('no fact in the table reads as absent under observedPresence, because no se
     }
   }
   assert.ok(presenceFacts > 0, 'the table carries at least one presence-form fact, so this row checks something');
+
+  // The one statement that claims an exhaustive check names no subject and no
+  // window, which is why it yields no fact rather than an absent one.
+  const exhaustive = evals.OBSERVATION_ANNOTATIONS.filter(
+    (row) => row.statement === 'no matching server errors were recorded',
+  );
+  assert.equal(exhaustive.length, 1, 'the corpus carries the exhaustive-check statement exactly once');
+  assert.deepEqual(exhaustive[0].facts, []);
+});
+
+test("the independent identity formula's version prefix is the replay identity version the registry declares", () => {
+  // The formula above is a deliberate second copy; this keeps its version in
+  // step with production's without importing production's builder.
+  assert.equal(replayIdentity('logs', {}).startsWith(`v${REPLAY_IDENTITY_VERSION}:`), true);
 });
