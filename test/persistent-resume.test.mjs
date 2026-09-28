@@ -13,6 +13,22 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workerPath = resolve(projectRoot, 'test/fixtures/persistent-resume-worker.mjs');
 const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
+/**
+ * How long a child process may take to get somewhere, and why it is generous
+ * (AIC-134). A worker is a fresh Node process that imports the built graph and
+ * persistence packages before it does anything; on a loaded machine that alone
+ * has taken longer than the 8 s these waits used to allow, and the rows failed
+ * with nothing wrong in the code. The waits are deadlines, not delays: a
+ * healthy child answers in well under a second and the wait ends then. A child
+ * that never answers still fails the row, only later — and the message says
+ * whether it ever started (see WORKER_STARTED below).
+ */
+const CHILD_DEADLINE_MS = 60_000;
+/** Each row's own timeout: every child deadline it can wait on, with headroom. */
+const ROW_TIMEOUT_MS = 4 * CHILD_DEADLINE_MS;
+/** The first message a worker sends, before it imports anything. */
+const WORKER_STARTED = 'worker-started';
+
 function spawnWorker(args) {
   const child = spawn(process.execPath, [workerPath, ...args], {
     cwd: projectRoot,
@@ -26,11 +42,23 @@ function spawnWorker(args) {
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => (stdout += chunk));
   child.stderr.on('data', (chunk) => (stderr += chunk));
-  child.on('message', (message) => messages.push(message));
-  return { child, messages, diagnostics: () => `stdout:\n${stdout}\nstderr:\n${stderr}` };
+  let started = false;
+  child.on('message', (message) => {
+    if (message?.type === WORKER_STARTED) {
+      started = true;
+      return;
+    }
+    messages.push(message);
+  });
+  return {
+    child,
+    messages,
+    started: () => started,
+    diagnostics: () => `stdout:\n${stdout}\nstderr:\n${stderr}`,
+  };
 }
 
-function waitForMessage(worker, expectedType, timeoutMs = 8_000) {
+function waitForMessage(worker, expectedType, timeoutMs = CHILD_DEADLINE_MS) {
   const { child, diagnostics, messages } = worker;
 
   const queuedIndex = messages.findIndex(
@@ -47,7 +75,13 @@ function waitForMessage(worker, expectedType, timeoutMs = 8_000) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(
-        new Error(`worker did not send ${expectedType} within ${timeoutMs}ms\n${diagnostics()}`),
+        new Error(
+          `worker did not send ${expectedType} within ${timeoutMs}ms; ${
+            worker.started()
+              ? 'it had started, so it stopped short of that point'
+              : 'it never reported starting'
+          }\n${diagnostics()}`,
+        ),
       );
     }, timeoutMs);
 
@@ -92,7 +126,7 @@ function waitForMessage(worker, expectedType, timeoutMs = 8_000) {
   });
 }
 
-function waitForExit(worker, timeoutMs = 8_000) {
+function waitForExit(worker, timeoutMs = CHILD_DEADLINE_MS) {
   const { child, diagnostics } = worker;
 
   if (child.exitCode !== null || child.signalCode !== null) {
@@ -153,7 +187,7 @@ test('derives stable Trial and Evidence ids from their frozen identity inputs', 
 
 test(
   'the start-mode worker stays alive until it is killed, so the kill is what ends it',
-  { timeout: 20_000 },
+  { timeout: ROW_TIMEOUT_MS },
   async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-worker-liveness-'));
     const checkpointPath = join(temporaryRoot, 'checkpoints.sqlite');
@@ -183,7 +217,7 @@ test(
 
 test(
   'resumes the persisted run after process death without duplicate records or budget drift',
-  { timeout: 25_000 },
+  { timeout: ROW_TIMEOUT_MS },
   async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-persistent-resume-'));
     const checkpointPath = join(temporaryRoot, 'checkpoints.sqlite');
@@ -291,7 +325,7 @@ test('publishes separate CLI start and resume command contracts under aic dev sp
 
 test(
   'starts and resumes the same persisted run through the compiled CLI, under aic dev spike',
-  { timeout: 20_000 },
+  { timeout: ROW_TIMEOUT_MS },
   async () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), 'aic-cli-persistent-resume-'));
     const checkpointPath = join(temporaryRoot, 'checkpoints.sqlite');
@@ -314,7 +348,7 @@ test(
           cwd: projectRoot,
           encoding: 'utf8',
           env: childEnv(),
-          timeout: 8_000,
+          timeout: CHILD_DEADLINE_MS,
         });
         assert.equal(executed.status, 0, commandDiagnostics(args, executed));
         results.push(JSON.parse(executed.stdout));
