@@ -279,10 +279,15 @@ export const EvidenceSchema = z.strictObject({
   statement: ContractStringSchema,
   rawRef: ContractStringSchema,
   reliability: StrengthSchema.optional(),
-  // Typed data for the observation vocabulary above (owner ruling D2): optional
-  // because nothing populates it yet — see
+  // Typed data for the observation vocabulary above (owner ruling D2): optional,
+  // because only evidence the observation table annotates carries it — see
   // test/expected-observation-contract.test.mjs › "accepts Evidence with no
-  // observation field, since nothing populates it yet (owner ruling D2)".
+  // observation field, because only evidence the observation table annotates
+  // carries one (owner ruling D2)" and observation-merge.test.mjs ›
+  // "ReplayToolAdapter given { observations } merges facts only onto the item
+  // the annotator returns a non-empty list for, as a new object equal to the
+  // item plus observation:{version,facts}, leaves the other item untouched, and
+  // never mutates the caller's own fixture object".
   observation: z
     .strictObject({
       version: z.literal(EXPECTED_OBSERVATION_VERSION),

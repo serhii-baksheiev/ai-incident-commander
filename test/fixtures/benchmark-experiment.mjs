@@ -228,6 +228,14 @@ function replayFixtureFor(fixture) {
 const OBSERVATION_MERGE_ADAPTER = 'aic.incident-tool@1';
 
 /**
+ * The table read directly, so the self-check below does not ask the annotator
+ * the adapter was given to confirm its own answer.
+ */
+const OBSERVATION_FACTS = new Map(
+  evals.OBSERVATION_ANNOTATIONS.map((row) => [`${row.identity}|${row.evidenceId}`, row.facts]),
+);
+
+/**
  * A second, independent construction of the v2 replay identity string,
  * deliberately not an import of `buildReplayIdentity`
  * (`packages/tools/src/bound-source-registry.ts`) — the same discipline
@@ -267,7 +275,7 @@ export function replayBackedNodes(record, traces, replayCounts) {
      * so an `ok` replay's evidence may now carry `observation`. The self-check
      * below therefore compares `entry.result` against the replayed result with
      * `observation` stripped back off, and checks the merge itself separately
-     * against what `annotate` gives for the same (identity, item) pair — see
+     * against the table read directly for the same (identity, item) pair — see
      * observation-merge.test.mjs's header for the identity discipline this
      * mirrors.
      *
@@ -344,7 +352,7 @@ export function replayBackedNodes(record, traces, replayCounts) {
 
           const identity = replayIdentityFor(entry.toolId, entry.input);
           for (const item of replayed.output) {
-            const expectedFacts = annotate(identity, item) ?? [];
+            const expectedFacts = OBSERVATION_FACTS.get(`${identity}|${item.id}`) ?? [];
             if (expectedFacts.length === 0) {
               assert.equal('observation' in item, false);
             } else {
