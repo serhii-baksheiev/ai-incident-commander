@@ -2,7 +2,7 @@
  * AIC-126 slice a: the correspondence between `FINAL_EVALUATION_CANDIDATE_PATHS`
  * (`packages/evals/src/final-evaluation-record.ts`, read by
  * `scripts/eval-final-holdout.mjs`'s `candidateFingerprint()`) and the files
- * Node actually LOADS when running the two live-model commands.
+ * Node actually LOADS when importing the two lane scripts.
  *
  * Before this slice the list carried `test/fixtures/benchmark-experiment.mjs`
  * because `scripts/lane-arms.mjs` imported `replayBackedNodes` from it
@@ -30,6 +30,13 @@
  * thread-safe write, and the test parses them back out of the child's
  * captured stderr.
  *
+ * ⚠ What this does not see: the npm commands' own `--import` preload
+ * (`test/fixtures/no-ambient-tracing.mjs`, which only turns ambient tracing
+ * off); a module reached only through a dynamic `import()` at run time (the
+ * dynamic-import row below keeps that set empty); and a workspace package
+ * consumed as a real copy under `node_modules` rather than a symlink, which
+ * `isWorkspaceExternalDependency` would drop.
+ *
  * 🔴 Mutation note: this row is the one thing that would catch
  * `scripts/lane-arms.mjs` quietly reimporting a `test/` fixture in the
  * future. Re-adding `import { replayBackedNodes } from
@@ -39,7 +46,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, relative, resolve, sep } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -118,6 +125,11 @@ function repoRelativePath(fileUrl) {
   return relative(REPO_ROOT, real).split(sep).join('/');
 }
 
+/** Source text with block and line comments removed — coarse, and enough to keep a comment that names `import(` from reading as a call. */
+function withoutComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 /** A path is a workspace-external dependency if `node_modules` names any of its segments once symlinks are resolved — a workspace package's own `node_modules/@aic/*` symlink resolves away to `packages/*` before this check ever sees it. */
 function isWorkspaceExternalDependency(relativePath) {
   return relativePath.split('/').includes('node_modules');
@@ -148,8 +160,27 @@ test('every repository file Node loads importing scripts/eval-live-model.mjs and
   assert.deepEqual(
     uncovered,
     [],
-    `every file the two live-model commands actually load must fall under a path FINAL_EVALUATION_CANDIDATE_PATHS declares, or a real change to it would go unfingerprinted: ${JSON.stringify(uncovered, null, 2)}`,
+    `every file the two lane scripts load must fall under a path FINAL_EVALUATION_CANDIDATE_PATHS declares, or a real change to it would go unfingerprinted: ${JSON.stringify(uncovered, null, 2)}`,
   );
+});
+
+/**
+ * The row above measures what importing the two scripts loads. A module loaded
+ * only when a lane RUNS — through a dynamic `import()` — would never be
+ * resolved there, so this row closes that gap for the files the scripts load
+ * today: none of them contains a dynamic import, so the import-time set is the
+ * run-time set. It looks for the call as this repository writes it,
+ * `import(` with no space, in the code with its comments removed (a comment
+ * may name the call), and targets drift, not an adversary.
+ */
+test('no repository file the two lane scripts load contains a dynamic import(), so what importing them loads is what running them loads', () => {
+  const urls = loadedFileUrls(['scripts/eval-live-model.mjs', 'scripts/eval-final-holdout.mjs']);
+  const withDynamicImport = [...urls]
+    .map(repoRelativePath)
+    .filter((path) => !isWorkspaceExternalDependency(path))
+    .filter((path) => /\bimport\(/.test(withoutComments(readFileSync(resolve(REPO_ROOT, path), 'utf8'))));
+
+  assert.deepEqual(withDynamicImport, [], `a dynamic import would load code the fingerprint row cannot see: ${JSON.stringify(withDynamicImport)}`);
 });
 
 /* -------------------------------------------------------------------------- */

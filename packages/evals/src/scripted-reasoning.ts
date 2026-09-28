@@ -9,9 +9,11 @@ import type { InvestigationReasoning } from '@aic/graph';
  * own header on `scriptedNodes`).
  *
  * Moved here from `test/fixtures/benchmark-experiment.mjs`'s
- * `replayBackedNodes`, byte-identical on every output it still produces, so a
- * lane never has to import a test fixture to build its control arm
- * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * `replayBackedNodes`, which now delegates its four reasoning roles to this
+ * function and only adds its own traces and self-check around them, so a
+ * lane never has to import a test fixture to build its control arm and the
+ * two cannot drift (`.claude/rules/invariants.md`, "one mechanism, one
+ * implementation").
  *
  * One deliberate behaviour change from the fixture: `challenge_hypothesis`
  * here does not assert on the leader id it is called with. The fixture's own

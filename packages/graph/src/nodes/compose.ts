@@ -21,6 +21,9 @@ const REASONING_KEYS = [
 export type InvestigationReasoning = Pick<InvestigationNodes, (typeof REASONING_KEYS)[number]>;
 
 function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
+  if (typeof reasoning !== 'object' || reasoning === null) {
+    throw new TypeError('createInvestigationNodes: reasoning must be an object carrying the four reasoning roles');
+  }
   const keys = Object.keys(reasoning);
   const missing = REASONING_KEYS.filter((key) => !keys.includes(key));
   if (missing.length > 0) {
@@ -32,6 +35,12 @@ function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
   if (extra.length > 0) {
     throw new TypeError(
       `createInvestigationNodes: reasoning carries unexpected key(s): ${extra.join(', ')}`,
+    );
+  }
+  const notFunctions = REASONING_KEYS.filter((key) => typeof reasoning[key] !== 'function');
+  if (notFunctions.length > 0) {
+    throw new TypeError(
+      `createInvestigationNodes: reasoning role(s) must be functions: ${notFunctions.join(', ')}`,
     );
   }
 }

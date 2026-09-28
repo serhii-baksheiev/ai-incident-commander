@@ -217,6 +217,32 @@ test('a reasoning object carrying an extra key throws a TypeError naming that ke
 /* 2. normalize_incident / collect_baseline: canonical no-ops                */
 /* -------------------------------------------------------------------------- */
 
+test('a reasoning role that is not a function throws a TypeError naming the role', () => {
+  const createInvestigationNodes = requireGraphExport('createInvestigationNodes');
+
+  assert.throws(
+    () => createInvestigationNodes({
+      reasoning: fakeReasoning({ challenge_hypothesis: 'not-a-function' }),
+      execute: async () => ({ status: 'unavailable', reason: 'unused' }),
+      asOf: asOfConstant(ASOF),
+    }),
+    (error) => error instanceof TypeError && /challenge_hypothesis/.test(error.message),
+  );
+});
+
+test('a reasoning value that is not an object throws a TypeError naming reasoning', () => {
+  const createInvestigationNodes = requireGraphExport('createInvestigationNodes');
+
+  assert.throws(
+    () => createInvestigationNodes({
+      reasoning: null,
+      execute: async () => ({ status: 'unavailable', reason: 'unused' }),
+      asOf: asOfConstant(ASOF),
+    }),
+    (error) => error instanceof TypeError && /reasoning/.test(error.message),
+  );
+});
+
 test('normalize_incident and collect_baseline are no-ops that return {} regardless of state', async () => {
   const createInvestigationNodes = requireGraphExport('createInvestigationNodes');
   const nodes = createInvestigationNodes({ reasoning: fakeReasoning(), execute: noopExecute, asOf: asOfConstant(ASOF) });
