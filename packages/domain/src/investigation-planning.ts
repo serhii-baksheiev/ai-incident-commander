@@ -91,6 +91,16 @@ import { canonicalJson } from './execution.js';
  * unaffected by permuting existing tests unrelated to the new observations"
  * and › "planInvestigation does not mutate its predictions, tests or routes
  * inputs".
+ *
+ * ⚠ Stated limit: the de-dup pass above builds `requestIdentity` from every
+ * EXISTING test's `tool` and `input`, through `canonicalJson`
+ * (`./execution.js`), and `canonicalJson` throws a `TypeError` on a value it
+ * cannot represent — a `BigInt`, or a circular reference. An existing test
+ * carrying such an input is not silently skipped by the de-dup pass; the call
+ * throws instead — see investigation-planning.test.mjs › "planInvestigation
+ * throws when an existing test's input cannot be canonicalised (a BigInt
+ * value)" and › "planInvestigation throws when an existing test's input
+ * cannot be canonicalised (a circular reference)".
  */
 
 export interface InvestigationRouteEntry {

@@ -1042,7 +1042,19 @@ async function graphExperimentWithDiscriminatingTrialStatus(trialStatus) {
         plan_investigation: empty,
         execute_investigation: async (state) => {
           if (state.control.challengeRounds === 0) return {};
+          // Every arm fetches a new evidence item, so the trial's status is the
+          // only thing that differs between the ok, error and unavailable rows.
+          const fetched = [{
+            id: `challenge-evidence-${input.runId}`,
+            trialId,
+            kind: 'metric',
+            source: tool,
+            observedAt: '2026-01-01T00:00:00.000Z',
+            statement: 'the discriminating test returned a new observation',
+            rawRef: `replay://${tool}/challenge-evidence-${input.runId}`,
+          }];
           return {
+            evidence: fetched,
             tests: [{
               id: testId,
               predictionId,
@@ -1060,7 +1072,7 @@ async function graphExperimentWithDiscriminatingTrialStatus(trialStatus) {
               input: { challenge: true },
               status: trialStatus,
               durationMs: 1,
-              evidenceIds: [],
+              evidenceIds: fetched.map(({ id }) => id),
             }],
           };
         },

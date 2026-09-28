@@ -290,6 +290,7 @@ test('merges a typed challenge result and accounts for its reserved budget in th
       'termination_check',
       'challenge_hypothesis',
       'derive_predictions',
+      'plan_investigation',
       'execute_investigation',
       'evaluate_predictions',
       'interpret_residual_evidence',

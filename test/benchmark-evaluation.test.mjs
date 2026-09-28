@@ -1770,6 +1770,7 @@ test('runs all fifteen fresh records through createInvestigationGraph and replay
     ...expectedLifecycleNodes.slice(0, 10),
     'challenge_hypothesis',
     'derive_predictions',
+    'plan_investigation',
     ...expectedLifecycleNodes.slice(5, 10),
     'propose_conclusion',
   ];

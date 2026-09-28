@@ -459,6 +459,40 @@ test('planInvestigation is unaffected by permuting existing tests unrelated to t
   assert.deepEqual(resultOrderAB, resultOrderBA);
 });
 
+/* -------------------------------------------------------------------------- */
+/* stated limit: an existing test's input must canonicalise                  */
+/* -------------------------------------------------------------------------- */
+
+test('planInvestigation throws when an existing test\'s input cannot be canonicalised (a BigInt value)', () => {
+  const planInvestigation = requirePlanInvestigation();
+  const p = prediction('p-bigint-existing', {
+    expectedIfTrue: [observation('signal-state', { subject: 'orders-db' })],
+  });
+  const uncanonicalisable = existingTest('existing-bigint', 'metrics', { amount: 1n });
+
+  assert.throws(
+    () => planInvestigation({ predictions: [p], tests: [uncanonicalisable], routes: ROUTES }),
+    TypeError,
+    'an existing test whose input carries a value canonicalJson cannot represent (a BigInt) must not be silently skipped by the de-dup pass',
+  );
+});
+
+test('planInvestigation throws when an existing test\'s input cannot be canonicalised (a circular reference)', () => {
+  const planInvestigation = requirePlanInvestigation();
+  const p = prediction('p-cycle-existing', {
+    expectedIfTrue: [observation('signal-state', { subject: 'orders-db' })],
+  });
+  const cyclicInput = { service: 'orders-db' };
+  cyclicInput.self = cyclicInput;
+  const uncanonicalisable = existingTest('existing-cycle', 'metrics', cyclicInput);
+
+  assert.throws(
+    () => planInvestigation({ predictions: [p], tests: [uncanonicalisable], routes: ROUTES }),
+    TypeError,
+    'an existing test whose input contains a circular reference must not be silently skipped by the de-dup pass',
+  );
+});
+
 test('planInvestigation does not mutate its predictions, tests or routes inputs', () => {
   const planInvestigation = requirePlanInvestigation();
   const p = prediction('p-no-mutate', {
