@@ -153,7 +153,10 @@ interface SinglePredictionVerdict {
  * lowercase) before comparison — exported so a caller outside this module
  * (`packages/tools/replay/index.ts`'s `createPlannedReplayExecutor` quantity
  * match) applies the exact same rule rather than a second copy of it
- * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
+ * planned-replay.test.mjs › "a QUANTITY match compares the subject case- and
+ * whitespace-insensitively, matching normalizeSubject's own rule (trim +
+ * lowercase)".
  */
 export function normalizeSubject(subject: string): string {
   return subject.trim().toLowerCase();

@@ -189,7 +189,12 @@ export function replayFixtureFromScenarioEntries(
   fixture: PlannedReplayScenarioFixture,
 ): ReplayFixture {
   return {
-    version: REPLAY_FIXTURE_VERSION,
+    // Carried through, not restamped: an unknown version is the replay
+    // adapter's to refuse — see planned-replay.test.mjs ›
+    // "replayFixtureFromScenarioEntries carries the scenario fixture version
+    // through, so a fixture at an unknown version is refused by the replay
+    // adapter rather than silently reinterpreted".
+    version: fixture.version as typeof REPLAY_FIXTURE_VERSION,
     responses: Object.fromEntries(
       fixture.entries.map((entry) => [createReplayFixtureKey(entry.toolId, entry.input), entry.result]),
     ),
@@ -235,6 +240,25 @@ function findRouteForTool(
   return undefined;
 }
 
+/**
+ * A request is read back into one quantity only if its tool names one form, so
+ * a table naming a tool twice is refused at construction — see
+ * planned-replay.test.mjs › "refuses at construction a route table in which
+ * two forms name the same tool, since a request for that tool could not be
+ * read back into one quantity".
+ */
+function assertOneFormPerTool(routes: InvestigationRouteTable): void {
+  const seen = new Set<string>();
+  for (const route of Object.values(routes.byForm)) {
+    if (seen.has(route.tool)) {
+      throw new TypeError(
+        `createPlannedReplayExecutor: routes.byForm names tool ${JSON.stringify(route.tool)} for more than one form`,
+      );
+    }
+    seen.add(route.tool);
+  }
+}
+
 function keysMatchExactly(routeInput: Readonly<Record<string, string>>, input: Record<string, unknown>): boolean {
   const routeKeys = Object.keys(routeInput);
   const inputKeys = Object.keys(input);
@@ -260,12 +284,12 @@ function requestedQuantity(
   }
   const { subject, window, ...discriminantFields } = observationFields;
   if (typeof subject !== 'string' || typeof window !== 'string') return undefined;
-  return { form, subject, window, discriminants: Object.entries(discriminantFields) };
+  return { form, subject: normalizeSubject(subject), window, discriminants: Object.entries(discriminantFields) };
 }
 
 function factMatchesQuantity(fact: ObservedFact, quantity: RequestedQuantity): boolean {
   if (fact.form !== quantity.form) return false;
-  if (normalizeSubject(fact.subject) !== normalizeSubject(quantity.subject)) return false;
+  if (normalizeSubject(fact.subject) !== quantity.subject) return false;
   if (fact.window !== quantity.window) return false;
   const factRecord = fact as unknown as Record<string, unknown>;
   return quantity.discriminants.every(([field, value]) => factRecord[field] === value);
@@ -347,6 +371,7 @@ export function createPlannedReplayExecutor(
   if (typeof annotate !== 'function') {
     throw new TypeError('createPlannedReplayExecutor: options.annotate is required and must be a function');
   }
+  assertOneFormPerTool(routes);
 
   const adapter = new ReplayToolAdapter(replayFixtureFromScenarioEntries(fixture), { observations: annotate });
   const exactKeys = new Set(fixture.entries.map((entry) => createReplayFixtureKey(entry.toolId, entry.input)));
@@ -402,11 +427,15 @@ export function createPlannedReplayExecutor(
       if (entry.result.status !== 'ok') continue;
 
       const replayed = await adapter.execute(entry.toolId, entry.input);
-      if (replayed.status !== 'ok') continue;
+      // see planned-replay.test.mjs › "an ok recorded result whose output is
+      // not an array answers unavailable rather than rejecting"
+      if (replayed.status !== 'ok' || !Array.isArray(replayed.output)) continue;
 
       for (const item of replayed.output) {
         const facts = item.observation?.facts ?? [];
         if (!facts.some((fact) => factMatchesQuantity(fact, quantity))) continue;
+        // see planned-replay.test.mjs › "a QUANTITY match answers an
+        // evidence id once when two matching same-tool entries both return it"
         if (seenEvidenceIds.has(item.id)) continue;
         seenEvidenceIds.add(item.id);
         matched.push(item);

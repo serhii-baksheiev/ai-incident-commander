@@ -693,3 +693,105 @@ test('a ReplayToolAdapter built from replayFixtureFromScenarioEntries replays a 
 
   assert.deepEqual(result, deploymentEntry.result);
 });
+
+/* ============================================================================
+ * 9. Review round 1: dedupe, ambiguous routes, fixture version, output shape,
+ *    and the corpus row showing answerability does not track ground truth
+ * ==========================================================================*/
+
+test('a QUANTITY match answers an evidence id once when two matching same-tool entries both return it', async () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const shared = evidenceItem('metric-payments-shared', 'payments error rate, shared');
+  const fixture = {
+    version: 1,
+    entries: [
+      { toolId: 'metrics', input: { service: 'payments', metric: 'probe-a' }, result: ok(shared) },
+      { toolId: 'metrics', input: { service: 'payments', metric: 'probe-b' }, result: ok(shared) },
+    ],
+  };
+  const fact = { form: 'signal-state', subject: 'payments', window: 'incident', signal: 'error-rate', state: 'elevated' };
+  const executor = createPlannedReplayExecutor({
+    fixture,
+    routes: graph.INVESTIGATION_ROUTES,
+    annotate: (_identity, evidence) => (evidence.id === shared.id ? [fact] : undefined),
+  });
+
+  const result = await executor.execute(
+    baseContext({ tool: 'metrics', input: { service: 'payments', window: 'incident', metric: 'error-rate' } }),
+  );
+
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.output.map((item) => item.id), ['metric-payments-shared']);
+});
+
+test('refuses at construction a route table in which two forms name the same tool, since a request for that tool could not be read back into one quantity', () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const routes = {
+    version: 'ambiguous-v1',
+    byForm: {
+      'signal-state': { tool: 'metrics', input: { service: 'subject', window: 'window', metric: 'signal' } },
+      'log-class-in-window': { tool: 'metrics', input: { service: 'subject', window: 'window', metric: 'logClass' } },
+    },
+  };
+
+  assert.throws(
+    () => createPlannedReplayExecutor({ fixture: { version: 1, entries: [] }, routes, annotate: () => undefined }),
+    (error) => error instanceof TypeError && /metrics/.test(error.message),
+  );
+});
+
+test('INVESTIGATION_ROUTES names each tool at most once, so every routed request reads back into exactly one quantity', () => {
+  const tools = Object.values(graph.INVESTIGATION_ROUTES.byForm).map((route) => route.tool);
+  assert.equal(new Set(tools).size, tools.length);
+});
+
+test('replayFixtureFromScenarioEntries carries the scenario fixture version through, so a fixture at an unknown version is refused by the replay adapter rather than silently reinterpreted', () => {
+  const replayFixtureFromScenarioEntries = requireReplayFixtureFromScenarioEntries();
+
+  const converted = replayFixtureFromScenarioEntries({ version: 99, entries: [] });
+
+  assert.equal(converted.version, 99);
+  assert.throws(() => new ReplayToolAdapter(converted));
+});
+
+test('an ok recorded result whose output is not an array answers unavailable rather than rejecting', async () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const fixture = {
+    version: 1,
+    entries: [{ toolId: 'metrics', input: { service: 'payments', metric: 'probe' }, result: { status: 'ok', output: null } }],
+  };
+  const executor = createPlannedReplayExecutor({ fixture, routes: graph.INVESTIGATION_ROUTES, annotate: () => undefined });
+
+  const result = await executor.execute(
+    baseContext({ tool: 'metrics', input: { service: 'payments', window: 'incident', metric: 'error-rate' } }),
+  );
+
+  assert.equal(result.status, 'unavailable');
+});
+
+test('dependency-caused-incident-b: a planned deployment request for payments answers ok with the pre-onset deployment fact although the scenario\'s cause is inventory-api, measured off the frozen corpus: answerability does not track the ground truth', async () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const { fixture } = scenario('dependency-caused-incident-b');
+  assert.notEqual(
+    evals.STRUCTURAL_GROUND_TRUTH['dependency-caused-incident-b'].rootCause.component,
+    'payments',
+    'fixture sanity: payments is not this scenario\'s root cause',
+  );
+  const [deployment] = plannedTestsFor('payments');
+  assert.equal(deployment.tool, 'deployments');
+  const executor = createPlannedReplayExecutor({
+    fixture,
+    routes: graph.INVESTIGATION_ROUTES,
+    annotate: evals.createObservationAnnotator(),
+  });
+
+  const result = await executor.execute(baseContext({ tool: deployment.tool, input: deployment.input }));
+
+  assert.equal(result.status, 'ok');
+  assert.ok(
+    result.output.some((item) =>
+      item.observation?.facts.some((fact) => fact.form === 'deployment-in-window' && fact.window === 'pre-onset'),
+    ),
+    'the answer carries the pre-onset deployment fact',
+  );
+});
