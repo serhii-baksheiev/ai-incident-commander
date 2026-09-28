@@ -4,6 +4,8 @@ export * from './evaluation.js';
 export * from './execution.js';
 export * from './hypothesis-standing.js';
 export * from './intake.js';
+export * from './prediction-derivation.js';
+export * from './prediction-evaluation.js';
 export * from './reducers.js';
 export * from './run-event-stream.js';
 export * from './scope.js';
