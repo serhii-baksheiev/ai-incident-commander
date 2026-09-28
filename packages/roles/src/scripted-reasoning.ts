@@ -8,12 +8,24 @@ import type { InvestigationReasoning } from '@aic/graph';
  * measures is what the harness itself contributes (`scripts/lane-arms.mjs`'s
  * own header on `scriptedNodes`).
  *
- * Moved here from `test/fixtures/benchmark-experiment.mjs`'s
- * `replayBackedNodes`, which now delegates its four reasoning roles to this
- * function and only adds its own traces and self-check around them, so a
- * lane never has to import a test fixture to build its control arm and the
- * two cannot drift (`.claude/rules/invariants.md`, "one mechanism, one
- * implementation").
+ * AIC-126 slice b: it lives in `@aic/roles`, not `@aic/evals`. It is a
+ * deterministic reasoner with no ground truth of its own, and
+ * `dependency-cruiser.config.mjs`'s `benchmark-ground-truth-is-evaluator-side-only`
+ * rule forbids every other package and app from importing `@aic/evals`,
+ * which carries the benchmark scenarios and their ground truth. `@aic/roles`
+ * already hosts the model reasoners and `@aic/evals` already depends on
+ * `@aic/roles`, so a product entry (the CLI's `aic investigate --roles
+ * scripted`) can use the same scripted control the lanes do without
+ * importing `@aic/evals` at all — see scripted-reasoning.test.mjs › "@aic/evals
+ * does not export createScriptedReasoning: the one implementation lives in
+ * @aic/roles".
+ *
+ * Before that it lived in `@aic/evals`, moved there from
+ * `test/fixtures/benchmark-experiment.mjs`'s `replayBackedNodes`, which
+ * delegates its four reasoning roles to this function and only adds its own
+ * traces and self-check around them, so a lane never has to import a test
+ * fixture to build its control arm and the two cannot drift
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
  *
  * One deliberate behaviour change from the fixture: `challenge_hypothesis`
  * here does not assert on the leader id it is called with. The fixture's own

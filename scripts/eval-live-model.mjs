@@ -98,7 +98,7 @@
  *
  * Both graph arms come from `./lane-arms.mjs`, which builds them with
  * `createInvestigationNodes` (`@aic/graph`) and, for the control arm,
- * `createScriptedReasoning` (`@aic/evals`) — the one implementation the
+ * `createScriptedReasoning` (`@aic/roles`) — the one implementation the
  * regression suite's replay-backed fixture also delegates to
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation"). A copy
  * here would be a control arm that could drift away from the arm the regression

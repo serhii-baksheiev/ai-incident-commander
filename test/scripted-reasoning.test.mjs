@@ -1,10 +1,19 @@
 /**
- * AIC-126 slice a: `@aic/evals`'s `createScriptedReasoning(record)`, the
- * scripted-control reasoning the benchmark harness needs — the same
- * behaviour `test/fixtures/benchmark-experiment.mjs`'s `replayBackedNodes`
- * carries today for `generate_hypotheses`, `interpret_residual_evidence`,
- * `challenge_hypothesis` and `propose_conclusion` — moved into the package so
- * a lane never has to reach into `test/` for its control arm's reasoning.
+ * AIC-126 slice b: `createScriptedReasoning(record)`, the scripted-control
+ * reasoning the benchmark harness needs — the same behaviour
+ * `test/fixtures/benchmark-experiment.mjs`'s `replayBackedNodes` carries
+ * today for `generate_hypotheses`, `interpret_residual_evidence`,
+ * `challenge_hypothesis` and `propose_conclusion` — so a lane never has to
+ * reach into `test/` for its control arm's reasoning.
+ *
+ * It lives in `@aic/roles`, not `@aic/evals`: it is a deterministic reasoner
+ * with no ground truth of its own, and `@aic/evals` is the package
+ * dependency-cruiser's `benchmark-ground-truth-is-evaluator-side-only` rule
+ * forbids every other package and app from importing, because it carries the
+ * benchmark scenarios and their ground truth. `@aic/roles` already hosts the
+ * model reasoners and `@aic/evals` already depends on `@aic/roles`, so moving
+ * it there lets a product entry (the CLI, AIC-126 slice b) use the same
+ * scripted control the lanes do without importing `@aic/evals` at all.
  *
  * One deliberate behaviour change from the fixture: `challenge_hypothesis`
  * here does not assert on the leader id it is called with. The fixture's own
@@ -17,12 +26,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import * as evals from '@aic/evals';
+import * as roles from '@aic/roles';
 
-function requireEvalsExport(name) {
-  assert.equal(typeof evals[name], 'function', `@aic/evals must export ${name}`);
-  return evals[name];
+function requireRolesExport(name) {
+  assert.equal(typeof roles[name], 'function', `@aic/roles must export ${name}`);
+  return roles[name];
 }
+
+/* -------------------------------------------------------------------------- */
+/* 0. one implementation: @aic/evals does not export it any more            */
+/* -------------------------------------------------------------------------- */
+
+test('@aic/evals does not export createScriptedReasoning: the one implementation lives in @aic/roles', async () => {
+  const evals = await import('@aic/evals');
+
+  assert.equal(
+    evals.createScriptedReasoning,
+    undefined,
+    '@aic/evals must not export createScriptedReasoning any more, so no product entry reaches it through evals',
+  );
+});
 
 function record(overrides = {}) {
   return {
@@ -42,7 +65,7 @@ function record(overrides = {}) {
 /* -------------------------------------------------------------------------- */
 
 test('createScriptedReasoning(record) returns the four reasoning roles as functions', () => {
-  const createScriptedReasoning = requireEvalsExport('createScriptedReasoning');
+  const createScriptedReasoning = requireRolesExport('createScriptedReasoning');
   const reasoning = createScriptedReasoning(record());
 
   for (const role of ['generate_hypotheses', 'interpret_residual_evidence', 'challenge_hypothesis', 'propose_conclusion']) {
@@ -55,7 +78,7 @@ test('createScriptedReasoning(record) returns the four reasoning roles as functi
 /* -------------------------------------------------------------------------- */
 
 test('generate_hypotheses mints exactly one causeless hypothesis leader-<runId>, createdBy initial', async () => {
-  const createScriptedReasoning = requireEvalsExport('createScriptedReasoning');
+  const createScriptedReasoning = requireRolesExport('createScriptedReasoning');
   const aRecord = record();
   const reasoning = createScriptedReasoning(aRecord);
 
@@ -76,7 +99,7 @@ test('generate_hypotheses mints exactly one causeless hypothesis leader-<runId>,
 /* -------------------------------------------------------------------------- */
 
 test('interpret_residual_evidence returns {} regardless of state', async () => {
-  const createScriptedReasoning = requireEvalsExport('createScriptedReasoning');
+  const createScriptedReasoning = requireRolesExport('createScriptedReasoning');
   const reasoning = createScriptedReasoning(record());
 
   assert.deepEqual(await reasoning.interpret_residual_evidence({ some: 'state' }), {});
@@ -87,7 +110,7 @@ test('interpret_residual_evidence returns {} regardless of state', async () => {
 /* -------------------------------------------------------------------------- */
 
 test('challenge_hypothesis returns the causeless alternative-<runId> and one discriminating test on the fixture\'s first entry, byte-identical to the fixture\'s own shape', async () => {
-  const createScriptedReasoning = requireEvalsExport('createScriptedReasoning');
+  const createScriptedReasoning = requireRolesExport('createScriptedReasoning');
   const aRecord = record();
   const reasoning = createScriptedReasoning(aRecord);
 
@@ -112,7 +135,7 @@ test('challenge_hypothesis returns the causeless alternative-<runId> and one dis
 });
 
 test('challenge_hypothesis does not assert on the leader id it is called with, unlike the fixture it replaces', async () => {
-  const createScriptedReasoning = requireEvalsExport('createScriptedReasoning');
+  const createScriptedReasoning = requireRolesExport('createScriptedReasoning');
   const aRecord = record();
   const reasoning = createScriptedReasoning(aRecord);
 
@@ -129,7 +152,7 @@ test('challenge_hypothesis does not assert on the leader id it is called with, u
 /* -------------------------------------------------------------------------- */
 
 test('propose_conclusion returns an inconclusive conclusion with no causes', async () => {
-  const createScriptedReasoning = requireEvalsExport('createScriptedReasoning');
+  const createScriptedReasoning = requireRolesExport('createScriptedReasoning');
   const reasoning = createScriptedReasoning(record());
 
   assert.deepEqual(await reasoning.propose_conclusion({}), {

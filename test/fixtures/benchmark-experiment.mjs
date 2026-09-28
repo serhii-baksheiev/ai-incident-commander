@@ -37,6 +37,7 @@ import assert from 'node:assert/strict';
 
 import { EXPECTED_OBSERVATION_VERSION, STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
+import { createScriptedReasoning } from '@aic/roles';
 import { createRequestFingerprint } from '@aic/tools';
 import { replayFixtureFromScenarioEntries, ReplayToolAdapter } from '@aic/tools/replay';
 
@@ -252,9 +253,9 @@ export function replayBackedNodes(record, traces, replayCounts) {
     return update;
   };
   // The scripted reasoning's outputs come from the one implementation the
-  // lanes use (`evals.createScriptedReasoning`); this fixture only adds its
-  // own traces and the challenge's leader self-check around them.
-  const scripted = evals.createScriptedReasoning(record);
+  // lanes use (`createScriptedReasoning`, `@aic/roles`); this fixture only
+  // adds its own traces and the challenge's leader self-check around them.
+  const scripted = createScriptedReasoning(record);
   const traced = (nodeName, role) => async (...args) => {
     traces.get(record.runId).push(nodeName);
     return scripted[role](...args);

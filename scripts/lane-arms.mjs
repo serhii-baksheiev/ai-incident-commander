@@ -24,6 +24,7 @@ import {
   createModelGenerateHypotheses,
   createModelInterpretResidualEvidence,
   createModelProposeConclusion,
+  createScriptedReasoning,
 } from '@aic/roles';
 import { NAIVE_PROMPT_VERSION, createModelNaiveInvestigation } from '@aic/roles/naive';
 import { createPlannedReplayExecutor } from '@aic/tools/replay';
@@ -31,8 +32,9 @@ import { createPlannedReplayExecutor } from '@aic/tools/replay';
 /**
  * The deterministic arm: `@aic/graph`'s canonical `createInvestigationNodes`
  * (AIC-126 slice a), given the scripted-control reasoning
- * (`evals.createScriptedReasoning`, AIC-126 slice a) and the planned-replay
- * executor. Before this slice this function assembled the node map itself —
+ * (`createScriptedReasoning`, `@aic/roles` since AIC-126 slice b — it lived
+ * in `@aic/evals` for slice a) and the planned-replay executor. Before this
+ * slice this function assembled the node map itself —
  * spreading `replayBackedNodes` (`test/fixtures/benchmark-experiment.mjs`)
  * for the scripted roles and the identity/no-op nodes, then overriding the
  * six deterministic nodes one by one. `createInvestigationNodes` now owns
@@ -60,7 +62,7 @@ import { createPlannedReplayExecutor } from '@aic/tools/replay';
  */
 export function scriptedNodes(record) {
   return createInvestigationNodes({
-    reasoning: evals.createScriptedReasoning(record),
+    reasoning: createScriptedReasoning(record),
     execute: createPlannedReplayExecutor({
       fixture: record.fixture,
       routes: INVESTIGATION_ROUTES,
