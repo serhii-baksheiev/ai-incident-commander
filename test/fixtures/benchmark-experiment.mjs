@@ -37,8 +37,8 @@ import assert from 'node:assert/strict';
 
 import { EXPECTED_OBSERVATION_VERSION, STATUS_RULES_VERSION } from '@aic/domain';
 import * as evals from '@aic/evals';
-import { createReplayFixtureKey, createRequestFingerprint } from '@aic/tools';
-import { ReplayToolAdapter } from '@aic/tools/replay';
+import { createRequestFingerprint } from '@aic/tools';
+import { replayFixtureFromScenarioEntries, ReplayToolAdapter } from '@aic/tools/replay';
 
 export const benchmarkVersions = Object.freeze({
   graphVersion: 'graph-v0.1',
@@ -213,17 +213,14 @@ export async function getControlledMutationCycle() {
   return controlledMutationCycle;
 }
 
-function replayFixtureFor(fixture) {
-  return {
-    version: fixture.version,
-    responses: Object.fromEntries(
-      fixture.entries.map(({ toolId, input, result }) => [
-        createReplayFixtureKey(toolId, input),
-        result,
-      ]),
-    ),
-  };
-}
+/**
+ * AIC-125 slice c: the fixture->adapter conversion itself now lives in
+ * `@aic/tools/replay` (`replayFixtureFromScenarioEntries`,
+ * `packages/tools/replay/index.ts`) — this file imports it rather than
+ * carrying a second copy (`.claude/rules/invariants.md`, "one mechanism, one
+ * implementation").
+ */
+const replayFixtureFor = replayFixtureFromScenarioEntries;
 
 const OBSERVATION_MERGE_ADAPTER = 'aic.incident-tool@1';
 
