@@ -34,8 +34,9 @@
  * `import()` at run time (the dynamic-import row below keeps that set
  * empty); a workspace package consumed as a real copy under `node_modules`
  * rather than a symlink, which `isWorkspaceExternalDependency` would drop;
- * and `package.json` itself, which is undeclared on purpose — a `version` or
- * `description` edit must not move the one-shot fingerprint, so its command
+ * and `package.json` itself, which is undeclared on purpose — an edit to a
+ * script the lane never runs or to `license` must not move the one-shot
+ * fingerprint, so its command
  * lines are pinned instead by "the build, eval:live-model and
  * eval:final-holdout npm scripts are exactly the command lines the candidate
  * fingerprint was reviewed against" below, an exact-string row a reviewer
@@ -324,7 +325,7 @@ test('FINAL_EVALUATION_CANDIDATE_PATHS declares tsconfig.json and tsconfig.base.
   assert.equal(
     candidatePaths.includes('package.json'),
     false,
-    "package.json carries its own version and description alongside the command line it declares, so declaring it would let a version/description-only edit move the fingerprint and re-admit a hold-out run — the documented asymmetry (omitting a behaviour-affecting path is a false refusal; including one that does not affect behaviour is a false unlock, final-evaluation-record.ts and docs/evidence/final-evaluation/README.md) rules it out. Its command lines are pinned instead by the exact-string row 'the build, eval:live-model and eval:final-holdout npm scripts are exactly the command lines the candidate fingerprint was reviewed against'",
+    "package.json carries scripts the lane never runs (test, lint, cli) and fields such as license alongside the command line it declares, so declaring it would let an edit to any of them move the fingerprint and re-admit a hold-out run — the documented asymmetry (omitting a behaviour-affecting path is a false refusal; including one that does not affect behaviour is a false unlock, final-evaluation-record.ts and docs/evidence/final-evaluation/README.md) rules it out. Its command lines are pinned instead by the exact-string row 'the build, eval:live-model and eval:final-holdout npm scripts are exactly the command lines the candidate fingerprint was reviewed against'",
   );
 });
 
@@ -396,6 +397,28 @@ test('the build, eval:live-model and eval:final-holdout npm scripts are exactly 
         'npm run build --silent && node --import ./scripts/lib/no-ambient-tracing.mjs scripts/eval-final-holdout.mjs',
     },
     'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a change to these three lines, or a pre/post hook added around any of them, cannot move the candidate fingerprint at all — it must instead redden this row',
+  );
+});
+
+/**
+ * npm itself is configured by two things `package.json` being undeclared
+ * leaves outside the fingerprint: the `packageManager` field, which decides
+ * which npm corepack runs the lane commands with, and a root `.npmrc`, whose
+ * `node-options` would inject a preload into every node process those
+ * commands spawn. Neither is declared, so both are pinned here instead.
+ */
+test('the root package.json pins packageManager and the repository has no root .npmrc, so npm runs the lane commands unconfigured', () => {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+
+  assert.equal(
+    manifest.packageManager,
+    'npm@10.9.8',
+    'packageManager decides which npm runs the lane command lines, and package.json is undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a change to it must redden this row',
+  );
+  assert.equal(
+    existsSync(join(REPO_ROOT, '.npmrc')),
+    false,
+    'a root .npmrc can set node-options for every node process npm spawns, the lane scripts included, and it is undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so adding one must redden this row',
   );
 });
 
@@ -513,7 +536,7 @@ test("the candidate fingerprint does not move when package.json's version change
     assert.equal(
       before,
       after,
-      'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so a version-only edit must not move the candidate fingerprint and re-admit a spent hold-out run',
+      'package.json is deliberately undeclared in FINAL_EVALUATION_CANDIDATE_PATHS, so an edit to package.json alone must not move the candidate fingerprint and re-admit a spent hold-out run (a bump written by `npm version` also rewrites package-lock.json, which is declared, and does move it)',
     );
   });
 });

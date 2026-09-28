@@ -67,8 +67,9 @@
  * the declared `scripts` path — see › "every --import preload the
  * eval:live-model and eval:final-holdout npm scripts declare falls under a
  * path FINAL_EVALUATION_CANDIDATE_PATHS declares". `package.json` is
- * deliberately NOT declared, by the asymmetry stated above: a `version` or
- * `description` edit would otherwise re-admit the hold-out. Its command lines,
+ * deliberately NOT declared, by the asymmetry stated above: an edit to a
+ * script the lane never runs (`test`, `lint`, `cli`) or to `license` would
+ * otherwise re-admit the hold-out. Its command lines,
  * and any npm pre/post hook around them, are pinned instead by an
  * exact-string row, so changing them reddens that row rather than moving the
  * fingerprint — see › "the build, eval:live-model and
