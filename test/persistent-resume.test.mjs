@@ -24,8 +24,12 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
  * whether it ever started (see WORKER_STARTED below).
  */
 const CHILD_DEADLINE_MS = 60_000;
-/** Each row's own timeout: every child deadline it can wait on, with headroom. */
-const ROW_TIMEOUT_MS = 4 * CHILD_DEADLINE_MS;
+/**
+ * Each row's own timeout. The resume row waits on a child five times in
+ * sequence, so this covers five full deadlines plus headroom: a row is never
+ * cut off by its own timeout while a child deadline is still running.
+ */
+const ROW_TIMEOUT_MS = 6 * CHILD_DEADLINE_MS;
 /** The first message a worker sends, before it imports anything. */
 const WORKER_STARTED = 'worker-started';
 

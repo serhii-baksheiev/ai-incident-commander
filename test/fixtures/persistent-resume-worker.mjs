@@ -2,8 +2,9 @@ const [, , mode, checkpointPath, runId, testId = 'test-checkout'] = process.argv
 
 // Sent before any import, so a row that times out can say whether this
 // process ever started (AIC-134): see persistent-resume.test.mjs's
-// CHILD_DEADLINE_MS.
-process.send({ type: 'worker-started' });
+// CHILD_DEADLINE_MS. Guarded like everything else in this file, so a test
+// runner that imports it with no IPC channel finds it inert.
+if (typeof process.send === 'function') process.send({ type: 'worker-started' });
 
 async function main() {
   const { createPersistentInvestigationRunner } = await import('@aic/graph');
