@@ -3,9 +3,10 @@
  * named as "a later slice" — `ReplayToolAdapter` gains an optional second
  * constructor argument that annotates a replayed `ok` evidence array with
  * `Evidence.observation`, `@aic/evals` gains `createObservationAnnotator()`
- * reading `OBSERVATION_ANNOTATIONS`, the shared `replayBackedNodes` fixture
- * (`test/fixtures/benchmark-experiment.mjs`) wires the two together so both
- * the scripted and the model graph arm see the same annotated evidence, and
+ * reading `OBSERVATION_ANNOTATIONS`, which the replay port both graph arms
+ * execute through (AIC-125, `createPlannedReplayExecutor`) passes to the
+ * adapter, so whatever evidence an arm fetches carries its observation — the
+ * arms no longer fetch the same evidence (supplement 7) — and
  * `describeState` (`packages/roles/src/investigation-roles.ts`) omits
  * `evidence[].observation` from the prompt every model role sends — the
  * naive arm never sees the typed channel, so the graph model must not either
