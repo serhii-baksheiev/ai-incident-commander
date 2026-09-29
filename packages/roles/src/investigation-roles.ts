@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  boundedJsonViolation,
   buildExecKey,
   canonicalJson,
   CauseClaimSchema,
@@ -662,14 +663,15 @@ export function createModelInterpretResidualEvidence({
 // runs BEFORE the input ever reaches the planner, so the refusal is reported
 // as a model-quality failure rather than a crash deep inside a later round.
 //
-// It is deliberately iterative (an explicit stack, no recursion over the
-// input) with an explicit depth bound and a node-count budget, never a catch
-// around a stack overflow: `.claude/rules/invariants.md`, "A guard that fails
-// open must do provably bounded work" — a caught `RangeError`'s threshold
-// depends on ambient stack size, which is not a bound at all. Both bounds are
-// this role's own and stricter than the planner's: the provider's closed
-// challenge schema allows an `input` of at most four string properties, so no
-// conforming answer comes near either bound.
+// AIC-140 moved the bounded, iterative walk itself into
+// `@aic/domain`'s `boundedJsonViolation` (`packages/domain/src/bounded-json.ts`)
+// so `apps/cli`'s `--replay` fixture parser shares the one mechanism rather
+// than growing its own copy (`.claude/rules/invariants.md`, "one mechanism,
+// one implementation"). This role keeps its own bounds — its own and
+// stricter than the planner's: the provider's closed challenge schema allows
+// an `input` of at most four string properties, so no conforming answer
+// comes near either bound — and maps the structured result back to the
+// exact refusal wording pinned below.
 // see roles-model-nodes.test.mjs › "refuses a discriminating test whose input nests exactly 33 levels deep, one past the guard's own depth bound"
 // see roles-model-nodes.test.mjs › "refuses a discriminating test whose input carries more than 5000 values, one key holding a 5001-element array"
 // see roles-model-nodes.test.mjs › "refuses a discriminating test whose input
@@ -681,52 +683,23 @@ const CANONICALISABLE_INPUT_MAX_DEPTH = 32;
 const CANONICALISABLE_INPUT_MAX_NODES = 5000;
 
 function uncanonicalisableInputViolation(input: unknown): string | undefined {
-  const stack: Array<{ value: unknown; depth: number }> = [{ value: input, depth: 0 }];
-  let visited = 0;
-  while (stack.length > 0) {
-    const frame = stack.pop() as { value: unknown; depth: number };
-    visited += 1;
-    if (visited > CANONICALISABLE_INPUT_MAX_NODES) {
-      return `has more than ${CANONICALISABLE_INPUT_MAX_NODES} values, the most this role accepts`;
-    }
-    if (frame.depth > CANONICALISABLE_INPUT_MAX_DEPTH) {
-      return `nests deeper than ${CANONICALISABLE_INPUT_MAX_DEPTH} levels, the most this role accepts`;
-    }
-
-    const { value } = frame;
-    if (value === null || typeof value === 'boolean' || typeof value === 'string') {
-      continue;
-    }
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value)) {
-        return 'carries a value that is not a finite number';
-      }
-      continue;
-    }
-    if (Array.isArray(value)) {
-      if (visited + stack.length + value.length > CANONICALISABLE_INPUT_MAX_NODES) {
-        return `has more than ${CANONICALISABLE_INPUT_MAX_NODES} values, the most this role accepts`;
-      }
-      for (const item of value) stack.push({ value: item, depth: frame.depth + 1 });
-      continue;
-    }
-    if (typeof value === 'object') {
-      const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== null) {
-        return 'contains a value that is not a plain JSON object';
-      }
-      const keys = Object.keys(value as Record<string, unknown>);
-      if (visited + stack.length + keys.length > CANONICALISABLE_INPUT_MAX_NODES) {
-        return `has more than ${CANONICALISABLE_INPUT_MAX_NODES} values, the most this role accepts`;
-      }
-      for (const key of keys) {
-        stack.push({ value: (value as Record<string, unknown>)[key], depth: frame.depth + 1 });
-      }
-      continue;
-    }
-    return 'contains a value that is not a JSON-serialisable shape';
+  const violation = boundedJsonViolation(input, {
+    maxDepth: CANONICALISABLE_INPUT_MAX_DEPTH,
+    maxNodes: CANONICALISABLE_INPUT_MAX_NODES,
+  });
+  if (violation === undefined) return undefined;
+  switch (violation.kind) {
+    case 'size':
+      return `has more than ${violation.limit} values, the most this role accepts`;
+    case 'depth':
+      return `nests deeper than ${violation.limit} levels, the most this role accepts`;
+    case 'non-finite':
+      return 'carries a value that is not a finite number';
+    case 'shape':
+      return violation.detail === 'non-plain-object'
+        ? 'contains a value that is not a plain JSON object'
+        : 'contains a value that is not a JSON-serialisable shape';
   }
-  return undefined;
 }
 
 /**

@@ -1,3 +1,4 @@
+export * from './bounded-json.js';
 export * from './conclusion-rules.js';
 export * from './contracts.js';
 export * from './evaluation.js';

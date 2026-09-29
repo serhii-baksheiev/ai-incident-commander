@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 
 import {
+  boundedJsonViolation,
   deriveHypothesisStatus,
   IncidentSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   LogicalCountSchema,
   STATUS_RULES_VERSION,
+  type BoundedJsonViolation,
   type Incident,
   type IncidentState,
 } from '@aic/domain';
@@ -68,7 +70,27 @@ interface ReplayFileContent {
   readonly fixture: PlannedReplayScenarioFixture;
 }
 
+// Residual reviewer advisory (5), PRs #160/162: named so the refusal it backs
+// can name the bound rather than an unexplained number. Checked from `stat`,
+// before the file is ever read into memory or handed to `JSON.parse` — an
+// oversized file is refused by its own size, never by however long parsing or
+// allocating its content happens to take.
+const REPLAY_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
 function readReplayFile(path: string): unknown {
+  let sizeBytes: number;
+  try {
+    sizeBytes = statSync(path).size;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`--replay file could not be read at ${path}: ${message}`);
+  }
+  if (sizeBytes > REPLAY_FILE_MAX_BYTES) {
+    throw new Error(
+      `--replay file at ${path} is ${sizeBytes} bytes, over the 16 MiB size bound this command accepts`,
+    );
+  }
+
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
@@ -87,6 +109,28 @@ function readReplayFile(path: string): unknown {
 function ownRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   return value as Record<string, unknown>;
+}
+
+/**
+ * This command's own wording for `@aic/domain`'s structured
+ * `BoundedJsonViolation` — a separate phrasing from
+ * `packages/roles/src/investigation-roles.ts`'s, which keeps its own
+ * pre-AIC-140 strings byte-for-byte instead. Both map the same structured
+ * result; this one names the bound the way this command's other refusals do.
+ */
+function describeBoundedJsonViolation(violation: BoundedJsonViolation): string {
+  switch (violation.kind) {
+    case 'size':
+      return `carries more than ${violation.limit} values, the most this command accepts`;
+    case 'depth':
+      return `nests deeper than ${violation.limit} levels, the most this command accepts`;
+    case 'non-finite':
+      return 'carries a value that is not a finite number';
+    case 'shape':
+      return violation.detail === 'non-plain-object'
+        ? 'contains a value that is not a plain JSON object'
+        : 'contains a value that is not a JSON-serialisable shape';
+  }
 }
 
 const BUDGET_FIELDS = ['maxIterations', 'llmCallBudget', 'reservedChallengeBudget'] as const;
@@ -152,6 +196,33 @@ function parseFixture(value: unknown): PlannedReplayScenarioFixture {
     if (typeof entryRecord.toolId !== 'string') {
       throw new Error(`--replay file fixture.entries[${index}] is missing required string field toolId`);
     }
+    // Residual reviewer advisory (2), PRs #160/162: named eagerly, here at
+    // parse time — never left to surface as an unnamed internal error only
+    // when the graph happens to query this entry.
+    if (ownRecord(entryRecord.result) === undefined) {
+      throw new Error(
+        `--replay file fixture.entries[${index}].result must be an object, got ${JSON.stringify(entryRecord.result)}`,
+      );
+    }
+    if ('input' in entryRecord) {
+      if (ownRecord(entryRecord.input) === undefined) {
+        throw new Error(
+          `--replay file fixture.entries[${index}].input must be an object, got ${JSON.stringify(entryRecord.input)}`,
+        );
+      }
+      // AIC-135's bounded structural walk (`@aic/domain`'s
+      // `boundedJsonViolation`, `packages/domain/src/bounded-json.ts`),
+      // shared rather than re-implemented (`.claude/rules/invariants.md`,
+      // "one mechanism, one implementation"): a 200000-deep `input` is
+      // refused by name here instead of overflowing the stack later, deep
+      // inside a role or the planner.
+      const violation = boundedJsonViolation(entryRecord.input);
+      if (violation !== undefined) {
+        throw new Error(
+          `--replay file fixture.entries[${index}].input ${describeBoundedJsonViolation(violation)}`,
+        );
+      }
+    }
   });
   return record as unknown as PlannedReplayScenarioFixture;
 }
@@ -179,11 +250,21 @@ function parseReplayFileContent(raw: unknown): ReplayFileContent {
 /**
  * The full initial `IncidentState` this run starts from, built from the
  * domain's own schema-version constants and the replay file's `incident` and
- * `budget` — never a literal this command keeps in sync by hand.
- * see cli-investigate.test.mjs's own `directInitialStateFor` helper, the same
- * shape.
+ * `budget` — never a literal this command keeps in sync by hand. Exported so
+ * a test can check its control block against
+ * `packages/evals/src/graph-benchmark.ts`'s own `initialBenchmarkState` for
+ * the same `runId`/`budget`, including `maxIterations` — residual reviewer
+ * advisory (3), PRs #160/162.
+ * see cli-investigate.test.mjs › "apps/cli/src/commands/investigate.ts
+ * exports buildInitialState(runId, content), whose control block (and empty
+ * hypotheses/predictions/tests/trials/evidence/assessments arrays) equal
+ * packages/evals/src/graph-benchmark.ts initialBenchmarkState's own start
+ * state for the same runId and budget, maxIterations included"
  */
-function buildInitialState(runId: string, content: ReplayFileContent): IncidentState {
+export function buildInitialState(
+  runId: string,
+  content: Pick<ReplayFileContent, 'incident' | 'budget'>,
+): IncidentState {
   return {
     incident: content.incident,
     hypotheses: [],
@@ -312,7 +393,24 @@ export async function runInvestigate(
   // content into the graph — the same way `aic dev spike` decides tracing
   // before it starts: tracing that was asked for and cannot be delivered
   // must stop the run, not silently drop the trace partway through it.
-  const tracing = resolveTracingConfig(env);
+  //
+  // Decided from the real `process.env`, never from `deps.env`: it is
+  // @langchain/core's own tracer that reads this process's ambient
+  // `process.env` when it decides whether to trace at all, not whatever env
+  // object an in-process caller passes to `runInvestigate` — so deciding
+  // this from `deps.env` would refuse (or admit) tracing based on a variable
+  // the tracer never actually reads. `deps.env` still serves the model
+  // credential just below, which this command DOES read itself. Residual
+  // reviewer advisory (1), PRs #160/162.
+  // see cli-investigate.test.mjs › "runInvestigate(args, { env: cleanEnv })
+  // called in-process still refuses tracing, naming LANGSMITH_API_KEY, when
+  // the real process.env carries LANGSMITH_TRACING=true and no key — even
+  // though the env object passed in carries neither"
+  // see cli-investigate.test.mjs › "runInvestigate(args, { env: depsEnv })
+  // called in-process does not refuse tracing when depsEnv carries
+  // LANGSMITH_TRACING=true but the real process.env carries no tracing flag,
+  // because @langchain/core would not actually trace off deps.env"
+  const tracing = resolveTracingConfig(process.env);
   if (tracing.enabled) {
     // This process exits as soon as it has printed its result. The tracer's
     // default is to send in the background, which drops whatever has not

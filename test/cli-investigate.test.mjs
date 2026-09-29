@@ -871,3 +871,307 @@ test('runInvestigate with --replay, --roles model and injected env and createMod
     assert.ok(portCalls.length >= 1, 'the fake port returned by the factory must see at least one call before the run ends');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* 11. AIC-140: the tracing refusal is decided from process.env, never from   */
+/*     deps.env alone — @langchain/core's own tracer reads this process's own */
+/*     ambient process.env, not whatever env object an in-process caller      */
+/*     passes to runInvestigate. Residual reviewer advisory (1), PRs #160/162.*/
+/* -------------------------------------------------------------------------- */
+
+test('runInvestigate(args, { env: cleanEnv }) called in-process still refuses tracing, naming LANGSMITH_API_KEY, when the real process.env carries LANGSMITH_TRACING=true and no key — even though the env object passed in carries neither', async () => {
+  await withTempDir(async (dir) => {
+    const investigateModule = await import('../apps/cli/dist/commands/investigate.js');
+    const scenario = calibrationScenario();
+    const replayPath = writeReplayFile(dir, replayFileContentFor(annotatedFixtureFor(scenario)));
+
+    const cleanEnv = childEnv();
+    assert.ok(
+      !Object.keys(cleanEnv).some((name) => /LANGSMITH|LANGCHAIN/i.test(name)),
+      'fixture sanity: childEnv() with no overrides must carry no tracing variable',
+    );
+
+    const savedEnv = {
+      LANGSMITH_TRACING: process.env.LANGSMITH_TRACING,
+      LANGSMITH_ENDPOINT: process.env.LANGSMITH_ENDPOINT,
+      LANGCHAIN_ENDPOINT: process.env.LANGCHAIN_ENDPOINT,
+      LANGSMITH_API_KEY: process.env.LANGSMITH_API_KEY,
+      LANGCHAIN_API_KEY: process.env.LANGCHAIN_API_KEY,
+    };
+    // The no-ambient-tracing preload clears the tracing flags but leaves any
+    // api key a developer's shell exports; this row's premise is "no key", so
+    // it removes both key variables for its duration and restores them after.
+    delete process.env.LANGSMITH_API_KEY;
+    delete process.env.LANGCHAIN_API_KEY;
+    // A closed local port, never the real LangSmith endpoint — the same
+    // reasoning as the spawned-process tracing row above: should this row's
+    // expected refusal ever fail to fire, nothing it does may reach a real
+    // host with a real key.
+    process.env.LANGSMITH_TRACING = 'true';
+    process.env.LANGSMITH_ENDPOINT = 'http://127.0.0.1:1';
+    process.env.LANGCHAIN_ENDPOINT = 'http://127.0.0.1:1';
+    try {
+      await assert.rejects(
+        investigateModule.runInvestigate(['--replay', replayPath, '--roles', 'scripted'], { env: cleanEnv }),
+        /LANGSMITH_API_KEY/,
+        'runInvestigate must still refuse naming LANGSMITH_API_KEY when the ambient process.env — the one @langchain/core actually reads — carries LANGSMITH_TRACING=true, regardless of what deps.env carries',
+      );
+    } finally {
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
+test('runInvestigate(args, { env: depsEnv }) called in-process does not refuse tracing when depsEnv carries LANGSMITH_TRACING=true but the real process.env carries no tracing flag, because @langchain/core would not actually trace off deps.env', async () => {
+  await withTempDir(async (dir) => {
+    const investigateModule = await import('../apps/cli/dist/commands/investigate.js');
+    const scenario = calibrationScenario();
+    const replayPath = writeReplayFile(dir, replayFileContentFor(annotatedFixtureFor(scenario)));
+
+    assert.ok(
+      !['LANGSMITH_TRACING', 'LANGSMITH_TRACING_V2', 'LANGCHAIN_TRACING', 'LANGCHAIN_TRACING_V2'].some(
+        (name) => name in process.env,
+      ),
+      "fixture sanity: the suite's own no-ambient-tracing preload must have already cleared every tracing flag from process.env",
+    );
+
+    const depsEnv = { ...childEnv(), LANGSMITH_TRACING: 'true' };
+
+    await assert.doesNotReject(
+      investigateModule.runInvestigate(['--replay', replayPath, '--roles', 'scripted'], { env: depsEnv }),
+      'runInvestigate must not refuse tracing from deps.env alone: the real process.env — what @langchain/core actually reads — carries no tracing flag, so no trace would ever be attempted',
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 12. AIC-140: malformed fixture entries are named eagerly, at parse time —  */
+/*     never surfaced as an unnamed internal error only when the graph        */
+/*     happens to query that entry. Residual reviewer advisory (2), PRs       */
+/*     #160/162.                                                              */
+/* -------------------------------------------------------------------------- */
+
+test('a --replay file whose fixture.entries[0].result is missing or not an object exits non-zero, writes nothing to stdout, and names fixture.entries[0].result on stderr', async () => {
+  await withTempDir(async (dir) => {
+    const scenario = calibrationScenario();
+    const fixture = annotatedFixtureFor(scenario);
+
+    for (const badResult of [undefined, 'not-an-object', 42, null, []]) {
+      const content = replayFileContentFor(fixture);
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const mutatedEntry = { ...firstEntry };
+      if (badResult === undefined) {
+        delete mutatedEntry.result;
+      } else {
+        mutatedEntry.result = badResult;
+      }
+      content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
+      const replayPath = writeReplayFile(dir, content);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(
+        result.status,
+        0,
+        `fixture.entries[0].result = ${JSON.stringify(badResult)}: ${commandDiagnostics(args, result)}`,
+      );
+      assert.equal(
+        result.stdout,
+        '',
+        `no stdout may be written on refusal for fixture.entries[0].result = ${JSON.stringify(badResult)}: ${commandDiagnostics(args, result)}`,
+      );
+      assert.match(
+        result.stderr,
+        /fixture\.entries\[0\]\.result/,
+        `stderr must name fixture.entries[0].result as the problem for value ${JSON.stringify(badResult)}: ${commandDiagnostics(args, result)}`,
+      );
+    }
+  });
+});
+
+test('a --replay file whose fixture.entries[0].input is present but not an object exits non-zero, writes nothing to stdout, and names fixture.entries[0].input on stderr', async () => {
+  await withTempDir(async (dir) => {
+    const scenario = calibrationScenario();
+    const fixture = annotatedFixtureFor(scenario);
+
+    for (const badInput of ['not-an-object', 42, true, [], null]) {
+      const content = replayFileContentFor(fixture);
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const mutatedEntry = { ...firstEntry, input: badInput };
+      content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
+      const replayPath = writeReplayFile(dir, content);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(
+        result.status,
+        0,
+        `fixture.entries[0].input = ${JSON.stringify(badInput)}: ${commandDiagnostics(args, result)}`,
+      );
+      assert.equal(
+        result.stdout,
+        '',
+        `no stdout may be written on refusal for fixture.entries[0].input = ${JSON.stringify(badInput)}: ${commandDiagnostics(args, result)}`,
+      );
+      assert.match(
+        result.stderr,
+        /fixture\.entries\[0\]\.input/,
+        `stderr must name fixture.entries[0].input as the problem for value ${JSON.stringify(badInput)}: ${commandDiagnostics(args, result)}`,
+      );
+    }
+  });
+});
+
+test('a --replay file whose fixture.entries[0].input is nested 200000 levels deep is refused naming fixture.entries[0].input on stderr, never surfacing a raw "Maximum call stack size exceeded"', async () => {
+  await withTempDir(async (dir) => {
+    const scenario = calibrationScenario();
+    const fixture = annotatedFixtureFor(scenario);
+    const content = replayFileContentFor(fixture);
+    const [firstEntry, ...restEntries] = content.fixture.entries;
+    const DEEP_INPUT_MARKER = '"__AIC140_DEEP_INPUT__"';
+    const mutatedEntry = { ...firstEntry, input: '__AIC140_DEEP_INPUT__' };
+    content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
+
+    // Built iteratively, never recursively: JSON.stringify itself overflows
+    // the stack on a 200000-deep JS object assembled by recursion (confirmed
+    // empirically while writing this row: `RangeError: Maximum call stack
+    // size exceeded` from JSON.stringify itself, in this very test process).
+    // So the deep structure never exists as a JS object here — it is built
+    // and spliced in as raw JSON text instead.
+    const DEPTH = 200_000;
+    const deepJson = '{"nested":'.repeat(DEPTH) + '{}' + '}'.repeat(DEPTH);
+    const contentJson = JSON.stringify(content);
+    assert.ok(
+      contentJson.includes(DEEP_INPUT_MARKER),
+      'fixture sanity: the marker must appear exactly where fixture.entries[0].input will be spliced in',
+    );
+    const replayJson = contentJson.replace(DEEP_INPUT_MARKER, deepJson);
+    const replayPath = join(dir, 'replay.json');
+    writeFileSync(replayPath, replayJson, 'utf8');
+
+    const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+    const result = runCli(args);
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+    assert.doesNotMatch(
+      result.stderr,
+      /Maximum call stack/,
+      `stderr must never surface a raw stack-overflow message, only a named-field refusal: ${commandDiagnostics(args, result)}`,
+    );
+    assert.match(
+      result.stderr,
+      /fixture\.entries\[0\]\.input/,
+      `stderr must name fixture.entries[0].input as the problem: ${commandDiagnostics(args, result)}`,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 13. AIC-140: a --replay file over the size bound is refused before parsing */
+/*     it — never handed to JSON.parse at all. Residual reviewer advisory     */
+/*     (5, size half only — no ceiling on budget.llmCallBudget: out of scope, */
+/*     owner decision), PRs #160/162.                                        */
+/* -------------------------------------------------------------------------- */
+
+test('a --replay file larger than 16 MiB is refused before parsing, naming the size bound on stderr', async () => {
+  await withTempDir(async (dir) => {
+    const scenario = calibrationScenario();
+    const content = replayFileContentFor(annotatedFixtureFor(scenario));
+    const json = JSON.stringify(content);
+
+    const MiB = 1024 * 1024;
+    const targetBytes = 16 * MiB + 1;
+    const padding = ' '.repeat(Math.max(0, targetBytes - Buffer.byteLength(json, 'utf8')));
+    // Whitespace around a valid JSON document is insignificant to JSON.parse,
+    // so this row's fixture is otherwise exactly the same well-formed replay
+    // file every other row writes — only its byte size differs.
+    const padded = padding + json;
+    assert.equal(
+      Buffer.byteLength(padded, 'utf8'),
+      targetBytes,
+      'fixture sanity: the padded replay file must be exactly 16 MiB + 1 byte',
+    );
+
+    const replayPath = join(dir, 'replay-oversized.json');
+    writeFileSync(replayPath, padded, 'utf8');
+
+    const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+    const result = runCli(args);
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+    assert.match(
+      result.stderr,
+      /16\s*MiB/i,
+      `stderr must name the 16 MiB size bound: ${commandDiagnostics(args, result)}`,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 14. AIC-140: buildInitialState corresponds to evals' own initial benchmark */
+/*     state, for the same runId/budget — including maxIterations. Residual   */
+/*     reviewer advisory (3), PRs #160/162.                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `packages/evals/src/graph-benchmark.ts`'s own `initialBenchmarkState` is not
+ * exported from `@aic/evals` (only its callers are), so this row's oracle is a
+ * literal copy of the exact control-block field set it writes — read directly
+ * from `packages/evals/src/graph-benchmark.ts` at the time of writing this
+ * row, never a re-import of the CLI's own `buildInitialState` under a
+ * different name. `maxIterations` is given a value (7) distinct from every
+ * other budget field and from the literal `1` a prior round of this command
+ * left unpinned for it (reviewer advisory (3), this file's module header),
+ * so a hardcoded control field in either function could not coincidentally
+ * satisfy this row's expectation.
+ */
+function evalsInitialControlFor(runId, budget) {
+  return {
+    runId,
+    schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
+    statusRulesVersion: domain.STATUS_RULES_VERSION,
+    phase: 'normalizing',
+    maxIterations: budget.maxIterations,
+    llmCallBudget: budget.llmCallBudget,
+    reservedChallengeBudget: budget.reservedChallengeBudget,
+    challengeRounds: 0,
+    iterationsUsed: 0,
+    llmCallsUsed: 0,
+    resumeCount: 0,
+    humanReview: false,
+  };
+}
+
+test(
+  "apps/cli/src/commands/investigate.ts exports buildInitialState(runId, content), whose control block (and empty hypotheses/predictions/tests/trials/evidence/assessments arrays) equal packages/evals/src/graph-benchmark.ts initialBenchmarkState's own start state for the same runId and budget, maxIterations included",
+  async () => {
+    const investigateModule = await import('../apps/cli/dist/commands/investigate.js');
+    assert.equal(
+      typeof investigateModule.buildInitialState,
+      'function',
+      'apps/cli/src/commands/investigate.ts must export buildInitialState(runId, content)',
+    );
+
+    const runId = 'aic140-start-state-correspondence-run';
+    const budget = { maxIterations: 7, llmCallBudget: 11, reservedChallengeBudget: 3 };
+    const incident = { id: 'aic140-start-state-incident', primaryScope: evals.BENCHMARK_PRIMARY_SCOPE };
+
+    const state = investigateModule.buildInitialState(runId, { incident, budget });
+
+    assert.deepEqual(state.incident, incident);
+    assert.deepEqual(state.hypotheses, []);
+    assert.deepEqual(state.predictions, []);
+    assert.deepEqual(state.tests, []);
+    assert.deepEqual(state.trials, []);
+    assert.deepEqual(state.evidence, []);
+    assert.deepEqual(state.assessments, []);
+    assert.deepEqual(state.control, evalsInitialControlFor(runId, budget));
+  },
+);
