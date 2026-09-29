@@ -1,11 +1,9 @@
 /**
- * AIC-140 round-1 review fixes: `@aic/domain`'s `boundedJsonViolation`
+ * AIC-140: `@aic/domain`'s `boundedJsonViolation`
  * (`packages/domain/src/bounded-json.ts`) is exercised through two callers
  * elsewhere (`roles-model-nodes.test.mjs` for depth/size wording,
- * `cli-investigate.test.mjs` for the CLI's own wording) but no row anywhere
- * pins its `non-finite` or `shape` branches directly — code-reviewer-r1.md
- * item 1 ("three of the five mapped branches ... are pinned by no row
- * anywhere in the suite"). This file calls `boundedJsonViolation` straight
+ * `cli-investigate.test.mjs` for the CLI's own wording); this file pins its
+ * `non-finite` and `shape` branches directly. It calls `boundedJsonViolation` straight
  * from `@aic/domain`, the public entry point, with literal expectations —
  * never through either caller's own wording, so a caller's mapping cannot
  * mask a change to the shared walk's own structured result.

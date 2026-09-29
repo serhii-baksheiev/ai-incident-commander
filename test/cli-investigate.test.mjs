@@ -1180,14 +1180,13 @@ test(
 );
 
 /* -------------------------------------------------------------------------- */
-/* 15. AIC-140 round-1 review fixes (code-reviewer-r1.md, security-scanner-r1.md) */
+/* 15. AIC-140 review fixes: bounded reads and refusals that never echo    */
 /* -------------------------------------------------------------------------- */
 
 /**
- * security-scanner-r1.md blocker 1: `statSync(path).size` is 0 for a FIFO, a
- * character device or a pipe, so the size bound at `readReplayFile` never
- * fires and the unbounded `readFileSync` that follows reads whatever the
- * producer supplies. The replay path must be opened once, refused by name
+ * `statSync(path).size` is 0 for a FIFO, a character device or a pipe, so a
+ * stat-then-read size bound never fires for one and an unbounded read reads
+ * whatever the producer supplies. The replay path must be opened once, refused by name
  * when it is not a regular file, and read no more than the size bound + 1
  * byte from that same descriptor.
  *
@@ -1227,7 +1226,7 @@ test(
 );
 
 /**
- * security-scanner-r1.md blocker 1, second reproduction: a symlink to
+ * a symlink to
  * `/dev/zero` has `stat().size === 0` too, so the size bound never fires and
  * an unbounded read runs indefinitely. Same fix, same fail-closed refusal.
  */
@@ -1262,7 +1261,7 @@ test(
 );
 
 /**
- * code-reviewer-r1.md blockers (investigate.ts:204, :210): the `.result` and
+ * the `.result` and
  * `.input` refusals echo the untrusted value through an unbounded recursive
  * `JSON.stringify` BEFORE any bounded walk runs. `ownRecord` rejects arrays,
  * so a deep ARRAY never reaches `boundedJsonViolation` at all — it dies in
@@ -1316,9 +1315,8 @@ test(
 );
 
 /**
- * Same blocker, the `.result` field — checked first in `parseFixture`, so a
- * deep ARRAY here hits `investigate.ts:204`'s own `JSON.stringify` echo
- * before the `.input` check is ever reached.
+ * The same for the `.result` field, which `parseFixture` checks before
+ * `.input`.
  */
 test(
   'a --replay file whose fixture.entries[0].result is a 200000-deep ARRAY is refused naming fixture.entries[0].result, never a raw "Maximum call stack size exceeded"',
@@ -1363,10 +1361,9 @@ test(
 );
 
 /**
- * code-reviewer-r1.md blocker, size half: the same echo is bounded only by
+ * the same echo is bounded only by
  * the 16 MiB file bound, so a large non-record `.result` prints its whole
- * value to the operator's stderr (security-scanner-r1.md advisory 4,
- * reproducing 12582983 bytes of stderr for a 12 MiB string). The refusal
+ * value to the operator's stderr. The refusal
  * must name the field and the value's KIND, never the value itself.
  */
 test(
@@ -1402,7 +1399,7 @@ test(
 );
 
 /**
- * security-scanner-r1.md advisory 3: `IncidentSchema.safeParse` keeps
+ * `IncidentSchema.safeParse` keeps
  * unknown keys, so the same bounded walk that already covers
  * `entries[].input` must also cover `incident` — never left to overflow the
  * stack later, deep inside `@langchain/langgraph`'s own unbounded recursive
@@ -1449,7 +1446,7 @@ test(
 );
 
 /**
- * code-reviewer-r1.md advisory (investigate.ts:207): `'input' in entryRecord`
+ * `'input' in entryRecord`
  * treats `input` as optional, while `PlannedReplayScenarioEntry`
  * (`packages/tools/replay/index.ts`) declares it required. An entry with no
  * `input` at all must be refused the same way a present-but-wrong-shaped one
@@ -1480,3 +1477,55 @@ test(
     });
   },
 );
+
+/* -------------------------------------------------------------------------- */
+/* 16. No refusal echoes an untrusted value whole: budget, asOf and          */
+/*     fixture.version name the field and the value's kind too.             */
+/* -------------------------------------------------------------------------- */
+
+for (const [field, mutate] of [
+  ['budget.maxIterations', (content, big) => ({ ...content, budget: { ...content.budget, maxIterations: big } })],
+  ['asOf', (content, big) => ({ ...content, asOf: big })],
+  ['fixture.version', (content, big) => ({ ...content, fixture: { ...content.fixture, version: big } })],
+]) {
+  test(`a --replay file whose ${field} is a ~12 MiB string is refused with bounded stderr naming ${field}, never echoing the value whole`, async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const content = mutate(replayFileContentFor(annotatedFixtureFor(scenario)), 'a'.repeat(12 * 1024 * 1024));
+      const replayPath = writeReplayFile(dir, content);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.ok(result.stderr.includes(field), `stderr must name ${field}: ${JSON.stringify(result.stderr.slice(0, 200))}`);
+      const stderrBytes = Buffer.byteLength(result.stderr, 'utf8');
+      assert.ok(stderrBytes < 4096, `a refusal must never echo a ~12 MiB value whole; got ${stderrBytes} bytes of stderr`);
+    });
+  });
+}
+
+for (const field of ['budget.maxIterations', 'fixture.version']) {
+  test(`a --replay file whose ${field} is a 200000-deep array is refused naming ${field}, never with "Maximum call stack size exceeded"`, async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const content = replayFileContentFor(annotatedFixtureFor(scenario));
+      const placeholder = '"__AIC140_DEEP__"';
+      if (field === 'budget.maxIterations') content.budget = { ...content.budget, maxIterations: '__AIC140_DEEP__' };
+      else content.fixture = { ...content.fixture, version: '__AIC140_DEEP__' };
+      const depth = 200000;
+      const text = JSON.stringify(content).replace(placeholder, `${'['.repeat(depth)}${']'.repeat(depth)}`);
+      const replayPath = join(dir, 'replay.json');
+      writeFileSync(replayPath, text);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.ok(result.stderr.includes(field), `stderr must name ${field}: ${JSON.stringify(result.stderr.slice(0, 200))}`);
+      assert.doesNotMatch(result.stderr, /Maximum call stack/);
+    });
+  });
+}

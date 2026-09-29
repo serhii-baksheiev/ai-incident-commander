@@ -70,21 +70,19 @@ interface ReplayFileContent {
   readonly fixture: PlannedReplayScenarioFixture;
 }
 
-// Residual reviewer advisory (5), PRs #160/162: named so the refusal it backs
-// can name the bound rather than an unexplained number. Every message that
-// states the bound derives its text from this constant — never a repeated
-// "16 MiB" literal (security-scanner-r1.md advisory, investigate.ts:89).
+// Named so the refusal it backs can name the bound rather than an
+// unexplained number. Every message that states the bound derives its text
+// from this constant, never a repeated "16 MiB" literal.
 const REPLAY_FILE_MAX_BYTES = 16 * 1024 * 1024;
 const REPLAY_FILE_MAX_MIB = REPLAY_FILE_MAX_BYTES / (1024 * 1024);
 
 /**
- * security-scanner-r1.md blocker 1: `statSync(path).size` is 0 for a FIFO, a
- * character device or a pipe, so a stat-then-read pair never bounds the read
- * that follows, and (separately) a symlink swapped between the stat and the
- * read is a TOCTOU. This opens the path exactly once, inspects the SAME
- * descriptor with `fstatSync`, refuses anything that is not a regular file,
- * and then reads no more than the size bound + 1 byte from that one
- * descriptor — which also covers a file that grows after the `fstat` call.
+ * `statSync(path).size` is 0 for a FIFO, a character device or a pipe, so a
+ * stat-then-read pair never bounds the read that follows, and a symlink
+ * swapped between the stat and the read is a TOCTOU. This opens the path
+ * exactly once, inspects the SAME descriptor with `fstatSync`, refuses
+ * anything that is not a regular file, and then reads no more than the size
+ * bound + 1 byte from that one descriptor.
  *
  * `O_NONBLOCK` on the open is load-bearing for the FIFO case specifically: a
  * blocking open of a FIFO for reading waits for a writer that this command
@@ -150,7 +148,13 @@ function readReplayFile(path: string): unknown {
       throw new Error(`--replay file at ${path} is not valid JSON: ${message}`);
     }
   } finally {
-    closeSync(fd);
+    // A read-only descriptor that fails to close must not replace the
+    // refusal (or the result) that is already on its way out.
+    try {
+      closeSync(fd);
+    } catch {
+      // nothing to recover: the descriptor was only ever read
+    }
   }
 }
 
@@ -160,8 +164,8 @@ function ownRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * code-reviewer-r1.md blockers (investigate.ts:204, :210): a shape-refusal
- * that echoed the untrusted value whole through `JSON.stringify` was both an
+ * A shape refusal that echoed the untrusted value whole through
+ * `JSON.stringify` was both an
  * unbounded recursive walk over it (a 200000-deep array died in the
  * `JSON.stringify` call itself, before `boundedJsonViolation` was ever
  * reached — `ownRecord` rejects arrays outright) and, for anything the walk
@@ -242,7 +246,7 @@ function parseBudget(value: unknown): ReplayBudget {
     const result = LogicalCountSchema.safeParse(candidate);
     if (!result.success) {
       throw new Error(
-        `--replay file budget.${field} must be a non-negative integer, got ${JSON.stringify(candidate)}`,
+        `--replay file budget.${field} must be a non-negative integer, got ${describeKind(candidate)}`,
       );
     }
     parsed[field] = result.data;
@@ -255,7 +259,9 @@ function parseAsOf(value: unknown): string {
     throw new Error('--replay file is missing required field asOf: the CLI never defaults it to the clock');
   }
   if (Number.isNaN(Date.parse(value))) {
-    throw new Error(`--replay file asOf is not a parseable instant: ${JSON.stringify(value)}`);
+    // At most the first 80 characters, escaped: enough to recognise the value,
+    // never an unbounded echo of it.
+    throw new Error(`--replay file asOf is not a parseable instant: ${JSON.stringify(value.slice(0, 80))}`);
   }
   return value;
 }
@@ -266,7 +272,7 @@ function parseFixture(value: unknown): PlannedReplayScenarioFixture {
     throw new Error('--replay file is missing required field fixture');
   }
   if (typeof record.version !== 'number') {
-    throw new Error(`--replay file fixture.version must be a number, got ${JSON.stringify(record.version)}`);
+    throw new Error(`--replay file fixture.version must be a number, got ${describeKind(record.version)}`);
   }
   if (!Array.isArray(record.entries) || record.entries.length === 0) {
     throw new Error('--replay file fixture.entries must be a non-empty array');
@@ -292,6 +298,9 @@ function parseFixture(value: unknown): PlannedReplayScenarioFixture {
     // (2), PRs #160/162: named eagerly, here at parse time — never left to
     // surface as an unnamed internal error only when the graph happens to
     // query this entry.
+    if (!Object.hasOwn(entryRecord, 'result')) {
+      throw new Error(`--replay file fixture.entries[${index}].result is required`);
+    }
     const resultViolation = boundedJsonViolation(entryRecord.result);
     if (resultViolation !== undefined) {
       throw new Error(
@@ -305,10 +314,9 @@ function parseFixture(value: unknown): PlannedReplayScenarioFixture {
     }
 
     // `PlannedReplayScenarioEntry` (`packages/tools/replay/index.ts`)
-    // declares `input` required, never optional — code-reviewer-r1.md
-    // advisory (investigate.ts:207): an entry with no `input` at all used to
-    // parse and key on `undefined` instead of being refused by name.
-    if (!('input' in entryRecord)) {
+    // declares `input` required, never optional, so an entry with no `input`
+    // at all is refused by name.
+    if (!Object.hasOwn(entryRecord, 'input')) {
       throw new Error(`--replay file fixture.entries[${index}].input is required`);
     }
     const inputViolation = boundedJsonViolation(entryRecord.input);
@@ -333,7 +341,10 @@ function parseReplayFileContent(raw: unknown): ReplayFileContent {
   }
   const asOf = parseAsOf(record.asOf);
   const budget = parseBudget(record.budget);
-  // security-scanner-r1.md advisory 3: `IncidentSchema.safeParse` keeps
+  if (!Object.hasOwn(record, 'incident')) {
+    throw new Error('--replay file is missing required field incident');
+  }
+  // `IncidentSchema.safeParse` keeps
   // unknown keys (no `.strict()`), so a deep `incident.extra` this command
   // never declared survives parsing untouched and was later walked
   // unbounded, deep inside `@langchain/langgraph`'s own initial-state
