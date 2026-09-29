@@ -56,9 +56,11 @@ function requireSubcommand(noun: string, argv: readonly string[], allowed: reado
  */
 const RegistryNameSchema = ServiceInputSchema.shape.name;
 
-function requireRegistryName(label: string, value: string): string {
+export function requireRegistryName(label: string, value: string): string {
   if (!RegistryNameSchema.safeParse(value).success) {
-    throw new Error(`<${label}> must be a lowercase, hyphen-separated slug of at most 100 characters`);
+    throw new Error(
+      `<${label}> must be a lowercase, hyphen-separated slug of at most 100 characters that is not shaped like a credential`,
+    );
   }
   return value;
 }
@@ -76,6 +78,16 @@ function requirePositionals(positionals: readonly string[], names: readonly stri
 /** A flag name is echoed only when it is itself short and plain. */
 const ECHOABLE_FLAG_NAME = /^[a-z][a-z-]{0,39}$/;
 
+/**
+ * An unknown flag's name is echoed only when it is short, lowercase and
+ * hyphenated AND passes the registry's own name rule, whose credential
+ * screen refuses lowercase members of the repository's secret vocabulary
+ * (`sk-ant-…`, `xoxb-…`, `glpat-…`) — one screen, not a second list.
+ */
+function isEchoableFlagName(name: string): boolean {
+  return ECHOABLE_FLAG_NAME.test(name) && RegistryNameSchema.safeParse(name).success;
+}
+
 interface FlagSpec {
   readonly name: string;
   readonly repeatable: boolean;
@@ -92,6 +104,15 @@ interface ParsedArgs {
  * called. Unlike `node:util`'s `parseArgs`, every declared flag here takes
  * exactly one value, so no separate "which token is a value" inference is
  * needed.
+ *
+ * Stated limits: there is no `--` escape, so a flag value that itself begins
+ * with `--` is refused as a missing value. An unknown flag whose name is
+ * short, lowercase and hyphenated is named in the refusal — see
+ * cli-registry-commands.test.mjs › "an unknown flag is refused by name,
+ * writes nothing to stdout, and never calls the store" — unless the name is
+ * credential-shaped, which is refused without an echo — see › "an unknown
+ * flag whose name is itself credential-shaped is refused without reproducing
+ * it, even though it is lowercase and hyphenated".
  */
 function parseFlags(args: readonly string[], specs: readonly FlagSpec[]): ParsedArgs {
   const specByName = new Map(specs.map((spec) => [spec.name, spec] as const));
@@ -104,7 +125,7 @@ function parseFlags(args: readonly string[], specs: readonly FlagSpec[]): Parsed
       const name = token.slice(2);
       const spec = specByName.get(name);
       if (spec === undefined) {
-        throw new Error(ECHOABLE_FLAG_NAME.test(name) ? `unknown flag --${name}` : 'unknown flag');
+        throw new Error(isEchoableFlagName(name) ? `unknown flag --${name}` : 'unknown flag');
       }
       const value = args[index + 1];
       if (value === undefined || value.startsWith('--')) {

@@ -2,15 +2,20 @@
 
 import { parseArgs } from 'node:util';
 
+import { createDirectorySecretResolver } from '@aic/tools';
 import { createRegistryStore, setupApplicationSchema, type RegistryStore } from '@aic/persistence';
 
 import { runRegistryCommand, type RegistryCommandDeps } from './commands/registry.js';
 import { runDevSpike } from './commands/dev-spike.js';
 import { runInvestigate } from './commands/investigate.js';
+import { runSourceCheckCommand } from './commands/source-check.js';
+import { runDoctorCommand } from './commands/doctor.js';
 
 // The onboarding nouns docs/decisions/integration-boundary.md's Terminology
-// section fixes for AIC-99, still stubs in this slice.
-const STUB_NOUNS = ['incident', 'doctor', 'apply'] as const;
+// section fixes for AIC-99, still stubs in this slice. `doctor` and
+// `source check` stop being stubs in slice e — see runDoctorCommand and
+// runSourceCheckCommand below.
+const STUB_NOUNS = ['incident', 'apply'] as const;
 type StubNoun = (typeof STUB_NOUNS)[number];
 
 // AIC-99 slice d: real dispatch over the registry store — `credential` is a
@@ -93,6 +98,22 @@ function createConnectedRegistryStore(env: NodeJS.ProcessEnv): RegistryStore {
   };
 }
 
+const SECRETS_DIR_VARIABLE = 'AIC_SECRETS_DIR';
+const DEFAULT_SECRETS_DIR = '/run/secrets';
+
+/**
+ * AIC-99 slice e: the directory a resolved `CredentialRef.secretName` is read
+ * from — `AIC_SECRETS_DIR`, defaulting to `/run/secrets`. Built fresh per
+ * dispatch (never at module load), so a parse error still refuses before any
+ * filesystem path is even computed, mirroring `createConnectedRegistryStore`
+ * above.
+ */
+function createSecretResolver(env: NodeJS.ProcessEnv) {
+  const configured = env[SECRETS_DIR_VARIABLE];
+  const directory = typeof configured === 'string' && configured.trim() !== '' ? configured : DEFAULT_SECRETS_DIR;
+  return createDirectorySecretResolver({ directory });
+}
+
 /**
  * Finds the next positional argument in `argv` and the raw remainder of
  * `argv` after it, using `node:util`'s `parseArgs` tokenizer only to locate
@@ -132,7 +153,9 @@ async function main(argv: readonly string[]): Promise<void> {
   if (command === 'dev') {
     const { command: sub, rest: devArgs } = nextPositional(rest);
     if (sub !== 'spike') {
-      throw new Error(`unknown command: dev ${sub ?? ''}`.trim());
+      // Fixed text: never reproduces the given subcommand token (carried
+      // from #172 security-scanner r2).
+      throw new Error('unknown command: dev <subcommand>');
     }
     await runDevSpike(devArgs);
     return;
@@ -163,13 +186,34 @@ async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
+  if (command === 'doctor') {
+    const resolver = createSecretResolver(process.env);
+    const summary = await runDoctorCommand(rest, {
+      store: createConnectedRegistryStore(process.env),
+      resolveSecret: (secretName) => resolver.resolve(secretName),
+      stdout: writeStdoutLine,
+    });
+    if (!summary.allReady) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (isRegistryNoun(command)) {
-    // `source check` remains the "not implemented" stub in this slice; only
-    // `source add` (and the other registry nouns' own subcommands) are real.
+    // AIC-99 slice e: `source check` is real; only `source add` (and the
+    // other registry nouns' own subcommands) share this branch with it.
     if (command === 'source') {
-      const { command: sourceSub } = nextPositional(rest);
+      const { command: sourceSub, rest: sourceRest } = nextPositional(rest);
       if (sourceSub === 'check') {
-        runOnboardingStub('source');
+        const resolver = createSecretResolver(process.env);
+        const summary = await runSourceCheckCommand(sourceRest, {
+          store: createConnectedRegistryStore(process.env),
+          resolveSecret: (secretName) => resolver.resolve(secretName),
+          stdout: writeStdoutLine,
+        });
+        if (!summary.allReady) {
+          process.exitCode = 1;
+        }
         return;
       }
     }
@@ -186,7 +230,9 @@ async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  throw new Error(`unknown command: ${command}`);
+  // Fixed text: never reproduces the given command token (carried from #172
+  // security-scanner r2).
+  throw new Error('unknown command');
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {
