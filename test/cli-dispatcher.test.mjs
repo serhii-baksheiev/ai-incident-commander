@@ -28,15 +28,20 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
  * below `ALL_ONBOARDING_NOUNS`.
  *
  * AIC-99 slice f: `incident` (its `start` subcommand) also stops being a
- * stub — `apply` is the only onboarding noun still unimplemented after this
- * slice. test/cli-incident-command.test.mjs pins `runIncidentCommand`'s own
+ * stub. test/cli-incident-command.test.mjs pins `runIncidentCommand`'s own
  * argv/deps/store contract directly, without a database; this file only
  * asserts that `incident start` no longer claims to be "not implemented",
  * the same shape as the `source check`/`doctor` rows below.
+ *
+ * AIC-99 slice g: `apply` also stops being a stub — no onboarding noun is a
+ * stub any more, and `STUB_NOUNS` is empty. test/cli-apply.test.mjs pins
+ * `runApplyCommand`'s own argv/deps/store contract directly, without a
+ * database; this file only asserts that `apply` no longer claims to be "not
+ * implemented", the same shape as the `incident start` row above.
  */
-const STUB_NOUNS = ['apply'];
+const STUB_NOUNS = [];
 const REGISTRY_NOUNS = ['service', 'env', 'source', 'policy', 'credential'];
-const ALL_ONBOARDING_NOUNS = [...REGISTRY_NOUNS, ...STUB_NOUNS, 'incident'];
+const ALL_ONBOARDING_NOUNS = [...REGISTRY_NOUNS, 'incident', 'apply'];
 
 function runCli(args, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -212,6 +217,34 @@ test('aic incident start with no <service>/<env>/--title no longer reports itsel
       `${result.stdout}${result.stderr}`,
       /not implemented/i,
       `aic incident start is real in this slice; it must never again claim to be unimplemented: ${commandDiagnostics(args, result)}`,
+    );
+    assert.deepEqual(readdirSync(cwd), before, 'it must not write to the working directory it is invoked from');
+  });
+});
+
+/**
+ * AIC-99 slice g: `apply` is real. Like `incident start` above, this file
+ * does not assert the full argv/store contract (that needs a registry store,
+ * and this command still reaches one through
+ * `apps/cli/src/index.ts`'s `createConnectedRegistryStore`, which this file
+ * never wires past — the connection variable it reads is not set here, by
+ * `childEnv`'s own stripping). It only asserts that a missing `-f` is
+ * refused as such, BEFORE any connection is ever attempted, rather than the
+ * command claiming to be unimplemented — see test/cli-apply.test.mjs for the
+ * full pinned argv/deps/store contract, against the exported command
+ * function directly.
+ */
+test('aic apply with no -f no longer reports itself as not implemented in this build', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['apply'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}`,
+      /not implemented/i,
+      `aic apply is real in this slice; it must never again claim to be unimplemented: ${commandDiagnostics(args, result)}`,
     );
     assert.deepEqual(readdirSync(cwd), before, 'it must not write to the working directory it is invoked from');
   });
