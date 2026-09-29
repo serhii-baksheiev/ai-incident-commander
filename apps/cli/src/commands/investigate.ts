@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 
 import {
   deriveHypothesisStatus,
+  IncidentSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
+  LogicalCountSchema,
   STATUS_RULES_VERSION,
   type Incident,
   type IncidentState,
@@ -15,6 +17,7 @@ import {
   PREDICTION_TEMPLATES,
   type InvestigationReasoning,
 } from '@aic/graph';
+import { resolveTracingConfig } from '@aic/observability';
 import {
   createModelChallengeHypothesis,
   createModelGenerateHypotheses,
@@ -25,6 +28,7 @@ import {
   createScriptedReasoning,
   readModelCredential,
   requireModelConfig,
+  type ModelPort,
 } from '@aic/roles';
 import type { PlannedReplayScenarioFixture } from '@aic/tools/replay';
 import { createPlannedReplayExecutor } from '@aic/tools/replay';
@@ -43,11 +47,11 @@ import { createPlannedReplayExecutor } from '@aic/tools/replay';
  * scriptedNodes(record) produces through createInvestigationGraph for the
  * same replay fixture"
  */
-export const investigateHelp = `Usage: aic investigate --replay <file> [--roles model|scripted] [--run-id <id>]
+export const investigateHelp = `Usage: aic investigate --replay <file> --roles model|scripted [--run-id <id>]
 
 Options:
   --replay   Path to a replay file: { asOf, incident, budget, fixture }
-  --roles    "model" (default) or "scripted"
+  --roles    "model" or "scripted" (required)
   --run-id   Run identity (default: a generated id)
   --help     Show this help`;
 
@@ -85,25 +89,38 @@ function ownRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
-function requirePositiveInteger(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new Error(
-      `--replay file budget.${field} must be a positive integer, got ${JSON.stringify(value)}`,
-    );
-  }
-  return value;
-}
+const BUDGET_FIELDS = ['maxIterations', 'llmCallBudget', 'reservedChallengeBudget'] as const;
 
+/**
+ * Validated against the domain's own `LogicalCountSchema`
+ * (`z.number().int().nonnegative()`) — never a hand-written positive-integer
+ * check, which disagreed with it: `reservedChallengeBudget: 0` is a value
+ * `IncidentStateControlSchema` accepts (and the kernel runs), so the CLI must
+ * accept it too. One spelling of the fact (`.claude/rules/invariants.md`,
+ * "one mechanism, one implementation") — the same schema
+ * `packages/evals/src/budget-policy.ts` imports for exactly this reason.
+ * see cli-investigate.test.mjs › "a --replay file whose budget field is
+ * negative, non-integer or not a number is refused for each of the three
+ * fields, exits non-zero, writes nothing to stdout, and names the field on
+ * stderr"
+ */
 function parseBudget(value: unknown): ReplayBudget {
   const record = ownRecord(value);
   if (record === undefined) {
     throw new Error('--replay file is missing required field budget');
   }
-  return {
-    maxIterations: requirePositiveInteger(record.maxIterations, 'maxIterations'),
-    llmCallBudget: requirePositiveInteger(record.llmCallBudget, 'llmCallBudget'),
-    reservedChallengeBudget: requirePositiveInteger(record.reservedChallengeBudget, 'reservedChallengeBudget'),
-  };
+  const parsed: Record<string, number> = {};
+  for (const field of BUDGET_FIELDS) {
+    const candidate = record[field];
+    const result = LogicalCountSchema.safeParse(candidate);
+    if (!result.success) {
+      throw new Error(
+        `--replay file budget.${field} must be a non-negative integer, got ${JSON.stringify(candidate)}`,
+      );
+    }
+    parsed[field] = result.data;
+  }
+  return parsed as unknown as ReplayBudget;
 }
 
 function parseAsOf(value: unknown): string {
@@ -116,6 +133,29 @@ function parseAsOf(value: unknown): string {
   return value;
 }
 
+function parseFixture(value: unknown): PlannedReplayScenarioFixture {
+  const record = ownRecord(value);
+  if (record === undefined) {
+    throw new Error('--replay file is missing required field fixture');
+  }
+  if (typeof record.version !== 'number') {
+    throw new Error(`--replay file fixture.version must be a number, got ${JSON.stringify(record.version)}`);
+  }
+  if (!Array.isArray(record.entries) || record.entries.length === 0) {
+    throw new Error('--replay file fixture.entries must be a non-empty array');
+  }
+  record.entries.forEach((entry: unknown, index: number) => {
+    const entryRecord = ownRecord(entry);
+    if (entryRecord === undefined) {
+      throw new Error(`--replay file fixture.entries[${index}] must be an object`);
+    }
+    if (typeof entryRecord.toolId !== 'string') {
+      throw new Error(`--replay file fixture.entries[${index}] is missing required string field toolId`);
+    }
+  });
+  return record as unknown as PlannedReplayScenarioFixture;
+}
+
 function parseReplayFileContent(raw: unknown): ReplayFileContent {
   const record = ownRecord(raw);
   if (record === undefined) {
@@ -123,19 +163,16 @@ function parseReplayFileContent(raw: unknown): ReplayFileContent {
   }
   const asOf = parseAsOf(record.asOf);
   const budget = parseBudget(record.budget);
-  const incident = ownRecord(record.incident);
-  if (incident === undefined) {
-    throw new Error('--replay file is missing required field incident');
+  const incidentResult = IncidentSchema.safeParse(record.incident);
+  if (!incidentResult.success) {
+    throw new Error(`--replay file incident is invalid: ${incidentResult.error.message}`);
   }
-  const fixture = ownRecord(record.fixture);
-  if (fixture === undefined || !Array.isArray(fixture.entries)) {
-    throw new Error('--replay file is missing required field fixture');
-  }
+  const fixture = parseFixture(record.fixture);
   return {
     asOf,
-    incident: incident as unknown as Incident,
+    incident: incidentResult.data,
     budget,
-    fixture: fixture as unknown as PlannedReplayScenarioFixture,
+    fixture,
   };
 }
 
@@ -180,27 +217,15 @@ function buildInitialState(runId: string, content: ReplayFileContent): IncidentS
  * byMechanism carries exactly one key per ROOT_CAUSE_MECHANISMS entry, in both
  * directions".
  *
- * The credential is resolved through `@aic/roles` before anything else this
- * command does — `requireModelConfig` throws `MissingModelCredentialError`,
- * naming the missing variable, with no network reached — the same function
- * `scripts/eval-live-model.mjs` calls for the same reason.
- * see cli-investigate.test.mjs › "aic investigate --roles model with no
- * ANTHROPIC_API_KEY in the child env exits non-zero, writes nothing to
- * stdout, names the missing variable on stderr, and reaches no network"
+ * Takes the already-constructed port, so a test can wire a fake one directly
+ * — the same seam `scripts/lane-arms.mjs`'s `modelNodes(record, port)` uses.
+ * see cli-investigate.test.mjs › "createModelReasoning(fakePort) wires
+ * generate_hypotheses, challenge_hypothesis and propose_conclusion as model
+ * roles carrying the PREDICTION_TEMPLATES mechanism vocabulary, which equals
+ * evals.ROOT_CAUSE_MECHANISMS as a set"
  */
-function buildModelReasoning(env: NodeJS.ProcessEnv, budget: ReplayBudget): InvestigationReasoning {
-  const config = requireModelConfig(env);
+export function createModelReasoning(port: ModelPort): InvestigationReasoning {
   const mechanisms = Object.keys(PREDICTION_TEMPLATES.byMechanism);
-  const ledger = createModelUsageLedger({ maxCalls: budget.llmCallBudget });
-  const port = createReferenceModelPort({
-    // requireModelConfig already validated the credential above; the one
-    // reader (readModelCredential) is called again here so the value sent is
-    // the value that was validated.
-    apiKey: readModelCredential(env) as string,
-    modelId: config.modelId,
-    ledger,
-  });
-
   return {
     generate_hypotheses: createModelGenerateHypotheses({ port, mechanisms }),
     interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
@@ -227,32 +252,83 @@ function option(args: readonly string[], flag: string): string | undefined {
   return value;
 }
 
-export async function runInvestigate(args: readonly string[]): Promise<void> {
+export interface RunInvestigateDeps {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly createModelPort?: typeof createReferenceModelPort;
+}
+
+/**
+ * Resolves and validates the credential once, then hands the SAME validated
+ * value to the port factory — `requireModelConfig` throws
+ * `MissingModelCredentialError`, naming the missing variable, before the
+ * factory (or any network) is ever reached.
+ * see cli-investigate.test.mjs › "runInvestigate(['--replay', file, '--roles',
+ * 'model'], { env, createModelPort }) calls the injected factory once with
+ * the env credential, and the fake port it returns sees at least one call
+ * before the run ends"
+ */
+function buildModelPort(
+  env: NodeJS.ProcessEnv,
+  budget: ReplayBudget,
+  createModelPort: typeof createReferenceModelPort,
+): ModelPort {
+  const config = requireModelConfig(env);
+  const ledger = createModelUsageLedger({ maxCalls: budget.llmCallBudget });
+  return createModelPort({
+    apiKey: readModelCredential(env) as string,
+    modelId: config.modelId,
+    ledger,
+  });
+}
+
+export async function runInvestigate(
+  args: readonly string[],
+  deps: RunInvestigateDeps = {},
+): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(`${investigateHelp}\n`);
     return;
   }
 
+  const env = deps.env ?? process.env;
+  const createModelPort = deps.createModelPort ?? createReferenceModelPort;
+
   const replayPath = option(args, 'replay');
   if (replayPath === undefined) {
-    throw new Error('--replay is required: aic investigate --replay <file>');
+    throw new Error('--replay is required: aic investigate --replay <file> --roles model|scripted');
   }
 
-  const rolesOption = option(args, 'roles') ?? 'model';
+  const rolesOption = option(args, 'roles');
+  if (rolesOption === undefined) {
+    throw new Error('--roles is required: aic investigate --replay <file> --roles model|scripted');
+  }
   if (rolesOption !== 'model' && rolesOption !== 'scripted') {
     throw new Error(`--roles must be "model" or "scripted", got ${JSON.stringify(rolesOption)}`);
   }
 
   const runId = option(args, 'run-id') ?? randomUUID();
 
+  // Resolved before any other work — including reading the replay file's
+  // content into the graph — the same way `aic dev spike` decides tracing
+  // before it starts: tracing that was asked for and cannot be delivered
+  // must stop the run, not silently drop the trace partway through it.
+  const tracing = resolveTracingConfig(env);
+  if (tracing.enabled) {
+    // This process exits as soon as it has printed its result. The tracer's
+    // default is to send in the background, which drops whatever has not
+    // left by then; `false` makes @langchain/core block on finalization
+    // (see dev-spike.ts for the same handling).
+    process.env.LANGCHAIN_CALLBACKS_BACKGROUND ??= 'false';
+  }
+
   const content = parseReplayFileContent(readReplayFile(replayPath));
 
-  // Resolved and validated before anything else the model arm needs, so a
-  // missing credential fails before the replay file's fixture is even
-  // touched for the graph's own purposes — no network reached either way.
+  // `buildModelPort` validates the credential before the factory (or any
+  // network) is reached, so a missing credential still fails before any
+  // graph node runs.
   const reasoning: InvestigationReasoning =
     rolesOption === 'model'
-      ? buildModelReasoning(process.env, content.budget)
+      ? createModelReasoning(buildModelPort(env, content.budget, createModelPort))
       : createScriptedReasoning({ runId, fixture: content.fixture });
 
   const nodes = createInvestigationNodes({

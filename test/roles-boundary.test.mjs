@@ -565,8 +565,8 @@ test('leaves the model error types undistinguished by any caller in packages or 
  *     is why the trail stops at the call site in form 4 rather than following
  *     it into the helper — and it means an indirection through a second helper
  *     of one's own would pass;
- *   - anything outside `packages/**\/*.ts` and `scripts/*.mjs`: tests, `apps/`,
- *     configuration and shell are all out of scope;
+ *   - anything outside `packages/**\/*.ts`, `apps/**\/*.ts` and
+ *     `scripts/*.mjs`: tests, configuration and shell are all out of scope;
  *   - what a caller DOES with the value once `readModelCredential` returns it.
  *     That is the other row's subject, not this one's.
  *
@@ -612,6 +612,10 @@ function bindsTheCredentialKey(node) {
 function credentialValueReads() {
   const scanned = [
     ...workspaceSources,
+    // AIC-126 slice b: apps/cli is the first apps/ credential consumer, so
+    // the single-reader invariant this row checks is now unenforced there
+    // unless the scan covers it too.
+    ...sourceFiles(resolve(projectRoot, 'apps')),
     ...readdirSync(resolve(projectRoot, 'scripts'))
       .filter((entry) => entry.endsWith('.mjs'))
       .map((entry) => resolve(projectRoot, 'scripts', entry)),
@@ -672,12 +676,12 @@ function credentialValueReads() {
   return reads;
 }
 
-test('reads the credential value in readModelCredential and nowhere else in packages or scripts', () => {
+test('reads the credential value in readModelCredential and nowhere else in packages, apps or scripts', () => {
   const reads = credentialValueReads();
 
   assert.ok(
     reads.length > 0,
-    `the scan found no read of ${CREDENTIAL_VARIABLE_NAME} anywhere in packages or scripts: an audit that finds nothing passes everything, so this reads as a broken scanner — a renamed constant, a moved module, or a spelling this row does not match — rather than as a clean repository`,
+    `the scan found no read of ${CREDENTIAL_VARIABLE_NAME} anywhere in packages, apps or scripts: an audit that finds nothing passes everything, so this reads as a broken scanner — a renamed constant, a moved module, or a spelling this row does not match — rather than as a clean repository`,
   );
 
   assert.ok(
