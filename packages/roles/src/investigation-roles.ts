@@ -417,7 +417,20 @@ function describeState(state: IncidentState): string {
   // from what a model role is shown: interpret_residual_evidence's prompt is
   // byte-identical whether or not the state's evidence item carries an
   // observation, and never contains the key or a fact value unique to it"
-  const evidence = state.evidence.map(({ observation: _observation, ...item }) => item);
+  //
+  // AIC-146: `evidence[].provenance` is stripped for the same reason.
+  // Provenance is the registry's record of where evidence came from —
+  // binding and credential-reference ids, adapter version, fetch time,
+  // request fingerprint — not investigation evidence, and the naive arm
+  // never sees it either (information parity). see observation-merge.test.mjs
+  // › "describeState strips evidence[].provenance from what a model role is
+  // shown: for every model-backed role, the prompt sent is byte-identical
+  // whether or not the state's evidence item carries a well-formed
+  // provenance, and the prompt contains neither the key "provenance" nor the
+  // binding UUID, the credentialRefId UUID, nor the request fingerprint"
+  const evidence = state.evidence.map(
+    ({ observation: _observation, provenance: _provenance, ...item }) => item,
+  );
   return JSON.stringify(
     {
       incident,

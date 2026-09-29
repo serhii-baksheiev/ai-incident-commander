@@ -20,11 +20,15 @@
  * copy of the adapter id `ReplayToolAdapter` binds every read-only tool
  * against, not an import of it.
  */
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import * as domain from '@aic/domain';
 import * as evals from '@aic/evals';
+import * as graph from '@aic/graph';
 import {
   createReplayFixtureKey,
   createRequestFingerprint,
@@ -478,4 +482,154 @@ test("describeState strips evidence[].observation from what a model role is show
     false,
     'the prompt must never carry a fact value unique to the observation channel',
   );
+});
+
+/* ============================================================================
+ * describeState: evidence[].provenance is never shown to any model role
+ * (AIC-146: EvidenceProvenanceSchema, packages/domain/src/contracts.ts)
+ * ==========================================================================*/
+
+const PROVENANCE_MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
+const PROVENANCE_REQUEST_VOCABULARY = domain.routeRequestVocabulary(graph.INVESTIGATION_ROUTES);
+
+function stateForProvenancePrompt(evidenceItem) {
+  return {
+    incident: scopedIncident('incident-origin-prompt'),
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [evidenceItem],
+    assessments: [],
+    control: {
+      runId: 'run-origin-prompt',
+      schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
+      statusRulesVersion: domain.STATUS_RULES_VERSION,
+      phase: 'concluding',
+      maxIterations: 4,
+      llmCallBudget: 8,
+      reservedChallengeBudget: 2,
+      challengeRounds: 0,
+      iterationsUsed: 0,
+      llmCallsUsed: 0,
+      resumeCount: 0,
+      humanReview: false,
+      stopKind: 'sufficient',
+    },
+  };
+}
+
+/**
+ * Every model-backed role whose prompt is built from `describeState`
+ * (`packages/roles/src/investigation-roles.ts`), one row per role. The row
+ * below this table does not take this list's completeness on faith: it reads
+ * the source file itself and asserts the count of `describeState(state)`
+ * call sites equals the number of rows here, so an added role that also
+ * calls `describeState` and is not added to this table fails loudly instead
+ * of silently going unchecked.
+ */
+const MODEL_ROLES_READING_DESCRIBE_STATE = [
+  {
+    name: 'generate_hypotheses',
+    invoke: (port, state) =>
+      roles.createModelGenerateHypotheses({ port, mechanisms: PROVENANCE_MECHANISMS })(state),
+  },
+  {
+    name: 'interpret_residual_evidence',
+    invoke: (port, state) =>
+      roles.createModelInterpretResidualEvidence({ port, at: () => '2026-01-01T01:00:00.000Z' })(state),
+  },
+  {
+    name: 'challenge_hypothesis',
+    invoke: (port, state) =>
+      roles.createModelChallengeHypothesis({
+        port,
+        mechanisms: PROVENANCE_MECHANISMS,
+        requestVocabulary: PROVENANCE_REQUEST_VOCABULARY,
+      })(state, 'h-1'),
+  },
+  {
+    name: 'propose_conclusion',
+    invoke: (port, state) =>
+      roles.createModelProposeConclusion({ port, mechanisms: PROVENANCE_MECHANISMS })(state),
+  },
+];
+
+test('MODEL_ROLES_READING_DESCRIBE_STATE names exactly every describeState(state) call site in investigation-roles.ts, one row per role', () => {
+  const source = readFileSync(
+    new URL('../packages/roles/src/investigation-roles.ts', import.meta.url),
+    'utf8',
+  );
+  const callSites = source.match(/describeState\(state\)/g) ?? [];
+  assert.ok(callSites.length > 0, 'investigation-roles.ts must call describeState(state) somewhere, or this sweep checks nothing');
+  assert.equal(
+    callSites.length,
+    MODEL_ROLES_READING_DESCRIBE_STATE.length,
+    'every describeState(state) call site in investigation-roles.ts must have exactly one row in this table',
+  );
+});
+
+test("describeState strips evidence[].provenance from what a model role is shown: for every model-backed role, the prompt sent is byte-identical whether or not the state's evidence item carries a well-formed provenance, and the prompt contains neither the key \"provenance\" nor the binding UUID, the credentialRefId UUID, nor the request fingerprint", async () => {
+  const baseEvidence = {
+    id: 'evidence-origin-1',
+    trialId: 'trial-origin-1',
+    kind: 'deploy',
+    source: 'deploy-log',
+    observedAt: '2026-01-01T00:00:00.000Z',
+    statement: 'checkout-v42 rolled out at 00:00',
+    rawRef: 'deploy/42',
+  };
+  const provenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: randomUUID(),
+    fetchedAt: new Date().toISOString(),
+    requestFingerprint: `sha256:${createHash('sha256').update('aic-146-provenance-prompt-fixture').digest('hex')}`,
+  };
+  const evidenceWithProvenance = { ...baseEvidence, provenance };
+  domain.EvidenceSchema.parse(evidenceWithProvenance);
+
+  assert.ok(
+    MODEL_ROLES_READING_DESCRIBE_STATE.length > 0,
+    'the table must name at least one role, or this sweep checks nothing',
+  );
+
+  for (const { name, invoke } of MODEL_ROLES_READING_DESCRIBE_STATE) {
+    const without = capturingPort();
+    // eslint-disable-next-line no-await-in-loop -- one role at a time, matching this suite's other sweeps
+    await invoke(without.port, stateForProvenancePrompt(baseEvidence)).catch(() => {});
+
+    const withProvenance = capturingPort();
+    // eslint-disable-next-line no-await-in-loop -- one role at a time, matching this suite's other sweeps
+    await invoke(withProvenance.port, stateForProvenancePrompt(evidenceWithProvenance)).catch(() => {});
+
+    assert.equal(without.requests.length, 1, `${name}: exactly one model call expected without provenance`);
+    assert.equal(withProvenance.requests.length, 1, `${name}: exactly one model call expected with provenance`);
+
+    assert.equal(
+      withProvenance.requests[0].prompt,
+      without.requests[0].prompt,
+      `${name}: the prompt must not change when the state's evidence gains a provenance`,
+    );
+    assert.equal(
+      withProvenance.requests[0].prompt.includes('provenance'),
+      false,
+      `${name}: the prompt must never carry the key "provenance"`,
+    );
+    assert.equal(
+      withProvenance.requests[0].prompt.includes(provenance.sourceBindingId),
+      false,
+      `${name}: the prompt must never carry the binding UUID`,
+    );
+    assert.equal(
+      withProvenance.requests[0].prompt.includes(provenance.credentialRefId),
+      false,
+      `${name}: the prompt must never carry the credentialRefId UUID`,
+    );
+    assert.equal(
+      withProvenance.requests[0].prompt.includes(provenance.requestFingerprint),
+      false,
+      `${name}: the prompt must never carry the request fingerprint`,
+    );
+  }
 });
