@@ -85,11 +85,18 @@
  *     entry is refused without ever being echoed into the thrown message.
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { childEnv } from './fixtures/child-env.mjs';
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
 /** A github-pat shape, assembled at runtime — never written as one contiguous literal (`.claude/rules/autonomy.md`). */
 const pastedSecret = () => ['ghp', 'B'.repeat(28)].join('_');
@@ -838,6 +845,332 @@ test('a credential-shaped policy allow entry is refused before any store call, a
       assert.ok(!error.message.includes(secret), `the refusal must never echo the credential-shaped policy allow entry: ${error.message}`);
       return true;
     },
+  );
+  assert.deepEqual(calls, []);
+});
+
+/* -------------------------------------------------------------------------- */
+/* an unresolved YAML tag is refused, never merely warned about               */
+/* -------------------------------------------------------------------------- */
+
+test('an unresolved YAML tag in the manifest, run through the built CLI, exits non-zero and never lets the credential-shaped value or the tag text reach stdout or stderr', async () => {
+  const secret = pastedSecret();
+  const dir = mkdtempSync(join(tmpdir(), 'aic-cli-apply-'));
+  const filePath = join(dir, 'manifest.yaml');
+  const manifest = `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments:
+      - name: staging
+        credentials: []
+        sources:
+          - name: github-source
+            adapter: github@1
+            config:
+              owner: my-org
+              repo: checkout
+              token: !!weird ${secret}
+        policy:
+          allow: []
+          writeCredentials: []
+`;
+  writeFileSync(filePath, manifest, 'utf8');
+  try {
+    const args = [cliPath, 'apply', '-f', filePath];
+    const result = spawnSync(process.execPath, args, {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: childEnv(),
+    });
+    assert.notEqual(
+      result.status,
+      0,
+      `expected a non-zero exit for an unresolved YAML tag; stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.ok(
+      !result.stdout.includes(secret) && !result.stderr.includes(secret),
+      `neither stdout nor stderr may echo the credential-shaped config value; stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.ok(
+      !result.stdout.includes('!!weird') && !result.stderr.includes('!!weird'),
+      `neither stdout nor stderr may echo the unresolved tag text; stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.match(
+      result.stderr,
+      /not valid YAML at line \d+, column \d+/,
+      `the refusal must name only line and column, the same shape invalid syntax already gets; stderr:\n${result.stderr}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a manifest carrying an unresolved YAML tag on an ordinary, non-credential-shaped field is refused before any store call, rather than silently applying the tag\'s fallback value', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+
+  await assert.rejects(() =>
+    withManifestFile(manifestYaml({ repositoryAliases: ['!!weird extra-alias'] }), (filePath) =>
+      runApplyCommand(['-f', filePath], { store, stdout }),
+    ),
+  );
+  assert.deepEqual(calls, []);
+});
+
+/* -------------------------------------------------------------------------- */
+/* drift: source config key set (added/removed key, not only a changed value) */
+/* -------------------------------------------------------------------------- */
+
+function sourceOnlySnapshot(config) {
+  const serviceId = randomUUID();
+  const environmentId = randomUUID();
+  const sourceId = randomUUID();
+  return {
+    services: [{ id: serviceId, name: 'checkout', repositoryAliases: [] }],
+    environments: [{ id: environmentId, serviceId, name: 'staging' }],
+    credentialRefs: [],
+    sourceBindings: [
+      {
+        id: sourceId,
+        environmentId,
+        name: 'github-source',
+        adapterId: 'github',
+        adapterVersion: '1',
+        config,
+        credentialRefId: null,
+      },
+    ],
+    actionPolicies: [],
+  };
+}
+
+function sourceOnlyManifest(configYaml) {
+  return `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments:
+      - name: staging
+        sources:
+          - name: github-source
+            adapter: github@1
+            config:
+${configYaml}
+`;
+}
+
+test('a source config declaring a key the stored SourceBinding does not have is reported as drift naming only the config field', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore(sourceOnlySnapshot({}));
+  const { stdout, rows } = createStdoutSink();
+
+  const result = await withManifestFile(sourceOnlyManifest('              owner: my-org'), (filePath) =>
+    runApplyCommand(['-f', filePath], { store, stdout }),
+  );
+
+  assert.deepEqual(result, { clean: false });
+  const sourceRow = rows().find((row) => row.entity === 'source');
+  assert.deepEqual(sourceRow, {
+    action: 'drift',
+    entity: 'source',
+    service: 'checkout',
+    environment: 'staging',
+    name: 'github-source',
+    fields: ['config'],
+  });
+  assert.equal(calls.some((call) => call.method === 'addSourceBinding'), false);
+});
+
+test('a source config missing a key the stored SourceBinding has is reported as drift naming only the config field', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore(sourceOnlySnapshot({ owner: 'my-org' }));
+  const { stdout, rows } = createStdoutSink();
+
+  const result = await withManifestFile(sourceOnlyManifest('              {}'), (filePath) =>
+    runApplyCommand(['-f', filePath], { store, stdout }),
+  );
+
+  assert.deepEqual(result, { clean: false });
+  const sourceRow = rows().find((row) => row.entity === 'source');
+  assert.deepEqual(sourceRow, {
+    action: 'drift',
+    entity: 'source',
+    service: 'checkout',
+    environment: 'staging',
+    name: 'github-source',
+    fields: ['config'],
+  });
+  assert.equal(calls.some((call) => call.method === 'addSourceBinding'), false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* drift: credential access                                                   */
+/* -------------------------------------------------------------------------- */
+
+test('a CredentialRef whose access differs from the stored one, with the same name and secret, is reported as drift naming only the access field', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore(onboardedSnapshot());
+  const { stdout, rows } = createStdoutSink();
+
+  const result = await withManifestFile(manifestYaml({ credentialAccess: 'write' }), (filePath) =>
+    runApplyCommand(['-f', filePath], { store, stdout }),
+  );
+
+  assert.deepEqual(result, { clean: false });
+  const credentialRow = rows().find((row) => row.entity === 'credential');
+  assert.deepEqual(credentialRow, {
+    action: 'drift',
+    entity: 'credential',
+    service: 'checkout',
+    environment: 'staging',
+    name: 'github-read',
+    fields: ['access'],
+  });
+  assert.equal(calls.some((call) => call.method === 'addCredentialRef'), false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* duplicate names within one manifest are refused before any store mutation  */
+/* -------------------------------------------------------------------------- */
+
+function noMutationCalled(calls) {
+  return !calls.some((call) => call.method !== 'snapshot');
+}
+
+test('two services declared with the same name in one manifest are refused, naming the duplicate\'s path and the word "duplicate", before any store mutation', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+  const manifest = `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments: []
+  - name: checkout
+    repositoryAliases: []
+    environments: []
+`;
+
+  await assert.rejects(
+    () => withManifestFile(manifest, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    (error) => {
+      assert.match(error.message, /duplicate/i);
+      assert.match(error.message, /services\[1\]/);
+      return true;
+    },
+  );
+  assert.ok(noMutationCalled(calls), `no store mutation may run: ${JSON.stringify(calls)}`);
+});
+
+test('two environments declared with the same name in one service are refused, naming the duplicate\'s path and the word "duplicate", before any store mutation', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+  const manifest = `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments:
+      - name: staging
+      - name: staging
+`;
+
+  await assert.rejects(
+    () => withManifestFile(manifest, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    (error) => {
+      assert.match(error.message, /duplicate/i);
+      assert.match(error.message, /environments\[1\]/);
+      return true;
+    },
+  );
+  assert.ok(noMutationCalled(calls), `no store mutation may run: ${JSON.stringify(calls)}`);
+});
+
+test('two credentials declared with the same name in one environment are refused, naming the duplicate\'s path and the word "duplicate", before any store mutation', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+  const manifest = `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments:
+      - name: staging
+        credentials:
+          - name: github-read
+            secret: ${secretName('GITHUB', 'READ', 'TOKEN')}
+            access: read
+          - name: github-read
+            secret: ${secretName('GITHUB', 'READ', 'TOKEN', 'TWO')}
+            access: read
+`;
+
+  await assert.rejects(
+    () => withManifestFile(manifest, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    (error) => {
+      assert.match(error.message, /duplicate/i);
+      assert.match(error.message, /credentials\[1\]/);
+      return true;
+    },
+  );
+  assert.ok(noMutationCalled(calls), `no store mutation may run: ${JSON.stringify(calls)}`);
+});
+
+test('two sources declared with the same name in one environment are refused, naming the duplicate\'s path and the word "duplicate", before any store mutation', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+  const manifest = `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments:
+      - name: staging
+        sources:
+          - name: github-source
+            adapter: github@1
+            config:
+              owner: my-org
+              repo: checkout
+          - name: github-source
+            adapter: github@2
+            config:
+              owner: my-org
+              repo: checkout
+`;
+
+  await assert.rejects(
+    () => withManifestFile(manifest, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    (error) => {
+      assert.match(error.message, /duplicate/i);
+      assert.match(error.message, /sources\[1\]/);
+      return true;
+    },
+  );
+  assert.ok(noMutationCalled(calls), `no store mutation may run: ${JSON.stringify(calls)}`);
+});
+
+/* -------------------------------------------------------------------------- */
+/* top-level unknown key wording: never doubles the word "manifest"           */
+/* -------------------------------------------------------------------------- */
+
+test('an unknown top-level manifest key is refused with a message that names "manifest" exactly once, not "manifest manifest"', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+  const unknownTopLevelKeyYaml = `apiVersion: aic.onboarding/v1\nkind: Onboarding\nservices: []\nunexpected: true\n`;
+
+  await assert.rejects(
+    () => withManifestFile(unknownTopLevelKeyYaml, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    /^manifest carries an unrecognised key/,
   );
   assert.deepEqual(calls, []);
 });
