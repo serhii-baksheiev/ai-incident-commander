@@ -790,8 +790,9 @@ test('a tool no binding describes is refused unavailable, without ever reaching 
 
 test('a github@1 binding routes no ToolId: every read-only tool id is refused unavailable, and fetch is never called', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
-  const credentialRef = makeReadCredentialRef();
-  const binding = makeGithubBinding({ credentialRefId: credentialRef.id });
+  const environmentId = randomUUID();
+  const credentialRef = makeReadCredentialRef({ environmentId });
+  const binding = makeGithubBinding({ credentialRefId: credentialRef.id, environmentId });
   const fetchFn = createRefusingFetch('github@1 routes no ToolId, so fetch must never be reached');
 
   const constructed = await createBoundInvestigationExecutor({
