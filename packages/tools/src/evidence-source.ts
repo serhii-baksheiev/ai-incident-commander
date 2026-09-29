@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { canonicalJson } from '@aic/domain';
+import { canonicalJson, EvidenceSourceRefusalReasonSchema } from '@aic/domain';
 import type { EvidenceProvenance } from '@aic/domain';
 
 import type { ToolResult } from './contracts.js';
@@ -28,15 +28,18 @@ import type { ToolResult } from './contracts.js';
  * must never read as negative evidence. See
  * test/evidence-source-contract.test.mjs › "publishes exactly the six typed
  * refusal reasons, frozen (AIC-100 slice c adds budget_exceeded)".
+ *
+ * AIC-146 slice b4: this list is re-exported from `@aic/domain`'s
+ * `EvidenceSourceRefusalReasonSchema.options` rather than restated as a
+ * second, possibly-diverging literal array — one spelling
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
+ * test/trial-refusal-contract.test.mjs › "EVIDENCE_SOURCE_REFUSAL_REASONS
+ * (tools) deep-equals EvidenceSourceRefusalReasonSchema.options (domain), one
+ * spelling" and › "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) stays frozen".
  */
 export const EVIDENCE_SOURCE_REFUSAL_REASONS = Object.freeze([
-  'unavailable',
-  'denied',
-  'rate_limited',
-  'timeout',
-  'adapter_error',
-  'budget_exceeded',
-] as const);
+  ...EvidenceSourceRefusalReasonSchema.options,
+]);
 
 export type EvidenceSourceRefusalReason =
   (typeof EVIDENCE_SOURCE_REFUSAL_REASONS)[number];

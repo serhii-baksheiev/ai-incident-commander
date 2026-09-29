@@ -7,6 +7,7 @@ import {
   type Evidence,
   type EvidenceProvenance,
   type SourceBinding,
+  type TrialRefusal,
 } from '@aic/domain';
 
 import {
@@ -124,8 +125,8 @@ export type BoundInvestigationExecutorContext = Readonly<{
 
 export type BoundInvestigationExecutorOutcome =
   | { readonly status: 'ok'; readonly output: readonly Evidence[]; readonly provenance: EvidenceProvenance }
-  | { readonly status: 'unavailable'; readonly reason: string }
-  | { readonly status: 'error'; readonly message: string };
+  | { readonly status: 'unavailable'; readonly reason: string; readonly refusal?: TrialRefusal }
+  | { readonly status: 'error'; readonly message: string; readonly refusal?: TrialRefusal };
 
 export interface BoundInvestigationExecutor {
   execute(context: BoundInvestigationExecutorContext): Promise<BoundInvestigationExecutorOutcome>;
@@ -302,26 +303,40 @@ function buildRouteTable(entries: readonly BoundSourceEntrySnapshot[]): RouteTab
  * carrying its own `provenance` key (regardless of whether that value is
  * itself well-formed) or an item failing `EvidenceSchema` all refuse the same
  * fixed, content-free `adapter_error`, never echoing adapter output text.
+ *
+ * AIC-146 b4: every `unavailable`/`error` variant this function returns also
+ * carries a typed `refusal` naming the reason and the routed `sourceBindingId`
+ * — the one binding this call was routed to, since this function is only
+ * ever reached once a route already resolved (a no-route call returns its own
+ * `refusal` with `sourceBindingId: null` directly from `execute`, below,
+ * without ever calling this function). `outcome.reason` on the `refused`
+ * branch is already `EvidenceSourceRefusalReason` (one of the closed six),
+ * read directly rather than through `evidenceSourceOutcomeToToolResult`'s own
+ * `string`-typed `reason`/`message` fields.
  */
-function mapOutcome(outcome: EvidenceSourceOutcome<unknown>): BoundInvestigationExecutorOutcome {
+function mapOutcome(
+  outcome: EvidenceSourceOutcome<unknown>,
+  sourceBindingId: string,
+): BoundInvestigationExecutorOutcome {
   if (outcome.status === 'refused') {
     const mapped = evidenceSourceOutcomeToToolResult(outcome);
+    const refusal: TrialRefusal = { reason: outcome.reason, sourceBindingId };
     if (mapped.status === 'unavailable') {
-      return { status: 'unavailable', reason: mapped.reason };
+      return { status: 'unavailable', reason: mapped.reason, refusal };
     }
     if (mapped.status === 'error') {
-      return { status: 'error', message: mapped.message };
+      return { status: 'error', message: mapped.message, refusal };
     }
-    return { status: 'error', message: 'adapter_error' };
+    return { status: 'error', message: 'adapter_error', refusal };
   }
 
   const provenanceResult = EvidenceProvenanceSchema.safeParse(outcome.provenance);
   if (!provenanceResult.success) {
-    return { status: 'error', message: 'adapter_error' };
+    return { status: 'error', message: 'adapter_error', refusal: { reason: 'adapter_error', sourceBindingId } };
   }
 
   if (!Array.isArray(outcome.output)) {
-    return { status: 'error', message: 'adapter_error' };
+    return { status: 'error', message: 'adapter_error', refusal: { reason: 'adapter_error', sourceBindingId } };
   }
 
   const items: Evidence[] = [];
@@ -330,11 +345,11 @@ function mapOutcome(outcome: EvidenceSourceOutcome<unknown>): BoundInvestigation
     // itself well-formed: provenance travels alongside the outcome, never
     // inside an item.
     if (typeof item === 'object' && item !== null && Object.hasOwn(item, 'provenance')) {
-      return { status: 'error', message: 'adapter_error' };
+      return { status: 'error', message: 'adapter_error', refusal: { reason: 'adapter_error', sourceBindingId } };
     }
     const parsedItem = EvidenceSchema.safeParse(item);
     if (!parsedItem.success) {
-      return { status: 'error', message: 'adapter_error' };
+      return { status: 'error', message: 'adapter_error', refusal: { reason: 'adapter_error', sourceBindingId } };
     }
     items.push(parsedItem.data);
   }
@@ -453,10 +468,16 @@ export async function createBoundInvestigationExecutor(
       async execute(context) {
         const sourceBindingId = routeTable.get(context.tool);
         if (sourceBindingId === undefined) {
-          return { status: 'unavailable', reason: 'unavailable' };
+          // No binding at all served this tool, so routing never reached the
+          // registry — the refusal names no binding (AIC-146 b4).
+          return {
+            status: 'unavailable',
+            reason: 'unavailable',
+            refusal: { reason: 'unavailable', sourceBindingId: null },
+          };
         }
         const outcome = await boundRegistry.execute(sourceBindingId, context.tool, context.input);
-        return mapOutcome(outcome);
+        return mapOutcome(outcome, sourceBindingId);
       },
     },
   };

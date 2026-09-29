@@ -1337,6 +1337,10 @@ const MIGRATION_CLAUSES: ReadonlyMap<number, string> = new Map([
     5,
     ' State written under schema version 5 predates evidence provenance, and this graph resumes only the current version; start a new investigation.',
   ],
+  [
+    6,
+    ' State written under schema version 6 has evidence provenance but predates typed trial refusals, and this graph resumes only the current version; start a new investigation.',
+  ],
 ]);
 
 function assertPersistedStateVersion(control: IncidentStateControl): void {
@@ -1350,14 +1354,20 @@ function assertPersistedStateVersion(control: IncidentStateControl): void {
     //   `primaryScope` but carries untyped predictions and no hypothesis
     //   cause instead.
     // Neither of those gaps has a value to invent that would not be a guess.
-    // - AIC-146 added the optional `Evidence.provenance`; a schema-version-5
-    //   checkpoint lacks nothing, and is refused by the version policy alone.
+    // - AIC-146 slice a added the optional `Evidence.provenance`; a
+    //   schema-version-5 checkpoint lacks nothing, and is refused by the
+    //   version policy alone.
+    // - AIC-146 slice b4 added the optional `Trial.refusal`; a
+    //   schema-version-6 checkpoint likewise lacks nothing, and is refused by
+    //   the version policy alone.
     // see state-cutover.test.mjs › "refuses to resume a schema-version-3
     // checkpoint paused at the HITL interrupt, because it predates
     // primaryScope", › "refuses to resume a schema-version-4 checkpoint
     // paused at the HITL interrupt, because it predates typed predictions and
-    // hypothesis cause" and › "refuses to resume a schema-version-5 checkpoint
+    // hypothesis cause", › "refuses to resume a schema-version-5 checkpoint
     // paused at the HITL interrupt, because it predates evidence provenance"
+    // and › "refuses to resume a schema-version-6 checkpoint paused at the
+    // HITL interrupt, because it predates typed trial refusals"
     const migrationClause =
       typeof control.schemaVersion === 'number'
         ? (MIGRATION_CLAUSES.get(control.schemaVersion) ?? '')

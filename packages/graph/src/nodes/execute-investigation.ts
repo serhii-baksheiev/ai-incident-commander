@@ -6,9 +6,10 @@ import {
   type IncidentState,
   type InvestigationTest,
   type Trial,
+  type TrialRefusal,
 } from '@aic/domain';
 
-import { ingestEvidence } from '../evidence-ingestion.js';
+import { ingestEvidence, readOwnTrialRefusal } from '../evidence-ingestion.js';
 import { deriveTrialId } from '../identity.js';
 import type { InvestigationNode, InvestigationNodeResult } from '../investigation.js';
 import type { ExecuteInvestigationContext } from '../index.js';
@@ -26,8 +27,8 @@ import type { ExecuteInvestigationContext } from '../index.js';
  */
 export type ExecuteInvestigationOutcome =
   | { status: 'ok'; output: readonly Evidence[]; provenance?: EvidenceProvenance }
-  | { status: 'unavailable'; reason: string }
-  | { status: 'error'; message: string };
+  | { status: 'unavailable'; reason: string; refusal?: TrialRefusal }
+  | { status: 'error'; message: string; refusal?: TrialRefusal };
 
 /**
  * AIC-125 slice B: the canonical `execute_investigation` node.
@@ -84,6 +85,17 @@ export type ExecuteInvestigationOutcome =
  *
  * A thrown `execute` error propagates rather than being swallowed — see ›
  * "propagates a thrown error from execute instead of swallowing it".
+ *
+ * AIC-146 b4: an `unavailable` or `error` outcome may also carry a typed
+ * `refusal` (`@aic/domain`'s `TrialRefusal`), read as an own data property
+ * only and parsed with `TrialRefusalSchema` before it is ever stamped on the
+ * Trial — see `../evidence-ingestion.js`'s own `readOwnTrialRefusal` for the
+ * shared own-property discipline, and investigation-execution.test.mjs ›
+ * "on an unavailable result: a well-formed refusal naming a binding UUID is
+ * recorded on the trial (AIC-146 b4)", › "on an unavailable result carrying
+ * no refusal: the recorded trial carries no refusal key at all (AIC-146 b4)"
+ * and › "on an error result: a well-formed refusal naming a binding UUID is
+ * recorded on the trial (AIC-146 b4)".
  *
  * Lane wiring — which graph edge calls this node — is a later slice's
  * concern, not this one's, matching `createDerivePredictions` and
@@ -166,12 +178,35 @@ export function createExecuteInvestigation({
       }
 
       if (outcome.status === 'unavailable') {
-        trials.push(TrialSchema.parse({ ...trialBase, status: 'unavailable', evidenceIds: [] }));
+        // The refusal reason is read as an own data property only, and
+        // parsed with TrialRefusalSchema, before it is ever stamped on the
+        // Trial — see evidence-ingestion.ts's `readOwnTrialRefusal` (AIC-146
+        // b4), which shares the exact own-property discipline
+        // `readOwnProvenance` already uses for the ok branch above.
+        const refusal = readOwnTrialRefusal(outcome);
+        trials.push(
+          TrialSchema.parse({
+            ...trialBase,
+            status: 'unavailable',
+            evidenceIds: [],
+            ...(refusal === undefined ? {} : { refusal }),
+          }),
+        );
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'unavailable' }));
         continue;
       }
 
-      trials.push(TrialSchema.parse({ ...trialBase, status: 'error', evidenceIds: [] }));
+      {
+        const refusal = readOwnTrialRefusal(outcome);
+        trials.push(
+          TrialSchema.parse({
+            ...trialBase,
+            status: 'error',
+            evidenceIds: [],
+            ...(refusal === undefined ? {} : { refusal }),
+          }),
+        );
+      }
       tests.push(InvestigationTestSchema.parse({ ...test, status: 'failed' }));
     }
 

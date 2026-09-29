@@ -248,6 +248,41 @@ export const InvestigationTestSchema = z.strictObject({
   status: z.enum(['planned', 'executed', 'unavailable', 'failed']),
 });
 
+/**
+ * The six typed reasons a bound EvidenceSource call may be refused, owned
+ * here rather than in `@aic/tools`: `@aic/tools`'s
+ * `EVIDENCE_SOURCE_REFUSAL_REASONS` (`packages/tools/src/evidence-source.ts`)
+ * re-exports `.options` off this same schema, one spelling rather than two
+ * possibly-diverging copies (`.claude/rules/invariants.md`, "one mechanism,
+ * one implementation") — see test/trial-refusal-contract.test.mjs ›
+ * "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) deep-equals
+ * EvidenceSourceRefusalReasonSchema.options (domain), one spelling".
+ */
+export const EvidenceSourceRefusalReasonSchema = z.enum([
+  'unavailable',
+  'denied',
+  'rate_limited',
+  'timeout',
+  'adapter_error',
+  'budget_exceeded',
+]);
+
+/**
+ * AIC-146 slice b4: what a Trial records when the source call behind it was
+ * refused rather than answered — the typed reason, and the binding that
+ * refused it (`null` when no binding served the tool at all, so routing
+ * itself never reached the registry). Carried on the Trial record itself,
+ * durably, rather than in a separate per-node execution log, so AIC-101 can
+ * answer "why is this test untestable" from the same durable read that
+ * already covers every Trial. See test/trial-refusal-contract.test.mjs for
+ * the full pinned contract this schema satisfies.
+ */
+export const TrialRefusalSchema = z.strictObject({
+  reason: EvidenceSourceRefusalReasonSchema,
+  sourceBindingId: z.uuid().nullable(),
+});
+export type TrialRefusal = z.infer<typeof TrialRefusalSchema>;
+
 export const TrialSchema = z.strictObject({
   id: IdentifierSchema,
   runId: IdentifierSchema,
@@ -258,6 +293,13 @@ export const TrialSchema = z.strictObject({
   status: z.enum(['ok', 'unavailable', 'error']),
   durationMs: z.number(),
   evidenceIds: z.array(IdentifierSchema),
+  // Present only when the source call behind this trial was refused
+  // (AIC-146 b4); a successful trial, or one recorded before this field
+  // existed, carries no `refusal` key at all — see
+  // test/trial-refusal-contract.test.mjs › "TrialSchema accepts a Trial
+  // carrying no refusal at all, because a successful or pre-b4 trial has
+  // none".
+  refusal: TrialRefusalSchema.optional(),
 });
 
 /**
