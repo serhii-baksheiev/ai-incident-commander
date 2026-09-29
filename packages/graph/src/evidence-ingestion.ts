@@ -221,12 +221,15 @@ function readOwnProvenance(source: object) {
  * investigation-execution.test.mjs › "on an unavailable result: an accessor
  * "refusal" on the outcome makes the node throw and records nothing, and its
  * getter is never called (AIC-146 b4)", › "on an unavailable result: a
- * refusal carrying an unknown key makes the node throw and records nothing
- * (AIC-146 b4)", › "on an unavailable result: a refusal whose reason is
- * outside the six frozen reasons makes the node throw and records nothing
- * (AIC-146 b4)" and › "on an unavailable result: a refusal whose
- * sourceBindingId is neither a UUID nor null makes the node throw and
- * records nothing (AIC-146 b4)".
+ * refusal carrying an unknown key makes the node throw with the content-free
+ * refusal message, echoing neither the key name nor its value, and records
+ * nothing (AIC-146 b4)", › "on an unavailable result: a refusal whose reason
+ * is outside the six frozen reasons makes the node throw with the
+ * content-free refusal message, never echoing the malformed reason, and
+ * records nothing (AIC-146 b4)" and › "on an unavailable result: a refusal
+ * whose sourceBindingId is neither a UUID nor null makes the node throw with
+ * the content-free refusal message, never echoing the malformed binding id,
+ * and records nothing (AIC-146 b4)".
  */
 export function readOwnTrialRefusal(source: object): TrialRefusal | undefined {
   return readOwnValidatedProperty(source, 'refusal', TrialRefusalSchema, 'trial refusal');

@@ -4,9 +4,8 @@
  * chain like any other property read, `obj.key`) can never observe a value
  * inherited from a polluted `Object.prototype`.
  *
- * This is the one null-prototype-input discipline this repository builds a
- * `schema.parse` input with, whether the value being parsed is a candidate
- * evidence item (`@aic/graph`'s `evidence-ingestion.ts`, `EvidenceSchema` and
+ * It is the null-prototype input for every Trial and Evidence parse, whether
+ * the value being parsed is a candidate evidence item (`@aic/graph`'s `evidence-ingestion.ts`, `EvidenceSchema` and
  * `TrialSchema`), a plain object literal in `nodes/execute-investigation.ts`,
  * or a row body freshly `JSON.parse`d off the database
  * (`@aic/persistence`'s `retention.ts`, `parseRunProductRows` — AIC-146 b4).
@@ -14,7 +13,10 @@
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation") —
  * `@aic/persistence` in particular cannot import `@aic/graph` (the dependency
  * runs the other way), which is why this lives in `@aic/domain`, the one
- * package both already depend on.
+ * package both already depend on. It is not the only null-prototype copy in
+ * the repository: `@aic/graph`'s `investigation.ts` builds a deep,
+ * depth-capped one (`ownDataCopy`) for a human conclusion-review decision,
+ * a different mechanism for a different input.
  *
  * Only own enumerable string keys of `fields` are copied (`Object.keys`):
  * an inherited property is never seen, whatever `Object.prototype` carries,

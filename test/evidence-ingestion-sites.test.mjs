@@ -91,7 +91,7 @@ function withoutComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
-test('across packages/*/src and apps/*/src, TrialSchema.parse and TrialSchema.safeParse appear only in the node that builds trials and in the read-back of stored trials', () => {
+test('across every package and app source tree, TrialSchema.parse and TrialSchema.safeParse appear only in the node that builds trials and in the read-back of stored trials', () => {
   const sourceDirs = everySourceDir();
   assert.ok(sourceDirs.some((dir) => dir.endsWith('packages/graph/src')), 'the scan must reach packages/graph/src');
   assert.ok(sourceDirs.some((dir) => dir.endsWith('packages/persistence/src')), 'the scan must reach packages/persistence/src');

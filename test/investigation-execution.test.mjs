@@ -1062,3 +1062,34 @@ test('applying the first call\'s result to state by id (upsert) and calling agai
   const trialEvidenceViolations = requireDomainExport('trialEvidenceViolations');
   assert.deepEqual(trialEvidenceViolations({ trials: nextState.trials, evidence: nextState.evidence }), []);
 });
+
+test("parseTrial throws, content-free, when the parsed trial's own refusal does not match the refusal supplied for the call", () => {
+  const refusal = { reason: 'denied', sourceBindingId: randomUUID() };
+  const fields = {
+    id: 'trial-parse-1',
+    runId: 'run-parse-1',
+    testId: 'test-parse-1',
+    attempt: 1,
+    tool: 'deployments',
+    input: {},
+    status: 'unavailable',
+    durationMs: 0,
+    evidenceIds: [],
+  };
+  assert.deepEqual(graph.parseTrial({ ...fields, refusal }, refusal).refusal, refusal, 'agreeing fields and refusal parse');
+  assert.equal(Object.hasOwn(graph.parseTrial(fields, undefined), 'refusal'), false, 'no refusal on either side parses without one');
+  for (const [label, parsedFields, supplied] of [
+    ['fields carry a refusal the call did not supply', { ...fields, refusal }, undefined],
+    ['the call supplies a refusal the fields do not carry', fields, refusal],
+  ]) {
+    assert.throws(
+      () => graph.parseTrial(parsedFields, supplied),
+      (error) => {
+        assert.equal(error.message, 'parsed trial refusal presence does not match what was supplied for this call', label);
+        assert.equal(error.message.includes(refusal.sourceBindingId), false, label);
+        return true;
+      },
+      label,
+    );
+  }
+});

@@ -112,11 +112,16 @@ export type ExecuteInvestigationOutcome =
  * "one mechanism, one implementation"). A post-parse assertion then checks
  * that the parsed Trial's own `refusal` presence matches whether a refusal
  * was actually supplied for this call — content-free, so it never echoes the
- * refusal's value — catching anything upstream of the parse that might have
- * changed, exactly as `ingestEvidence`'s own post-parse provenance check
- * does. Every `TrialSchema.parse` call in this file goes through here,
- * keeping `TrialSchema` the single place a Trial is built — see
- * investigation-execution.test.mjs › "on an ok result carrying no own
+ * refusal's value. It is pinned directly — see investigation-execution.test.mjs
+ * › "parseTrial throws, content-free, when the parsed trial's own refusal
+ * does not match the refusal supplied for the call" — because inside the
+ * node the null-prototype input already rules out a mismatch; it guards a
+ * caller that passes fields and refusal that disagree. Every
+ * `TrialSchema.parse` call in this file goes through here — see
+ * evidence-ingestion-sites.test.mjs › "across every package and app source
+ * tree, TrialSchema.parse and TrialSchema.safeParse appear only in the node
+ * that builds trials and in the read-back of stored trials". The null-prototype
+ * input is pinned by investigation-execution.test.mjs › "on an ok result carrying no own
  * refusal: a polluted Object.prototype.refusal never becomes an own property
  * of the recorded trial, even on a real ok trial (AIC-146 b4 security round
  * 1)", › "on an unavailable result carrying no own refusal: a polluted
