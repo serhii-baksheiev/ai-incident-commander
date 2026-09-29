@@ -79,5 +79,49 @@ const toolsWithExtraKey: EvidenceSourceProvenance = {
 };
 void toolsWithExtraKey;
 
+/**
+ * Mutual assignability (above) is strictly weaker than "the same key set":
+ * a structural assignability check does not fail when the target type has an
+ * EXTRA OPTIONAL key, because excess-property checking only applies to a
+ * fresh object literal, never to a type-to-type comparison. `Exact` closes
+ * that gap with a `keyof` comparison in both directions, which DOES see an
+ * extra key regardless of optionality. Green only when the two types name
+ * exactly the same keys — which holds today because
+ * `EvidenceSourceProvenance` is a direct alias of `EvidenceProvenance`, and
+ * would go red the moment either type gained a key the other lacks.
+ */
+type Exact<A, B> = [A] extends [B]
+  ? [B] extends [A]
+    ? keyof A extends keyof B
+      ? keyof B extends keyof A
+        ? true
+        : false
+      : false
+    : false
+  : false;
+
+const exact: Exact<EvidenceProvenance, EvidenceSourceProvenance> = true;
+void exact;
+
+/**
+ * `EvidenceSourceProvenance` is `Readonly<EvidenceProvenance>`: `@aic/tools`'s
+ * own doc comment calls the registry "the single writer of provenance", and a
+ * mutable field would let any holder of the value contradict that at compile
+ * time even though no current call site does. Every field is assignment-
+ * refused; `adapter` stands in for all five, since one readonly modifier
+ * proves the schema-level `.readonly()`/`Readonly<>` wrapper was applied at
+ * all.
+ */
+const toolsReadonlyProbe: EvidenceSourceProvenance = {
+  sourceBindingId: fixtureBindingId,
+  adapter: 'lab@1',
+  credentialRefId: null,
+  fetchedAt: '2026-09-24T00:00:00.000Z',
+  requestFingerprint: fixtureFingerprint,
+};
+// @ts-expect-error EvidenceSourceProvenance is Readonly<EvidenceProvenance>: adapter is assignment-refused
+toolsReadonlyProbe.adapter = 'other@2';
+void toolsReadonlyProbe;
+
 void acceptsSourceProvenance;
 void acceptsDomainProvenance;

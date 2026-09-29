@@ -31,7 +31,7 @@
  * dependency what the right answer is.
  */
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
 
 import * as domain from '@aic/domain';
@@ -408,6 +408,45 @@ test('on an ok result: records an ok trial, emits new evidence re-stamped with t
   assert.equal(producedEvidence.id, 'e-new');
   assert.equal(producedEvidence.trialId, producedTrial.id, 're-stamped to the trial that produced it');
   assert.equal(producedEvidence.statement, 'evidence recorded as e-new', 'every other field is kept as-is');
+  domain.EvidenceSchema.parse(producedEvidence);
+});
+
+test('on an ok result: a provenance block on the tool\'s own output item never survives into the recorded evidence (AIC-146 slice a)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  // The tool's own output item attests a binding, adapter and fingerprint
+  // that no BoundSourceRegistry call ever served it — well-formed enough to
+  // pass EvidenceProvenanceSchema on its own, which is exactly the hazard:
+  // nothing about shape alone distinguishes an adapter's claim from the
+  // registry's.
+  const adapterSuppliedProvenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-24T00:00:00.000Z',
+    requestFingerprint: `sha256:${'0'.repeat(64)}`,
+  };
+  const execute = recordingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('e-forged', { provenance: adapterSuppliedProvenance })],
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.evidence.length, 1);
+  const [producedEvidence] = result.evidence;
+  assert.equal(
+    'provenance' in producedEvidence,
+    false,
+    'a provenance block the tool itself attached must never reach persisted evidence',
+  );
+  assert.equal(producedEvidence.id, 'e-forged', 'every other field is kept as-is');
+  assert.equal(
+    producedEvidence.statement,
+    'evidence recorded as e-forged',
+    'every other field is kept as-is',
+  );
   domain.EvidenceSchema.parse(producedEvidence);
 });
 
