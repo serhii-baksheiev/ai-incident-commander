@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { canonicalJson } from '@aic/domain';
+import type { EvidenceProvenance } from '@aic/domain';
 
 import type { ToolResult } from './contracts.js';
 
@@ -45,14 +46,13 @@ export type EvidenceSourceRefusalReason =
  * binding served it, which adapter build, the id of the binding's credential
  * reference (never the secret's value or name; null when none), when it was
  * fetched, and a deterministic fingerprint of the request that was made.
+ *
+ * The same shape as `@aic/domain`'s `EvidenceProvenance` (the validated
+ * contract `Evidence.provenance` carries) — one spelling, not two
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation"). See
+ * test/fixtures/evidence-provenance-type-contract.ts.
  */
-export interface EvidenceSourceProvenance {
-  readonly sourceBindingId: string;
-  readonly adapter: string;
-  readonly credentialRefId: string | null;
-  readonly fetchedAt: string;
-  readonly requestFingerprint: string;
-}
+export type EvidenceSourceProvenance = EvidenceProvenance;
 
 /** The result of a single EvidenceSource#execute call. */
 export type EvidenceSourceOutcome<Output> =
