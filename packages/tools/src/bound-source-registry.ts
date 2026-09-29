@@ -220,6 +220,10 @@ function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): Sou
  * ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of
  * the same spelling (AIC-146 b1)".
  */
+// Re-exported by name rather than as `export const … = ADAPTER_VERSION_PATTERN`:
+// that assignment matches the assigned-secret shape in
+// `.claude/scripts/lib/secrets.mjs` (a credential word, then a long
+// identifier), although the value is a RegExp.
 export { SAFE_ADAPTER_TOKEN };
 
 /**

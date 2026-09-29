@@ -283,7 +283,8 @@ export const ADAPTER_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * The bound-source-registry side of `adapter`: one `<adapterId>@<adapterVersion>`
  * string, built by joining `ADAPTER_ID_PATTERN` and `ADAPTER_VERSION_PATTERN`
  * above into a single anchored `RegExp` (their sources, stripped of their own
- * `^`/`$`, joined by a literal `@`) and checked with `.regex(...)` — never
+ * `^`/`$`, each wrapped in a non-capturing group, joined by a literal `@`) and
+ * checked with `.regex(...)` — never
  * `.refine`: a refinement is a zod `custom` check, which the checkpoint
  * schema walk reads as a value the serializer would store as an lc record —
  * see checkpoint-serde-own-values.test.mjs › "states its limit: a declared lc
@@ -299,7 +300,7 @@ export const ADAPTER_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * this narrower field.
  */
 const provenanceAdapterFieldPattern = new RegExp(
-  `^${ADAPTER_ID_PATTERN.source.slice(1, -1)}@${ADAPTER_VERSION_PATTERN.source.slice(1, -1)}$`,
+  `^(?:${ADAPTER_ID_PATTERN.source.slice(1, -1)})@(?:${ADAPTER_VERSION_PATTERN.source.slice(1, -1)})$`,
 );
 const ProvenanceAdapterFieldSchema = z.string().regex(provenanceAdapterFieldPattern);
 
@@ -317,7 +318,7 @@ export const EvidenceProvenanceSchema = z.strictObject({
   sourceBindingId: z.uuid(),
   adapter: ProvenanceAdapterFieldSchema,
   credentialRefId: z.uuid().nullable(),
-  fetchedAt: z.iso.datetime(),
+  fetchedAt: z.iso.datetime({ precision: 3 }),
   requestFingerprint: z.string().regex(/^sha256:[0-9a-f]{64}$/),
 });
 
