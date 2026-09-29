@@ -220,12 +220,23 @@ async function runCredentialCommand(argv: readonly string[], deps: StoreDeps): P
  * non-empty. Refused before any store method is called — see
  * test/cli-registry-commands.test.mjs's malformed-adapter row.
  */
-function parseAdapter(raw: string): { adapterId: string; adapterVersion: string } {
+/**
+ * Splits `<adapterId>@<adapterVersion>` at exactly one `@`, both halves
+ * non-empty; `undefined` otherwise. The one rule `source add --adapter` and a
+ * manifest source's `adapter` share.
+ */
+export function splitAdapterReference(raw: string): { adapterId: string; adapterVersion: string } | undefined {
   const parts = raw.split('@');
-  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
+  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') return undefined;
+  return { adapterId: parts[0], adapterVersion: parts[1] };
+}
+
+function parseAdapter(raw: string): { adapterId: string; adapterVersion: string } {
+  const split = splitAdapterReference(raw);
+  if (split === undefined) {
     throw new Error('--adapter must be "<adapterId>@<adapterVersion>"');
   }
-  return { adapterId: parts[0], adapterVersion: parts[1] };
+  return split;
 }
 
 /**

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from 'node:fs';
 
 import {
   boundedJsonViolation,
@@ -35,6 +34,8 @@ import {
 } from '@aic/roles';
 import type { PlannedReplayScenarioFixture } from '@aic/tools/replay';
 import { createPlannedReplayExecutor } from '@aic/tools/replay';
+
+import { readBoundedRegularFile } from './bounded-file.js';
 
 /**
  * AIC-126 slice b: `aic investigate`, a minimal real product entry that runs
@@ -75,87 +76,15 @@ interface ReplayFileContent {
 // unexplained number. Every message that states the bound derives its text
 // from this constant, never a repeated "16 MiB" literal.
 const REPLAY_FILE_MAX_BYTES = 16 * 1024 * 1024;
-const REPLAY_FILE_MAX_MIB = REPLAY_FILE_MAX_BYTES / (1024 * 1024);
 
-/**
- * `statSync(path).size` is 0 for a FIFO, a character device or a pipe, so a
- * stat-then-read pair never bounds the read that follows, and a symlink
- * swapped between the stat and the read is a TOCTOU. This opens the path
- * exactly once, inspects the SAME descriptor with `fstatSync`, refuses
- * anything that is not a regular file, and then reads no more than the size
- * bound + 1 byte from that one descriptor.
- *
- * `O_NONBLOCK` on the open is load-bearing for the FIFO case specifically: a
- * blocking open of a FIFO for reading waits for a writer that this command
- * never has, which would hang before `fstatSync` ever runs. With
- * `O_NONBLOCK` the open returns immediately regardless of a writer, `fstat`
- * still reports the true file type, and the `!isFile()` refusal below fires
- * before any read is attempted — for a regular file `O_NONBLOCK` changes
- * nothing about how it is opened or read.
- * see cli-investigate.test.mjs › "a --replay path that is a FIFO (named
- * pipe), not a regular file, is refused by name before any read, and never
- * hangs waiting for a writer" and › "a --replay path that is a symlink to
- * /dev/zero, not a regular file, is refused by name before any read, and
- * never hangs reading an infinite device"
- */
+/** The replay file, read through the shared bounded reader (`./bounded-file.ts`) and parsed as JSON. */
 function readReplayFile(path: string): unknown {
-  let fd: number;
+  const text = readBoundedRegularFile(path, { flag: '--replay', maxBytes: REPLAY_FILE_MAX_BYTES });
   try {
-    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    return JSON.parse(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`--replay file could not be read at ${path}: ${message}`);
-  }
-  try {
-    let stats: ReturnType<typeof fstatSync>;
-    try {
-      stats = fstatSync(fd);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`--replay file could not be read at ${path}: ${message}`);
-    }
-    if (!stats.isFile()) {
-      throw new Error(`--replay path is not a regular file: ${path}`);
-    }
-    if (stats.size > REPLAY_FILE_MAX_BYTES) {
-      throw new Error(
-        `--replay file at ${path} is ${stats.size} bytes, over the ${REPLAY_FILE_MAX_MIB} MiB size bound this command accepts`,
-      );
-    }
-
-    // Read at most the bound + 1 byte from the SAME descriptor `fstatSync`
-    // just inspected, never a fresh open/stat: a file that grows past the
-    // bound after `fstat` (or was never a bounded regular file to begin
-    // with) is refused by the number of bytes actually read, not by a size
-    // field that can be stale or, for a FIFO/device, always zero.
-    const readLimit = REPLAY_FILE_MAX_BYTES + 1;
-    const buffer = Buffer.alloc(readLimit);
-    let total = 0;
-    for (;;) {
-      const bytesRead = readSync(fd, buffer, total, readLimit - total, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total >= readLimit) {
-        throw new Error(
-          `--replay file at ${path} is over the ${REPLAY_FILE_MAX_MIB} MiB size bound this command accepts`,
-        );
-      }
-    }
-
-    try {
-      return JSON.parse(buffer.toString('utf8', 0, total));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`--replay file at ${path} is not valid JSON: ${message}`);
-    }
-  } finally {
-    // A read-only descriptor that fails to close must not replace the
-    // refusal (or the result) that is already on its way out.
-    try {
-      closeSync(fd);
-    } catch {
-      // nothing to recover: the descriptor was only ever read
-    }
+    throw new Error(`--replay file at ${path} is not valid JSON: ${message}`);
   }
 }
 

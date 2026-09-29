@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from 'node:fs';
 
 import {
   ActionPolicySchema,
@@ -11,12 +10,14 @@ import {
 import type { RegistryStore } from '@aic/persistence';
 import { parse as parseYamlDocument, YAMLParseError } from 'yaml';
 
+import { readBoundedRegularFile } from './bounded-file.js';
+import { splitAdapterReference } from './registry.js';
+
 /**
  * AIC-99 slice g: `runApplyCommand(argv, deps)` — `aic apply -f <file>
  * [--overwrite] [--dry-run]`, the declarative onboarding manifest the
  * owner's 2026-09-25 ruling fixes as idempotent INPUT, never a source of
- * truth (Jira AIC-99, the 2026-09-25 plan comment;
- * `.claude/runs/20260929-aic99g/design.md`).
+ * truth (Jira AIC-99, the 2026-09-25 plan comment).
  *
  * See test/cli-apply.test.mjs for the full pinned manifest schema, entity
  * order, JSON-line shape and field-name vocabulary this module is built
@@ -86,54 +87,9 @@ interface ManifestService {
 /* -------------------------------------------------------------------------- */
 
 const MANIFEST_FILE_MAX_BYTES = 1024 * 1024;
-const MANIFEST_FILE_MAX_MIB = MANIFEST_FILE_MAX_BYTES / (1024 * 1024);
 
 function readManifestText(path: string): string {
-  let fd: number;
-  try {
-    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`-f file could not be read at ${path}: ${message}`);
-  }
-  try {
-    let stats: ReturnType<typeof fstatSync>;
-    try {
-      stats = fstatSync(fd);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`-f file could not be read at ${path}: ${message}`);
-    }
-    if (!stats.isFile()) {
-      throw new Error(`-f path is not a regular file: ${path}`);
-    }
-    if (stats.size > MANIFEST_FILE_MAX_BYTES) {
-      throw new Error(
-        `-f file at ${path} is ${stats.size} bytes, over the ${MANIFEST_FILE_MAX_MIB} MiB size bound this command accepts`,
-      );
-    }
-
-    const readLimit = MANIFEST_FILE_MAX_BYTES + 1;
-    const buffer = Buffer.alloc(readLimit);
-    let total = 0;
-    for (;;) {
-      const bytesRead = readSync(fd, buffer, total, readLimit - total, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total >= readLimit) {
-        throw new Error(
-          `-f file at ${path} is over the ${MANIFEST_FILE_MAX_MIB} MiB size bound this command accepts`,
-        );
-      }
-    }
-    return buffer.toString('utf8', 0, total);
-  } finally {
-    try {
-      closeSync(fd);
-    } catch {
-      // nothing to recover: the descriptor was only ever read
-    }
-  }
+  return readBoundedRegularFile(path, { flag: '-f', maxBytes: MANIFEST_FILE_MAX_BYTES });
 }
 
 /**
@@ -233,11 +189,11 @@ function parseAdapter(label: string, raw: unknown): { adapterId: string; adapter
   if (typeof raw !== 'string') {
     throw new Error(`manifest ${label}.adapter must be a string "<adapterId>@<adapterVersion>"`);
   }
-  const parts = raw.split('@');
-  if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
+  const split = splitAdapterReference(raw);
+  if (split === undefined) {
     throw new Error(`manifest ${label}.adapter must be "<adapterId>@<adapterVersion>"`);
   }
-  return { adapterId: parts[0], adapterVersion: parts[1] };
+  return split;
 }
 
 /**
