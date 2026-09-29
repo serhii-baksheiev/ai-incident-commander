@@ -26,10 +26,17 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
  * argv/deps contract directly, without a database); this file only asserts
  * that neither one still claims to be "not implemented" — see the rows
  * below `ALL_ONBOARDING_NOUNS`.
+ *
+ * AIC-99 slice f: `incident` (its `start` subcommand) also stops being a
+ * stub — `apply` is the only onboarding noun still unimplemented after this
+ * slice. test/cli-incident-command.test.mjs pins `runIncidentCommand`'s own
+ * argv/deps/store contract directly, without a database; this file only
+ * asserts that `incident start` no longer claims to be "not implemented",
+ * the same shape as the `source check`/`doctor` rows below.
  */
-const STUB_NOUNS = ['incident', 'apply'];
+const STUB_NOUNS = ['apply'];
 const REGISTRY_NOUNS = ['service', 'env', 'source', 'policy', 'credential'];
-const ALL_ONBOARDING_NOUNS = [...REGISTRY_NOUNS, ...STUB_NOUNS];
+const ALL_ONBOARDING_NOUNS = [...REGISTRY_NOUNS, ...STUB_NOUNS, 'incident'];
 
 function runCli(args, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -179,6 +186,47 @@ test('aic doctor no longer reports itself as not implemented in this build', () 
       `aic doctor is real in this slice; it must never again claim to be unimplemented: ${commandDiagnostics(args, result)}`,
     );
     assert.deepEqual(readdirSync(cwd), before, 'it must not write to the working directory it is invoked from');
+  });
+});
+
+/**
+ * AIC-99 slice f: `incident start` is real. Like `source check`/`doctor`
+ * above, this file does not assert the full argv/store contract (that needs
+ * a registry store, and this command still reaches one through
+ * `apps/cli/src/index.ts`'s `createConnectedRegistryStore`/a connected
+ * incident store, which this file never wires past — the connection variable
+ * it reads is not set here, by `childEnv`'s own stripping). It only asserts
+ * that a missing `<service>`/`<env>`/`--title` is refused as such, BEFORE
+ * any connection is ever attempted, rather than the command claiming to be
+ * unimplemented — see test/cli-incident-command.test.mjs for the full pinned
+ * argv/deps/store contract, against the exported command function directly.
+ */
+test('aic incident start with no <service>/<env>/--title no longer reports itself as not implemented in this build', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'start'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}`,
+      /not implemented/i,
+      `aic incident start is real in this slice; it must never again claim to be unimplemented: ${commandDiagnostics(args, result)}`,
+    );
+    assert.deepEqual(readdirSync(cwd), before, 'it must not write to the working directory it is invoked from');
+  });
+});
+
+test('aic incident with no subcommand exits non-zero, names "subcommand" as the problem rather than claiming to be unimplemented, and writes nothing to the working directory', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.match(`${result.stdout}${result.stderr}`, /subcommand/i, commandDiagnostics(args, result));
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /not implemented/i, commandDiagnostics(args, result));
+    assert.deepEqual(readdirSync(cwd), before);
   });
 });
 
