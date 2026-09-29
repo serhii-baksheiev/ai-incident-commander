@@ -494,7 +494,7 @@ const PROVENANCE_REQUEST_VOCABULARY = domain.routeRequestVocabulary(graph.INVEST
 
 function stateForProvenancePrompt(evidenceItem) {
   return {
-    incident: scopedIncident('incident-provenance-prompt'),
+    incident: scopedIncident('incident-origin-prompt'),
     hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
     predictions: [],
     tests: [],
@@ -502,7 +502,7 @@ function stateForProvenancePrompt(evidenceItem) {
     evidence: [evidenceItem],
     assessments: [],
     control: {
-      runId: 'run-provenance-prompt',
+      runId: 'run-origin-prompt',
       schemaVersion: domain.INCIDENT_STATE_SCHEMA_VERSION,
       statusRulesVersion: domain.STATUS_RULES_VERSION,
       phase: 'concluding',
@@ -571,7 +571,7 @@ test('MODEL_ROLES_READING_DESCRIBE_STATE names exactly every describeState(state
 
 test("describeState strips evidence[].provenance from what a model role is shown: for every model-backed role, the prompt sent is byte-identical whether or not the state's evidence item carries a well-formed provenance, and the prompt contains neither the key \"provenance\" nor the binding UUID, the credentialRefId UUID, nor the request fingerprint", async () => {
   const baseEvidence = {
-    id: 'evidence-provenance-1',
+    id: 'evidence-origin-1',
     trialId: 'trial-provenance-1',
     kind: 'deploy',
     source: 'deploy-log',
