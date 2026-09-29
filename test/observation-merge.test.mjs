@@ -572,7 +572,7 @@ test('MODEL_ROLES_READING_DESCRIBE_STATE names exactly every describeState(state
 test("describeState strips evidence[].provenance from what a model role is shown: for every model-backed role, the prompt sent is byte-identical whether or not the state's evidence item carries a well-formed provenance, and the prompt contains neither the key \"provenance\" nor the binding UUID, the credentialRefId UUID, nor the request fingerprint", async () => {
   const baseEvidence = {
     id: 'evidence-origin-1',
-    trialId: 'trial-provenance-1',
+    trialId: 'trial-origin-1',
     kind: 'deploy',
     source: 'deploy-log',
     observedAt: '2026-01-01T00:00:00.000Z',
