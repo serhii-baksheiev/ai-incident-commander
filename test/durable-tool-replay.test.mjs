@@ -35,7 +35,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +76,41 @@ function countingExecuteInvestigation(calls) {
         reliability: 'high',
       },
       payloadFingerprint: PAYLOAD_FINGERPRINT,
+    };
+  };
+}
+
+/** A well-formed EvidenceProvenance, fresh every call: AIC-146 b2's stamp-alongside-the-result shape. */
+function validProvenance(overrides = {}) {
+  return {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: new Date().toISOString(),
+    requestFingerprint: `sha256:${randomBytes(32).toString('hex')}`,
+    ...overrides,
+  };
+}
+
+/**
+ * Same shape as `countingExecuteInvestigation`, but the `ExecuteInvestigationResult`
+ * also carries the given `provenance` at the top level — alongside the
+ * evidence fields, never inside them (AIC-146 b2).
+ */
+function countingExecuteInvestigationWithProvenance(calls, provenance) {
+  return async (context) => {
+    calls.push(context);
+    return {
+      trial: { status: 'ok', durationMs: 1 },
+      evidence: {
+        kind: 'log',
+        source: 'fixture-tool',
+        observedAt: '2026-09-24T00:00:00.000Z',
+        statement: 'checkout returned a deterministic fixture result',
+        rawRef: 'fixture://checkout/result',
+      },
+      payloadFingerprint: PAYLOAD_FINGERPRINT,
+      provenance,
     };
   };
 }
@@ -295,15 +330,16 @@ test('crash between commit and checkpoint: resume returns the committed result a
 });
 
 /* -------------------------------------------------------------------------- */
-/* Row 6 (AIC-146 slice a) - a provenance block executeInvestigation returns  */
-/* must never survive into persisted evidence                                 */
+/* Row 6 (AIC-146 b2) - evidence carrying its own provenance is refused,      */
+/* naming the evidence id; nothing is committed                              */
 /* -------------------------------------------------------------------------- */
 
-test('a provenance block executeInvestigation returns on its evidence never survives into the persisted evidence', async () => {
+test('evidence carrying its own provenance is refused, naming the evidence id, and nothing is committed', async () => {
   // The port's own caller attests a binding, adapter and fingerprint that no
   // BoundSourceRegistry call ever served it - well-formed enough to pass
   // EvidenceProvenanceSchema on its own, which is exactly the hazard: nothing
   // about shape alone distinguishes an adapter's claim from the registry's.
+  // Slice a silently dropped this; b2 refuses it outright.
   const adapterSuppliedProvenance = {
     sourceBindingId: randomUUID(),
     adapter: 'lab@1',
@@ -330,19 +366,157 @@ test('a provenance block executeInvestigation returns on its evidence never surv
     },
   });
 
-  const started = await runner.start({ runId: RUN_ID, test: buildTest() });
+  const expectedEvidenceId = deriveEvidenceId({
+    trialId: deriveTrialId({ runId: RUN_ID, testId: TEST_ID, attempt: 1 }),
+    payloadFingerprint: PAYLOAD_FINGERPRINT,
+  });
 
-  assert.equal(started.evidence.length, 1);
-  const [producedEvidence] = started.evidence;
-  assert.equal(
-    'provenance' in producedEvidence,
-    false,
-    'a provenance block executeInvestigation attached must never reach persisted evidence',
+  await assert.rejects(
+    () => runner.start({ runId: RUN_ID, test: buildTest() }),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.ok(
+        error.message.includes(expectedEvidenceId),
+        `expected the refusal to name the evidence id ${expectedEvidenceId}, got: ${error.message}`,
+      );
+      return true;
+    },
   );
-  assert.equal(
-    producedEvidence.statement,
-    'checkout returned a deterministic fixture result',
-    'every other field is kept as-is',
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 7 (AIC-146 b2) - provenance travels alongside the result, never inside */
+/* evidence, and becomes part of the persisted evidence                      */
+/* -------------------------------------------------------------------------- */
+
+test('provenance on the ExecuteInvestigationResult (alongside evidence, not inside it) becomes part of the persisted evidence', async () => {
+  const calls = [];
+  const provenance = validProvenance();
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    executeInvestigation: countingExecuteInvestigationWithProvenance(calls, provenance),
+  });
+
+  const result = await runner.start({ runId: RUN_ID, test: buildTest() });
+
+  assert.equal(result.evidence.length, 1);
+  assert.deepEqual(
+    result.evidence[0].provenance,
+    provenance,
+    'the persisted evidence must carry exactly the provenance the result declared alongside it',
   );
-  domain.EvidenceSchema.parse(producedEvidence);
+  domain.EvidenceSchema.parse(result.evidence[0]);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 8 (AIC-146 b2) - crash between commit and checkpoint, with provenance  */
+/* -------------------------------------------------------------------------- */
+
+test('crash between commit and checkpoint, with provenance: resume returns evidence deepEqual including provenance.fetchedAt, and executeInvestigation ran once', async () => {
+  const calls = [];
+  const checkpointer = new MemorySaver();
+  const fake = createFakeCommittedExecution({ crashAfterFirstCommit: true });
+  const provenance = validProvenance();
+
+  const crashingRunner = createPersistentInvestigationRunner({
+    checkpointer,
+    execution: fake,
+    executeInvestigation: countingExecuteInvestigationWithProvenance(calls, provenance),
+  });
+
+  await assert.rejects(
+    () => crashingRunner.start({ runId: RUN_ID, test: buildTest() }),
+    /SIMULATED_CRASH_AFTER_COMMIT/,
+  );
+
+  const resumingRunner = createPersistentInvestigationRunner({
+    checkpointer,
+    execution: fake,
+    executeInvestigation: countingExecuteInvestigationWithProvenance(calls, provenance),
+  });
+
+  const resumed = await resumingRunner.resume({ runId: RUN_ID });
+
+  assert.equal(
+    calls.length,
+    1,
+    'executeInvestigation must have been called exactly once in TOTAL across both runner instances',
+  );
+
+  const expectedTrialId = deriveTrialId({ runId: RUN_ID, testId: TEST_ID, attempt: 1 });
+  const expectedEvidenceId = deriveEvidenceId({ trialId: expectedTrialId, payloadFingerprint: PAYLOAD_FINGERPRINT });
+
+  assert.equal(resumed.evidence.length, 1);
+  assert.deepEqual(
+    resumed.evidence[0],
+    {
+      id: expectedEvidenceId,
+      trialId: expectedTrialId,
+      kind: 'log',
+      source: 'fixture-tool',
+      observedAt: '2026-09-24T00:00:00.000Z',
+      statement: 'checkout returned a deterministic fixture result',
+      rawRef: 'fixture://checkout/result',
+      provenance,
+    },
+    'the resumed Evidence must be derived from the COMMITTED result, provenance.fetchedAt included',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 9 (AIC-146 b2) - the evidence id formula never takes provenance as an  */
+/* input                                                                      */
+/* -------------------------------------------------------------------------- */
+
+test('evidence id is independent of provenance: the same payloadFingerprint with two different fetchedAt values yields the same evidence id', async () => {
+  function executorWithFetchedAt(calls, fetchedAt) {
+    return async (context) => {
+      calls.push(context);
+      return {
+        trial: { status: 'ok', durationMs: 1 },
+        evidence: {
+          kind: 'log',
+          source: 'fixture-tool',
+          observedAt: '2026-09-24T00:00:00.000Z',
+          statement: 'checkout returned a deterministic fixture result',
+          rawRef: 'fixture://checkout/result',
+        },
+        payloadFingerprint: PAYLOAD_FINGERPRINT,
+        provenance: validProvenance({ fetchedAt }),
+      };
+    };
+  }
+
+  const callsA = [];
+  const callsB = [];
+  const runnerA = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    executeInvestigation: executorWithFetchedAt(callsA, '2026-09-24T00:00:00.000Z'),
+  });
+  const runnerB = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    executeInvestigation: executorWithFetchedAt(callsB, '2026-09-24T01:00:00.000Z'),
+  });
+
+  const resultA = await runnerA.start({ runId: RUN_ID, test: buildTest() });
+  const resultB = await runnerB.start({ runId: RUN_ID, test: buildTest() });
+
+  // Independent oracle: deriveEvidenceId's own documented formula
+  // (packages/graph/src/identity.ts), hashed by hand rather than through the
+  // module's own export - the whole point of this row is that provenance is
+  // NOT one of the formula's inputs, and asking the formula itself would
+  // agree with any implementation that quietly changed that.
+  const expectedTrialId = deriveTrialId({ runId: RUN_ID, testId: TEST_ID, attempt: 1 });
+  const expectedEvidenceId = createHash('sha256')
+    .update(JSON.stringify([expectedTrialId, PAYLOAD_FINGERPRINT]))
+    .digest('hex');
+
+  assert.equal(resultA.evidence[0].id, expectedEvidenceId);
+  assert.equal(resultB.evidence[0].id, expectedEvidenceId);
+  assert.notEqual(
+    resultA.evidence[0].provenance.fetchedAt,
+    resultB.evidence[0].provenance.fetchedAt,
+    'sanity: the two runs must actually carry different fetchedAt values',
+  );
 });

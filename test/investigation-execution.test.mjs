@@ -31,7 +31,7 @@
  * dependency what the right answer is.
  */
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import test from 'node:test';
 
 import * as domain from '@aic/domain';
@@ -129,6 +129,18 @@ function trial(id, overrides = {}) {
     status: 'ok',
     durationMs: 0,
     evidenceIds: [],
+    ...overrides,
+  };
+}
+
+/** A well-formed EvidenceProvenance, fresh every call: AIC-146 b2's stamp-alongside-the-items shape. */
+function validProvenance(overrides = {}) {
+  return {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: new Date().toISOString(),
+    requestFingerprint: `sha256:${randomBytes(32).toString('hex')}`,
     ...overrides,
   };
 }
@@ -411,13 +423,132 @@ test('on an ok result: records an ok trial, emits new evidence re-stamped with t
   domain.EvidenceSchema.parse(producedEvidence);
 });
 
-test('on an ok result: a provenance block on the tool\'s own output item never survives into the recorded evidence (AIC-146 slice a)', async () => {
+test('on an ok result: a well-formed provenance block on the outcome is stamped onto every newly recorded evidence item, exactly as given (AIC-146 b2)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const outcomeProvenance = validProvenance();
+  const execute = recordingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('e-new-1'), evidenceItem('e-new-2')],
+    provenance: outcomeProvenance,
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.evidence.length, 2);
+  for (const producedEvidence of result.evidence) {
+    assert.deepEqual(
+      producedEvidence.provenance,
+      outcomeProvenance,
+      'every newly recorded item must carry exactly the outcome\'s own provenance',
+    );
+    domain.EvidenceSchema.parse(producedEvidence);
+  }
+});
+
+test('on an ok result: an evidence item already held in state is not re-emitted, and the outcome\'s provenance is never retroactively stamped onto it (AIC-146 b2)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('e-held')],
+    provenance: validProvenance(),
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const heldEvidence = evidenceItem('e-held', { trialId: 'trial-already', statement: 'the original statement' });
+  const testState = state({
+    tests: [plannedTest('test-a')],
+    trials: [trial('trial-already', { testId: 'test-already', evidenceIds: ['e-held'] })],
+    evidence: [heldEvidence],
+  });
+
+  const result = await node(testState);
+
+  assert.deepEqual(result.evidence, [], 'the already-held evidence item is not re-emitted');
+  assert.equal(
+    Object.hasOwn(heldEvidence, 'provenance'),
+    false,
+    'the state\'s own evidence object must never be mutated with a provenance field it never had',
+  );
+});
+
+for (const [label, malformedProvenance] of [
+  [
+    'lab-source\'s placeholder shape (empty adapter, empty fingerprint, empty binding id)',
+    { sourceBindingId: '', adapter: '', credentialRefId: null, fetchedAt: '', requestFingerprint: '' },
+  ],
+  [
+    'a non-UUID sourceBindingId, otherwise well-formed',
+    validProvenance({ sourceBindingId: 'incident-lab' }),
+  ],
+]) {
+  test(`on an ok result: an outcome provenance failing EvidenceProvenanceSchema (${label}) makes the node throw and records nothing (AIC-146 b2)`, async () => {
+    const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+    const execute = recordingExecutor(async () => ({
+      status: 'ok',
+      output: [evidenceItem('e-new')],
+      provenance: malformedProvenance,
+    }));
+    const node = createExecuteInvestigation({ execute });
+    const testState = state({ tests: [plannedTest('test-a')] });
+
+    await assert.rejects(() => node(testState));
+  });
+}
+
+test('on an ok result: an accessor "provenance" on the outcome is refused, and its getter is never called (AIC-146 b2)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  let getterCalls = 0;
+  const outcome = { status: 'ok', output: [evidenceItem('e-new')] };
+  Object.defineProperty(outcome, 'provenance', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error('SENTINEL: outcome.provenance getter must never be called');
+    },
+  });
+  const execute = recordingExecutor(async () => outcome);
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState));
+  assert.equal(getterCalls, 0, 'the accessor\'s own getter must never be invoked');
+});
+
+test('on an ok result: a polluted Object.prototype.provenance never leaks onto recorded evidence when the outcome carries no own provenance (AIC-146 b2)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [evidenceItem('e-new')] }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  Object.defineProperty(Object.prototype, 'provenance', {
+    value: validProvenance(),
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const result = await node(testState);
+
+    assert.equal(result.evidence.length, 1);
+    assert.equal(
+      Object.hasOwn(result.evidence[0], 'provenance'),
+      false,
+      'a prototype-inherited provenance must never become an own property on recorded evidence',
+    );
+  } finally {
+    delete Object.prototype.provenance;
+  }
+});
+
+test('on an ok result: an evidence item carrying its own provenance is refused, naming the evidence id, and nothing is recorded (AIC-146 b2)', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   // The tool's own output item attests a binding, adapter and fingerprint
   // that no BoundSourceRegistry call ever served it — well-formed enough to
   // pass EvidenceProvenanceSchema on its own, which is exactly the hazard:
   // nothing about shape alone distinguishes an adapter's claim from the
-  // registry's.
+  // registry's. Slice a silently dropped this; b2 refuses it outright.
   const adapterSuppliedProvenance = {
     sourceBindingId: randomUUID(),
     adapter: 'lab@1',
@@ -432,22 +563,17 @@ test('on an ok result: a provenance block on the tool\'s own output item never s
   const node = createExecuteInvestigation({ execute });
   const testState = state({ tests: [plannedTest('test-a')] });
 
-  const result = await node(testState);
-
-  assert.equal(result.evidence.length, 1);
-  const [producedEvidence] = result.evidence;
-  assert.equal(
-    'provenance' in producedEvidence,
-    false,
-    'a provenance block the tool itself attached must never reach persisted evidence',
+  await assert.rejects(
+    () => node(testState),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.ok(
+        error.message.includes('e-forged'),
+        `expected the refusal to name the offending evidence id "e-forged", got: ${error.message}`,
+      );
+      return true;
+    },
   );
-  assert.equal(producedEvidence.id, 'e-forged', 'every other field is kept as-is');
-  assert.equal(
-    producedEvidence.statement,
-    'evidence recorded as e-forged',
-    'every other field is kept as-is',
-  );
-  domain.EvidenceSchema.parse(producedEvidence);
 });
 
 test('on an ok result naming no evidence: records an ok trial with empty evidenceIds and emits no evidence', async () => {
