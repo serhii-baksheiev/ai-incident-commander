@@ -943,6 +943,19 @@ services: []
   }
 });
 
+test('a manifest holding more than one YAML document is refused naming only the line and column, before any store call', async () => {
+  const { runApplyCommand } = await loadApplyCommand();
+  const { store, calls } = createFakeRegistryStore();
+  const { stdout } = createStdoutSink();
+  const twoDocuments = `${manifestYaml()}---\napiVersion: aic.onboarding/v1\nkind: Onboarding\nservices: []\n`;
+
+  await assert.rejects(
+    () => withManifestFile(twoDocuments, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    { message: /is not valid YAML at line \d+, column \d+$/ },
+  );
+  assert.deepEqual(calls, []);
+});
+
 test('a manifest carrying an unresolved YAML tag on an ordinary, non-credential-shaped field is refused before any store call, rather than silently applying the tag\'s fallback value', async () => {
   const { runApplyCommand } = await loadApplyCommand();
   const { store, calls } = createFakeRegistryStore();
