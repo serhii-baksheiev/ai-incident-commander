@@ -348,14 +348,6 @@ export interface ApplicationSchemaVersionSource {
 }
 
 /**
- * The `schemaVersion` validation seam for the application schema, mirroring
- * `assertCheckpointerSchemaVersion` in `index.ts`: it refuses loudly on a
- * version this build was not written against and does nothing else — no
- * migration, no repair. See run-store.test.mjs › "assertApplicationSchemaVersion
- * refuses a mismatched and a missing version on a fake source, and accepts the
- * current one".
- */
-/**
  * The refusal `assertApplicationSchemaVersion` raises when the schema is
  * reachable but at another migration version: a class, so a caller inside
  * this package can tell it from a connection or authentication failure
@@ -368,6 +360,14 @@ export class ApplicationSchemaVersionError extends Error {
   }
 }
 
+/**
+ * The `schemaVersion` validation seam for the application schema, mirroring
+ * `assertCheckpointerSchemaVersion` in `index.ts`: it refuses loudly on a
+ * version this build was not written against and does nothing else — no
+ * migration, no repair. See run-store.test.mjs › "assertApplicationSchemaVersion
+ * refuses a mismatched and a missing version on a fake source, and accepts the
+ * current one".
+ */
 export async function assertApplicationSchemaVersion(source: ApplicationSchemaVersionSource): Promise<void> {
   const { rows } = await source.query(`select max(version) as v from "${APPLICATION_SCHEMA}".schema_migrations`);
   const applied = rows[0]?.v ?? null;

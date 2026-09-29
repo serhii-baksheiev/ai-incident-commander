@@ -360,5 +360,6 @@ test('a registry command whose database cannot be reached is refused with the co
 
   assert.notEqual(result.status, 0, commandDiagnostics(args, result));
   assert.equal(result.stdout, '', commandDiagnostics(args, result));
+  assert.match(result.stderr, /ECONNREFUSED/, commandDiagnostics(args, result));
   assert.doesNotMatch(result.stderr, /aic db migrate/, commandDiagnostics(args, result));
 });
