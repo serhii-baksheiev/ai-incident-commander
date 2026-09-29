@@ -576,6 +576,89 @@ test('on an ok result: an evidence item carrying its own provenance is refused, 
   );
 });
 
+test('on an ok result: a hostile 100,000-character evidence id (CR, CSI erase, BEL) carrying its own provenance is refused with a short, escaped message (AIC-146 b2 round-1 security fix)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const adapterSuppliedProvenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-24T00:00:00.000Z',
+    requestFingerprint: `sha256:${'0'.repeat(64)}`,
+  };
+  // The CSI erase-line sequence, combined with a leading CR, is exactly what
+  // lets a hostile id overwrite the operator's terminal line with a
+  // fabricated success message instead of this refusal — padded to 100,000
+  // characters so an unbounded, unescaped echo is also caught on its own.
+  const suffix = 'ok\r\x1b[2Kboom\x07';
+  const hostileId = `${'Z'.repeat(100000 - suffix.length)}${suffix}`;
+  assert.equal(hostileId.length, 100000, 'sanity: the hostile id is exactly 100,000 characters');
+
+  const execute = recordingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem(hostileId, { provenance: adapterSuppliedProvenance })],
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(
+    () => node(testState),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.ok(!error.message.includes('\r'), 'a raw CR must never reach the message');
+      assert.ok(!error.message.includes('\x1b'), 'a raw ESC must never reach the message');
+      assert.ok(!error.message.includes('\x07'), 'a raw BEL must never reach the message');
+      assert.ok(
+        error.message.length < 300,
+        `expected a short, quoted message; got ${error.message.length} characters: ${JSON.stringify(error.message.slice(0, 120))}...`,
+      );
+      return true;
+    },
+  );
+});
+
+test('on an ok result: a Proxy evidence item that hides its own provenance from Object.hasOwn but reveals it to Object.keys is refused, and nothing is recorded (AIC-146 b2 security advisory 1)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  // The forged provenance is well-formed enough to pass EvidenceProvenanceSchema
+  // on its own — the same hazard the plain "e-forged" row above demonstrates,
+  // but smuggled past the FIRST guard (`Object.hasOwn(item, 'provenance')`) by
+  // a Proxy whose getOwnPropertyDescriptor trap answers `undefined` the first
+  // time it is asked (so `Object.hasOwn` sees no own provenance) and a real,
+  // enumerable data descriptor every time after (so `Object.keys` - used to
+  // copy the item's own fields - does see it, and copies the forged value
+  // through). Only the module's independent, POST-parse ownership check
+  // catches this: it must be refused just like the direct case above.
+  const adapterSuppliedProvenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-24T00:00:00.000Z',
+    requestFingerprint: `sha256:${'0'.repeat(64)}`,
+  };
+  const target = evidenceItem('e-proxy-smuggle', { provenance: adapterSuppliedProvenance });
+  let provenanceDescriptorAsks = 0;
+  const smugglingItem = new Proxy(target, {
+    getOwnPropertyDescriptor(t, prop) {
+      if (prop === 'provenance') {
+        provenanceDescriptorAsks += 1;
+        if (provenanceDescriptorAsks === 1) {
+          return undefined;
+        }
+      }
+      return Reflect.getOwnPropertyDescriptor(t, prop);
+    },
+  });
+
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [smugglingItem] }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState), Error);
+  assert.ok(
+    provenanceDescriptorAsks >= 2,
+    `sanity: the trap must actually be consulted more than once (first hides, later reveals), got ${provenanceDescriptorAsks}`,
+  );
+});
+
 test('on an ok result naming no evidence: records an ok trial with empty evidenceIds and emits no evidence', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const execute = recordingExecutor(async () => ({ status: 'ok', output: [] }));

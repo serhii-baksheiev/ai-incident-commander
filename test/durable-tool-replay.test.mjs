@@ -385,6 +385,166 @@ test('evidence carrying its own provenance is refused, naming the evidence id, a
 });
 
 /* -------------------------------------------------------------------------- */
+/* Row 6b (AIC-146 b2 round-1 fix) - the same refusal, through a real         */
+/* committed-execution store: nothing lands in it                            */
+/* -------------------------------------------------------------------------- */
+
+test('evidence carrying its own provenance is refused through a real committed-execution store, the store commits nothing, and no projection runs', async () => {
+  const adapterSuppliedProvenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-24T00:00:00.000Z',
+    requestFingerprint: `sha256:${'0'.repeat(64)}`,
+  };
+  const fake = createFakeCommittedExecution();
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    execution: fake,
+    async executeInvestigation() {
+      return {
+        trial: { status: 'ok', durationMs: 1 },
+        evidence: {
+          kind: 'log',
+          source: 'fixture-tool',
+          observedAt: '2026-09-24T00:00:00.000Z',
+          statement: 'checkout returned a deterministic fixture result',
+          rawRef: 'fixture://checkout/result',
+          provenance: adapterSuppliedProvenance,
+        },
+        payloadFingerprint: PAYLOAD_FINGERPRINT,
+      };
+    },
+  });
+
+  const expectedEvidenceId = deriveEvidenceId({
+    trialId: deriveTrialId({ runId: RUN_ID, testId: TEST_ID, attempt: 1 }),
+    payloadFingerprint: PAYLOAD_FINGERPRINT,
+  });
+
+  await assert.rejects(
+    () => runner.start({ runId: RUN_ID, test: buildTest() }),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.ok(
+        error.message.includes(expectedEvidenceId),
+        `expected the refusal to name the evidence id ${expectedEvidenceId}, got: ${error.message}`,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(
+    fake.store.size,
+    0,
+    'a refused result must never be committed to the execution store — validation happens inside compute(), before the store can ever set the key',
+  );
+  assert.equal(fake.projectionCalls.length, 0, 'project must never run for a result that was never committed');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 6c (AIC-146 b2 round-1 fix) - a NON-enumerable own provenance on the   */
+/* evidence is refused exactly like an enumerable one, through the durable   */
+/* site                                                                      */
+/* -------------------------------------------------------------------------- */
+
+test('evidence carrying its own NON-enumerable provenance is refused through the durable site just like an enumerable one, and nothing is committed', async () => {
+  const adapterSuppliedProvenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-24T00:00:00.000Z',
+    requestFingerprint: `sha256:${'1'.repeat(64)}`,
+  };
+  const fake = createFakeCommittedExecution();
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    execution: fake,
+    async executeInvestigation() {
+      const evidence = {
+        kind: 'log',
+        source: 'fixture-tool',
+        observedAt: '2026-09-24T00:00:00.000Z',
+        statement: 'checkout returned a deterministic fixture result',
+        rawRef: 'fixture://checkout/result',
+      };
+      Object.defineProperty(evidence, 'provenance', {
+        value: adapterSuppliedProvenance,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+      return {
+        trial: { status: 'ok', durationMs: 1 },
+        evidence,
+        payloadFingerprint: PAYLOAD_FINGERPRINT,
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => runner.start({ runId: RUN_ID, test: buildTest() }),
+    Error,
+    'a non-enumerable own provenance on the evidence must be refused, not silently spread away',
+  );
+
+  assert.equal(
+    fake.store.size,
+    0,
+    'a refused result must never be committed to the execution store',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 6d (AIC-146 b2 round-1 fix) - an explicit own provenance: undefined on */
+/* the ExecuteInvestigationResult is refused with a clear message, not left   */
+/* to crash opaquely at a later commit                                       */
+/* -------------------------------------------------------------------------- */
+
+test('an ExecuteInvestigationResult with an explicit own provenance: undefined is refused with a message naming provenance, before anything is committed', async () => {
+  const fake = createFakeCommittedExecution();
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    execution: fake,
+    async executeInvestigation() {
+      return {
+        trial: { status: 'ok', durationMs: 1 },
+        evidence: {
+          kind: 'log',
+          source: 'fixture-tool',
+          observedAt: '2026-09-24T00:00:00.000Z',
+          statement: 'checkout returned a deterministic fixture result',
+          rawRef: 'fixture://checkout/result',
+        },
+        payloadFingerprint: PAYLOAD_FINGERPRINT,
+        provenance: undefined,
+      };
+    },
+  });
+
+  await assert.rejects(
+    () => runner.start({ runId: RUN_ID, test: buildTest() }),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.ok(
+        error.message.toLowerCase().includes('provenance'),
+        `expected the refusal to name provenance, got: ${error.message}`,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(
+    fake.store.size,
+    0,
+    'an explicit provenance: undefined must be refused before the result is ever committed, not accepted and left to fail opaquely later at the real persistence layer',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
 /* Row 7 (AIC-146 b2) - provenance travels alongside the result, never inside */
 /* evidence, and becomes part of the persisted evidence                      */
 /* -------------------------------------------------------------------------- */
