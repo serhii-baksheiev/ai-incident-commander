@@ -12,11 +12,10 @@
  *
  *   - `@aic/domain` exports `EvidenceProvenanceSchema` (`z.strictObject`):
  *     `sourceBindingId` a UUID, `adapter` a single `<adapterId>@<adapterVersion>`
- *     string with a non-empty, at-most-200-character token on each side of
- *     the one `@` (the same length bound `SourceBindingSchema.adapterId` /
- *     `.adapterVersion` already carry, `packages/domain/src/scope.ts`),
- *     `credentialRefId` a UUID or `null` (present either way — never
- *     omitted), `fetchedAt` an ISO-8601 UTC datetime string, and
+ *     string whose sides match `ADAPTER_ID_PATTERN` / `ADAPTER_VERSION_PATTERN`
+ *     (the AIC-146 b1 rows below), `credentialRefId` a UUID or `null`
+ *     (present either way — never omitted), `fetchedAt` an ISO-8601 UTC
+ *     datetime with exactly three fractional digits, and
  *     `requestFingerprint` matching `/^sha256:[0-9a-f]{64}$/`. Unknown keys
  *     are refused, and no field ever carries a secret's own value or name.
  *   - `EvidenceSchema` accepts an optional `provenance: EvidenceProvenanceSchema`.
@@ -413,13 +412,18 @@ test('ADAPTER_ID_PATTERN and ADAPTER_VERSION_PATTERN are each anchored at both e
   }
 });
 
-test('EvidenceProvenanceSchema accepts a fetchedAt with millisecond precision and refuses one with more fractional digits (AIC-146 b1)', () => {
+test('EvidenceProvenanceSchema accepts a fetchedAt with exactly three fractional digits and refuses any other count, none included (AIC-146 b1)', () => {
   assert.equal(domain.EvidenceProvenanceSchema.safeParse(validProvenance({ fetchedAt: '2026-09-24T00:00:00.000Z' })).success, true);
-  for (const fetchedAt of ['2026-09-24T00:00:00.0000Z', `2026-09-24T00:00:00.${'0'.repeat(10000)}Z`]) {
+  for (const fetchedAt of [
+    '2026-09-24T00:00:00Z',
+    '2026-09-24T00:00:00.00Z',
+    '2026-09-24T00:00:00.0000Z',
+    `2026-09-24T00:00:00.${'0'.repeat(10000)}Z`,
+  ]) {
     assert.equal(
       domain.EvidenceProvenanceSchema.safeParse(validProvenance({ fetchedAt })).success,
       false,
-      `a fetchedAt with ${fetchedAt.length - 21} fractional digits must be refused: the registry writes toISOString(), three digits, and a stored recording may not grow the field without bound`,
+      `${fetchedAt.slice(0, 30)} must be refused: fetchedAt is the toISOString() form the registry writes, three fractional digits, so a stored recording can neither grow it nor carry another precision`,
     );
   }
 });

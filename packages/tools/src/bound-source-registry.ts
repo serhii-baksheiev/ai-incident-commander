@@ -403,12 +403,14 @@ function normalizeRefusalReason(reason: unknown): EvidenceSourceRefusalReason {
  * `EvidenceSourceOutcome`: `status` is `ok` or `refused`; a `refused` status
  * carries a `reason` inside `EVIDENCE_SOURCE_REFUSAL_REASONS`; `provenance` is
  * an object whose `fetchedAt` parses with `@aic/domain`'s
- * `EvidenceProvenanceSchema.shape.fetchedAt` — an ISO-8601 UTC datetime, not
- * merely `typeof fetchedAt === 'string'` (AIC-146 slice b1) — because
+ * `EvidenceProvenanceSchema.shape.fetchedAt` — an ISO-8601 UTC datetime with
+ * exactly three fractional digits, the `toISOString()` form this registry
+ * writes, not merely `typeof fetchedAt === 'string'` (AIC-146 slice b1) — because
  * `fetchedAt` is the one field a replay hit reuses verbatim, straight from
  * the stored recording. Anything else — including a value with no
  * `provenance` at all, or a `fetchedAt` that is a string but not a
- * well-formed UTC datetime (`'yesterday'`, a non-UTC offset) — is malformed
+ * UTC datetime of that form (`'yesterday'`, a non-UTC offset, a second- or
+ * microsecond-precision value) — is malformed
  * and treated as a miss (`unavailable`), never handed back to the caller
  * verbatim. See test/bound-source-registry.test.mjs's "replay treats a
  * stored record …" rows (security blocker 5b) and its "replay treats a
