@@ -20,11 +20,13 @@ import {
   type Hypothesis,
   type IncidentState,
   type InvestigationTest,
+  type RequestVocabulary,
 } from '@aic/domain';
 import type { ChallengeResult, InvestigationNodeResult } from '@aic/graph';
 
 import { describeMechanismVocabulary } from './mechanism-vocabulary.js';
 import { ModelRoleOutputError } from './model-errors.js';
+import { describeRequestVocabulary } from './request-vocabulary.js';
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   JSON_ONLY,
@@ -286,11 +288,21 @@ function challengeSchema(mechanisms: readonly string[]) {
  * through `causeMechanismViolation` (`@aic/domain`), and their system prompts
  * carry `describeMechanismVocabulary`'s sentence — the same sentence
  * `propose_conclusion`'s prompt already carried.
+ *
+ * AIC-143 bumps it again, to v0.6: `challenge_hypothesis`'s system prompt now
+ * also carries `describeRequestVocabulary`'s sentence (`./request-vocabulary.js`),
+ * naming the closed tool/input-key vocabulary a `discriminatingTests` entry
+ * may use — the route table's own admissible requests, derived through
+ * `routeRequestVocabulary` (`@aic/domain`) from `INVESTIGATION_ROUTES`
+ * (`@aic/graph`), never a corpus value. Registered in
+ * docs/evidence/preregistration/v0.2-four-arm-supplement-10.md before any
+ * paid run reads this prompt.
  * see docs/evidence/preregistration/v0.2-four-arm-supplement-1.md
  * see docs/evidence/preregistration/v0.2-four-arm-supplement-3.md
- * see conclusion-role.test.mjs › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5"
+ * see docs/evidence/preregistration/v0.2-four-arm-supplement-10.md
+ * see conclusion-role.test.mjs › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.6"
  */
-export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.5' as const;
+export const REFERENCE_PROMPT_VERSION = 'reference-roles-prompt-v0.6' as const;
 
 export { DEFAULT_MAX_OUTPUT_TOKENS } from './role-output.js';
 
@@ -321,6 +333,23 @@ export interface ModelRoleOptions {
 export interface ModelMechanismRoleOptions extends ModelRoleOptions {
   /** The closed root-cause mechanism vocabulary a cause must be classified in. */
   readonly mechanisms: readonly string[];
+}
+
+/**
+ * (AIC-143) `ModelMechanismRoleOptions`, plus the closed request vocabulary
+ * `challenge_hypothesis` tells the model it may use for a discriminating
+ * test's `tool`/`input` — the route table's own admissible requests
+ * (`routeRequestVocabulary(INVESTIGATION_ROUTES)`, `@aic/domain` /
+ * `@aic/graph`), never a corpus value. Required: a challenge role given no
+ * vocabulary would silently fall back to the undisclosed-vocabulary handicap
+ * AIC-143 exists to close.
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis refuses
+ * construction when requestVocabulary is missing, naming it"
+ * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis refuses
+ * construction when requestVocabulary is an empty array, naming it"
+ */
+export interface ModelChallengeRoleOptions extends ModelMechanismRoleOptions {
+  readonly requestVocabulary: RequestVocabulary;
 }
 
 /**
@@ -723,6 +752,14 @@ function uncanonicalisableInputViolation(input: unknown): string | undefined {
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative cause whose mechanism is outside the supplied vocabulary, naming it escaped and truncated to 80 characters"
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative cause carrying an unknown key"
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: the system prompt contains exactly the mechanism vocabulary sentence"
+ *
+ * AIC-143: also requires `requestVocabulary` (`ModelChallengeRoleOptions`),
+ * refused at construction when missing or empty, naming it — see the two
+ * refusal rows on `ModelChallengeRoleOptions` above. Its system prompt now
+ * also carries `describeRequestVocabulary(requestVocabulary)`, right after the
+ * answer-shape line.
+ * see cause-emitting-roles.test.mjs › "describeRequestVocabulary returns the exact sentence for the INVESTIGATION_ROUTES vocabulary"
+ * see cause-emitting-roles.test.mjs › "challenge_hypothesis' system prompt contains describeRequestVocabulary(v) for the vocabulary it was given"
  */
 export function createModelChallengeHypothesis({
   port,
@@ -730,10 +767,16 @@ export function createModelChallengeHypothesis({
   promptVersion = REFERENCE_PROMPT_VERSION,
   maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
   mechanisms,
-}: ModelMechanismRoleOptions): (
+  requestVocabulary,
+}: ModelChallengeRoleOptions): (
   state: IncidentState,
   leaderId: string,
 ) => Promise<ChallengeResult> {
+  if (!Array.isArray(requestVocabulary) || requestVocabulary.length === 0) {
+    throw new Error(
+      'createModelChallengeHypothesis requires a non-empty requestVocabulary (routeRequestVocabulary(INVESTIGATION_ROUTES))',
+    );
+  }
   const role = 'challenge_hypothesis';
   const vocabulary = Object.freeze([...mechanisms]);
   const outputSchema = challengeSchema(vocabulary);
@@ -744,6 +787,7 @@ export function createModelChallengeHypothesis({
         'You are a red-team reviewer challenging the leading explanation of an incident.',
         'Propose ONE genuinely different alternative cause, and tests that discriminate between it and the leader.',
         'Answer shape: {"alternative":{"id":"<stable id>","statement":"<one sentence>","cause":{"component":"<component>","mechanism":"<mechanism>","trigger":"<optional trigger>"}},"discriminatingTests":[{"id":"<id>","predictionId":"<id>","tool":"<tool id>","input":{},"cost":"cheap|medium|expensive"}]}',
+        describeRequestVocabulary(requestVocabulary),
         describeMechanismVocabulary(vocabulary),
         JSON_ONLY,
       ].join('\n'),

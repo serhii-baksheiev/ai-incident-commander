@@ -106,7 +106,7 @@ const CONCLUSION_MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustio
  * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
  * other row in this file at import time.
  */
-const REQUEST_VOCABULARY = domain.routeRequestVocabulary?.(graphPackage.INVESTIGATION_ROUTES);
+const REQUEST_VOCABULARY = domain.routeRequestVocabulary(graphPackage.INVESTIGATION_ROUTES);
 
 /** A `ModelCompletion` carrying a scripted JSON document as its `text`. */
 function jsonCompletion(document) {

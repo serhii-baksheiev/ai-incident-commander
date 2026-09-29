@@ -55,7 +55,7 @@ const MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
  * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
  * other row in this file at import time.
  */
-const REQUEST_VOCABULARY = domain.routeRequestVocabulary?.(graph.INVESTIGATION_ROUTES);
+const REQUEST_VOCABULARY = domain.routeRequestVocabulary(graph.INVESTIGATION_ROUTES);
 
 /**
  * A port that answers with a scripted body and records what it was asked, in

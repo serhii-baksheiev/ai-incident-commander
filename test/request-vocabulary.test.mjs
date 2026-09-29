@@ -311,6 +311,15 @@ test('the vocabulary for INVESTIGATION_ROUTES names no replay-corpus value: no s
   const annotationSubjects = [
     ...new Set(OBSERVATION_ANNOTATIONS.flatMap((row) => row.facts.map((fact) => fact.subject))),
   ];
+  // A recorded input that is a member of one of the domain's own closed enums
+  // (a window, a signal, a log class) is request vocabulary, not a corpus
+  // value: the vocabulary names every such member by design. Everything else a
+  // recording carries (a service name, a free query) must not appear.
+  const domainEnumMembers = new Set([
+    ...domain.ObservationWindowSchema.options,
+    ...domain.SignalKindSchema.options,
+    ...domain.LogClassSchema.options,
+  ]);
   const recordedInputValues = [
     ...new Set(
       REPLAY_SCENARIOS.flatMap((scenario) =>
@@ -321,7 +330,7 @@ test('the vocabulary for INVESTIGATION_ROUTES names no replay-corpus value: no s
         ),
       ),
     ),
-  ];
+  ].filter((value) => !domainEnumMembers.has(value));
 
   assert.ok(scenarioIds.length > 0, 'fixture sanity: REPLAY_SCENARIOS must carry ids to check against');
   assert.ok(evidenceIds.length > 0, 'fixture sanity: REPLAY_SCENARIOS must carry evidence ids to check against');

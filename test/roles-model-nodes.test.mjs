@@ -170,7 +170,7 @@ const MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
  * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
  * other row in this file at import time.
  */
-const REQUEST_VOCABULARY = domain.routeRequestVocabulary?.(graph.INVESTIGATION_ROUTES);
+const REQUEST_VOCABULARY = domain.routeRequestVocabulary(graph.INVESTIGATION_ROUTES);
 
 /* -------------------------------------------------------------------------- */
 /* generate_hypotheses                                                        */
@@ -1749,7 +1749,7 @@ test('derives every answer-schema enum from the domain rather than restating it'
 
   for (const make of [createModelChallengeHypothesis, createModelInterpretResidualEvidence]) {
     try {
-      const node = make({ port: capturingPort, at, mechanisms: MECHANISMS });
+      const node = make({ port: capturingPort, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
       await node(initialState(), 'h-1');
     } catch {
       // The port throws by design; the schema was captured first.
@@ -1838,7 +1838,7 @@ test('hands the provider a token budget large enough that the reference model wa
 
   for (const [name, answer] of roles) {
     const { port, requests } = fakePort([answer]);
-    const node = requireExport(name)({ port, at, mechanisms: MECHANISMS });
+    const node = requireExport(name)({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
     await node(initialState(), 'h-1').catch(() => {});
 
     assert.equal(requests.length, 1, `${name} must have reached the port exactly once`);
