@@ -56,17 +56,34 @@
  * two lane scripts load contains a dynamic import(), so what importing them
  * loads is what running them loads".
  *
- * ⚠ Measured is the two scripts' module graph, not the npm commands around
- * them. The command line those commands build is outside this list and
- * outside the measurement: `package.json` itself (only `package-lock.json`
- * is listed), and the `test/fixtures/no-ambient-tracing.mjs` it preloads with
- * `--import`, which today only turns ambient tracing off.
+ * AIC-137: `tsconfig.base.json` and the root `tsconfig.json` are declared
+ * because they change the emitted JS — `tsc -b`, the `build` script both
+ * `eval:` commands run first, reads the root `tsconfig.json`, which extends
+ * the base config and lists the project references — see
+ * final-evaluation-candidate-fingerprint.test.mjs › "the candidate fingerprint
+ * moves when tsconfig.json changes" and › "the candidate fingerprint moves
+ * when tsconfig.base.json changes". The `--import` preload the `eval:`
+ * scripts declare, `scripts/lib/no-ambient-tracing.mjs`, already falls under
+ * the declared `scripts` path — see › "every --import preload the
+ * eval:live-model and eval:final-holdout npm scripts declare falls under a
+ * path FINAL_EVALUATION_CANDIDATE_PATHS declares". `package.json` is
+ * deliberately NOT declared, by the asymmetry stated above: an edit to a
+ * script the lane never runs (`test`, `lint`, `cli`) or to `license` would
+ * otherwise re-admit the hold-out. Its command lines,
+ * and any npm pre/post hook around them, are pinned instead by an
+ * exact-string row, so changing them reddens that row rather than moving the
+ * fingerprint — see › "the build, eval:live-model and
+ * eval:final-holdout npm scripts are exactly the command lines the candidate
+ * fingerprint was reviewed against" and › "the candidate fingerprint does not
+ * move when package.json's version changes".
  */
 export const FINAL_EVALUATION_CANDIDATE_PATHS = Object.freeze([
   'packages',
   'apps',
   'scripts',
   'package-lock.json',
+  'tsconfig.json',
+  'tsconfig.base.json',
 ] as const);
 
 /** The one schema version this code knows how to read. */
