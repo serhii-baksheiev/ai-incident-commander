@@ -137,26 +137,10 @@ function ownRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
-/**
- * `error.toString()` (what `assert.rejects`'s `RegExp` form matches against)
- * prepends `Error: ` unless `name` is the empty string — this refusal's
- * message would otherwise never satisfy an anchored `/^manifest …/`.
- * see cli-apply.test.mjs › "an unknown top-level manifest key is refused
- * with a message that names \"manifest\" exactly once, not \"manifest
- * manifest\""
- */
-function manifestError(message: string): Error {
-  const error = new Error(message);
-  error.name = '';
-  return error;
-}
-
 function requireKnownKeys(record: Record<string, unknown>, known: ReadonlySet<string>, label: string): void {
   for (const key of Object.keys(record)) {
     if (!known.has(key)) {
-      throw label === 'manifest'
-        ? manifestError('manifest carries an unrecognised key')
-        : new Error(`manifest ${label} carries an unrecognised key`);
+      throw new Error(label === 'manifest' ? 'manifest carries an unrecognised key' : `manifest ${label} carries an unrecognised key`);
     }
   }
 }

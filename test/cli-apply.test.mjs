@@ -1170,7 +1170,7 @@ test('an unknown top-level manifest key is refused with a message that names "ma
 
   await assert.rejects(
     () => withManifestFile(unknownTopLevelKeyYaml, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
-    /^manifest carries an unrecognised key/,
+    { message: /^manifest carries an unrecognised key/ },
   );
   assert.deepEqual(calls, []);
 });
