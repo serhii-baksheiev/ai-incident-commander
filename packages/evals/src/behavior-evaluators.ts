@@ -34,9 +34,65 @@ export const BEHAVIOR_EVALUATOR_VERSION =
 export const STRUCTURAL_EVALUATOR_VERSION =
   'behavior-evaluators-v0.3' as const;
 
+/**
+ * The discriminating-challenge evaluator version (AIC-138): identical to
+ * `behavior-evaluators-v0.3` except in `challenge_effect`, which now requires
+ * at least one executed discriminating trial to pass — a leader or
+ * leader-status change with zero such trials is judgement over evidence the
+ * run already had, not investigation, and scores 0 with reason
+ * `no-discriminating-trial`. Every other metric, and every other version,
+ * keeps its exact semantics.
+ * see challenge-effect-discriminating-evaluator.test.mjs › "DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION is pinned to behavior-evaluators-v0.4, and v0.2 and v0.3 do not move"
+ */
+export const DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION =
+  'behavior-evaluators-v0.4' as const;
+
 export type BehaviorEvaluatorVersion =
   | typeof BEHAVIOR_EVALUATOR_VERSION
-  | typeof STRUCTURAL_EVALUATOR_VERSION;
+  | typeof STRUCTURAL_EVALUATOR_VERSION
+  | typeof DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION;
+
+/** Every evaluator version `evaluateBenchmarkRecord` and its peers accept. */
+export const KNOWN_BEHAVIOR_EVALUATOR_VERSIONS: readonly BehaviorEvaluatorVersion[] =
+  [
+    BEHAVIOR_EVALUATOR_VERSION,
+    STRUCTURAL_EVALUATOR_VERSION,
+    DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION,
+  ];
+
+/** Every version scored structurally: v0.3 and v0.4, which differ only in `challenge_effect`. */
+export type StructuralEvaluatorVersion =
+  | typeof STRUCTURAL_EVALUATOR_VERSION
+  | typeof DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION;
+
+/**
+ * True for every version scored structurally (evidence matched by id against
+ * `STRUCTURAL_GROUND_TRUTH`, root cause by `matchesRootCause`) — v0.3 and
+ * v0.4, which differ only in `challenge_effect`. The one predicate every
+ * dispatch site (`benchmark-evaluation.ts`, `oracle-arm.ts`,
+ * `live-model-lane.ts`, `scripts/eval-oracle.mjs`) uses instead of comparing
+ * against `STRUCTURAL_EVALUATOR_VERSION` alone.
+ */
+export function scoresStructurally(
+  evaluatorVersion: string,
+): evaluatorVersion is StructuralEvaluatorVersion {
+  return (
+    evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION ||
+    evaluatorVersion === DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION
+  );
+}
+
+/**
+ * The one spelling of "which versions this evaluator accepts", for every
+ * refusal message that names them (`evaluateBenchmarkRecord`,
+ * `scripts/eval-oracle.mjs`) — so the list is never hand-copied into a second
+ * string that can drift from `KNOWN_BEHAVIOR_EVALUATOR_VERSIONS`.
+ */
+export function knownVersionsMessage(): string {
+  const versions = [...KNOWN_BEHAVIOR_EVALUATOR_VERSIONS];
+  const last = versions[versions.length - 1];
+  return `${versions.slice(0, -1).join(', ')} or ${last}`;
+}
 
 export const BEHAVIOR_METRIC_KEYS = [
   'misleading_evidence_handling',
@@ -232,8 +288,9 @@ export function evaluateChallengeEffect(
   return scoreChallengeEffect(input, BEHAVIOR_EVALUATOR_VERSION);
 }
 
-// One scoring of the challenge effect for both versions: the structural
-// version changed how evidence and root causes are matched, not this.
+// One scoring of the challenge effect for every version. v0.3 changed how
+// evidence and root causes are matched, not this; v0.4 (AIC-138) changes
+// exactly this, through the one version-gated guard below.
 function scoreChallengeEffect(
   input: Readonly<{
     groundTruth: Readonly<{ expectedLeaderChangeAfterChallenge: boolean }>;
@@ -267,6 +324,18 @@ function scoreChallengeEffect(
   if (!leaderChanged && !statusChanged && !discriminatingTrialExecuted) {
     return metric(0, 'no-investigation-change');
   }
+  // AIC-138: only behavior-evaluators-v0.4 demands the change be backed by a
+  // discriminating trial the challenge round actually executed. v0.2 and v0.3
+  // stay exactly as they were — a matching leader or status change with zero
+  // trials still passes under both.
+  // see challenge-effect-discriminating-evaluator.test.mjs › "under behavior-evaluators-v0.4, a challenge that changes the leader as expected with no executed discriminating trial scores 0 with reason no-discriminating-trial"
+  // see challenge-effect-discriminating-evaluator.test.mjs › "the leader-change-without-trial observation still scores 1 passed under behavior-evaluators-v0.3 and behavior-evaluators-v0.2"
+  if (
+    evaluatorVersion === DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION &&
+    !discriminatingTrialExecuted
+  ) {
+    return metric(0, 'no-discriminating-trial');
+  }
   if (
     leaderChanged !== groundTruth.expectedLeaderChangeAfterChallenge
   ) {
@@ -276,7 +345,7 @@ function scoreChallengeEffect(
 }
 
 /**
- * The structural (`behavior-evaluators-v0.3`) behaviour metrics.
+ * The structural (`behavior-evaluators-v0.3` and `-v0.4`) behaviour metrics.
  *
  * Same questions as the accepted evaluators above, answered from
  * `STRUCTURAL_GROUND_TRUTH`: evidence counts as investigated only when the arm
@@ -301,10 +370,11 @@ export function evaluateStructuralMisleadingEvidenceHandling(
       evidenceAssessments?: readonly EvidenceAssessmentObservation[];
     }>;
   }>,
+  evaluatorVersion: StructuralEvaluatorVersion = STRUCTURAL_EVALUATOR_VERSION,
 ): BehaviorMetric<'misleading_evidence_handling'> {
   const { truth, outcome } = input;
   const metric = (score: 0 | 1, reason: string) =>
-    behaviorMetric('misleading_evidence_handling', score, reason, STRUCTURAL_EVALUATOR_VERSION);
+    behaviorMetric('misleading_evidence_handling', score, reason, evaluatorVersion);
   const misleading = truth.misleadingEvidenceIds ?? [];
   if (truth.rootCause === undefined) {
     throw new Error('structural misleading-evidence handling needs a structural root cause');
@@ -345,10 +415,11 @@ export function evaluateStructuralFalseAlertOutcome(
       referencedEvidenceIds?: readonly string[];
     }>;
   }>,
+  evaluatorVersion: StructuralEvaluatorVersion = STRUCTURAL_EVALUATOR_VERSION,
 ): BehaviorMetric<'false_alert_correctness'> {
   const { truth, outcome } = input;
   const metric = (score: 0 | 1, reason: string) =>
-    behaviorMetric('false_alert_correctness', score, reason, STRUCTURAL_EVALUATOR_VERSION);
+    behaviorMetric('false_alert_correctness', score, reason, evaluatorVersion);
   if (outcome.stopKind !== input.expectedStopKind) {
     return metric(0, 'insufficient-investigation');
   }
@@ -366,6 +437,7 @@ export function evaluateStructuralChallengeEffect(
     groundTruth: Readonly<{ expectedLeaderChangeAfterChallenge: boolean }>;
     outcome: ChallengeEffectObservation;
   }>,
+  evaluatorVersion: StructuralEvaluatorVersion = STRUCTURAL_EVALUATOR_VERSION,
 ): BehaviorMetric<'challenge_effect'> {
-  return scoreChallengeEffect(input, STRUCTURAL_EVALUATOR_VERSION);
+  return scoreChallengeEffect(input, evaluatorVersion);
 }

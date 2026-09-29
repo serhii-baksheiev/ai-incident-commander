@@ -9,7 +9,7 @@ import {
 } from './benchmark-evaluation.js';
 import {
   BEHAVIOR_EVALUATOR_VERSION,
-  STRUCTURAL_EVALUATOR_VERSION,
+  scoresStructurally,
   type ChallengeEffectObservation,
 } from './behavior-evaluators.js';
 import { structuralGroundTruthFor } from './structural-ground-truth.js';
@@ -45,7 +45,7 @@ import {
  * `behavior-evaluators-v0.2` that is a fingerprint equal to the item's
  * `{kind, source, statement}`, and where the ground truth names no item that
  * way the oracle can cite nothing — that is the measurement, not a defect of
- * the oracle. Under `behavior-evaluators-v0.3` it is the item's id in
+ * the oracle. Under `behavior-evaluators-v0.3` and `-v0.4` it is the item's id in
  * `STRUCTURAL_GROUND_TRUTH`.
  * see oracle-positive-control.test.mjs › "oracleAnswerFor identifies no
  * evidence for bad-deployment, because no fixture statement equals the
@@ -88,11 +88,12 @@ function identifiedEvidenceIds(
  * The ground truth an answer projects, in the vocabulary the named evaluator
  * version scores: the accepted fields for `behavior-evaluators-v0.2` (evidence
  * identified by fingerprint, the accepted root-cause prose), the structural
- * table for `behavior-evaluators-v0.3` (evidence by id, the structural cause).
+ * table for `behavior-evaluators-v0.3` and `-v0.4` (evidence by id, the
+ * structural cause).
  */
 function projectedTruth(scenario: IncidentScenario, evaluatorVersion: string) {
   const { groundTruth } = scenario;
-  if (evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION) {
+  if (scoresStructurally(evaluatorVersion)) {
     const truth = structuralGroundTruthFor(scenario.id);
     return {
       expectedIds: [...truth.expectedEvidenceIds],

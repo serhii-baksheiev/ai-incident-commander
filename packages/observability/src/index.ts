@@ -99,13 +99,14 @@ const PERSISTED_OPTIONAL_METADATA_KEYS = [
   'modelProvider',
 ] as const satisfies readonly (keyof PersistedBenchmarkRunMetadata)[];
 
-// The evaluator versions a record may declare: the accepted one and the
-// structural one (AIC-105). A second spelling of the versions @aic/evals
-// defines, because this package does not import evals; the persistence rows in
-// structural-evaluator.test.mjs publish a record under each and refuse any other.
+// The evaluator versions a record may declare: the accepted one, the
+// structural one (AIC-105), and the discriminating-challenge one (AIC-138). A
+// second spelling of the versions @aic/evals defines, because this package
+// does not import evals.
 const PERSISTED_BEHAVIOR_EVALUATOR_VERSIONS: ReadonlySet<string> = new Set([
   'behavior-evaluators-v0.2',
   'behavior-evaluators-v0.3',
+  'behavior-evaluators-v0.4',
 ]);
 
 const PERSISTED_BEHAVIOR_METRIC_REASONS = new Set([
@@ -120,6 +121,9 @@ const PERSISTED_BEHAVIOR_METRIC_REASONS = new Set([
   'leader-observation-missing',
   'no-investigation-change',
   'leader-change-mismatch',
+  // AIC-138: behavior-evaluators-v0.4's challenge_effect reason for a leader
+  // or status change with zero executed discriminating trials.
+  'no-discriminating-trial',
 ]);
 
 interface NativeDataset {

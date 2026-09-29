@@ -969,6 +969,32 @@ test('reports evidence_coverage under behavior-evaluators-v0.3, with withheld em
   }
 });
 
+/**
+ * AIC-138 (F1): the v0.4 twin of the row above. v0.4 differs from v0.3 only in
+ * `challenge_effect`'s scoring — it matches evidence the same way v0.3 does,
+ * so it must report `evidence_coverage` exactly as v0.3 does.
+ */
+test('reports evidence_coverage under behavior-evaluators-v0.4, with withheld empty', async () => {
+  const runLiveModelLane = requireExport('runLiveModelLane');
+  const discriminatingMetadata = { ...benchmarkVersions, evaluatorVersion: evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION };
+
+  const report = await runLiveModelLane(
+    fourArmLaneOptions({
+      metadata: discriminatingMetadata,
+      controlBaseline: {
+        unsupported_claim_rate: 0,
+        evidence_coverage: 1,
+        termination_correctness: 1,
+      },
+    }),
+  );
+
+  assert.deepEqual(report.withheld, {});
+  for (const arm of ['control', 'oracle', 'naive', 'model']) {
+    assert.equal('evidence_coverage' in report.arms[arm].metrics, true, `${arm} must carry evidence_coverage once it is not withheld`);
+  }
+});
+
 /* -------------------------------------------------------------------------- */
 /* 7. comparability via the oracle                                            */
 /* -------------------------------------------------------------------------- */

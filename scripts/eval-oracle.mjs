@@ -45,9 +45,9 @@ function evaluatorVersionFromArgs() {
   if (index < 0) return evals.BEHAVIOR_EVALUATOR_VERSION;
   const value = argv[index + 1];
   // A flag given without a value is refused rather than read as the default,
-  // or a mistyped command would print a v0.2 report under a v0.3 request.
-  if (value !== evals.BEHAVIOR_EVALUATOR_VERSION && value !== evals.STRUCTURAL_EVALUATOR_VERSION) {
-    throw new Error(`--evaluator-version needs ${evals.BEHAVIOR_EVALUATOR_VERSION} or ${evals.STRUCTURAL_EVALUATOR_VERSION}`);
+  // or a mistyped command would print a v0.2 report under a later request.
+  if (!evals.KNOWN_BEHAVIOR_EVALUATOR_VERSIONS.includes(value)) {
+    throw new Error(`--evaluator-version needs ${evals.knownVersionsMessage()}`);
   }
   return value;
 }

@@ -371,10 +371,10 @@ test('declares a control baseline for the hold-out, without which the model arm 
   // covering the very gap it left open — the lane compared two axes and the
   // control arm emitted five.
   //
-  // Both commands declare the structural evaluator, under which the lane
-  // withholds nothing, so every metric key is compared:
-  // see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and naiveArm from ./lane-arms.mjs, wire them into runLiveModelLane, and declare the v0.3 structural evaluator"
-  // see four-arm-lane.test.mjs › "reports evidence_coverage under behavior-evaluators-v0.3, with withheld empty"
+  // Both commands declare an evaluator under which the lane withholds
+  // nothing, so every metric key is compared:
+  // see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and naiveArm from ./lane-arms.mjs, wire them into runLiveModelLane, and declare the lane's evaluator behavior-evaluators-v0.4"
+  // see four-arm-lane.test.mjs › "reports evidence_coverage under behavior-evaluators-v0.4, with withheld empty"
   const compared = [...BENCHMARK_METRIC_KEYS, ...BEHAVIOR_METRIC_KEYS].sort();
   const declared = Object.keys(baseline).filter((key) => !key.startsWith('_'));
   assert.deepEqual(

@@ -42,3 +42,23 @@ In that table every metric reaches its best value on every calibration
 scenario. On false-alert and multiple-plausible-causes, `unsupported_claim_rate`
 is at its best because `claimCount` is 0: the ground truth names no cause
 there, so the oracle makes no claim.
+
+## After the discriminating-challenge repair (AIC-138)
+
+`behavior-evaluators-v0.4.json` is the same report under the
+discriminating-challenge evaluator
+(`npm run eval:oracle -- --evaluator-version behavior-evaluators-v0.4`), which
+differs from v0.3 only in `challenge_effect`: a pass now requires at least one
+executed discriminating trial, not merely a leader or leader-status change that
+matches the expectation. Every other metric, and evidence/root-cause matching,
+are unchanged from v0.3. The v0.2 and v0.3 files above stay as they were
+measured.
+
+- `test/challenge-effect-discriminating-evaluator.test.mjs` ›
+  "docs/evidence/oracle/behavior-evaluators-v0.4.json deep-equals a fresh run
+  of scripts/eval-oracle.mjs --evaluator-version behavior-evaluators-v0.4, and
+  reaches best on every metric including challenge_effect"
+
+The oracle's own `challengeEffect` projection always reports one executed
+discriminating trial (`oracleAnswerFor`), so it reaches best on
+`challenge_effect` under v0.4 exactly as it does under v0.3.

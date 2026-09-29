@@ -126,7 +126,7 @@ export function corpusFingerprint(runsPerScenario) {
 
 function baseMetadata() {
   return {
-    evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
+    evaluatorVersion: evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION,
     graphVersion: 'aic-19-final-holdout',
     promptVersion: REFERENCE_PROMPT_VERSION,
     toolsetVersion: 'replay-v0.1',

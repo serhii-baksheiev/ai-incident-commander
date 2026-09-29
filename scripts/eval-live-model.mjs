@@ -180,7 +180,7 @@ const baseMetadata = Object.freeze({
   promptVersion: REFERENCE_PROMPT_VERSION,
   toolsetVersion: 'toolset-v0.1',
   statusRulesVersion: STATUS_RULES_VERSION,
-  evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
+  evaluatorVersion: evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION,
   // Both arms replay their TOOLS. Only the four reasoning roles differ between them,
   // which is what keeps the comparison about the model rather than about the
   // environment the two arms ran against.
