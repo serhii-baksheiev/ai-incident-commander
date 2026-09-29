@@ -34,8 +34,9 @@ import type { ToolResult } from './contracts.js';
  * second, possibly-diverging literal array — one spelling
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
  * test/trial-refusal-contract.test.mjs › "EVIDENCE_SOURCE_REFUSAL_REASONS
- * (tools) deep-equals EvidenceSourceRefusalReasonSchema.options (domain), one
- * spelling" and › "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) stays frozen".
+ * (tools) is the same list @aic/tools derives from
+ * EvidenceSourceRefusalReasonSchema.options (domain), one spelling and not a
+ * second copy" and › "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) stays frozen".
  */
 export const EVIDENCE_SOURCE_REFUSAL_REASONS = Object.freeze([
   ...EvidenceSourceRefusalReasonSchema.options,

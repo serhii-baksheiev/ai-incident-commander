@@ -255,8 +255,9 @@ export const InvestigationTestSchema = z.strictObject({
  * re-exports `.options` off this same schema, one spelling rather than two
  * possibly-diverging copies (`.claude/rules/invariants.md`, "one mechanism,
  * one implementation") — see test/trial-refusal-contract.test.mjs ›
- * "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) deep-equals
- * EvidenceSourceRefusalReasonSchema.options (domain), one spelling".
+ * "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) is the same list @aic/tools
+ * derives from EvidenceSourceRefusalReasonSchema.options (domain), one
+ * spelling and not a second copy".
  *
  * `.options` is frozen right after construction (AIC-146 b4 security round
  * 1): zod's `ZodEnum` assigns it once, at construction, to the same array
