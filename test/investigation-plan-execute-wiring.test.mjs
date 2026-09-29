@@ -298,9 +298,10 @@ test('through the real kernel, modelNodes(record, port) on deployment-caused-inc
   // AIC-142: INVESTIGATION_ROUTES now names `dependencies` too (the
   // dependency-health signal routes to it — test/investigation-routes.test.mjs),
   // but no PREDICTION_TEMPLATES template emits a dependency-health
-  // observation (test/investigation-routes.test.mjs's own template-routability
-  // sweep only ever sees error-rate, connection-pool and worker-saturation),
-  // so nothing this slice's planner can plan still ever requests it — a
+  // observation (this file › "no PREDICTION_TEMPLATES observation is a
+  // signal-state observation of dependency-health or latency"), and this row's
+  // fake challenge role proposes no dependencies test, so nothing this run
+  // plans or proposes ever requests it — a
   // structural guarantee about which templates are in play, not "no route
   // names it" and not a per-scenario coincidence.
   assert.ok(
@@ -680,4 +681,73 @@ test('the route-vocabulary reachability matrix under investigation-routes-v2: ev
     }
     assert.deepEqual(answered.sort(), [...expected].sort(), `${scenarioId}: requests answered ok must equal the registered route-vocabulary reachability`);
   }
+});
+
+/**
+ * AIC-142: the same enumeration as the row above, under the form-only table
+ * AIC-142 replaced (`investigation-routes-v1`, restated here as a literal so
+ * the comparison stays checkable after that table left production). Under it
+ * every signal-state request went to `metrics`, and no route named
+ * `dependencies`. The requests answered `ok` are exactly the v2 set minus the
+ * two `dependencies`/`dependency-health` requests — so the repair added those
+ * two and removed nothing. Registered in supplement 9.
+ */
+test('under the replaced form-only table investigation-routes-v1, the same route-vocabulary enumeration answers exactly the v2 matrix minus its two dependencies/dependency-health requests', async () => {
+  const signalInput = Object.freeze({ service: 'subject', window: 'window', metric: 'signal' });
+  const formOnlyV1 = Object.freeze({
+    version: 'investigation-routes-v1',
+    byForm: Object.freeze({
+      'deployment-in-window': Object.freeze({ tool: 'deployments', input: Object.freeze({ service: 'subject', window: 'window' }) }),
+      'signal-state': Object.freeze({ tool: 'metrics', input: signalInput }),
+      'log-class-in-window': Object.freeze({ tool: 'logs', input: Object.freeze({ service: 'subject', window: 'window', query: 'logClass' }) }),
+    }),
+  });
+  const windows = domain.ObservationWindowSchema.options;
+  const logClasses = domain.LogClassSchema.options;
+
+  for (const [scenarioId, v2Answered] of Object.entries(EXPECTED_ROUTE_VOCABULARY_REACHABILITY)) {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    const services = [...new Set(scenario.fixture.entries.map((entry) => entry.input?.service).filter((service) => typeof service === 'string'))].sort();
+    const executor = createPlannedReplayExecutor({
+      fixture: scenario.fixture,
+      routes: formOnlyV1,
+      annotate: evals.createObservationAnnotator(),
+    });
+    const answered = [];
+    for (const service of services) {
+      for (const window of windows) {
+        const requests = [['deployments', { service, window }]];
+        for (const signal of domain.SignalKindSchema.options) requests.push(['metrics', { service, window, metric: signal }]);
+        for (const logClass of logClasses) requests.push(['logs', { service, window, query: logClass }]);
+        for (const [tool, input] of requests) {
+          // eslint-disable-next-line no-await-in-loop -- one request at a time, in a stable order
+          const result = await executor.execute({ tool, input });
+          if (result.status === 'ok') answered.push(`${tool} ${JSON.stringify(input)} -> ${result.output.map(({ id }) => id).join(',')}`);
+        }
+      }
+    }
+    const expectedV1 = v2Answered.filter((line) => !line.startsWith('dependencies {') || !line.includes('"metric":"dependency-health"'));
+    assert.deepEqual(answered.sort(), [...expectedV1].sort(), `${scenarioId}: under v1 the answered requests must be the v2 set minus its dependencies/dependency-health requests`);
+  }
+  const added = Object.values(EXPECTED_ROUTE_VOCABULARY_REACHABILITY).flat().filter((line) => line.startsWith('dependencies {'));
+  assert.equal(added.length, 2, 'the repair adds exactly two answerable requests across the calibration partition');
+});
+
+/**
+ * Why a template-derived plan cannot reach the requests the repair added: no
+ * PREDICTION_TEMPLATES observation names dependency-health, and none names
+ * latency.
+ */
+test('no PREDICTION_TEMPLATES observation is a signal-state observation of dependency-health or latency', () => {
+  const signals = new Set();
+  for (const templates of Object.values(graph.PREDICTION_TEMPLATES.byMechanism)) {
+    for (const template of templates) {
+      for (const observation of [...template.expectedIfTrue, ...template.expectedIfFalse]) {
+        if (observation.form === 'signal-state') signals.add(observation.signal);
+      }
+    }
+  }
+  assert.ok(signals.size > 0, 'fixture sanity: the templates must derive some signal-state observation');
+  assert.equal(signals.has('dependency-health'), false);
+  assert.equal(signals.has('latency'), false);
 });

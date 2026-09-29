@@ -65,8 +65,9 @@ import type {
  *
  * No `PREDICTION_TEMPLATES` template (`./prediction-templates.ts`) currently
  * derives a `dependency-health` or a `latency` signal-state observation — see
- * investigation-routes.test.mjs's own template-routability sweep, which only
- * ever exercises error-rate, connection-pool and worker-saturation. Repairing
+ * investigation-plan-execute-wiring.test.mjs › "no PREDICTION_TEMPLATES
+ * observation is a signal-state observation of dependency-health or latency".
+ * Repairing
  * routing alone therefore changes no template-derived reachability today; it
  * changes what a typed `dependency-health` request (from a future template or
  * a challenge role's own discriminating test) can reach.
