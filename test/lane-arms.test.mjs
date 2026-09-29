@@ -1600,7 +1600,7 @@ test("eval-final-holdout.mjs's runNaiveArm still assigns naiveExperiment, and it
 
 /**
  * `createInvestigationNodes` (`@aic/graph`) and `createScriptedReasoning`
- * (`@aic/evals`) replace `scripts/lane-arms.mjs`'s own spread of
+ * (`@aic/roles`) replace `scripts/lane-arms.mjs`'s own spread of
  * `replayBackedNodes` (`test/fixtures/benchmark-experiment.mjs`), so this
  * script — the one both live-model commands wire through — never needs to
  * reach into the test tree to build a working graph.
@@ -1619,6 +1619,6 @@ test('scripts/lane-arms.mjs imports nothing from test/', () => {
   assert.deepEqual(
     testImports,
     [],
-    `scripts/lane-arms.mjs must not import anything from test/: the canonical composition now lives in @aic/graph's createInvestigationNodes and @aic/evals' createScriptedReasoning, found: ${JSON.stringify(testImports)}`,
+    `scripts/lane-arms.mjs must not import anything from test/: the canonical composition now lives in @aic/graph's createInvestigationNodes and @aic/roles' createScriptedReasoning, found: ${JSON.stringify(testImports)}`,
   );
 });

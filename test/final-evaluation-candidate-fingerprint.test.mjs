@@ -7,7 +7,7 @@
  * Before this slice the list carried `test/fixtures/benchmark-experiment.mjs`
  * because `scripts/lane-arms.mjs` imported `replayBackedNodes` from it
  * directly. `createInvestigationNodes` (`@aic/graph`) and
- * `createScriptedReasoning` (`@aic/evals`) remove that import, so the list
+ * `createScriptedReasoning` (now `@aic/roles`) remove that import, so the list
  * no longer needs a `test/` entry to cover what the lane commands load — and
  * declaring one anyway would be exactly the defect
  * `final-evaluation-oneshot.test.mjs`'s "refuses a re-run at a candidate

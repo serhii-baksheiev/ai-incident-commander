@@ -98,7 +98,7 @@
  *
  * Both graph arms come from `./lane-arms.mjs`, which builds them with
  * `createInvestigationNodes` (`@aic/graph`) and, for the control arm,
- * `createScriptedReasoning` (`@aic/evals`) — the one implementation the
+ * `createScriptedReasoning` (`@aic/roles`) — the one implementation the
  * regression suite's replay-backed fixture also delegates to
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation"). A copy
  * here would be a control arm that could drift away from the arm the regression
@@ -310,7 +310,7 @@ async function main() {
       // not true and was not true before either. What IS true is narrower and is
       // the property worth having: exactly one function reads it.
       // see roles-boundary.test.mjs › "reads the credential value in
-      // readModelCredential and nowhere else in packages or scripts"
+      // readModelCredential and nowhere else in packages, apps or scripts"
       const port = sharedPort();
       modelExperiment = await evals.runGraphBenchmarkExperiment({
         experimentId: `aic-94-model-${headSha().slice(0, 12)}`,

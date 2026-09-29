@@ -3,6 +3,7 @@
 import { parseArgs } from 'node:util';
 
 import { runDevSpike } from './commands/dev-spike.js';
+import { runInvestigate } from './commands/investigate.js';
 
 // The onboarding nouns docs/decisions/integration-boundary.md's Terminology
 // section fixes for AIC-99. Each is a stub in this slice; the subcommands
@@ -23,15 +24,17 @@ const generalHelp = `AI Incident Commander
 Usage: aic <command> [options]
 
 Commands:
-  service    Register and manage a Service AIC investigates
-  env        Register and manage a Service's Environments
-  source     Register and check evidence SourceBindings
-  policy     Set the ActionPolicy for an Environment
-  incident   Start an Incident investigation
-  doctor     Check onboarding health
-  apply      Apply a declarative onboarding manifest
+  service      Register and manage a Service AIC investigates
+  env          Register and manage a Service's Environments
+  source       Register and check evidence SourceBindings
+  policy       Set the ActionPolicy for an Environment
+  incident     Start an Incident investigation
+  investigate  Run one investigation over a replay file
+  doctor       Check onboarding health
+  apply        Apply a declarative onboarding manifest
 
-Run "aic dev spike --help" for the development-only persistence spike.`;
+Run "aic dev spike --help" for the development-only persistence spike.
+Run "aic investigate --help" for the replay-driven investigation runner.`;
 
 function isOnboardingNoun(value: string): value is OnboardingNoun {
   return (ONBOARDING_NOUNS as readonly string[]).includes(value);
@@ -75,6 +78,11 @@ async function main(argv: readonly string[]): Promise<void> {
       throw new Error(`unknown command: dev ${sub ?? ''}`.trim());
     }
     await runDevSpike(devArgs);
+    return;
+  }
+
+  if (command === 'investigate') {
+    await runInvestigate(rest);
     return;
   }
 

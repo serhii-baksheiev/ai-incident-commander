@@ -7,6 +7,7 @@ export * from './model-errors.js';
 export * from './model-usage-ledger.js';
 export * from './investigation-roles.js';
 export * from './naive-role.js';
+export * from './scripted-reasoning.js';
 export * from './status-rules-prompt.js';
 
 export {

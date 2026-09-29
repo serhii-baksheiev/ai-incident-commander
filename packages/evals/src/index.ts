@@ -13,7 +13,6 @@ export * from './observation-annotations.js';
 export * from './prediction-gap.js';
 export * from './behavior-evaluators.js';
 export * from './replay-scenarios.js';
-export * from './scripted-reasoning.js';
 export * from './structural-ground-truth.js';
 
 export const EVAL_DEPENDENCIES = [DOMAIN_LAYER, ...GRAPH_DEPENDENCIES] as const;

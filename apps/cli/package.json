@@ -7,8 +7,11 @@
     "aic": "dist/index.js"
   },
   "dependencies": {
+    "@aic/domain": "0.0.0",
     "@aic/graph": "0.0.0",
     "@aic/observability": "0.0.0",
-    "@aic/persistence": "0.0.0"
+    "@aic/persistence": "0.0.0",
+    "@aic/roles": "0.0.0",
+    "@aic/tools": "0.0.0"
   }
 }

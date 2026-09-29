@@ -44,8 +44,8 @@
  * AIC-126 slice a: `test/fixtures/benchmark-experiment.mjs` is no longer
  * listed. `scripts/lane-arms.mjs` used to import `replayBackedNodes` from it
  * directly; `createInvestigationNodes` (`@aic/graph`) and
- * `createScriptedReasoning` (`./scripted-reasoning.js`) replace that import,
- * so the two lane scripts no longer load anything under `test/` and a
+ * `createScriptedReasoning` (moved to `@aic/roles` in slice b) replace that
+ * import, so the two lane scripts no longer load anything under `test/` and a
  * `test/` entry here would be exactly the false-unlock this list exists to
  * avoid. What keeps this list honest against what the scripts actually
  * load, at runtime rather than by reading import statements, is
