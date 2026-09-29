@@ -1333,25 +1333,31 @@ const MIGRATION_CLAUSES: ReadonlyMap<number, string> = new Map([
     4,
     ' State written under schema version 4 carries untyped predictions and no hypothesis cause and cannot be migrated without inventing them; start a new investigation.',
   ],
+  [
+    5,
+    ' State written under schema version 5 predates evidence provenance, and this graph resumes only the current version; start a new investigation.',
+  ],
 ]);
 
 function assertPersistedStateVersion(control: IncidentStateControl): void {
   if (control.schemaVersion !== INCIDENT_STATE_SCHEMA_VERSION) {
-    // A persisted version BELOW the current one is not merely stale, and the
-    // two clauses below are deliberately distinct because they are missing
-    // different things:
+    // Each older version gets its own clause, because each is missing
+    // something different:
     // - AIC-96 made `incident.primaryScope` required, and no state written
     //   before that carries one;
     // - AIC-123 made predictions typed and versioned and added the optional
     //   hypothesis cause; a schema-version-4 checkpoint already has
     //   `primaryScope` but carries untyped predictions and no hypothesis
     //   cause instead.
-    // Neither gap has a value to invent that would not be a guess. see
-    // state-cutover.test.mjs › "refuses to resume a schema-version-3
+    // Neither of those gaps has a value to invent that would not be a guess.
+    // - AIC-146 added the optional `Evidence.provenance`; a schema-version-5
+    //   checkpoint lacks nothing, and is refused by the version policy alone.
+    // see state-cutover.test.mjs › "refuses to resume a schema-version-3
     // checkpoint paused at the HITL interrupt, because it predates
-    // primaryScope" and › "refuses to resume a schema-version-4 checkpoint
+    // primaryScope", › "refuses to resume a schema-version-4 checkpoint
     // paused at the HITL interrupt, because it predates typed predictions and
-    // hypothesis cause"
+    // hypothesis cause" and › "refuses to resume a schema-version-5 checkpoint
+    // paused at the HITL interrupt, because it predates evidence provenance"
     const migrationClause =
       typeof control.schemaVersion === 'number'
         ? (MIGRATION_CLAUSES.get(control.schemaVersion) ?? '')

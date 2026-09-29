@@ -260,6 +260,37 @@ export const TrialSchema = z.strictObject({
   evidenceIds: z.array(IdentifierSchema),
 });
 
+/**
+ * The bound-source-registry side of `adapter`: one `<adapterId>@<adapterVersion>`
+ * string, each side 1-200 characters with no `@` — within the
+ * bounds `SourceBindingSchema.adapterId` / `.adapterVersion` already carry
+ * (`packages/domain/src/scope.ts`), so a provenance record can never claim an
+ * adapter identity `SourceBindingSchema` itself would refuse. A regex rather
+ * than a `.refine`: a refinement is a `custom` check, which the checkpoint
+ * schema walk reads as a value the serializer would store as an lc record —
+ * see checkpoint-serde-own-values.test.mjs › "states its limit: a declared lc
+ * record's loaded counterpart is handed back unverified".
+ */
+const ProvenanceAdapterFieldSchema = z.string().regex(/^[^@]{1,200}@[^@]{1,200}$/);
+
+/**
+ * Evidence carries `provenance` (AIC-146 slice a) when it was produced
+ * through a bound source: which binding served it, which adapter build, the
+ * id of the binding's credential reference (never the secret's own value or
+ * name — null when the binding carries no credential), when it was fetched,
+ * and a deterministic fingerprint of the request that was made. This is the
+ * validated-contract mirror of `@aic/tools`'s `EvidenceSourceProvenance`
+ * (`packages/tools/src/evidence-source.ts`) — one shape, checked from both
+ * sides, see test/fixtures/evidence-provenance-type-contract.ts.
+ */
+export const EvidenceProvenanceSchema = z.strictObject({
+  sourceBindingId: z.uuid(),
+  adapter: ProvenanceAdapterFieldSchema,
+  credentialRefId: z.uuid().nullable(),
+  fetchedAt: z.iso.datetime(),
+  requestFingerprint: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+});
+
 export const EvidenceSchema = z.strictObject({
   id: IdentifierSchema,
   trialId: IdentifierSchema,
@@ -294,6 +325,14 @@ export const EvidenceSchema = z.strictObject({
       facts: z.array(ObservedFactSchema).min(1).max(MAX_OBSERVATIONS),
     })
     .optional(),
+  // Evidence collected through a bound source carries the provenance
+  // BoundSourceRegistry builds at fetch time; replay and scripted evidence
+  // from before bound sources carries none, which is why the field is
+  // optional — see test/evidence-provenance-contract.test.mjs ›
+  // "EvidenceSchema accepts Evidence with no provenance field, because
+  // existing replay evidence carries none". The credential's value or secret
+  // name is never part of it.
+  provenance: EvidenceProvenanceSchema.optional(),
 });
 
 export const EvidenceAssessmentSchema = z.strictObject({
@@ -387,6 +426,7 @@ export type Prediction = z.infer<typeof PredictionSchema>;
 export type InvestigationTest = z.infer<typeof InvestigationTestSchema>;
 export type Trial = z.infer<typeof TrialSchema>;
 export type Evidence = z.infer<typeof EvidenceSchema>;
+export type EvidenceProvenance = z.infer<typeof EvidenceProvenanceSchema>;
 export type EvidenceAssessment = z.infer<typeof EvidenceAssessmentSchema>;
 export type CauseClaim = z.infer<typeof CauseClaimSchema>;
 export type IncidentConclusion = z.infer<typeof IncidentConclusionSchema>;

@@ -147,7 +147,15 @@ export function createExecuteInvestigation({
           if (claimedEvidenceIds.has(item.id)) continue;
           claimedEvidenceIds.add(item.id);
           evidenceIds.push(item.id);
-          evidence.push(EvidenceSchema.parse({ ...item, trialId }));
+          // Provenance on recorded Evidence is written only by the stamping
+          // layer from BoundSourceRegistry's own outcome, never taken from
+          // what a tool returned — a tool's own output item is exactly as
+          // trusted as any other caller-supplied field. see
+          // investigation-execution.test.mjs › "on an ok result: a
+          // provenance block on the tool's own output item never survives
+          // into the recorded evidence (AIC-146 slice a)"
+          const { provenance: _provenance, ...fields } = item;
+          evidence.push(EvidenceSchema.parse({ ...fields, trialId }));
         }
         trials.push(TrialSchema.parse({ ...trialBase, status: 'ok', evidenceIds }));
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'executed' }));

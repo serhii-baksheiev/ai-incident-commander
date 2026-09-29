@@ -35,6 +35,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -291,4 +292,57 @@ test('crash between commit and checkpoint: resume returns the committed result a
     { ...committedResult.evidence, id: expectedEvidenceId, trialId: expectedTrialId },
     'the resumed Evidence must be derived from the committed result',
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Row 6 (AIC-146 slice a) - a provenance block executeInvestigation returns  */
+/* must never survive into persisted evidence                                 */
+/* -------------------------------------------------------------------------- */
+
+test('a provenance block executeInvestigation returns on its evidence never survives into the persisted evidence', async () => {
+  // The port's own caller attests a binding, adapter and fingerprint that no
+  // BoundSourceRegistry call ever served it - well-formed enough to pass
+  // EvidenceProvenanceSchema on its own, which is exactly the hazard: nothing
+  // about shape alone distinguishes an adapter's claim from the registry's.
+  const adapterSuppliedProvenance = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-24T00:00:00.000Z',
+    requestFingerprint: `sha256:${'0'.repeat(64)}`,
+  };
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    async executeInvestigation() {
+      return {
+        trial: { status: 'ok', durationMs: 1 },
+        evidence: {
+          kind: 'log',
+          source: 'fixture-tool',
+          observedAt: '2026-09-24T00:00:00.000Z',
+          statement: 'checkout returned a deterministic fixture result',
+          rawRef: 'fixture://checkout/result',
+          provenance: adapterSuppliedProvenance,
+        },
+        payloadFingerprint: PAYLOAD_FINGERPRINT,
+      };
+    },
+  });
+
+  const started = await runner.start({ runId: RUN_ID, test: buildTest() });
+
+  assert.equal(started.evidence.length, 1);
+  const [producedEvidence] = started.evidence;
+  assert.equal(
+    'provenance' in producedEvidence,
+    false,
+    'a provenance block executeInvestigation attached must never reach persisted evidence',
+  );
+  assert.equal(
+    producedEvidence.statement,
+    'checkout returned a deterministic fixture result',
+    'every other field is kept as-is',
+  );
+  domain.EvidenceSchema.parse(producedEvidence);
 });

@@ -237,8 +237,14 @@ for (const version of [1, 2, 3]) {
 /* that HAS primaryScope but predates typed predictions and hypothesis cause */
 /* -------------------------------------------------------------------------- */
 
-test('publishes INCIDENT_STATE_SCHEMA_VERSION as 5', () => {
-  assert.equal(INCIDENT_STATE_SCHEMA_VERSION, 5);
+test('publishes INCIDENT_STATE_SCHEMA_VERSION as 6', () => {
+  // AIC-146 slice a bumps the schema again, 5 -> 6: Evidence now carries an
+  // optional `provenance` field older code does not validate, the same
+  // migration-forcing shape as the 4 -> 5 bump's hypothesis `cause` addition
+  // (packages/domain/src/status-rules.ts's policy comment). See the
+  // "refuses to resume a schema-version-5 checkpoint" row below for the
+  // resume-side refusal this bump forces.
+  assert.equal(INCIDENT_STATE_SCHEMA_VERSION, 6);
 });
 
 /**
@@ -307,6 +313,68 @@ test('refuses to resume a schema-version-4 checkpoint paused at the HITL interru
       outcome.error.message,
       /primaryScope/i,
       `a v4 checkpoint already has primaryScope; the v4 clause must be distinct from the below-v4 primaryScope clause: ${outcome.error.message}`,
+    );
+    assert.deepEqual(
+      harness.trace,
+      traceBeforeResume,
+      'the refusal must land before the resumed run executes another lifecycle node',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-146 slice a: the schema-version 5 -> 6 cutover, a checkpoint that HAS   */
+/* typed predictions and hypothesis cause but predates Evidence provenance    */
+/* -------------------------------------------------------------------------- */
+
+const namesPredatesEvidenceProvenance = /predates evidence provenance/i;
+
+test('refuses to resume a schema-version-5 checkpoint paused at the HITL interrupt, because it predates evidence provenance', async () => {
+  const harness = createHarness({ runId: 'run-cutover-paused-v5' });
+
+  try {
+    const interrupted = await harness.start();
+    const traceBeforeResume = [...harness.trace];
+    harness.rewritePersistedChannels(atControlSchemaVersion(5));
+
+    const outcome = await harness.resume(interrupted, { action: 'confirm' });
+
+    assert.equal(
+      'error' in outcome,
+      true,
+      'a schema-version-5 checkpoint predates evidence provenance and must be refused, not resumed to completion',
+    );
+    assert.match(
+      outcome.error.message,
+      /^incompatible persisted state: schema version 5\b/,
+      `the refusal must start by naming the persisted version it refused on: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesTheVersionThisGraphReads,
+      `the refusal must name the version this graph reads, taken from the constant: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      namesPredatesEvidenceProvenance,
+      `the v5 clause must say the persisted state predates evidence provenance: ${outcome.error.message}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /cannot be migrated/i,
+      `a v5 checkpoint's evidence is valid v6 evidence with no provenance, so the clause must not claim the state cannot be migrated; the refusal is the version policy: ${outcome.error.message}`,
+    );
+    assert.match(
+      outcome.error.message,
+      tellsCallerToStartOver,
+      `the refusal must tell the caller to start a new investigation: ${outcome.error.message}`,
+    );
+    assert.doesNotMatch(
+      outcome.error.message,
+      /primaryScope|untyped predictions|hypothesis cause/i,
+      `a v5 checkpoint already has primaryScope, typed predictions and hypothesis cause; the v5 clause must be distinct from the earlier clauses: ${outcome.error.message}`,
     );
     assert.deepEqual(
       harness.trace,
