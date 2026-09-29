@@ -64,6 +64,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as evals from '@aic/evals';
+import { MODEL_API_KEY_VARIABLE } from '@aic/roles';
 
 import { childEnv } from './fixtures/child-env.mjs';
 
@@ -592,3 +593,139 @@ test('the candidate fingerprint moves when tsconfig.base.json changes', async ()
 // exactly what keeps a docs/ commit from moving this hash) — not re-measured
 // here by mutation, because that row already pins the exact fact this one
 // would prove by a slower route.
+
+/* -------------------------------------------------------------------------- */
+/* 5. AIC-137 round 3: an uncommitted change outside the declared candidate   */
+/*    paths — package.json, a root .npmrc or npm-shrinkwrap.json — must also  */
+/*    refuse the run, naming the offending path. The guard over               */
+/*    FINAL_EVALUATION_CANDIDATE_PATHS already exists and is pinned by the    */
+/*    row at the end of this section; these rows are its sibling over the     */
+/*    three paths that command's own working tree still leaves unguarded.     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A credential shape assembled at runtime, never a literal
+ * (`.claude/rules/autonomy.md`, "Never" — no secret-shaped literal in a
+ * fixture). Copied from `test/lane-arms.test.mjs`'s own `fakeApiKey` rather
+ * than declared a second time as a shared export, matching that file's own
+ * choice to keep it local.
+ */
+function fakeApiKey() {
+  return ['sk', 'ant', 'test', '9'.repeat(24)].join('-');
+}
+
+/**
+ * Runs `eval-final-holdout.mjs --dry-run` as a real child process, cwd'd at a
+ * scratch worktree, under the same `--import` preload the npm script
+ * declares.
+ *
+ * Verified by reading `scripts/eval-final-holdout.mjs`: the `if
+ * (flag('dry-run'))` block is a `stdout.write` followed by a bare `return`,
+ * strictly above both the `execute()` call (the lane, and the only path to a
+ * provider request) and `writeRecordDurably`/publication (the only writes
+ * `main()` performs) — so this spawns no network call and writes nothing
+ * beyond what `git worktree add` already checked out.
+ */
+function runFinalHoldoutDryRun(dir) {
+  return spawnSync(
+    process.execPath,
+    ['--import', './scripts/lib/no-ambient-tracing.mjs', 'scripts/eval-final-holdout.mjs', '--dry-run'],
+    {
+      cwd: dir,
+      encoding: 'utf8',
+      env: childEnv({ [MODEL_API_KEY_VARIABLE]: fakeApiKey() }),
+    },
+  );
+}
+
+/** A regexp source escaped so a path carrying a `.` matches only itself. */
+function escapeForRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+test('a clean scratch worktree runs eval-final-holdout.mjs --dry-run cleanly, printing the decision with candidate.workingTreeClean true', async () => {
+  await withScratchWorktree(async (dir) => {
+    const result = runFinalHoldoutDryRun(dir);
+
+    assert.equal(
+      result.status,
+      0,
+      `--dry-run must exit 0 on a clean scratch worktree:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.dryRun, true);
+    assert.equal(parsed.candidate.workingTreeClean, true);
+  });
+});
+
+test('the final hold-out command refuses to run with an uncommitted package.json change, naming package.json', async () => {
+  await withScratchWorktree(async (dir) => {
+    const manifestPath = join(dir, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.scripts['aic-137-probe'] = 'node --import /tmp/aic-137-probe.mjs -e 1';
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const result = runFinalHoldoutDryRun(dir);
+
+    assert.notEqual(
+      result.status,
+      0,
+      `--dry-run must refuse a run with an uncommitted package.json change:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.equal(result.stdout.trim(), '', 'a refused run must print no dry-run JSON');
+    assert.match(result.stderr, /package\.json/, 'the refusal must name package.json');
+    assert.doesNotMatch(
+      result.stderr,
+      /no model provider credential is configured/,
+      'the refusal must be the working-tree guard, not the unrelated missing-credential guard',
+    );
+  });
+});
+
+for (const untrackedFile of ['.npmrc', 'npm-shrinkwrap.json']) {
+  test(`the final hold-out command refuses to run with an untracked root ${untrackedFile}, naming it`, async () => {
+    await withScratchWorktree(async (dir) => {
+      writeFileSync(
+        join(dir, untrackedFile),
+        untrackedFile === '.npmrc' ? 'node-options=--import=/tmp/aic-137-probe.mjs\n' : '{}\n',
+      );
+
+      const result = runFinalHoldoutDryRun(dir);
+
+      assert.notEqual(
+        result.status,
+        0,
+        `--dry-run must refuse a run with an untracked root ${untrackedFile}:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+      assert.equal(result.stdout.trim(), '', 'a refused run must print no dry-run JSON');
+      assert.match(
+        result.stderr,
+        new RegExp(escapeForRegExp(untrackedFile)),
+        `the refusal must name ${untrackedFile}`,
+      );
+      assert.doesNotMatch(
+        result.stderr,
+        /no model provider credential is configured/,
+        'the refusal must be the working-tree guard, not the unrelated missing-credential guard',
+      );
+    });
+  });
+}
+
+test('the final hold-out command refuses to run with an uncommitted change under a candidate path', async () => {
+  await withScratchWorktree(async (dir) => {
+    const filePath = join(dir, 'scripts', 'lane-arms.mjs');
+    writeFileSync(filePath, `${readFileSync(filePath, 'utf8')}\n// aic-137 probe: uncommitted, never committed\n`);
+
+    const result = runFinalHoldoutDryRun(dir);
+
+    assert.notEqual(
+      result.status,
+      0,
+      `--dry-run must refuse a run with an uncommitted change under a declared candidate path:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.equal(result.stdout.trim(), '', 'a refused run must print no dry-run JSON');
+    assert.match(result.stderr, /uncommitted changes under a candidate path/);
+    assert.match(result.stderr, /scripts\/lane-arms\.mjs/, 'the refusal must name the dirty candidate-path file');
+  });
+});
