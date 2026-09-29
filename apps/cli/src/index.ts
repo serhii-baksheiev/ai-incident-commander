@@ -9,17 +9,18 @@ import { createIncidentStore, createRegistryStore, setupApplicationSchema, type 
 
 import { runRegistryCommand, type RegistryCommandDeps } from './commands/registry.js';
 import { runIncidentCommand, type IncidentCommandStore } from './commands/incident.js';
+import { runApplyCommand } from './commands/apply.js';
 import { runDevSpike } from './commands/dev-spike.js';
 import { runInvestigate } from './commands/investigate.js';
 import { runSourceCheckCommand } from './commands/source-check.js';
 import { runDoctorCommand } from './commands/doctor.js';
 
 // The onboarding nouns docs/decisions/integration-boundary.md's Terminology
-// section fixes for AIC-99, still stubs in this slice. `doctor` and
-// `source check` stop being stubs in slice e, `incident` (its `start`
-// subcommand) in slice f — see runDoctorCommand, runSourceCheckCommand and
-// runIncidentCommand below.
-const STUB_NOUNS = ['apply'] as const;
+// section fixes for AIC-99. `doctor` and `source check` stop being stubs in
+// slice e, `incident` (its `start` subcommand) in slice f, `apply` in slice
+// g — see runDoctorCommand, runSourceCheckCommand, runIncidentCommand and
+// runApplyCommand below. No onboarding noun remains a stub.
+const STUB_NOUNS = [] as const;
 type StubNoun = (typeof STUB_NOUNS)[number];
 
 // AIC-99 slice d: real dispatch over the registry store — `credential` is a
@@ -231,6 +232,17 @@ async function main(argv: readonly string[]): Promise<void> {
       now: () => new Date().toISOString(),
       generateId: randomUUID,
     });
+    return;
+  }
+
+  if (command === 'apply') {
+    const result = await runApplyCommand(rest, {
+      store: createConnectedRegistryStore(process.env),
+      stdout: writeStdoutLine,
+    });
+    if (!result.clean) {
+      process.exitCode = 1;
+    }
     return;
   }
 
