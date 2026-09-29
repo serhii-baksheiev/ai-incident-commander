@@ -44,6 +44,7 @@ export {
 } from './bound-source-registry.js';
 export type {
   BoundSourceBinding,
+  BoundSourceEntrySnapshot,
   BoundSourceMode,
   BoundSourceRegistry,
   BoundSourceRegistryOptions,
@@ -68,3 +69,12 @@ export type {
   AdapterCatalogResult,
   AdapterCatalogSourceBinding,
 } from './adapter-catalog.js';
+export { createBoundInvestigationExecutor } from './bound-investigation-executor.js';
+export type {
+  BoundInvestigationExecutor,
+  BoundInvestigationExecutorConstructionResult,
+  BoundInvestigationExecutorContext,
+  BoundInvestigationExecutorOutcome,
+  BoundInvestigationExecutorRefusalReason,
+  CreateBoundInvestigationExecutorOptions,
+} from './bound-investigation-executor.js';
