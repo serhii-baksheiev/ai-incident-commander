@@ -295,12 +295,17 @@ test('through the real kernel, modelNodes(record, port) on deployment-caused-inc
   const investigationGraph = graph.createInvestigationGraph({ nodes });
   const result = await investigationGraph.execute({ kind: 'start', state: initialStateFor(input) });
 
-  // `dependencies` names no route in INVESTIGATION_ROUTES at all, so nothing
-  // this slice plans can ever request it — a structural guarantee, not a
-  // per-scenario coincidence.
+  // AIC-142: INVESTIGATION_ROUTES now names `dependencies` too (the
+  // dependency-health signal routes to it — test/investigation-routes.test.mjs),
+  // but no PREDICTION_TEMPLATES template emits a dependency-health
+  // observation (test/investigation-routes.test.mjs's own template-routability
+  // sweep only ever sees error-rate, connection-pool and worker-saturation),
+  // so nothing this slice's planner can plan still ever requests it — a
+  // structural guarantee about which templates are in play, not "no route
+  // names it" and not a per-scenario coincidence.
   assert.ok(
     result.trials.every((trial) => trial.tool !== 'dependencies'),
-    'no trial may ever be for the dependencies tool: no route names it',
+    'no trial may ever be for the dependencies tool: no current PREDICTION_TEMPLATES template emits a dependency-health observation',
   );
   assert.ok(
     !result.evidence.some((item) => item.id === 'payments-dependencies-healthy'),
@@ -601,5 +606,78 @@ test('every deployment-in-window fact in OBSERVATION_ANNOTATIONS counts at least
   assert.ok(deploymentFacts.length > 0, 'fixture sanity: the table must carry deployment facts');
   for (const fact of deploymentFacts) {
     assert.ok(fact.count > 0, `a deployment fact reads an absence: ${JSON.stringify(fact)}`);
+  }
+});
+
+/**
+ * AIC-142: what the planned-replay port can answer under
+ * investigation-routes-v2, measured without any provider call. For each
+ * calibration scenario, every request the route table can form — over the
+ * services the scenario's own recorded calls name, the three observation
+ * windows, every signal the table routes (latency is refused, so it forms no
+ * request) and every log class — is sent through the same
+ * createPlannedReplayExecutor the lanes use, and the requests answered `ok`
+ * are compared against the literal below. This is structural reachability:
+ * which requests the graph CAN execute on the frozen corpus. Whether a model
+ * chooses them is what calibration measures. Registered in
+ * docs/evidence/preregistration/v0.2-four-arm-supplement-9.md.
+ */
+const EXPECTED_ROUTE_VOCABULARY_REACHABILITY = Object.freeze({
+  'bad-deployment': ['deployments {"service":"checkout","window":"incident"} -> checkout-deploy-v42'],
+  'db-pool-exhaustion': [],
+  'false-alert': [],
+  'deployment-caused-incident-a': [
+    'deployments {"service":"payments","window":"pre-onset"} -> confirmation-deploy-v17',
+    'deployments {"service":"payments","window":"incident"} -> confirmation-deploy-v17',
+    'dependencies {"service":"payments","window":"incident","metric":"dependency-health"} -> payments-dependencies-healthy',
+  ],
+  'dependency-caused-incident-b': [
+    'deployments {"service":"payments","window":"pre-onset"} -> confirmation-deploy-v17',
+    'deployments {"service":"payments","window":"incident"} -> confirmation-deploy-v17',
+  ],
+  'multiple-plausible-causes': [],
+  'transient-self-resolved': [],
+  'challenge-keeps-leader': [
+    'deployments {"service":"payments","window":"pre-onset"} -> payments-v19-before-timeouts',
+    'dependencies {"service":"payments","window":"incident","metric":"dependency-health"} -> payments-v19-dependencies-healthy',
+  ],
+});
+
+test('the route-vocabulary reachability matrix under investigation-routes-v2: every request the route table can form for each calibration scenario over its own recorded services, windows and discriminants, answered through the planned-replay port, equals the registered literal', async () => {
+  assert.deepEqual(
+    Object.keys(EXPECTED_ROUTE_VOCABULARY_REACHABILITY).sort(),
+    [...evals.BENCHMARK_SCENARIO_PARTITIONS.calibration].sort(),
+    'fixture sanity: the registered matrix must cover exactly the calibration partition',
+  );
+  const windows = domain.ObservationWindowSchema.options;
+  const logClasses = domain.LogClassSchema.options;
+  const signalRoutes = graph.INVESTIGATION_ROUTES.byForm['signal-state'].bySignal;
+
+  for (const [scenarioId, expected] of Object.entries(EXPECTED_ROUTE_VOCABULARY_REACHABILITY)) {
+    const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === scenarioId);
+    assert.ok(scenario, `REPLAY_SCENARIOS must carry ${scenarioId}`);
+    const services = [...new Set(scenario.fixture.entries.map((entry) => entry.input?.service).filter((service) => typeof service === 'string'))].sort();
+    const executor = createPlannedReplayExecutor({
+      fixture: scenario.fixture,
+      routes: graph.INVESTIGATION_ROUTES,
+      annotate: evals.createObservationAnnotator(),
+    });
+    const answered = [];
+    for (const service of services) {
+      for (const window of windows) {
+        const requests = [['deployments', { service, window }]];
+        for (const signal of domain.SignalKindSchema.options) {
+          const entry = signalRoutes[signal];
+          if (typeof entry.tool === 'string') requests.push([entry.tool, { service, window, metric: signal }]);
+        }
+        for (const logClass of logClasses) requests.push(['logs', { service, window, query: logClass }]);
+        for (const [tool, input] of requests) {
+          // eslint-disable-next-line no-await-in-loop -- one request at a time, in a stable order
+          const result = await executor.execute({ tool, input });
+          if (result.status === 'ok') answered.push(`${tool} ${JSON.stringify(input)} -> ${result.output.map(({ id }) => id).join(',')}`);
+        }
+      }
+    }
+    assert.deepEqual(answered.sort(), [...expected].sort(), `${scenarioId}: requests answered ok must equal the registered route-vocabulary reachability`);
   }
 });

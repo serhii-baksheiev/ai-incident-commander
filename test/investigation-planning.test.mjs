@@ -510,3 +510,108 @@ test('planInvestigation does not mutate its predictions, tests or routes inputs'
   assert.deepEqual(tests, testsSnapshot);
   assert.deepEqual(ROUTES, routesSnapshot);
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-142: a `byForm[form]` entry may be a signal-keyed selector            */
+/*                                                                            */
+/* Owner design (AIC-142, "Representation"): `byForm[form]` is either an     */
+/* `InvestigationRouteEntry` (the flat shape every test above exercises), or */
+/* — for `signal-state` — a selector `{ bySignal: { [signal]: entry |        */
+/* { refused: reason } } }`. `planInvestigation` reads `observation.signal`  */
+/* in that map by OWN property only, exactly the same `Object.hasOwn`        */
+/* discipline rule 3 above already applies to `observation.form`; a refusal  */
+/* or a missing key plans NO test (fail closed, no fallback to another       */
+/* tool). This section is deliberately independent of `@aic/graph`'s own     */
+/* production policy (dependency-health -> dependencies, etc. —              */
+/* test/investigation-routes.test.mjs pins that): it is a hand-built table,  */
+/* proving the MECHANISM works for any caller-supplied bySignal shape, not   */
+/* just the production one.                                                  */
+/* -------------------------------------------------------------------------- */
+
+const SIGNAL_ROUTES = Object.freeze({
+  version: 'signal-routes-v1',
+  byForm: Object.freeze({
+    'signal-state': Object.freeze({
+      bySignal: Object.freeze({
+        'connection-pool': Object.freeze({
+          tool: 'metrics',
+          input: Object.freeze({ service: 'subject', window: 'window', metric: 'signal' }),
+        }),
+        'dependency-health': Object.freeze({
+          tool: 'dependencies',
+          input: Object.freeze({ service: 'subject', window: 'window', metric: 'signal' }),
+        }),
+        latency: Object.freeze({ refused: 'ambiguous between two source families' }),
+      }),
+    }),
+  }),
+});
+
+test('planInvestigation routes a signal-state observation through a bySignal-shaped route entry, using observation.signal to select the per-signal route', () => {
+  const planInvestigation = requirePlanInvestigation();
+  const p = prediction('p-bysignal', {
+    expectedIfTrue: [observation('signal-state', { subject: 'orders-db', signal: 'dependency-health' })],
+  });
+
+  const result = planInvestigation({ predictions: [p], tests: [], routes: SIGNAL_ROUTES });
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].tool, 'dependencies');
+  assert.deepEqual(result[0].input, { service: 'orders-db', window: 'incident', metric: 'dependency-health' });
+});
+
+test('planInvestigation plans no test when a bySignal entry refuses the signal, and never falls back to another tool', () => {
+  const planInvestigation = requirePlanInvestigation();
+  const p = prediction('p-refused-signal', {
+    expectedIfTrue: [observation('signal-state', { subject: 'orders-db', signal: 'latency' })],
+  });
+
+  const result = planInvestigation({ predictions: [p], tests: [], routes: SIGNAL_ROUTES });
+
+  assert.deepEqual(result, [], 'a refused signal must plan no test, never falling back to another tool');
+});
+
+test('planInvestigation plans no test when observation.signal has no entry at all in the route\'s bySignal map (fail closed, no fallback)', () => {
+  const planInvestigation = requirePlanInvestigation();
+  const p = prediction('p-unmapped-signal', {
+    // 'worker-saturation' is not a key of SIGNAL_ROUTES.byForm['signal-state'].bySignal at all.
+    expectedIfTrue: [observation('signal-state', { subject: 'orders-db', signal: 'worker-saturation' })],
+  });
+
+  const result = planInvestigation({ predictions: [p], tests: [], routes: SIGNAL_ROUTES });
+
+  assert.deepEqual(result, []);
+});
+
+test('planInvestigation produces no test for a bySignal-shaped route entry when the observation\'s signal is only reachable through Object.prototype (toString), even when the prototype carries a matching route', () => {
+  const planInvestigation = requirePlanInvestigation();
+  const maliciousProto = { toString: { tool: 'metrics', input: {} } };
+  const bySignal = Object.assign(Object.create(maliciousProto), {
+    'connection-pool': SIGNAL_ROUTES.byForm['signal-state'].bySignal['connection-pool'],
+  });
+  const routes = { version: 'signal-routes-proto-v1', byForm: { 'signal-state': { bySignal } } };
+  const p = prediction('p-signal-tostring', {
+    expectedIfTrue: [{ ...observation('signal-state', { subject: 'orders-db' }), signal: 'toString' }],
+  });
+
+  const result = planInvestigation({ predictions: [p], tests: [], routes });
+
+  assert.deepEqual(
+    result,
+    [],
+    'a signal reachable only through Object.prototype must not be treated as a registered per-signal route',
+  );
+});
+
+for (const signal of ['constructor', '__proto__']) {
+  test(`planInvestigation produces no test for a bySignal-shaped route entry when the observation's signal is the inherited property name ${signal}`, () => {
+    const planInvestigation = requirePlanInvestigation();
+    const p = prediction(`p-signal-${signal}`, {
+      expectedIfTrue: [{ ...observation('signal-state', { subject: 'orders-db' }), signal }],
+    });
+
+    const result = planInvestigation({ predictions: [p], tests: [], routes: SIGNAL_ROUTES });
+
+    assert.deepEqual(result, []);
+  });
+}

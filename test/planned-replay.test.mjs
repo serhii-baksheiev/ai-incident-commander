@@ -766,9 +766,103 @@ test('refuses at construction a route table in which two forms name the same too
   );
 });
 
-test('INVESTIGATION_ROUTES names each tool at most once, so every routed request reads back into exactly one quantity', () => {
-  const tools = Object.values(graph.INVESTIGATION_ROUTES.byForm).map((route) => route.tool);
-  assert.equal(new Set(tools).size, tools.length);
+/**
+ * AIC-142: `signal-state` is now a nested `bySignal` selector, so a flat
+ * `Object.values(routes.byForm)` walk no longer sees every tool a route
+ * names (three signals share the tool `metrics`, which is fine — the design
+ * only requires that every entry naming a tool shares one form and one
+ * input mapping, "generalising assertOneFormPerTool"). This replaces the
+ * v1-era "each tool at most once" check, which is no longer the right
+ * statement of the invariant now that one tool may legitimately serve
+ * several signals.
+ */
+test('every tool INVESTIGATION_ROUTES names is named under exactly one form and one input mapping, so every routed request still reads back into exactly one quantity', () => {
+  const routes = graph.INVESTIGATION_ROUTES;
+  const seenByTool = new Map();
+
+  for (const [form, entry] of Object.entries(routes.byForm)) {
+    const routeEntries = Object.hasOwn(entry, 'bySignal')
+      ? Object.values(entry.bySignal).filter((signalEntry) => Object.hasOwn(signalEntry, 'tool'))
+      : [entry];
+
+    for (const route of routeEntries) {
+      const existing = seenByTool.get(route.tool);
+      if (existing === undefined) {
+        seenByTool.set(route.tool, { form, input: route.input });
+      } else {
+        assert.equal(existing.form, form, `tool ${route.tool} must be named under exactly one form`);
+        assert.deepEqual(existing.input, route.input, `tool ${route.tool} must be named with exactly one input mapping`);
+      }
+    }
+  }
+
+  assert.ok(seenByTool.size > 0, 'fixture sanity: INVESTIGATION_ROUTES must name at least one tool');
+});
+
+test('refuses at construction a route table in which one tool is named under bySignal entries with two different input mappings', () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const routes = {
+    version: 'ambiguous-mapping-v1',
+    byForm: {
+      'signal-state': {
+        bySignal: {
+          'error-rate': { tool: 'metrics', input: { service: 'subject', window: 'window', metric: 'signal' } },
+          'connection-pool': { tool: 'metrics', input: { service: 'subject', metric: 'signal' } },
+        },
+      },
+    },
+  };
+
+  assert.throws(
+    () => createPlannedReplayExecutor({ fixture: { version: 1, entries: [] }, routes, annotate: () => undefined }),
+    (error) => error instanceof TypeError && /metrics/.test(error.message),
+  );
+});
+
+/* ============================================================================
+ * AIC-142: dependency-health routes to the dependencies source family
+ * ==========================================================================*/
+
+test("a dependencies request for dependency-health is answered by QUANTITY from a hand-built fixture whose dependencies entry's annotated fact is signal-state/dependency-health for that subject/window", async () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const entries = [
+    {
+      toolId: 'dependencies',
+      input: { service: 'svc-a', window: 'incident' },
+      result: ok(evidenceItem('dep-svc-a-probe', 'svc-a dependency probe')),
+    },
+  ];
+  const fixture = { version: 1, entries };
+  const annotate = (_identity, evidence) =>
+    evidence.id === 'dep-svc-a-probe'
+      ? [{ form: 'signal-state', subject: 'svc-a', window: 'incident', signal: 'dependency-health', state: 'at-limit' }]
+      : undefined;
+
+  const executor = createPlannedReplayExecutor({ fixture, routes: graph.INVESTIGATION_ROUTES, annotate });
+
+  const result = await executor.execute(
+    baseContext({ tool: 'dependencies', input: { service: 'svc-a', window: 'incident', metric: 'dependency-health' } }),
+  );
+
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.output.map((item) => item.id), ['dep-svc-a-probe']);
+});
+
+test('a metrics request for dependency-health answers unavailable, never ok-with-empty: absence of a measurement is not negative evidence', async () => {
+  const createPlannedReplayExecutor = requireCreatePlannedReplayExecutor();
+  const fixture = { version: 1, entries: [] };
+  const executor = createPlannedReplayExecutor({
+    fixture,
+    routes: graph.INVESTIGATION_ROUTES,
+    annotate: () => undefined,
+  });
+
+  const result = await executor.execute(
+    baseContext({ tool: 'metrics', input: { service: 'svc-a', window: 'incident', metric: 'dependency-health' } }),
+  );
+
+  assert.equal(result.status, 'unavailable');
+  assert.ok(result.reason.length > 0);
 });
 
 test('replayFixtureFromScenarioEntries carries the scenario fixture version through, so a fixture at an unknown version is refused by the replay adapter rather than silently reinterpreted', () => {

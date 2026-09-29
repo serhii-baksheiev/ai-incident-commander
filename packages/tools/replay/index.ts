@@ -8,6 +8,39 @@ import {
   type ObservedFact,
 } from '@aic/domain';
 
+/**
+ * (AIC-142) `byForm[form]` may be a flat `InvestigationRouteEntry` or a
+ * signal-keyed selector (`{ bySignal }`); this walks either shape into a flat
+ * sequence of `(form, route)` pairs, one per entry that names a tool — a
+ * refusal entry (`{ refused }`) is skipped, since it names no tool and can
+ * never answer a replay request.
+ */
+function* routeEntries(
+  routes: InvestigationRouteTable,
+): Generator<{ readonly form: string; readonly route: InvestigationRouteEntry }> {
+  for (const [form, entry] of Object.entries(routes.byForm)) {
+    if (Object.hasOwn(entry, 'bySignal')) {
+      const bySignal = (entry as { readonly bySignal: Readonly<Record<string, unknown>> }).bySignal;
+      for (const signalEntry of Object.values(bySignal)) {
+        if (Object.hasOwn(signalEntry as object, 'refused')) continue;
+        yield { form, route: signalEntry as InvestigationRouteEntry };
+      }
+    } else {
+      yield { form, route: entry as InvestigationRouteEntry };
+    }
+  }
+}
+
+function sameInputMapping(
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
+): boolean {
+  const aKeys = Object.keys(a).sort();
+  const bKeys = Object.keys(b).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key, index) => key === bKeys[index] && a[key] === b[key]);
+}
+
 import type { BoundSourceBinding, BoundSourceRegistry } from '../src/bound-source-registry.js';
 import {
   buildReplayIdentity,
@@ -240,28 +273,38 @@ function findRouteForTool(
   routes: InvestigationRouteTable,
   tool: string,
 ): { readonly form: string; readonly route: InvestigationRouteEntry } | undefined {
-  for (const [form, route] of Object.entries(routes.byForm)) {
-    if (route.tool === tool) return { form, route };
+  for (const entry of routeEntries(routes)) {
+    if (entry.route.tool === tool) return entry;
   }
   return undefined;
 }
 
 /**
- * A request is read back into one quantity only if its tool names one form, so
- * a table naming a tool twice is refused at construction — see
- * planned-replay.test.mjs › "refuses at construction a route table in which
- * two forms name the same tool, since a request for that tool could not be
- * read back into one quantity".
+ * A request is read back into one quantity only if its tool names one form
+ * and one input mapping — several `bySignal` entries may legitimately name
+ * the SAME tool (e.g. three signals all routed to `metrics`), as long as they
+ * all sit under the same form and share one input mapping. A table naming a
+ * tool under two different forms, or under the same form with two different
+ * input mappings, is refused at construction — see planned-replay.test.mjs ›
+ * "refuses at construction a route table in which two forms name the same
+ * tool, since a request for that tool could not be read back into one
+ * quantity" and › "refuses at construction a route table in which one tool is
+ * named under bySignal entries with two different input mappings". Refusal
+ * entries (`{ refused }`) name no tool and are skipped by `routeEntries`.
  */
 function assertOneFormPerTool(routes: InvestigationRouteTable): void {
-  const seen = new Set<string>();
-  for (const route of Object.values(routes.byForm)) {
-    if (seen.has(route.tool)) {
+  const seen = new Map<string, { readonly form: string; readonly input: Readonly<Record<string, string>> }>();
+  for (const { form, route } of routeEntries(routes)) {
+    const existing = seen.get(route.tool);
+    if (existing === undefined) {
+      seen.set(route.tool, { form, input: route.input });
+      continue;
+    }
+    if (existing.form !== form || !sameInputMapping(existing.input, route.input)) {
       throw new TypeError(
-        `createPlannedReplayExecutor: routes.byForm names tool ${JSON.stringify(route.tool)} for more than one form`,
+        `createPlannedReplayExecutor: routes.byForm names tool ${JSON.stringify(route.tool)} for more than one form or input mapping`,
       );
     }
-    seen.add(route.tool);
   }
 }
 
@@ -335,7 +378,15 @@ function factMatchesQuantity(fact: ObservedFact, quantity: RequestedQuantity): b
  *    key set that is not an exact match, is never routed) gives back the
  *    requested quantity — `form` (the route's own key in `routes.byForm`),
  *    `subject`, `window`, and the form's own discriminant (`signal` or
- *    `logClass`; `deployment-in-window` carries none). Every recorded entry
+ *    `logClass`; `deployment-in-window` carries none). (AIC-142) `routes`
+ *    inversion (`findRouteForTool`/`assertOneFormPerTool`, above) walks a
+ *    `bySignal`-shaped `byForm[form]` entry's own values in place of the flat
+ *    entry, skipping any refusal (`{ refused }`, names no tool) — several
+ *    signals naming the same tool is fine as long as every entry naming that
+ *    tool shares one form and one input mapping; the constructor throws
+ *    naming the tool otherwise, and a `dependencies` request built from a
+ *    `bySignal` route inverts exactly as a flat one always has, giving back
+ *    `form: 'signal-state'` and its `metric` discriminant. Every recorded entry
  *    of the SAME tool is then replayed through the adapter, and every
  *    evidence item whose annotated fact matches that quantity — same form,
  *    `normalizeSubject(subject)` (`@aic/domain`'s own rule, imported rather
