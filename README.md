@@ -244,6 +244,20 @@ The onboarding nouns (`service`, `env`, `source`, `policy`, `incident`,
 `doctor`, `apply`) that `--help` lists are stubs as of AIC-99 slice a; each
 prints "not implemented in this build" and exits non-zero.
 
+`investigate` runs one real investigation over a replay file, through the
+same node composition the evaluation lanes use:
+
+```bash
+npm run cli -- investigate --replay <file> --roles model|scripted [--run-id <id>]
+```
+
+The replay file is one JSON object, `{ asOf, incident, budget, fixture }`.
+`--roles scripted` runs the scripted control roles and calls no model provider.
+`--roles model` needs `ANTHROPIC_API_KEY` and sends the incident and the
+evidence the run fetches to the model provider. The command prints one JSON
+line: the run id, stop kind, trial count, evidence ids, hypothesis statuses and
+conclusion.
+
 The persistence spike that used to run as `npm run cli -- start|resume` moved
 behind an explicit, **development-only** subcommand
 (`docs/decisions/integration-boundary.md`, "Terminology"):

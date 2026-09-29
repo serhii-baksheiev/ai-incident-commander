@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import { childEnv } from './fixtures/child-env.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const architecturePath = resolve(projectRoot, 'docs/incident-commander-architecture-v1.md');
@@ -32,6 +35,29 @@ test('states the stateful-investigation thesis and the persistence and durable-r
 test('names the live and replay tool adapters in the repository structure', () => {
   const readme = readFileSync(readmePath, 'utf8');
   assert.match(readme, /^packages\/tools\s+live \+ replay tool adapters$/m);
+});
+
+/**
+ * AIC-126 slice c: the README's CLI section documents `aic investigate`, the
+ * one working product entry, with the argument line the built CLI's own
+ * `investigate --help` prints — read from the binary, not restated here, so a
+ * change to either side reddens this row.
+ */
+test('the README documents aic investigate with the usage line the built CLI prints', () => {
+  const result = spawnSync(
+    process.execPath,
+    [resolve(projectRoot, 'apps/cli/dist/index.js'), 'investigate', '--help'],
+    { encoding: 'utf8', env: childEnv() },
+  );
+  assert.equal(result.status, 0, `investigate --help must exit 0: ${result.stderr}`);
+  const usage = /^Usage: aic (investigate .+)$/m.exec(result.stdout);
+  assert.ok(usage, `investigate --help must print a "Usage: aic investigate …" line: ${result.stdout}`);
+
+  const readme = readFileSync(readmePath, 'utf8');
+  assert.ok(
+    readme.includes(`npm run cli -- ${usage[1]}`),
+    `README.md must document \`npm run cli -- ${usage[1]}\``,
+  );
 });
 
 test('links no private issue-tracker site from the root README', () => {
