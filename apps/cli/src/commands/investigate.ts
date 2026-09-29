@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from 'node:fs';
 
 import {
   boundedJsonViolation,
@@ -71,44 +71,127 @@ interface ReplayFileContent {
 }
 
 // Residual reviewer advisory (5), PRs #160/162: named so the refusal it backs
-// can name the bound rather than an unexplained number. Checked from `stat`,
-// before the file is ever read into memory or handed to `JSON.parse` — an
-// oversized file is refused by its own size, never by however long parsing or
-// allocating its content happens to take.
+// can name the bound rather than an unexplained number. Every message that
+// states the bound derives its text from this constant — never a repeated
+// "16 MiB" literal (security-scanner-r1.md advisory, investigate.ts:89).
 const REPLAY_FILE_MAX_BYTES = 16 * 1024 * 1024;
+const REPLAY_FILE_MAX_MIB = REPLAY_FILE_MAX_BYTES / (1024 * 1024);
 
+/**
+ * security-scanner-r1.md blocker 1: `statSync(path).size` is 0 for a FIFO, a
+ * character device or a pipe, so a stat-then-read pair never bounds the read
+ * that follows, and (separately) a symlink swapped between the stat and the
+ * read is a TOCTOU. This opens the path exactly once, inspects the SAME
+ * descriptor with `fstatSync`, refuses anything that is not a regular file,
+ * and then reads no more than the size bound + 1 byte from that one
+ * descriptor — which also covers a file that grows after the `fstat` call.
+ *
+ * `O_NONBLOCK` on the open is load-bearing for the FIFO case specifically: a
+ * blocking open of a FIFO for reading waits for a writer that this command
+ * never has, which would hang before `fstatSync` ever runs. With
+ * `O_NONBLOCK` the open returns immediately regardless of a writer, `fstat`
+ * still reports the true file type, and the `!isFile()` refusal below fires
+ * before any read is attempted — for a regular file `O_NONBLOCK` changes
+ * nothing about how it is opened or read.
+ * see cli-investigate.test.mjs › "a --replay path that is a FIFO (named
+ * pipe), not a regular file, is refused by name before any read, and never
+ * hangs waiting for a writer" and › "a --replay path that is a symlink to
+ * /dev/zero, not a regular file, is refused by name before any read, and
+ * never hangs reading an infinite device"
+ */
 function readReplayFile(path: string): unknown {
-  let sizeBytes: number;
+  let fd: number;
   try {
-    sizeBytes = statSync(path).size;
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`--replay file could not be read at ${path}: ${message}`);
   }
-  if (sizeBytes > REPLAY_FILE_MAX_BYTES) {
-    throw new Error(
-      `--replay file at ${path} is ${sizeBytes} bytes, over the 16 MiB size bound this command accepts`,
-    );
-  }
+  try {
+    let stats: ReturnType<typeof fstatSync>;
+    try {
+      stats = fstatSync(fd);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`--replay file could not be read at ${path}: ${message}`);
+    }
+    if (!stats.isFile()) {
+      throw new Error(`--replay path is not a regular file: ${path}`);
+    }
+    if (stats.size > REPLAY_FILE_MAX_BYTES) {
+      throw new Error(
+        `--replay file at ${path} is ${stats.size} bytes, over the ${REPLAY_FILE_MAX_MIB} MiB size bound this command accepts`,
+      );
+    }
 
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf8');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`--replay file could not be read at ${path}: ${message}`);
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`--replay file at ${path} is not valid JSON: ${message}`);
+    // Read at most the bound + 1 byte from the SAME descriptor `fstatSync`
+    // just inspected, never a fresh open/stat: a file that grows past the
+    // bound after `fstat` (or was never a bounded regular file to begin
+    // with) is refused by the number of bytes actually read, not by a size
+    // field that can be stale or, for a FIFO/device, always zero.
+    const readLimit = REPLAY_FILE_MAX_BYTES + 1;
+    const buffer = Buffer.alloc(readLimit);
+    let total = 0;
+    for (;;) {
+      const bytesRead = readSync(fd, buffer, total, readLimit - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total >= readLimit) {
+        throw new Error(
+          `--replay file at ${path} is over the ${REPLAY_FILE_MAX_MIB} MiB size bound this command accepts`,
+        );
+      }
+    }
+
+    try {
+      return JSON.parse(buffer.toString('utf8', 0, total));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`--replay file at ${path} is not valid JSON: ${message}`);
+    }
+  } finally {
+    closeSync(fd);
   }
 }
 
 function ownRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   return value as Record<string, unknown>;
+}
+
+/**
+ * code-reviewer-r1.md blockers (investigate.ts:204, :210): a shape-refusal
+ * that echoed the untrusted value whole through `JSON.stringify` was both an
+ * unbounded recursive walk over it (a 200000-deep array died in the
+ * `JSON.stringify` call itself, before `boundedJsonViolation` was ever
+ * reached — `ownRecord` rejects arrays outright) and, for anything the walk
+ * does accept as shallow, an unbounded echo (a 12 MiB string printed ~12 MiB
+ * to the operator's stderr). This reports only the value's kind — one
+ * `typeof`/`Array.isArray` check, no recursion into the value's contents —
+ * so a refusal can never be larger than a short, fixed phrase.
+ * see cli-investigate.test.mjs › "a --replay file whose fixture.entries[0].input
+ * is a 200000-deep ARRAY is refused naming fixture.entries[0].input, never a
+ * raw \"Maximum call stack size exceeded\"" and › "a --replay file whose
+ * fixture.entries[0].result is a ~12 MiB non-object string is refused with
+ * bounded stderr, never echoing the value whole"
+ */
+function describeKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  switch (typeof value) {
+    case 'string':
+      return 'a string';
+    case 'number':
+      return 'a number';
+    case 'boolean':
+      return 'a boolean';
+    case 'undefined':
+      return 'undefined';
+    case 'object':
+      return 'an object';
+    default:
+      return `a ${typeof value}`;
+  }
 }
 
 /**
@@ -196,32 +279,48 @@ function parseFixture(value: unknown): PlannedReplayScenarioFixture {
     if (typeof entryRecord.toolId !== 'string') {
       throw new Error(`--replay file fixture.entries[${index}] is missing required string field toolId`);
     }
-    // Residual reviewer advisory (2), PRs #160/162: named eagerly, here at
-    // parse time — never left to surface as an unnamed internal error only
-    // when the graph happens to query this entry.
-    if (ownRecord(entryRecord.result) === undefined) {
+
+    // AIC-135's bounded structural walk (`@aic/domain`'s
+    // `boundedJsonViolation`, `packages/domain/src/bounded-json.ts`), shared
+    // rather than re-implemented (`.claude/rules/invariants.md`, "one
+    // mechanism, one implementation"), runs BEFORE the `ownRecord` shape
+    // check below on both fields — never after it. `ownRecord` itself does
+    // not recurse, but a shape refusal that failed it used to echo the whole
+    // value; running the walk first means a 200000-deep value is named by
+    // its depth violation here, never handed further to a check whose
+    // failure path would have to describe it. Residual reviewer advisory
+    // (2), PRs #160/162: named eagerly, here at parse time — never left to
+    // surface as an unnamed internal error only when the graph happens to
+    // query this entry.
+    const resultViolation = boundedJsonViolation(entryRecord.result);
+    if (resultViolation !== undefined) {
       throw new Error(
-        `--replay file fixture.entries[${index}].result must be an object, got ${JSON.stringify(entryRecord.result)}`,
+        `--replay file fixture.entries[${index}].result ${describeBoundedJsonViolation(resultViolation)}`,
       );
     }
-    if ('input' in entryRecord) {
-      if (ownRecord(entryRecord.input) === undefined) {
-        throw new Error(
-          `--replay file fixture.entries[${index}].input must be an object, got ${JSON.stringify(entryRecord.input)}`,
-        );
-      }
-      // AIC-135's bounded structural walk (`@aic/domain`'s
-      // `boundedJsonViolation`, `packages/domain/src/bounded-json.ts`),
-      // shared rather than re-implemented (`.claude/rules/invariants.md`,
-      // "one mechanism, one implementation"): a 200000-deep `input` is
-      // refused by name here instead of overflowing the stack later, deep
-      // inside a role or the planner.
-      const violation = boundedJsonViolation(entryRecord.input);
-      if (violation !== undefined) {
-        throw new Error(
-          `--replay file fixture.entries[${index}].input ${describeBoundedJsonViolation(violation)}`,
-        );
-      }
+    if (ownRecord(entryRecord.result) === undefined) {
+      throw new Error(
+        `--replay file fixture.entries[${index}].result must be an object, got ${describeKind(entryRecord.result)}`,
+      );
+    }
+
+    // `PlannedReplayScenarioEntry` (`packages/tools/replay/index.ts`)
+    // declares `input` required, never optional — code-reviewer-r1.md
+    // advisory (investigate.ts:207): an entry with no `input` at all used to
+    // parse and key on `undefined` instead of being refused by name.
+    if (!('input' in entryRecord)) {
+      throw new Error(`--replay file fixture.entries[${index}].input is required`);
+    }
+    const inputViolation = boundedJsonViolation(entryRecord.input);
+    if (inputViolation !== undefined) {
+      throw new Error(
+        `--replay file fixture.entries[${index}].input ${describeBoundedJsonViolation(inputViolation)}`,
+      );
+    }
+    if (ownRecord(entryRecord.input) === undefined) {
+      throw new Error(
+        `--replay file fixture.entries[${index}].input must be an object, got ${describeKind(entryRecord.input)}`,
+      );
     }
   });
   return record as unknown as PlannedReplayScenarioFixture;
@@ -234,6 +333,17 @@ function parseReplayFileContent(raw: unknown): ReplayFileContent {
   }
   const asOf = parseAsOf(record.asOf);
   const budget = parseBudget(record.budget);
+  // security-scanner-r1.md advisory 3: `IncidentSchema.safeParse` keeps
+  // unknown keys (no `.strict()`), so a deep `incident.extra` this command
+  // never declared survives parsing untouched and was later walked
+  // unbounded, deep inside `@langchain/langgraph`'s own initial-state
+  // traversal. The same shared walk that already bounds `entries[].input`
+  // and `entries[].result` covers the whole `incident` value too, before it
+  // is ever handed to the schema.
+  const incidentViolation = boundedJsonViolation(record.incident);
+  if (incidentViolation !== undefined) {
+    throw new Error(`--replay file incident ${describeBoundedJsonViolation(incidentViolation)}`);
+  }
   const incidentResult = IncidentSchema.safeParse(record.incident);
   if (!incidentResult.success) {
     throw new Error(`--replay file incident is invalid: ${incidentResult.error.message}`);

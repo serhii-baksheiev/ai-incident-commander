@@ -18,8 +18,8 @@
  * the lanes are measured under and compare like with like.
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -45,6 +45,10 @@ function runCli(args, options = {}) {
     cwd: options.cwd ?? projectRoot,
     encoding: 'utf8',
     env: childEnv(options.env),
+    // Only set when a row explicitly asks for one (a hang-detection row over
+    // a FIFO or a device symlink); spawnSync's own default is no timeout at
+    // all, which every other row still gets.
+    ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
   });
 }
 
@@ -898,19 +902,20 @@ test('runInvestigate(args, { env: cleanEnv }) called in-process still refuses tr
       LANGSMITH_API_KEY: process.env.LANGSMITH_API_KEY,
       LANGCHAIN_API_KEY: process.env.LANGCHAIN_API_KEY,
     };
-    // The no-ambient-tracing preload clears the tracing flags but leaves any
-    // api key a developer's shell exports; this row's premise is "no key", so
-    // it removes both key variables for its duration and restores them after.
-    delete process.env.LANGSMITH_API_KEY;
-    delete process.env.LANGCHAIN_API_KEY;
-    // A closed local port, never the real LangSmith endpoint — the same
-    // reasoning as the spawned-process tracing row above: should this row's
-    // expected refusal ever fail to fire, nothing it does may reach a real
-    // host with a real key.
-    process.env.LANGSMITH_TRACING = 'true';
-    process.env.LANGSMITH_ENDPOINT = 'http://127.0.0.1:1';
-    process.env.LANGCHAIN_ENDPOINT = 'http://127.0.0.1:1';
     try {
+      // The no-ambient-tracing preload clears the tracing flags but leaves
+      // any api key a developer's shell exports; this row's premise is "no
+      // key", so it removes both key variables for its duration and restores
+      // them in the finally below.
+      delete process.env.LANGSMITH_API_KEY;
+      delete process.env.LANGCHAIN_API_KEY;
+      // A closed local port, never the real LangSmith endpoint — the same
+      // reasoning as the spawned-process tracing row above: should this
+      // row's expected refusal ever fail to fire, nothing it does may reach a
+      // real host with a real key.
+      process.env.LANGSMITH_TRACING = 'true';
+      process.env.LANGSMITH_ENDPOINT = 'http://127.0.0.1:1';
+      process.env.LANGCHAIN_ENDPOINT = 'http://127.0.0.1:1';
       await assert.rejects(
         investigateModule.runInvestigate(['--replay', replayPath, '--roles', 'scripted'], { env: cleanEnv }),
         /LANGSMITH_API_KEY/,
@@ -1038,11 +1043,9 @@ test('a --replay file whose fixture.entries[0].input is nested 200000 levels dee
     content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
 
     // Built iteratively, never recursively: JSON.stringify itself overflows
-    // the stack on a 200000-deep JS object assembled by recursion (confirmed
-    // empirically while writing this row: `RangeError: Maximum call stack
-    // size exceeded` from JSON.stringify itself, in this very test process).
-    // So the deep structure never exists as a JS object here — it is built
-    // and spliced in as raw JSON text instead.
+    // the stack on a 200000-deep JS object assembled by recursion, so the
+    // deep structure never exists as a JS object here — it is built and
+    // spliced in as raw JSON text instead.
     const DEPTH = 200_000;
     const deepJson = '{"nested":'.repeat(DEPTH) + '{}' + '}'.repeat(DEPTH);
     const contentJson = JSON.stringify(content);
@@ -1173,5 +1176,307 @@ test(
     assert.deepEqual(state.evidence, []);
     assert.deepEqual(state.assessments, []);
     assert.deepEqual(state.control, evalsInitialControlFor(runId, budget));
+  },
+);
+
+/* -------------------------------------------------------------------------- */
+/* 15. AIC-140 round-1 review fixes (code-reviewer-r1.md, security-scanner-r1.md) */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * security-scanner-r1.md blocker 1: `statSync(path).size` is 0 for a FIFO, a
+ * character device or a pipe, so the size bound at `readReplayFile` never
+ * fires and the unbounded `readFileSync` that follows reads whatever the
+ * producer supplies. The replay path must be opened once, refused by name
+ * when it is not a regular file, and read no more than the size bound + 1
+ * byte from that same descriptor.
+ *
+ * Nobody writes to the FIFO in this row: a command that still opens it for
+ * read and blocks waiting for a writer must be caught by the spawn timeout
+ * below, so a hang fails this one row rather than the whole suite.
+ */
+test(
+  'a --replay path that is a FIFO (named pipe), not a regular file, is refused by name before any read, and never hangs waiting for a writer',
+  async (t) => {
+    await withTempDir(async (dir) => {
+      const fifoPath = join(dir, 'replay.fifo');
+      try {
+        execFileSync('mkfifo', [fifoPath], { env: childEnv() });
+      } catch (error) {
+        t.skip(`mkfifo is not available on this platform: ${error.message}`);
+        return;
+      }
+
+      const args = ['investigate', '--replay', fifoPath, '--roles', 'scripted'];
+      const result = runCli(args, { timeout: 10_000 });
+
+      assert.equal(
+        result.signal,
+        null,
+        `the command must not still be blocked reading the FIFO 10s in (killed by ${result.signal}): ${commandDiagnostics(args, result)}`,
+      );
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.match(
+        result.stderr,
+        /not a regular file/i,
+        `stderr must say the replay path is not a regular file: ${commandDiagnostics(args, result)}`,
+      );
+    });
+  },
+);
+
+/**
+ * security-scanner-r1.md blocker 1, second reproduction: a symlink to
+ * `/dev/zero` has `stat().size === 0` too, so the size bound never fires and
+ * an unbounded read runs indefinitely. Same fix, same fail-closed refusal.
+ */
+test(
+  'a --replay path that is a symlink to /dev/zero, not a regular file, is refused by name before any read, and never hangs reading an infinite device',
+  async (t) => {
+    await withTempDir(async (dir) => {
+      if (!existsSync('/dev/zero')) {
+        t.skip('/dev/zero is not present on this platform');
+        return;
+      }
+      const linkPath = join(dir, 'replay-zero.json');
+      symlinkSync('/dev/zero', linkPath);
+
+      const args = ['investigate', '--replay', linkPath, '--roles', 'scripted'];
+      const result = runCli(args, { timeout: 10_000 });
+
+      assert.equal(
+        result.signal,
+        null,
+        `the command must not still be reading /dev/zero 10s in (killed by ${result.signal}): ${commandDiagnostics(args, result)}`,
+      );
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.match(
+        result.stderr,
+        /not a regular file/i,
+        `stderr must say the replay path is not a regular file: ${commandDiagnostics(args, result)}`,
+      );
+    });
+  },
+);
+
+/**
+ * code-reviewer-r1.md blockers (investigate.ts:204, :210): the `.result` and
+ * `.input` refusals echo the untrusted value through an unbounded recursive
+ * `JSON.stringify` BEFORE any bounded walk runs. `ownRecord` rejects arrays,
+ * so a deep ARRAY never reaches `boundedJsonViolation` at all — it dies in
+ * the throw expression's own `JSON.stringify`, printing the bare
+ * `RangeError` message the CLI's other deep-value rows above already forbid
+ * for the object-nesting shape. Built iteratively, never recursively, the
+ * same way the existing 200000-deep OBJECT `.input` row above builds its
+ * value — as raw JSON text, spliced in by a marker, never as a JS value this
+ * process would have to construct (or stringify) by recursion itself.
+ */
+test(
+  'a --replay file whose fixture.entries[0].input is a 200000-deep ARRAY is refused naming fixture.entries[0].input, never a raw "Maximum call stack size exceeded"',
+  async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const fixture = annotatedFixtureFor(scenario);
+      const content = replayFileContentFor(fixture);
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const DEEP_ARRAY_MARKER = '"__AIC140_DEEP_ARRAY_INPUT__"';
+      const mutatedEntry = { ...firstEntry, input: '__AIC140_DEEP_ARRAY_INPUT__' };
+      content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
+
+      const DEPTH = 200_000;
+      const deepArrayJson = '['.repeat(DEPTH) + '[]' + ']'.repeat(DEPTH);
+      const contentJson = JSON.stringify(content);
+      assert.ok(
+        contentJson.includes(DEEP_ARRAY_MARKER),
+        'fixture sanity: the marker must appear exactly where fixture.entries[0].input will be spliced in',
+      );
+      const replayJson = contentJson.replace(DEEP_ARRAY_MARKER, deepArrayJson);
+      const replayPath = join(dir, 'replay.json');
+      writeFileSync(replayPath, replayJson, 'utf8');
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.doesNotMatch(
+        result.stderr,
+        /Maximum call stack/,
+        `stderr must never surface a raw stack-overflow message from echoing the untrusted array whole, only a named-field refusal: ${commandDiagnostics(args, result)}`,
+      );
+      assert.match(
+        result.stderr,
+        /fixture\.entries\[0\]\.input/,
+        `stderr must name fixture.entries[0].input as the problem: ${commandDiagnostics(args, result)}`,
+      );
+    });
+  },
+);
+
+/**
+ * Same blocker, the `.result` field — checked first in `parseFixture`, so a
+ * deep ARRAY here hits `investigate.ts:204`'s own `JSON.stringify` echo
+ * before the `.input` check is ever reached.
+ */
+test(
+  'a --replay file whose fixture.entries[0].result is a 200000-deep ARRAY is refused naming fixture.entries[0].result, never a raw "Maximum call stack size exceeded"',
+  async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const fixture = annotatedFixtureFor(scenario);
+      const content = replayFileContentFor(fixture);
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const DEEP_ARRAY_MARKER = '"__AIC140_DEEP_ARRAY_RESULT__"';
+      const mutatedEntry = { ...firstEntry, result: '__AIC140_DEEP_ARRAY_RESULT__' };
+      content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
+
+      const DEPTH = 200_000;
+      const deepArrayJson = '['.repeat(DEPTH) + '[]' + ']'.repeat(DEPTH);
+      const contentJson = JSON.stringify(content);
+      assert.ok(
+        contentJson.includes(DEEP_ARRAY_MARKER),
+        'fixture sanity: the marker must appear exactly where fixture.entries[0].result will be spliced in',
+      );
+      const replayJson = contentJson.replace(DEEP_ARRAY_MARKER, deepArrayJson);
+      const replayPath = join(dir, 'replay.json');
+      writeFileSync(replayPath, replayJson, 'utf8');
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.doesNotMatch(
+        result.stderr,
+        /Maximum call stack/,
+        `stderr must never surface a raw stack-overflow message from echoing the untrusted array whole, only a named-field refusal: ${commandDiagnostics(args, result)}`,
+      );
+      assert.match(
+        result.stderr,
+        /fixture\.entries\[0\]\.result/,
+        `stderr must name fixture.entries[0].result as the problem: ${commandDiagnostics(args, result)}`,
+      );
+    });
+  },
+);
+
+/**
+ * code-reviewer-r1.md blocker, size half: the same echo is bounded only by
+ * the 16 MiB file bound, so a large non-record `.result` prints its whole
+ * value to the operator's stderr (security-scanner-r1.md advisory 4,
+ * reproducing 12582983 bytes of stderr for a 12 MiB string). The refusal
+ * must name the field and the value's KIND, never the value itself.
+ */
+test(
+  'a --replay file whose fixture.entries[0].result is a ~12 MiB non-object string is refused with bounded stderr, never echoing the value whole',
+  async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const fixture = annotatedFixtureFor(scenario);
+      const content = replayFileContentFor(fixture);
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const bigString = 'a'.repeat(12 * 1024 * 1024);
+      const mutatedEntry = { ...firstEntry, result: bigString };
+      content.fixture = { ...content.fixture, entries: [mutatedEntry, ...restEntries] };
+      const replayPath = writeReplayFile(dir, content);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.match(
+        result.stderr,
+        /fixture\.entries\[0\]\.result/,
+        `stderr must name fixture.entries[0].result as the problem: ${commandDiagnostics(args, result)}`,
+      );
+      const stderrBytes = Buffer.byteLength(result.stderr, 'utf8');
+      assert.ok(
+        stderrBytes < 4096,
+        `a refusal must never echo an untrusted ~12 MiB value whole, only the field and the value's kind; got ${stderrBytes} bytes of stderr: ${JSON.stringify(result.stderr.slice(0, 200))}...`,
+      );
+    });
+  },
+);
+
+/**
+ * security-scanner-r1.md advisory 3: `IncidentSchema.safeParse` keeps
+ * unknown keys, so the same bounded walk that already covers
+ * `entries[].input` must also cover `incident` — never left to overflow the
+ * stack later, deep inside `@langchain/langgraph`'s own unbounded recursive
+ * walk over the initial state.
+ */
+test(
+  'a --replay file whose incident carries a 200000-deep OBJECT extra field is refused naming incident, never a raw "Maximum call stack size exceeded"',
+  async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const fixture = annotatedFixtureFor(scenario);
+      const content = replayFileContentFor(fixture);
+      const DEEP_INCIDENT_MARKER = '"__AIC140_DEEP_INCIDENT_EXTRA__"';
+      content.incident = { ...content.incident, extra: '__AIC140_DEEP_INCIDENT_EXTRA__' };
+
+      const DEPTH = 200_000;
+      const deepObjectJson = '{"nested":'.repeat(DEPTH) + '{}' + '}'.repeat(DEPTH);
+      const contentJson = JSON.stringify(content);
+      assert.ok(
+        contentJson.includes(DEEP_INCIDENT_MARKER),
+        'fixture sanity: the marker must appear exactly where incident.extra will be spliced in',
+      );
+      const replayJson = contentJson.replace(DEEP_INCIDENT_MARKER, deepObjectJson);
+      const replayPath = join(dir, 'replay.json');
+      writeFileSync(replayPath, replayJson, 'utf8');
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.doesNotMatch(
+        result.stderr,
+        /Maximum call stack/,
+        `stderr must never surface a raw stack-overflow message from walking the incident unbounded: ${commandDiagnostics(args, result)}`,
+      );
+      assert.match(
+        result.stderr,
+        /incident/,
+        `stderr must name incident as the problem: ${commandDiagnostics(args, result)}`,
+      );
+    });
+  },
+);
+
+/**
+ * code-reviewer-r1.md advisory (investigate.ts:207): `'input' in entryRecord`
+ * treats `input` as optional, while `PlannedReplayScenarioEntry`
+ * (`packages/tools/replay/index.ts`) declares it required. An entry with no
+ * `input` at all must be refused the same way a present-but-wrong-shaped one
+ * already is, naming the same field.
+ */
+test(
+  'a --replay file whose fixture.entries[0] carries no input field at all is refused naming fixture.entries[0].input, since PlannedReplayScenarioEntry declares input required',
+  async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const fixture = annotatedFixtureFor(scenario);
+      const content = replayFileContentFor(fixture);
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const { input, ...entryWithoutInput } = firstEntry;
+      content.fixture = { ...content.fixture, entries: [entryWithoutInput, ...restEntries] };
+      const replayPath = writeReplayFile(dir, content);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.match(
+        result.stderr,
+        /fixture\.entries\[0\]\.input/,
+        `stderr must name fixture.entries[0].input as missing, since PlannedReplayScenarioEntry declares it required: ${commandDiagnostics(args, result)}`,
+      );
+    });
   },
 );
