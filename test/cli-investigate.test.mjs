@@ -27,7 +27,8 @@ import { fileURLToPath } from 'node:url';
 
 import * as domain from '@aic/domain';
 import * as evals from '@aic/evals';
-import { createInvestigationGraph, PREDICTION_TEMPLATES } from '@aic/graph';
+import { createInvestigationGraph, INVESTIGATION_ROUTES, PREDICTION_TEMPLATES } from '@aic/graph';
+import * as roles from '@aic/roles';
 
 import { childEnv } from './fixtures/child-env.mjs';
 
@@ -816,6 +817,52 @@ test('createModelReasoning(fakePort) wires generate_hypotheses, challenge_hypoth
     challengeRequest.outputSchema.properties.alternative.properties.cause.properties.mechanism.enum,
     mechanismKeys,
     'challenge_hypothesis must declare the cause mechanism enum from PREDICTION_TEMPLATES.byMechanism keys',
+  );
+});
+
+/**
+ * AIC-143: `createModelReasoning`'s `challenge_hypothesis` is also given the
+ * closed request vocabulary the route table can form —
+ * `routeRequestVocabulary(INVESTIGATION_ROUTES)` (`@aic/domain` /
+ * `@aic/graph`) — so its system prompt names the admissible tool ids and
+ * input keys, the same seam and fake-port style the row above uses.
+ */
+test("createModelReasoning(fakePort).challenge_hypothesis's system prompt contains describeRequestVocabulary(routeRequestVocabulary(INVESTIGATION_ROUTES))", async () => {
+  const investigateModule = await import('../apps/cli/dist/commands/investigate.js');
+  assert.equal(
+    typeof investigateModule.createModelReasoning,
+    'function',
+    'apps/cli/src/commands/investigate.ts must export createModelReasoning(port)',
+  );
+
+  const requests = [];
+  const fakePort = {
+    async complete(request) {
+      requests.push(request);
+      throw new Error('fake port refuses: this row reads the request the role sent, not an answer');
+    },
+  };
+
+  const reasoning = investigateModule.createModelReasoning(fakePort);
+  const state = {
+    incident: { id: 'aic143-cli-fake-incident' },
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [],
+    control: { stopKind: 'sufficient', challengeRounds: 0 },
+  };
+
+  await reasoning.challenge_hypothesis(state, 'h-1').catch(() => {});
+
+  assert.equal(requests.length, 1, 'challenge_hypothesis must make exactly one model call per invocation');
+  const vocabulary = domain.routeRequestVocabulary(INVESTIGATION_ROUTES);
+  const sentence = roles.describeRequestVocabulary(vocabulary);
+  assert.ok(
+    requests[0].system.includes(sentence),
+    `expected the system prompt to carry describeRequestVocabulary(routeRequestVocabulary(INVESTIGATION_ROUTES)): ${JSON.stringify(requests[0].system)}`,
   );
 });
 

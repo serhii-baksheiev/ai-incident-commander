@@ -97,6 +97,17 @@ const at = () => '2026-01-01T01:00:00.000Z';
  */
 const CONCLUSION_MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
 
+/**
+ * AIC-143: the closed request vocabulary `createModelChallengeHypothesis` now
+ * requires, built the same way `scripts/lane-arms.mjs` and
+ * `apps/cli/src/commands/investigate.ts` build it —
+ * `routeRequestVocabulary(INVESTIGATION_ROUTES)` (`@aic/domain` /
+ * `@aic/graph`). The optional call is deliberate: until `@aic/domain` ships
+ * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
+ * other row in this file at import time.
+ */
+const REQUEST_VOCABULARY = domain.routeRequestVocabulary?.(graphPackage.INVESTIGATION_ROUTES);
+
 /** A `ModelCompletion` carrying a scripted JSON document as its `text`. */
 function jsonCompletion(document) {
   return {
@@ -173,7 +184,11 @@ const ROLE_CASES = [
     // injected via closure for `propose_conclusion` below.
     roleName: 'challenge_hypothesis',
     create: (options) =>
-      roles.createModelChallengeHypothesis({ mechanisms: CONCLUSION_MECHANISMS, ...options }),
+      roles.createModelChallengeHypothesis({
+        mechanisms: CONCLUSION_MECHANISMS,
+        requestVocabulary: REQUEST_VOCABULARY,
+        ...options,
+      }),
     buildState: () => {
       const state = initialState();
       state.hypotheses = [
@@ -468,6 +483,7 @@ test('records a distinct model.role exec key for every model call across generat
     execution: recording,
     at,
     mechanisms: CONCLUSION_MECHANISMS,
+    requestVocabulary: REQUEST_VOCABULARY,
   });
 
   let terminationCalls = 0;
@@ -574,6 +590,7 @@ test('records a distinct model.role exec key for propose_conclusion too, one edg
     execution: recording,
     at,
     mechanisms: CONCLUSION_MECHANISMS,
+    requestVocabulary: REQUEST_VOCABULARY,
   });
   nodes.propose_conclusion = roles.createModelProposeConclusion({
     port,
@@ -735,6 +752,7 @@ test('AIC-119 slice 2: the canonical state-derived termination_check forces a se
     execution: recording,
     at,
     mechanisms: CONCLUSION_MECHANISMS,
+    requestVocabulary: REQUEST_VOCABULARY,
   });
   let proposeConclusionCalls = 0;
   const proposeConclusionNode = roles.createModelProposeConclusion({

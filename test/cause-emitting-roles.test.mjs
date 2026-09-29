@@ -28,6 +28,7 @@ import {
   STATUS_RULES_VERSION,
 } from '@aic/domain';
 import * as domain from '@aic/domain';
+import * as graph from '@aic/graph';
 import * as roles from '@aic/roles';
 
 import { scopedIncident } from './fixtures/scoped-incident.mjs';
@@ -44,6 +45,17 @@ function requireRolesExport(name) {
 
 /** The closed root-cause mechanism vocabulary this suite exercises with. */
 const MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
+
+/**
+ * AIC-143: the closed request vocabulary `createModelChallengeHypothesis` now
+ * requires, built the same way `scripts/lane-arms.mjs` and
+ * `apps/cli/src/commands/investigate.ts` build it —
+ * `routeRequestVocabulary(INVESTIGATION_ROUTES)` (`@aic/domain` /
+ * `@aic/graph`). The optional call is deliberate: until `@aic/domain` ships
+ * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
+ * other row in this file at import time.
+ */
+const REQUEST_VOCABULARY = domain.routeRequestVocabulary?.(graph.INVESTIGATION_ROUTES);
 
 /**
  * A port that answers with a scripted body and records what it was asked, in
@@ -333,7 +345,7 @@ test('createModelGenerateHypotheses: the system prompt contains exactly the mech
 test("createModelChallengeHypothesis: the provider schema declares a closed cause object on alternative, required, with the mechanism enum equal to the supplied vocabulary exactly", async () => {
   const createModelChallengeHypothesis = requireRolesExport('createModelChallengeHypothesis');
   const { port, requests } = capturingPort();
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   await node(stateWithLeader(), 'h-1').catch(() => {});
 
@@ -377,7 +389,7 @@ test('createModelChallengeHypothesis: a valid answer with a cause carrying a tri
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   const result = await node(stateWithLeader(), 'h-1');
 
@@ -408,7 +420,7 @@ test('createModelChallengeHypothesis: a cause with no trigger carries no own tri
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   const result = await node(stateWithLeader(), 'h-1');
 
@@ -430,7 +442,7 @@ test('createModelChallengeHypothesis: refuses an alternative carrying no cause',
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   await assert.rejects(() => node(stateWithLeader(), 'h-1'), ModelRoleOutputError);
 });
@@ -452,7 +464,7 @@ test("createModelChallengeHypothesis: refuses an alternative cause whose mechani
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   await assert.rejects(
     () => node(stateWithLeader(), 'h-1'),
@@ -492,7 +504,7 @@ test('createModelChallengeHypothesis: refuses an alternative cause carrying an u
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   await assert.rejects(
     () => node(stateWithLeader(), 'h-1'),
@@ -518,7 +530,7 @@ test('createModelChallengeHypothesis: the system prompt contains exactly the mec
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   await node(stateWithLeader(), 'h-1');
 
@@ -699,11 +711,83 @@ test("challenge_hypothesis' system prompt contains describeMechanismVocabulary(v
       ],
     },
   ]);
-  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
 
   await node(stateWithLeader(), 'h-1');
 
   assert.ok(requests[0].system.includes(describeMechanismVocabulary(MECHANISMS)));
+});
+
+/* ============================================================================
+ * AIC-143: describeRequestVocabulary (@aic/roles) and the challenge role's
+ * required requestVocabulary option
+ * ==========================================================================*/
+
+test('describeRequestVocabulary returns the exact sentence for the INVESTIGATION_ROUTES vocabulary', () => {
+  const describeRequestVocabulary = requireRolesExport('describeRequestVocabulary');
+
+  assert.equal(
+    describeRequestVocabulary(REQUEST_VOCABULARY),
+    'Each discriminating test must be one of these requests, with exactly these input keys: ' +
+      'deployments {service: <service>, window: pre-onset|incident|recovery}; ' +
+      'metrics {service: <service>, window: pre-onset|incident|recovery, metric: error-rate|connection-pool|worker-saturation}; ' +
+      'dependencies {service: <service>, window: pre-onset|incident|recovery, metric: dependency-health}; ' +
+      'logs {service: <service>, window: pre-onset|incident|recovery, query: error|timeout|activity}.',
+  );
+});
+
+test("challenge_hypothesis' system prompt contains describeRequestVocabulary(v) for the vocabulary it was given", async () => {
+  const describeRequestVocabulary = requireRolesExport('describeRequestVocabulary');
+  const createModelChallengeHypothesis = requireRolesExport('createModelChallengeHypothesis');
+  const { port, requests } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        { id: 'dt-1', predictionId: 'p-1', tool: 'logs.search', input: {}, cost: 'cheap' },
+      ],
+    },
+  ]);
+  const node = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
+
+  await node(stateWithLeader(), 'h-1');
+
+  assert.ok(requests[0].system.includes(describeRequestVocabulary(REQUEST_VOCABULARY)));
+});
+
+test('createModelChallengeHypothesis refuses construction when requestVocabulary is missing, naming it', () => {
+  const createModelChallengeHypothesis = requireRolesExport('createModelChallengeHypothesis');
+  const { port } = capturingPort();
+
+  assert.throws(
+    () => createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS }),
+    (error) => {
+      assert.ok(
+        error.message.includes('requestVocabulary'),
+        `the refusal must name requestVocabulary: ${error.message}`,
+      );
+      return true;
+    },
+  );
+});
+
+test('createModelChallengeHypothesis refuses construction when requestVocabulary is an empty array, naming it', () => {
+  const createModelChallengeHypothesis = requireRolesExport('createModelChallengeHypothesis');
+  const { port } = capturingPort();
+
+  assert.throws(
+    () => createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: [] }),
+    (error) => {
+      assert.ok(
+        error.message.includes('requestVocabulary'),
+        `the refusal must name requestVocabulary: ${error.message}`,
+      );
+      return true;
+    },
+  );
 });
 
 test("propose_conclusion's system prompt contains describeMechanismVocabulary(vocabulary) for the vocabulary it was given", async () => {
@@ -873,7 +957,7 @@ test('a hypothesis cause in state reaches the interpret, challenge and conclusio
   const prompts = [];
   for (const [name, build, call] of [
     ['interpret_residual_evidence', (port) => roles.createModelInterpretResidualEvidence({ port, at }), (node) => node(state)],
-    ['challenge_hypothesis', (port) => roles.createModelChallengeHypothesis({ port, mechanisms: MECHANISMS }), (node) => node(state, 'h-1')],
+    ['challenge_hypothesis', (port) => roles.createModelChallengeHypothesis({ port, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY }), (node) => node(state, 'h-1')],
     ['propose_conclusion', (port) => roles.createModelProposeConclusion({ port, mechanisms: MECHANISMS }), (node) => node(state)],
   ]) {
     const { port, requests } = capturingPort();

@@ -1212,8 +1212,15 @@ test("propose_conclusion's system prompt contains every sentence describeStatusR
  * and `challenge_hypothesis` now emit a structured `cause` on every hypothesis
  * and alternative, and carry the mechanism vocabulary sentence in their own
  * system prompts, the same sentence this role's prompt already carried. The
- * pin moves again, to v0.5, alongside `roles-model-nodes.test.mjs`'s own row.
+ * pin moved to v0.5, alongside `roles-model-nodes.test.mjs`'s own row.
+ *
+ * AIC-143: the prompt set changes a fourth time — `challenge_hypothesis`'s
+ * system prompt now also carries `describeRequestVocabulary(requestVocabulary)`,
+ * naming the closed tool/input-key vocabulary a discriminating test may use.
+ * This role's own prompt is unaffected, but the version it shares with the
+ * other three roles moves again, to v0.6, alongside
+ * `roles-model-nodes.test.mjs`'s own row.
  */
-test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5', () => {
-  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.5');
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.6', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.6');
 });

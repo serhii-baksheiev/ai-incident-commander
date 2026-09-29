@@ -30,7 +30,9 @@ import {
   InvestigationTestSchema,
   STATUS_RULES_VERSION,
 } from '@aic/domain';
+import * as domain from '@aic/domain';
 import { createInvestigationGraph } from '@aic/graph';
+import * as graph from '@aic/graph';
 import * as roles from '@aic/roles';
 
 import { TEST_PRIMARY_SCOPE, scopedIncident } from './fixtures/scoped-incident.mjs';
@@ -108,12 +110,19 @@ function requireExport(name) {
  * and `challenge_hypothesis` now emit a structured `cause` on every hypothesis
  * and alternative, and their system prompts carry the mechanism vocabulary
  * sentence `describeMechanismVocabulary` builds, the same sentence
- * `propose_conclusion`'s prompt already carried. The pin moves again, to
+ * `propose_conclusion`'s prompt already carried. The pin moved to
  * `reference-roles-prompt-v0.5`, the same version `conclusion-role.test.mjs`
- * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5" pins.
+ * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5" pinned.
+ *
+ * AIC-143: the prompt set changes a fourth time — `challenge_hypothesis`'s
+ * system prompt now also carries `describeRequestVocabulary(requestVocabulary)`
+ * right after the answer-shape line, naming the closed tool/input-key
+ * vocabulary a discriminating test may use. The pin moves again, to
+ * `reference-roles-prompt-v0.6`, the same version `conclusion-role.test.mjs`
+ * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.6" pins.
  */
-test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5', () => {
-  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.5');
+test('REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.6', () => {
+  assert.equal(requireExport('REFERENCE_PROMPT_VERSION'), 'reference-roles-prompt-v0.6');
 });
 
 /**
@@ -151,6 +160,17 @@ const at = () => '2026-01-01T01:00:00.000Z';
  * the other two mechanism-vocabulary roles.
  */
 const MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
+
+/**
+ * AIC-143: the closed request vocabulary `createModelChallengeHypothesis` now
+ * requires, built the same way `scripts/lane-arms.mjs` and
+ * `apps/cli/src/commands/investigate.ts` build it —
+ * `routeRequestVocabulary(INVESTIGATION_ROUTES)` (`@aic/domain` /
+ * `@aic/graph`). The optional call is deliberate: until `@aic/domain` ships
+ * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
+ * other row in this file at import time.
+ */
+const REQUEST_VOCABULARY = domain.routeRequestVocabulary?.(graph.INVESTIGATION_ROUTES);
 
 /* -------------------------------------------------------------------------- */
 /* generate_hypotheses                                                        */
@@ -834,7 +854,7 @@ test('produces a valid challenge result with an alternative created by the chall
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -885,7 +905,7 @@ test('refuses a challenge whose alternative repeats the hypothesis it was asked 
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -915,7 +935,7 @@ test('refuses a challenge carrying no discriminating test in the role, where a m
       discriminatingTests: [],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -976,7 +996,7 @@ test('refuses a discriminating test whose input carries a value canonicalJson ca
     '{"alternative":{"id":"alt-1","statement":"the dependency, not the deploy","cause":{"component":"dependency-pool","mechanism":"capacity-exhaustion"}},' +
     '"discriminatingTests":[{"id":"dt-infinity","predictionId":"p-1","tool":"logs.search","input":{"service":1e999},"cost":"cheap"}]}';
   const { port } = fakePort([rawText]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1014,7 +1034,7 @@ test('refuses a discriminating test whose input nests deeper than canonicalJson 
     nestedArrayText +
     '},"cost":"cheap"}]}';
   const { port } = fakePort([rawText]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1058,7 +1078,7 @@ test('does not refuse a discriminating test whose input is an ordinary closed-sh
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1092,7 +1112,7 @@ test('escapes and truncates a hostile discriminating-test id before it reaches t
     JSON.stringify(hostileId) +
     ',"predictionId":"p-1","tool":"logs.search","input":{"service":1e999},"cost":"cheap"}]}';
   const { port } = fakePort([rawText]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1161,7 +1181,7 @@ test('refuses a discriminating test whose input nests exactly 33 levels deep, on
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1202,7 +1222,7 @@ test('does not refuse a discriminating test whose input nests exactly 32 levels 
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1243,7 +1263,7 @@ test('refuses a discriminating test whose input carries more than 5000 values, o
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1284,7 +1304,7 @@ test('does not refuse a discriminating test whose input stays within the node bu
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1317,7 +1337,7 @@ test('refuses a discriminating test that carries no input key at all', async () 
       ],
     },
   ]);
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
@@ -1426,7 +1446,7 @@ test('records the challenge role usage in the ledger while the graph counter can
     },
   });
 
-  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS, requestVocabulary: REQUEST_VOCABULARY });
   const state = initialState();
   state.hypotheses = [
     { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
