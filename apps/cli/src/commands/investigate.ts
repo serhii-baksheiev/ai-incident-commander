@@ -213,9 +213,9 @@ function buildInitialState(runId: string, content: ReplayFileContent): IncidentS
  * The model arm's four reasoning roles, over the mechanism vocabulary
  * `@aic/graph`'s own `PREDICTION_TEMPLATES` registers — never
  * `evals.ROOT_CAUSE_MECHANISMS`, which this command cannot import. The two
- * are pinned equal elsewhere: prediction-nodes.test.mjs › "PREDICTION_TEMPLATES.
- * byMechanism carries exactly one key per ROOT_CAUSE_MECHANISMS entry, in both
- * directions".
+ * are pinned equal elsewhere: prediction-nodes.test.mjs ›
+ * "PREDICTION_TEMPLATES.byMechanism carries exactly one key per
+ * ROOT_CAUSE_MECHANISMS entry, in both directions".
  *
  * Takes the already-constructed port, so a test can wire a fake one directly
  * — the same seam `scripts/lane-arms.mjs`'s `modelNodes(record, port)` uses.

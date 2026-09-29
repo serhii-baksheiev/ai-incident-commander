@@ -173,8 +173,8 @@ test('aic investigate --replay <file> --roles scripted over the calibration scen
     // no cause — so the only trial is the mandatory challenge round's own
     // hard-coded probe, which the planned-replay port answers unavailable.
     // Measured directly through the same composition in
-    // test/investigation-plan-execute-wiring.test.mjs › "deployment-caused-
-    // incident-a is one scenario giving a strict subset: the model arm sees
+    // test/investigation-plan-execute-wiring.test.mjs ›
+    // "deployment-caused-incident-a is one scenario giving a strict subset: the model arm sees
     // exactly the confirming evidence, the scenario's own recorded corpus
     // also carries the dependencies evidence, and the scripted-control arm
     // run through the real kernel ends with no evidence at all".
@@ -735,13 +735,14 @@ test('a --replay file whose incident fails the domain IncidentSchema (missing id
  *
  * The fake-port shape and the assertions on the request it receives are
  * carried over from test/lane-arms.test.mjs's own `modelNodes(record, port)`
- * rows for the same three roles: › "modelNodes(record, port).propose_
- * conclusion is a model role: the fake port sees exactly one call, carrying
- * the mechanism vocabulary sentence built from evals.ROOT_CAUSE_MECHANISMS"
- * and › "modelNodes(record, port).generate_hypotheses and .challenge_
- * hypothesis are given the mechanism vocabulary evals.ROOT_CAUSE_MECHANISMS:
- * the provider schema's cause mechanism enum equals it exactly, and the
- * system prompt carries the vocabulary sentence".
+ * rows for the same three roles: see lane-arms.test.mjs ›
+ * "modelNodes(record, port).propose_conclusion is a model role: the fake port
+ * sees exactly one call, carrying the mechanism vocabulary sentence built from
+ * evals.ROOT_CAUSE_MECHANISMS" and lane-arms.test.mjs ›
+ * "modelNodes(record, port).generate_hypotheses and .challenge_hypothesis are
+ * given the mechanism vocabulary evals.ROOT_CAUSE_MECHANISMS: the provider
+ * schema's cause mechanism enum equals it exactly, and the system prompt
+ * carries the vocabulary sentence".
  */
 test('createModelReasoning(fakePort) wires generate_hypotheses, challenge_hypothesis and propose_conclusion as model roles carrying the PREDICTION_TEMPLATES mechanism vocabulary, which equals evals.ROOT_CAUSE_MECHANISMS as a set', async () => {
   const investigateModule = await import('../apps/cli/dist/commands/investigate.js');
