@@ -41,17 +41,29 @@
  *   (`adapter-catalog.ts`): both conventions already exist in this
  *   codebase, and `ok:boolean` is the one this file's own construction
  *   result — a single yes/no gate before any evidence collection, exactly
- *   like `PrimaryScopeCheck` — is closer to. The nine closed `reason` values
+ *   like `PrimaryScopeCheck` — is closer to. The closed `reason` values
  *   are `not-a-registry-binding`, `unsupported-adapter`, `invalid-config`,
  *   `missing-credential`, `credential-not-read`, `secret-absent`,
  *   `secret-unreadable` (all six borrowed verbatim from
  *   `AdapterCatalogRefusalReason`, `adapter-catalog.ts`, since a catalog
- *   refusal IS a construction refusal here), plus `adapter-mismatch` (the
+ *   refusal IS a construction refusal here), `adapter-mismatch` (the
  *   registry's own compatibility-handshake throw, caught and reported
  *   without echoing its message — see
- *   test/bound-source-compatibility.test.mjs's own header) and
+ *   test/bound-source-compatibility.test.mjs's own header),
  *   `ambiguous-route` (two bindings whose routes name the same tool,
- *   mirroring `replay/index.ts`'s `assertOneFormPerTool`).
+ *   mirroring `replay/index.ts`'s `assertOneFormPerTool`), and — pinned
+ *   below, review round 1 — `duplicate-binding` (the same `sourceBindingId`
+ *   passed twice, naming that id — never `adapter-mismatch`, which the
+ *   registry's own bare throw currently collapses this into),
+ *   `invalid-budgets` and `invalid-mode` (a `budgets` or `mode` value the
+ *   registry rejects for every binding, not one — so neither names a
+ *   `sourceBindingId`), `credential-environment-mismatch` (a binding's
+ *   `credentialRefId` names a read `CredentialRef` in a DIFFERENT
+ *   Environment — the same rule `RegistrySnapshotSchema`,
+ *   `packages/domain/src/scope.ts`, states for the mutation path, restated
+ *   here because this port matches a credential by id alone) and
+ *   `store-required` (mode `record` or `replay` with no `store` supplied —
+ *   `store` stays optional only for a caller that only ever runs `live`).
  *
  *   `BoundInvestigationExecutor.execute(context):
  *   Promise<BoundInvestigationExecutorOutcome>` where `context` is
@@ -202,6 +214,16 @@ async function unreachableResolveSecret() {
   throw new Error('RESOLVE_SECRET_MUST_NOT_BE_CALLED_FOR_A_CREDENTIAL_LESS_BINDING');
 }
 
+/**
+ * A github-pat SHAPE, assembled at runtime — never written as one
+ * contiguous literal (`.claude/rules/autonomy.md`) — mirrors
+ * test/cli-apply.test.mjs's and test/cli-incident-command.test.mjs's own
+ * `pastedSecret` helper. Used only as a construction candidate's `id` field,
+ * to prove a refusal never echoes it back (review round 1, security
+ * advisory 3).
+ */
+const credentialShapedId = () => ['ghp', 'B'.repeat(28)].join('_');
+
 /* -------------------------------------------------------------------------- */
 /* Evidence item fixtures — real EvidenceSchema-valid records                 */
 /* -------------------------------------------------------------------------- */
@@ -220,6 +242,22 @@ function makeEvidenceItem(overrides = {}) {
 }
 
 const DEPLOYMENTS_INPUT = Object.freeze({ service: 'checkout', window: 'incident' });
+
+/**
+ * A SCHEMA-VALID `EvidenceProvenance` — used to prove the own-provenance
+ * PRESENCE refusal fires even when the value itself would pass
+ * `EvidenceProvenanceSchema` on its own (review round 1, code blocker 1).
+ */
+function makeWellFormedItemProvenance(overrides = {}) {
+  return domain.EvidenceProvenanceSchema.parse({
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: CLOCK_ISO,
+    requestFingerprint: `sha256:${'0'.repeat(64)}`,
+    ...overrides,
+  });
+}
 
 /* -------------------------------------------------------------------------- */
 /* Independent-oracle fingerprint helper — hand-built, never calling         */
@@ -331,6 +369,62 @@ function buildSourceReturning(source) {
   return async () => ({ status: 'ready', source });
 }
 
+/**
+ * Wraps the REAL `createEvidenceSourceForBinding` (never a fake) with
+ * check()/execute() counters, so a construction-refusal row that never
+ * builds a source through the buildSource seam explicitly can still assert
+ * those two counts stayed at 0 alongside `fetch` — extending the "each
+ * construction refusal, fetch/check/execute/store reads counted at 0" claim
+ * beyond the two adapter-mismatch rows (review round 1, code advisory 2).
+ */
+function buildSourceWithSourceCallCounters() {
+  const calls = { check: 0, execute: 0 };
+  const buildSource = async (binding, deps) => {
+    const result = await tools.createEvidenceSourceForBinding(binding, deps);
+    if (result.status !== 'ready') return result;
+    const inner = result.source;
+    return {
+      status: 'ready',
+      source: {
+        describe: () => inner.describe(),
+        async check(...args) {
+          calls.check += 1;
+          return inner.check(...args);
+        },
+        async execute(...args) {
+          calls.execute += 1;
+          return inner.execute(...args);
+        },
+      },
+    };
+  };
+  return { calls, buildSource };
+}
+
+/** A `ReplayStore` with call counters, never touching the network or disk (review round 1, code advisory 2). */
+function buildCountingStore() {
+  const calls = { get: 0, set: 0, keys: 0, delete: 0 };
+  return {
+    calls,
+    store: {
+      async get() {
+        calls.get += 1;
+        return undefined;
+      },
+      async set() {
+        calls.set += 1;
+      },
+      async keys() {
+        calls.keys += 1;
+        return [];
+      },
+      async delete() {
+        calls.delete += 1;
+      },
+    },
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* An always-throwing ReplayStore — proves the port refuses BEFORE ever       */
 /* delegating into the registry, since replay mode's own execute() touches   */
@@ -402,22 +496,29 @@ test('routes a planned deployments call to the lab@1 binding, returns the stub b
 /* Construction refusal: unsupported adapter version                         */
 /* -------------------------------------------------------------------------- */
 
-test('a lab@2 binding is refused unsupported-adapter at construction, and fetch is never called', async () => {
+test('a lab@2 binding is refused unsupported-adapter at construction, with fetch, check, execute and store reads all counted at 0', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
   const binding = makeBinding({ adapterVersion: '2' });
   const fetchFn = createRefusingFetch('lab@2 is unsupported and must never reach fetch');
+  const { calls: sourceCalls, buildSource } = buildSourceWithSourceCallCounters();
+  const { calls: storeCalls, store } = buildCountingStore();
 
   const constructed = await createBoundInvestigationExecutor({
     bindings: [binding],
     mode: 'live',
-    store: tools.createMemoryReplayStore(),
+    store,
     clock: fixedClock,
     fetch: fetchFn,
     resolveSecret: unreachableResolveSecret,
+    buildSource,
   });
 
   assert.deepEqual(constructed, { ok: false, reason: 'unsupported-adapter', sourceBindingId: binding.id });
   assert.equal(fetchFn.calls.length, 0);
+  assert.equal(sourceCalls.check, 0);
+  assert.equal(sourceCalls.execute, 0);
+  assert.equal(storeCalls.get, 0);
+  assert.equal(storeCalls.set, 0);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -471,6 +572,109 @@ test('the same adapter-mismatch construction refusal holds in replay mode, and s
   });
 
   assert.deepEqual(constructed, { ok: false, reason: 'adapter-mismatch', sourceBindingId: binding.id });
+  assert.equal(calls.check, 0);
+  assert.equal(calls.execute, 0);
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Construction refusal classification (review round 1, code blocker 3):     */
+/* `createBoundSourceRegistry` throws on (at least) five distinct causes —   */
+/* duplicate sourceBindingId, invalid budgets, an unknown mode, an unsafe    */
+/* adapter field and a genuine expectedAdapter mismatch — and the port's own */
+/* bare `catch` collapses all of them into 'adapter-mismatch', sometimes     */
+/* naming an innocent binding. The four rows below pin four DISTINCT typed   */
+/* reasons: 'duplicate-binding' (naming the duplicated id), 'invalid-budgets'*/
+/* (no sourceBindingId — the value is wrong across every binding, not one),  */
+/* 'invalid-mode' (no sourceBindingId, for the same reason), and             */
+/* 'adapter-mismatch' still, but naming only the truly mismatched binding    */
+/* out of a healthy pair.                                                    */
+/* -------------------------------------------------------------------------- */
+
+test('the same binding passed twice is refused duplicate-binding, naming the duplicated id (not adapter-mismatch)', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const fetchFn = createRefusingFetch('a duplicate binding must never reach fetch');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding, binding],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'duplicate-binding', sourceBindingId: binding.id });
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test('invalid budgets (a negative timeoutMs) are refused invalid-budgets, with no sourceBindingId — the value is wrong for every binding, not one', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const fetchFn = createRefusingFetch('invalid budgets must never reach fetch');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+    budgets: { timeoutMs: -5 },
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'invalid-budgets' });
+  assert.equal('sourceBindingId' in constructed, false, JSON.stringify(constructed));
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test('an unknown mode is refused invalid-mode, with no sourceBindingId — the value is wrong for every binding, not one', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const fetchFn = createRefusingFetch('an unknown mode must never reach fetch');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'nonsense-mode',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'invalid-mode' });
+  assert.equal('sourceBindingId' in constructed, false, JSON.stringify(constructed));
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test('a genuine describe() mismatch among two otherwise-healthy bindings is still refused adapter-mismatch, naming only the truly mismatched binding', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const healthyBinding = makeBinding({ name: 'lab-healthy' });
+  const mismatchedBinding = makeBinding({ name: 'lab-mismatched' });
+  const { calls, source: mismatchedSource } = buildRefusingToBeCalledSource({
+    adapterId: 'lab',
+    version: '2',
+    operations: tools.READ_ONLY_TOOL_REGISTRY.map((entry) => entry.id),
+  });
+  const fetchFn = createRefusingFetch('a construction refusal must never reach fetch');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [healthyBinding, mismatchedBinding],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+    buildSource: async (binding, deps) => {
+      if (binding.id === mismatchedBinding.id) {
+        return buildSourceReturning(mismatchedSource)(binding, deps);
+      }
+      return tools.createEvidenceSourceForBinding(binding, deps);
+    },
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'adapter-mismatch', sourceBindingId: mismatchedBinding.id });
   assert.equal(calls.check, 0);
   assert.equal(calls.execute, 0);
   assert.equal(fetchFn.calls.length, 0);
@@ -614,6 +818,107 @@ test('a github@1 binding routes no ToolId: every read-only tool id is refused un
 });
 
 /* -------------------------------------------------------------------------- */
+/* Construction refusal: a credentialRefId naming a CredentialRef in a       */
+/* DIFFERENT Environment (review round 1, security advisory 1).             */
+/* `RegistrySnapshotSchema` (`@aic/domain`'s scope.ts) refuses exactly this  */
+/* pairing on the mutation path, but this port matches a binding's own      */
+/* `credentialRefId` by id alone (`credentialRefsById.get(...)`), never      */
+/* comparing the two records' `environmentId`s — so a caller that passes    */
+/* one environment's bindings alongside the whole registry's credentialRefs */
+/* (a documented, currently-legal call shape) would resolve the wrong       */
+/* environment's secret.                                                    */
+/* -------------------------------------------------------------------------- */
+
+test('a github@1 binding whose credentialRefId names a read CredentialRef in a DIFFERENT environment is refused credential-environment-mismatch, and resolveSecret is never called', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const bindingEnvironmentId = randomUUID();
+  const credentialEnvironmentId = randomUUID();
+  assert.notEqual(bindingEnvironmentId, credentialEnvironmentId);
+
+  const credentialRef = makeReadCredentialRef({ environmentId: credentialEnvironmentId });
+  const binding = makeGithubBinding({ environmentId: bindingEnvironmentId, credentialRefId: credentialRef.id });
+  const fetchFn = createRefusingFetch('a cross-environment credential refusal must never reach fetch');
+  const resolveSecretCalls = [];
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    credentialRefs: [credentialRef],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: async (name) => {
+      resolveSecretCalls.push(name);
+      return { status: 'found', value: resolvedSecretValue };
+    },
+  });
+
+  assert.deepEqual(constructed, {
+    ok: false,
+    reason: 'credential-environment-mismatch',
+    sourceBindingId: binding.id,
+  });
+  assert.equal(resolveSecretCalls.length, 0);
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Construction refusal: no store supplied for record/replay mode (review    */
+/* round 1, security advisory 4). A silent in-memory default is the right    */
+/* choice for `live` (where no code path ever reads or writes it), but it    */
+/* makes `record` discard every recording and `replay` miss every call.      */
+/* -------------------------------------------------------------------------- */
+
+test("mode 'record' with no store supplied is refused store-required", async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const fetchFn = createRefusingFetch('a missing-store refusal must never reach fetch');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'record',
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'store-required' });
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test("mode 'replay' with no store supplied is refused store-required", async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const fetchFn = createRefusingFetch('a missing-store refusal must never reach fetch');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'replay',
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'store-required' });
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test("mode 'live' with no store supplied still constructs — store is optional only for live callers (this file's own header)", async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const items = [makeEvidenceItem()];
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [makeBinding()],
+    mode: 'live',
+    clock: fixedClock,
+    fetch: createFakeFetch(() => fakeResponse({ status: 200, body: items })),
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.equal(constructed.ok, true, JSON.stringify(constructed));
+});
+
+/* -------------------------------------------------------------------------- */
 /* Ambiguous routing                                                          */
 /* -------------------------------------------------------------------------- */
 
@@ -643,17 +948,68 @@ test('two lab@1 bindings are refused ambiguous-route at construction, naming a t
 });
 
 /* -------------------------------------------------------------------------- */
+/* Routing admits only read-only ToolIds (review round 1, code blocker 2):   */
+/* `buildRouteTable` filters each entry's `describe().operations` through    */
+/* `isReadOnlyToolId` before it becomes a route. A binding whose adapter     */
+/* describes a NON-read-only operation alongside a read-only one must route  */
+/* the read-only one and refuse the other as if no binding described it —   */
+/* never reach that binding's `execute()` for the non-read-only operation.   */
+/* -------------------------------------------------------------------------- */
+
+test('a binding whose adapter describes a non-read-only operation alongside a read-only ToolId routes only the read-only one; the non-read-only operation is unavailable and never reaches execute()', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const items = [makeEvidenceItem()];
+  const { calls, source } = buildCountingWorkingSource({
+    adapterId: 'lab',
+    version: '1',
+    // A read-only ToolId ('deployments') alongside a github-style,
+    // NON-read-only verb ('rollback') — mirrors how a real adapter like
+    // github@1 describes operations outside READ_ONLY_TOOL_REGISTRY.
+    operations: ['deployments', 'rollback'],
+    items,
+  });
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: createRefusingFetch('this row uses buildSource, not fetch'),
+    resolveSecret: unreachableResolveSecret,
+    buildSource: buildSourceReturning(source),
+  });
+
+  assert.equal(constructed.ok, true, JSON.stringify(constructed));
+
+  const rollbackOutcome = await constructed.executor.execute(baseContext({ tool: 'rollback', input: {} }));
+  assert.deepEqual(rollbackOutcome, { status: 'unavailable', reason: 'unavailable' });
+  assert.equal(calls.execute, 0, 'a non-read-only operation must never reach source.execute()');
+
+  const deploymentsOutcome = await constructed.executor.execute(baseContext({ tool: 'deployments' }));
+  assert.equal(deploymentsOutcome.status, 'ok');
+  assert.deepEqual(deploymentsOutcome.output, items);
+  assert.equal(calls.execute, 1, 'the read-only operation must still route to source.execute()');
+});
+
+/* -------------------------------------------------------------------------- */
 /* Item-level refusals                                                       */
 /* -------------------------------------------------------------------------- */
 
-test('an output item carrying its own provenance is refused adapter_error, and no evidence is returned — independent of whether that provenance is itself well-formed', async () => {
+// Note (review round 1, code blocker 1): this row's `provenance` value is
+// itself malformed ({ notEvenAUuid: true }), so `EvidenceSchema.safeParse`
+// alone already refuses it — this row does NOT exercise the own-provenance
+// PRESENCE check (`Object.hasOwn(item, 'provenance')`,
+// packages/tools/src/bound-investigation-executor.ts:249-251). The next row
+// pins that check with a SCHEMA-VALID provenance value, which
+// `EvidenceSchema` alone would accept.
+test('an output item carrying its own MALFORMED provenance is refused adapter_error via EvidenceSchema itself, and no evidence is returned', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
   const items = [
     {
       ...makeEvidenceItem(),
-      // Deliberately not a well-formed EvidenceProvenance: the refusal must
-      // fire on the mere PRESENCE of an own `provenance` key, not on
-      // whether that value itself parses.
+      // Fails EvidenceProvenanceSchema on its own — see the sibling row
+      // below for the schema-VALID case that pins the presence check.
       provenance: { notEvenAUuid: true },
     },
   ];
@@ -664,6 +1020,38 @@ test('an output item carrying its own provenance is refused adapter_error, and n
     store: tools.createMemoryReplayStore(),
     clock: fixedClock,
     fetch: createFakeFetch(() => fakeResponse({ status: 200, body: items })),
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.equal(constructed.ok, true, JSON.stringify(constructed));
+  const outcome = await constructed.executor.execute(baseContext());
+
+  assert.equal(outcome.status, 'error');
+  assert.equal(outcome.message, 'adapter_error');
+  assert.equal('output' in outcome, false);
+});
+
+test('an output item carrying its own SCHEMA-VALID provenance is refused adapter_error, and no evidence is returned — the refusal fires on the mere PRESENCE of an own provenance key, not on whether that value itself parses', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const wellFormedProvenance = makeWellFormedItemProvenance();
+
+  // Precondition: EvidenceSchema alone accepts this item, so if this row's
+  // refusal held, it could only be because EvidenceSchema rejected the
+  // provenance value — proving the own-provenance PRESENCE check
+  // (`Object.hasOwn(item, 'provenance')`) is what is actually under test.
+  const itemWithWellFormedOwnProvenance = { ...makeEvidenceItem(), provenance: wellFormedProvenance };
+  assert.equal(
+    domain.EvidenceSchema.safeParse(itemWithWellFormedOwnProvenance).success,
+    true,
+    'precondition failed: EvidenceSchema must accept this item on its own, or this row would not isolate the presence check',
+  );
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [makeBinding()],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: createFakeFetch(() => fakeResponse({ status: 200, body: [itemWithWellFormedOwnProvenance] })),
     resolveSecret: unreachableResolveSecret,
   });
 
@@ -801,9 +1189,35 @@ test('describe() is called exactly once per binding, across construction and eve
 /* A non-UUID binding id                                                     */
 /* -------------------------------------------------------------------------- */
 
-test('a non-UUID binding id ("incident-lab") is refused not-a-registry-binding', async () => {
+test('a non-UUID binding id ("incident-lab") is refused not-a-registry-binding, with fetch, check, execute and store reads all counted at 0', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
   const binding = rawLabBinding({ id: 'incident-lab', name: 'incident-lab-binding' });
+  const fetchFn = createRefusingFetch('a non-registry binding must never reach fetch');
+  const { calls: sourceCalls, buildSource } = buildSourceWithSourceCallCounters();
+  const { calls: storeCalls, store } = buildCountingStore();
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'live',
+    store,
+    clock: fixedClock,
+    fetch: fetchFn,
+    resolveSecret: unreachableResolveSecret,
+    buildSource,
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'not-a-registry-binding', sourceBindingId: 'incident-lab' });
+  assert.equal(fetchFn.calls.length, 0);
+  assert.equal(sourceCalls.check, 0);
+  assert.equal(sourceCalls.execute, 0);
+  assert.equal(storeCalls.get, 0);
+  assert.equal(storeCalls.set, 0);
+});
+
+test('not-a-registry-binding for a record whose id is credential-shaped never echoes the raw id', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const rawId = credentialShapedId();
+  const binding = rawLabBinding({ id: rawId, name: 'credential-shaped-id-binding' });
   const fetchFn = createRefusingFetch('a non-registry binding must never reach fetch');
 
   const constructed = await createBoundInvestigationExecutor({
@@ -815,7 +1229,13 @@ test('a non-UUID binding id ("incident-lab") is refused not-a-registry-binding',
     resolveSecret: unreachableResolveSecret,
   });
 
-  assert.deepEqual(constructed, { ok: false, reason: 'not-a-registry-binding', sourceBindingId: 'incident-lab' });
+  assert.equal(constructed.ok, false);
+  assert.equal(constructed.reason, 'not-a-registry-binding');
+  assert.equal(
+    JSON.stringify(constructed).includes(rawId),
+    false,
+    `the refusal must not echo the raw credential-shaped id: ${JSON.stringify(constructed)}`,
+  );
   assert.equal(fetchFn.calls.length, 0);
 });
 
