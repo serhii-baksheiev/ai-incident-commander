@@ -1,12 +1,12 @@
 import {
   buildExecKey,
   DOMAIN_LAYER,
-  EvidenceSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   TrialSchema,
   upsertById,
   type CommittedExecution,
   type Evidence,
+  type EvidenceProvenance,
   type ToolId,
   type Trial,
 } from '@aic/domain';
@@ -19,6 +19,7 @@ import {
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
+import { ingestEvidence, refuseOwnProvenance } from './evidence-ingestion.js';
 import { deriveEvidenceId, deriveTrialId } from './identity.js';
 
 export * from './identity.js';
@@ -51,8 +52,9 @@ export type ExecuteInvestigationContext = Readonly<{
 
 export type ExecuteInvestigationResult = Readonly<{
   trial: Pick<Trial, 'status' | 'durationMs'>;
-  evidence: Omit<Evidence, 'id' | 'trialId'>;
+  evidence: Omit<Evidence, 'id' | 'trialId' | 'provenance'>;
   payloadFingerprint: string;
+  provenance?: EvidenceProvenance;
 }>;
 
 export type PersistentInvestigationResult = Readonly<{
@@ -193,18 +195,39 @@ export function createPersistentInvestigationRunner({
           trialId,
           payloadFingerprint: executed.payloadFingerprint,
         });
-        // Provenance on recorded Evidence is written only by the stamping
-        // layer from BoundSourceRegistry's own outcome, never taken from
-        // what executeInvestigation returned — its own evidence is exactly
-        // as trusted as any other caller-supplied field. see
-        // durable-tool-replay.test.mjs › "a provenance block
-        // executeInvestigation returns on its evidence never survives into
-        // the persisted evidence"
-        const { provenance: _provenance, ...executedEvidenceFields } = executed.evidence;
-        const evidence = EvidenceSchema.parse({
-          ...executedEvidenceFields,
-          id: evidenceId,
+        // Provenance travels alongside the result, never inside its
+        // evidence: an evidence object carrying its own `provenance` is
+        // refused, naming this evidence id, and a well-formed
+        // `executed.provenance` becomes part of the persisted evidence
+        // exactly as given — see durable-tool-replay.test.mjs › "evidence
+        // carrying its own provenance is refused, naming the evidence id,
+        // and nothing is committed" and › "provenance on the
+        // ExecuteInvestigationResult (alongside evidence, not inside it)
+        // becomes part of the persisted evidence".
+        //
+        // The own-provenance check runs HERE, on `executed.evidence` itself,
+        // before it is ever spread into the item below: `{ ...executed.evidence }`
+        // copies only OWN ENUMERABLE properties, so a non-enumerable own
+        // `provenance` would otherwise vanish silently in the copy and never
+        // reach `ingestEvidence`'s own check on the copy — see
+        // durable-tool-replay.test.mjs › "evidence carrying its own
+        // NON-enumerable provenance is refused through the durable site just
+        // like an enumerable one, and nothing is committed". Reusing
+        // `refuseOwnProvenance` (exported by `./evidence-ingestion.js`) keeps
+        // this one own-key check in exactly one implementation
+        // (`.claude/rules/invariants.md`, "one mechanism, one
+        // implementation").
+        refuseOwnProvenance(executed.evidence, evidenceId);
+        // `executed.provenance` is read the same own-data way inside
+        // `ingestEvidence` (via `provenanceSource: executed` below),
+        // including the explicit-`provenance: undefined` refusal — see
+        // durable-tool-replay.test.mjs › "an ExecuteInvestigationResult with
+        // an explicit own provenance: undefined is refused with a message
+        // naming provenance, before anything is committed".
+        const evidence = ingestEvidence({
+          item: { ...executed.evidence, id: evidenceId },
           trialId,
+          provenanceSource: executed,
         });
         const trial = TrialSchema.parse({
           id: trialId,
@@ -219,14 +242,21 @@ export function createPersistentInvestigationRunner({
         });
         return { trial, evidence };
       };
-      const call = () =>
-        executeInvestigation({
+      const call = async () => {
+        const executed = await executeInvestigation({
           runId: state.runId,
           testId: state.test.id,
           attempt: state.attempt,
           tool: state.test.tool,
           input: state.test.input,
         });
+        // Validate before this result can ever be committed: `recordsOf`
+        // throws on a refused or malformed result, and that throw happens
+        // here, inside compute() — before `execution`'s own commit line
+        // runs — so a refused result is never durably stored.
+        recordsOf(executed);
+        return executed;
+      };
       const executed = execution
         ? await execution.committed(
             buildExecKey('tool.trial', {
