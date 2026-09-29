@@ -706,15 +706,19 @@ test('a YAML alias in the manifest is refused before any store call, since alias
   const aliasedYaml = `apiVersion: aic.onboarding/v1
 kind: Onboarding
 services:
-  - &svc
-    name: checkout
-    repositoryAliases: []
+  - name: checkout
+    repositoryAliases: &aliases []
     environments: []
-  - *svc
+  - name: billing
+    repositoryAliases: *aliases
+    environments: []
 `;
 
-  await assert.rejects(() =>
-    withManifestFile(aliasedYaml, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+  // The aliased node is shared by two differently named services, so no
+  // other refusal (a duplicate name, say) can stand in for the alias one.
+  await assert.rejects(
+    () => withManifestFile(aliasedYaml, (filePath) => runApplyCommand(['-f', filePath], { store, stdout })),
+    { message: /aliases and anchors are not accepted/ },
   );
   assert.deepEqual(calls, []);
 });
@@ -1110,6 +1114,7 @@ services:
     (error) => {
       assert.match(error.message, /duplicate/i);
       assert.match(error.message, /services\[1\]/);
+      assert.ok(!error.message.includes('checkout'), 'the refusal names the index, never the repeated name');
       return true;
     },
   );
@@ -1135,6 +1140,7 @@ services:
     (error) => {
       assert.match(error.message, /duplicate/i);
       assert.match(error.message, /environments\[1\]/);
+      assert.ok(!error.message.includes('staging'), 'the refusal names the index, never the repeated name');
       return true;
     },
   );
@@ -1166,6 +1172,7 @@ services:
     (error) => {
       assert.match(error.message, /duplicate/i);
       assert.match(error.message, /credentials\[1\]/);
+      assert.ok(!error.message.includes('github-read'), 'the refusal names the index, never the repeated name');
       return true;
     },
   );
@@ -1201,6 +1208,7 @@ services:
     (error) => {
       assert.match(error.message, /duplicate/i);
       assert.match(error.message, /sources\[1\]/);
+      assert.ok(!error.message.includes('github-source'), 'the refusal names the index, never the repeated name');
       return true;
     },
   );
