@@ -742,3 +742,54 @@ test('refuses a __proto__ own property supplied through JSON.parse, rather than 
     'a config carrying __proto__ as an own property must be refused, not silently accepted with the key dropped',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* Names, repository aliases and allowed action types are screened too        */
+/* -------------------------------------------------------------------------- */
+
+/** A credential SHAPE, assembled at runtime, never written as a literal. */
+const pastedToken = () => ['sk', 'ant', 'api03', '7'.repeat(40)].join('-');
+
+test('refuses a credential-shaped Service name, repository alias and Environment name, and never echoes the value', () => {
+  const token = pastedToken();
+  const cases = [
+    () => domain.ServiceInputSchema.safeParse({ name: token, repositoryAliases: [] }),
+    () => domain.ServiceInputSchema.safeParse({ name: 'checkout', repositoryAliases: [token] }),
+    () =>
+      domain.EnvironmentSchema.safeParse({
+        id: '00000000-0000-4000-8000-000000000001',
+        serviceId: '00000000-0000-4000-8000-000000000002',
+        name: token,
+      }),
+  ];
+  for (const parse of cases) {
+    const result = parse();
+    assert.equal(result.success, false, 'a credential-shaped value must be refused');
+    assert.ok(!JSON.stringify(result.error.issues).includes(token), 'the refusal must not carry the value');
+  }
+});
+
+test('refuses a credential-shaped allowed action type on an ActionPolicy, and never echoes the value', () => {
+  const token = pastedToken();
+  const result = domain.ActionPolicySchema.safeParse({
+    id: '00000000-0000-4000-8000-000000000001',
+    environmentId: '00000000-0000-4000-8000-000000000002',
+    allowedActionTypes: [token],
+    writeCredentialRefIds: [],
+  });
+  assert.equal(result.success, false);
+  assert.ok(!JSON.stringify(result.error.issues).includes(token));
+});
+
+test('still accepts ordinary slugs, repository aliases and action types', () => {
+  assert.equal(domain.ServiceInputSchema.safeParse({ name: 'payments-api', repositoryAliases: ['org/payments-api'] }).success, true);
+  assert.equal(
+    domain.ActionPolicySchema.safeParse({
+      id: '00000000-0000-4000-8000-000000000001',
+      environmentId: '00000000-0000-4000-8000-000000000002',
+      allowedActionTypes: ['incident-comment', 'create-follow-up-ticket'],
+      writeCredentialRefIds: [],
+    }).success,
+    true,
+  );
+});

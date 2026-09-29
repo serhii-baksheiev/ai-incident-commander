@@ -14,6 +14,9 @@ import { z } from 'zod';
 
 const nonEmptyString = (max: number) => z.string().min(1).max(max);
 
+/** The fixed refusal for a credential-shaped registry value; the value itself is never echoed. */
+const NOT_A_CREDENTIAL = 'must not be shaped like a credential';
+
 /**
  * A lowercase, hyphen-separated name - `Service.name` and `Environment.name`.
  * Distinct from `RegistryIdSchema` below: a slug is a single word or several
@@ -24,7 +27,20 @@ const SlugSchema = z
   .string()
   .min(1)
   .max(100)
-  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
+  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/)
+  .refine((value) => !looksLikeCredential(value), NOT_A_CREDENTIAL);
+
+/**
+ * A free-text registry value an operator types (a repository alias, an
+ * allowed action type): bounded, and screened by the same credential
+ * vocabulary as a SourceBinding config value, so a pasted secret is refused
+ * rather than stored — see registry-names-and-config.test.mjs › "refuses a
+ * credential-shaped Service name, repository alias and Environment name, and
+ * never echoes the value" and › "refuses a credential-shaped allowed action
+ * type on an ActionPolicy, and never echoes the value".
+ */
+const screenedText = (max: number) =>
+  z.string().min(1).max(max).refine((value) => !looksLikeCredential(value), NOT_A_CREDENTIAL);
 
 /**
  * A server-assigned registry identifier (the decision record's "identity is
@@ -42,7 +58,7 @@ export const PrimaryScopeSchema = z.strictObject({
 
 export const ServiceInputSchema = z.strictObject({
   name: SlugSchema,
-  repositoryAliases: z.array(nonEmptyString(200)),
+  repositoryAliases: z.array(screenedText(200)),
 });
 
 export const ServiceSchema = ServiceInputSchema.extend({
@@ -263,7 +279,7 @@ export const CredentialRefSchema = z.strictObject({
 export const ActionPolicySchema = z.strictObject({
   id: RegistryIdSchema,
   environmentId: RegistryIdSchema,
-  allowedActionTypes: z.array(nonEmptyString(200)),
+  allowedActionTypes: z.array(screenedText(200)),
   writeCredentialRefIds: z.array(RegistryIdSchema),
 });
 
