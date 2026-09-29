@@ -3707,15 +3707,11 @@ test('redactEvidenceOutput skips a non-private -----BEGIN header that precedes a
 /* mechanism, one implementation"). Pinned here as object identity (`===`),    */
 /* an exported seam on both sides, never by re-deriving the character class.   */
 /*                                                                              */
-/* `isWellFormedStoredOutcome` currently checks only `typeof fetchedAt ===     */
-/* 'string'` before a replay hit hands a stored `ok` recording back — so a     */
-/* hand-edited (or pre-migration) recording carrying a non-ISO-8601 or         */
-/* non-UTC `fetchedAt` still replays as `ok` today. It must instead be         */
-/* validated with `EvidenceProvenanceSchema.shape.fetchedAt`, and a recording  */
-/* that fails that check is treated exactly like the existing "nothing         */
-/* recorded" miss: `{status: 'refused', reason: 'unavailable'}`, never handed  */
-/* back verbatim (mirrors the existing "replay treats a stored record …"      */
-/* security-blocker-5b rows above, same file, same helper).                    */
+/* `isWellFormedStoredOutcome` validates a stored `provenance.fetchedAt` with */
+/* `EvidenceProvenanceSchema.shape.fetchedAt`; a recording that fails that     */
+/* check is treated exactly like the existing "nothing recorded" miss:         */
+/* `{status: 'refused', reason: 'unavailable'}`, never handed back verbatim    */
+/* (the same helper as the "replay treats a stored record …" rows above).      */
 /* ============================================================================ */
 
 test('SAFE_ADAPTER_ID and SAFE_ADAPTER_TOKEN are @aic/domain\'s own ADAPTER_ID_PATTERN / ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of the same spelling (AIC-146 b1)', () => {

@@ -157,14 +157,14 @@ test('EvidenceProvenanceSchema refuses an adapter with an empty adapterVersion s
   assert.equal(domain.EvidenceProvenanceSchema.safeParse(validProvenance({ adapter: 'lab@' })).success, false);
 });
 
-test('EvidenceProvenanceSchema refuses an adapter whose adapterId side is 201 characters, one past SourceBindingSchema.adapterId\'s own bound', () => {
+test('EvidenceProvenanceSchema refuses an adapter whose adapterId side is 201 characters, past SourceBindingSchema.adapterId\'s 200 as well as the 64-character adapter spelling', () => {
   assert.equal(
     domain.EvidenceProvenanceSchema.safeParse(validProvenance({ adapter: `${'a'.repeat(201)}@1` })).success,
     false,
   );
 });
 
-test('EvidenceProvenanceSchema refuses an adapter whose adapterVersion side is 201 characters, one past SourceBindingSchema.adapterVersion\'s own bound', () => {
+test('EvidenceProvenanceSchema refuses an adapter whose adapterVersion side is 201 characters, past SourceBindingSchema.adapterVersion\'s 200 as well as the 64-character adapter spelling', () => {
   assert.equal(
     domain.EvidenceProvenanceSchema.safeParse(validProvenance({ adapter: `lab@${'1'.repeat(201)}` })).success,
     false,
@@ -385,29 +385,44 @@ test('a real BoundSourceRegistry live-mode outcome\'s provenance parses with Evi
 /* -------------------------------------------------------------------------- */
 /* AIC-146 slice b1 — the domain owns the adapter spelling                    */
 /*                                                                            */
-/* `@aic/tools`'s `bound-source-registry.ts` privately holds the safe-token   */
-/* shape a `describe().adapterId` / `.version` must match before either is   */
-/* trusted in `provenance.adapter`: `SAFE_ADAPTER_ID` (an alphanumeric first  */
-/* character, up to 64 characters total, `:` additionally allowed) and       */
-/* `SAFE_ADAPTER_TOKEN` (the same shape, without `:`) — read verbatim from    */
-/* `packages/tools/src/bound-source-registry.ts` at the lines this ticket     */
-/* names. `EvidenceProvenanceSchema.adapter` currently only bounds each side  */
-/* to 1-200 arbitrary non-`@` characters (`ProvenanceAdapterFieldSchema`),    */
-/* which is far wider than the registry's own spelling — so a provenance     */
-/* envelope can claim an `adapter` string the registry itself would never    */
-/* have produced. `@aic/domain` is meant to export `ADAPTER_ID_PATTERN` and  */
-/* `ADAPTER_VERSION_PATTERN` (the registry's two patterns, moved here) and   */
-/* build `ProvenanceAdapterFieldSchema` from them, so the registry's own     */
-/* `SAFE_ADAPTER_ID`/`SAFE_ADAPTER_TOKEN` become aliases of these domain      */
-/* objects rather than a second, independently-maintained copy of the same   */
-/* spelling (pinned as object identity in                                    */
-/* test/bound-source-registry.test.mjs).                                     */
+/* `ADAPTER_ID_PATTERN` / `ADAPTER_VERSION_PATTERN` are the spelling          */
+/* `BoundSourceRegistry` checks `describe()` against (an alphanumeric first   */
+/* character, up to 64 characters, `:` allowed only in the id), and           */
+/* `EvidenceProvenanceSchema.adapter` is built from them. The registry's own  */
+/* `SAFE_ADAPTER_ID` / `SAFE_ADAPTER_TOKEN` are these objects — pinned as     */
+/* object identity in bound-source-registry.test.mjs › "SAFE_ADAPTER_ID and   */
+/* SAFE_ADAPTER_TOKEN are @aic/domain's own ADAPTER_ID_PATTERN /              */
+/* ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of  */
+/* the same spelling (AIC-146 b1)".                                           */
 /*                                                                            */
 /* Independent oracle: every row below is a hand-written string with its     */
-/* expected accept/refuse verdict, decided by reading the registry's two     */
-/* patterns directly — never by constructing the expectation from the new    */
-/* `ADAPTER_ID_PATTERN`/`ADAPTER_VERSION_PATTERN` exports themselves.        */
+/* expected verdict, never an expectation computed from the exports.         */
 /* -------------------------------------------------------------------------- */
+
+test('ADAPTER_ID_PATTERN and ADAPTER_VERSION_PATTERN are each anchored at both ends and carry no top-level alternation, which the composed adapter field relies on (AIC-146 b1)', () => {
+  for (const pattern of [domain.ADAPTER_ID_PATTERN, domain.ADAPTER_VERSION_PATTERN]) {
+    const { source, flags } = pattern;
+    assert.equal(source.startsWith('^') && source.endsWith('$'), true, `${source} must be anchored at both ends`);
+    assert.equal(flags, '', `${source} must carry no flags`);
+    let depth = 0;
+    for (const char of source.replace(/\\./g, '')) {
+      if (char === '(' || char === '[') depth += 1;
+      else if (char === ')' || char === ']') depth -= 1;
+      else if (char === '|' && depth === 0) assert.fail(`${source} must carry no top-level alternation`);
+    }
+  }
+});
+
+test('EvidenceProvenanceSchema accepts a fetchedAt with millisecond precision and refuses one with more fractional digits (AIC-146 b1)', () => {
+  assert.equal(domain.EvidenceProvenanceSchema.safeParse(validProvenance({ fetchedAt: '2026-09-24T00:00:00.000Z' })).success, true);
+  for (const fetchedAt of ['2026-09-24T00:00:00.0000Z', `2026-09-24T00:00:00.${'0'.repeat(10000)}Z`]) {
+    assert.equal(
+      domain.EvidenceProvenanceSchema.safeParse(validProvenance({ fetchedAt })).success,
+      false,
+      `a fetchedAt with ${fetchedAt.length - 21} fractional digits must be refused: the registry writes toISOString(), three digits, and a stored recording may not grow the field without bound`,
+    );
+  }
+});
 
 test('@aic/domain exports ADAPTER_ID_PATTERN and ADAPTER_VERSION_PATTERN as RegExp objects (AIC-146 b1)', () => {
   assert.equal(
@@ -422,7 +437,7 @@ test('@aic/domain exports ADAPTER_ID_PATTERN and ADAPTER_VERSION_PATTERN as RegE
   );
 });
 
-test('EvidenceProvenanceSchema refuses an adapter whose adapterId side is 65 characters, one character past the registry\'s own SAFE_ADAPTER_ID bound — accepted today by the wider 200-character domain bound (AIC-146 b1)', () => {
+test('EvidenceProvenanceSchema refuses an adapter whose adapterId side is 65 characters, one character past the 64-character adapter spelling (AIC-146 b1)', () => {
   const adapter = `${'a'.repeat(65)}@1`;
   assert.equal(
     domain.EvidenceProvenanceSchema.safeParse(validProvenance({ adapter })).success,
