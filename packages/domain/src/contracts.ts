@@ -257,6 +257,17 @@ export const InvestigationTestSchema = z.strictObject({
  * one implementation") — see test/trial-refusal-contract.test.mjs ›
  * "EVIDENCE_SOURCE_REFUSAL_REASONS (tools) deep-equals
  * EvidenceSourceRefusalReasonSchema.options (domain), one spelling".
+ *
+ * `.options` is frozen right after construction (AIC-146 b4 security round
+ * 1): zod's `ZodEnum` assigns it once, at construction, to the same array
+ * reference on every later access (`inst.options = Object.values(def.entries)`
+ * in zod's own `ZodEnum` initializer — not a getter that recomputes), so
+ * freezing that one array here is enough to keep a caller from widening the
+ * six-reason vocabulary after the fact by mutating the array `@aic/tools`'s
+ * `EVIDENCE_SOURCE_REFUSAL_REASONS` (below) spreads from — see
+ * test/trial-refusal-contract.test.mjs › "EvidenceSourceRefusalReasonSchema.options
+ * (domain) is frozen, the same array reference every access, so it cannot be
+ * widened after construction (AIC-146 b4 security round 1 advisory)".
  */
 export const EvidenceSourceRefusalReasonSchema = z.enum([
   'unavailable',
@@ -266,16 +277,23 @@ export const EvidenceSourceRefusalReasonSchema = z.enum([
   'adapter_error',
   'budget_exceeded',
 ]);
+Object.freeze(EvidenceSourceRefusalReasonSchema.options);
 
 /**
  * AIC-146 slice b4: what a Trial records when the source call behind it was
  * refused rather than answered — the typed reason, and the binding that
  * refused it (`null` when no binding served the tool at all, so routing
- * itself never reached the registry). Carried on the Trial record itself,
- * durably, rather than in a separate per-node execution log, so AIC-101 can
- * answer "why is this test untestable" from the same durable read that
- * already covers every Trial. See test/trial-refusal-contract.test.mjs for
- * the full pinned contract this schema satisfies.
+ * itself never reached the registry). The reason is not an observation of
+ * the environment: it is the adapter's own typed claim about why its call
+ * did not succeed, narrowed to one of the six closed values only once
+ * `BoundSourceRegistry` normalises it (`normalizeRefusalReason`,
+ * `packages/tools/src/bound-source-registry.ts`) — an adapter's raw thrown
+ * value is never trusted as-is (security advisory 2). Carried on the Trial
+ * record itself, durably, rather than in a separate per-node execution log,
+ * so AIC-101 can answer "why is this test untestable" from the same durable
+ * read that already covers every Trial. See
+ * test/trial-refusal-contract.test.mjs for the full pinned contract this
+ * schema satisfies.
  */
 export const TrialRefusalSchema = z.strictObject({
   reason: EvidenceSourceRefusalReasonSchema,

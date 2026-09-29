@@ -9,7 +9,7 @@ import {
   type TrialRefusal,
 } from '@aic/domain';
 
-import { ingestEvidence, readOwnTrialRefusal } from '../evidence-ingestion.js';
+import { ingestEvidence, nullPrototypeInput, readOwnTrialRefusal } from '../evidence-ingestion.js';
 import { deriveTrialId } from '../identity.js';
 import type { InvestigationNode, InvestigationNodeResult } from '../investigation.js';
 import type { ExecuteInvestigationContext } from '../index.js';
@@ -102,6 +102,37 @@ export type ExecuteInvestigationOutcome =
  * `createEvaluatePredictions` (`./derive-predictions.js`,
  * `./evaluate-predictions.js`).
  */
+/**
+ * Parses one Trial via `TrialSchema`, building the parse input with
+ * `nullPrototypeInput` (`../evidence-ingestion.js`) so a polluted
+ * `Object.prototype.refusal` can never surface as an own `refusal` on the
+ * recorded Trial — the same null-prototype discipline `ingestEvidence` uses
+ * for `EvidenceProvenance` (AIC-146 b2), reused here for `refusal` (AIC-146
+ * b4, security round 1) rather than re-implemented (`.claude/rules/invariants.md`,
+ * "one mechanism, one implementation"). A post-parse assertion then checks
+ * that the parsed Trial's own `refusal` presence matches whether a refusal
+ * was actually supplied for this call — content-free, so it never echoes the
+ * refusal's value — catching anything upstream of the parse that might have
+ * changed, exactly as `ingestEvidence`'s own post-parse provenance check
+ * does. Every `TrialSchema.parse` call in this file goes through here,
+ * keeping `TrialSchema` the single place a Trial is built — see
+ * investigation-execution.test.mjs › "on an ok result carrying no own
+ * refusal: a polluted Object.prototype.refusal never becomes an own property
+ * of the recorded trial, even on a real ok trial (AIC-146 b4 security round
+ * 1)", › "on an unavailable result carrying no own refusal: a polluted
+ * Object.prototype.refusal never becomes an own property of the recorded
+ * trial (AIC-146 b4 security round 1)" and › "on an error result carrying no
+ * own refusal: a polluted Object.prototype.refusal never becomes an own
+ * property of the recorded trial (AIC-146 b4 security round 1)".
+ */
+function parseTrial(fields: Readonly<Record<string, unknown>>, refusal: TrialRefusal | undefined): Trial {
+  const trial = TrialSchema.parse(nullPrototypeInput(fields));
+  if (Object.hasOwn(trial, 'refusal') !== (refusal !== undefined)) {
+    throw new Error('parsed trial refusal presence does not match what was supplied for this call');
+  }
+  return trial;
+}
+
 export function createExecuteInvestigation({
   execute,
 }: Readonly<{
@@ -172,7 +203,7 @@ export function createExecuteInvestigation({
           // b2)".
           evidence.push(ingestEvidence({ item, trialId, provenanceSource: outcome }));
         }
-        trials.push(TrialSchema.parse({ ...trialBase, status: 'ok', evidenceIds }));
+        trials.push(parseTrial({ ...trialBase, status: 'ok', evidenceIds }, undefined));
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'executed' }));
         continue;
       }
@@ -185,12 +216,15 @@ export function createExecuteInvestigation({
         // `readOwnProvenance` already uses for the ok branch above.
         const refusal = readOwnTrialRefusal(outcome);
         trials.push(
-          TrialSchema.parse({
-            ...trialBase,
-            status: 'unavailable',
-            evidenceIds: [],
-            ...(refusal === undefined ? {} : { refusal }),
-          }),
+          parseTrial(
+            {
+              ...trialBase,
+              status: 'unavailable',
+              evidenceIds: [],
+              ...(refusal === undefined ? {} : { refusal }),
+            },
+            refusal,
+          ),
         );
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'unavailable' }));
         continue;
@@ -199,12 +233,15 @@ export function createExecuteInvestigation({
       {
         const refusal = readOwnTrialRefusal(outcome);
         trials.push(
-          TrialSchema.parse({
-            ...trialBase,
-            status: 'error',
-            evidenceIds: [],
-            ...(refusal === undefined ? {} : { refusal }),
-          }),
+          parseTrial(
+            {
+              ...trialBase,
+              status: 'error',
+              evidenceIds: [],
+              ...(refusal === undefined ? {} : { refusal }),
+            },
+            refusal,
+          ),
         );
       }
       tests.push(InvestigationTestSchema.parse({ ...test, status: 'failed' }));

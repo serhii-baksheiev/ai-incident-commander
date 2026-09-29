@@ -39,9 +39,10 @@ import {
  * also what keeps a polluted `Object.prototype.provenance` from leaking onto
  * recorded evidence: `provenanceSource` itself is never touched through the
  * prototype chain, and the object handed to `EvidenceSchema.parse` is built
- * with `Object.create(null)` so zod's own optional-field read (which walks
- * the prototype chain like any other property read) can never observe an
- * inherited value either — see › "on an ok result: a polluted
+ * by `nullPrototypeInput` (below), whose null prototype means zod's own
+ * optional-field read (which walks the prototype chain like any other
+ * property read) can never observe an inherited value either — see › "on an
+ * ok result: a polluted
  * Object.prototype.provenance never leaks onto recorded evidence when the
  * outcome carries no own provenance (AIC-146 b2)".
  *
@@ -63,26 +64,24 @@ export function ingestEvidence({
 
   const provenance = readOwnProvenance(provenanceSource);
 
-  // Built with a null prototype so a polluted Object.prototype.provenance can
-  // never be read back through this object's own prototype chain — by zod's
-  // optional-field check or by anything else — when no provenance was
-  // supplied for this call.
-  const input: Record<string, unknown> = Object.create(null);
-  for (const key of Object.keys(item)) {
-    input[key] = item[key];
-  }
-  input.trialId = trialId;
-  if (provenance !== undefined) {
-    input.provenance = provenance;
-  }
+  // Built with a null prototype (`nullPrototypeInput`, below) so a polluted
+  // Object.prototype.provenance can never be read back through this object's
+  // own prototype chain — by zod's optional-field check or by anything
+  // else — when no provenance was supplied for this call.
+  const input = nullPrototypeInput({
+    ...item,
+    trialId,
+    ...(provenance === undefined ? {} : { provenance }),
+  });
 
   const parsed = EvidenceSchema.parse(input);
 
   // This post-parse check is what catches a `provenance` smuggled past the
   // FIRST guard above by a Proxy whose `getOwnPropertyDescriptor` trap lies
-  // to `Object.hasOwn` on the first ask and tells the truth to `Object.keys`
-  // (used by the `for (const key of Object.keys(item))` copy above) on every
-  // ask after — see investigation-execution.test.mjs › "on an ok result: a
+  // to `Object.hasOwn` on the first ask and tells the truth on every ask
+  // after — which is exactly the ask the `{...item, ...}` spread above makes
+  // while assembling `nullPrototypeInput`'s `fields` argument — see
+  // investigation-execution.test.mjs › "on an ok result: a
   // Proxy evidence item that hides its own provenance from Object.hasOwn but
   // reveals it to Object.keys is refused, and nothing is recorded (AIC-146 b2
   // security advisory 1)".
@@ -96,6 +95,39 @@ export function ingestEvidence({
   }
 
   return parsed;
+}
+
+/**
+ * Copies every OWN key of `fields` onto a fresh object whose prototype is
+ * `null`, so a schema's own optional-field read (which walks the prototype
+ * chain like any other property read, `obj.key`) can never observe a value
+ * inherited from a polluted `Object.prototype` — the null-prototype
+ * discipline `ingestEvidence` (above) uses for the `EvidenceSchema.parse`
+ * input, shared here so `createExecuteInvestigation`
+ * (`./nodes/execute-investigation.ts`) can build its `TrialSchema.parse`
+ * input the same way for its own optional `refusal` field (AIC-146 b4) — one
+ * mechanism, not two copies of the same discipline (`.claude/rules/invariants.md`,
+ * "one mechanism, one implementation").
+ *
+ * Only OWN keys of `fields` are copied: `Object.keys` never sees an inherited
+ * property regardless of what `Object.prototype` carries, so a caller safely
+ * assembles `fields` with an ordinary object literal or spread first, and
+ * only a key it actually set ends up present on the result — see
+ * investigation-execution.test.mjs › "on an ok result carrying no own
+ * refusal: a polluted Object.prototype.refusal never becomes an own property
+ * of the recorded trial, even on a real ok trial (AIC-146 b4 security round
+ * 1)", › "on an unavailable result carrying no own refusal: a polluted
+ * Object.prototype.refusal never becomes an own property of the recorded
+ * trial (AIC-146 b4 security round 1)" and › "on an error result carrying no
+ * own refusal: a polluted Object.prototype.refusal never becomes an own
+ * property of the recorded trial (AIC-146 b4 security round 1)".
+ */
+export function nullPrototypeInput(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const input: Record<string, unknown> = Object.create(null);
+  for (const key of Object.keys(fields)) {
+    input[key] = fields[key];
+  }
+  return input;
 }
 
 /**
