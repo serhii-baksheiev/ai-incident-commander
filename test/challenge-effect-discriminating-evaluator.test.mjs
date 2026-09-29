@@ -207,13 +207,13 @@ function challengeObservation({ leaderChanged, statusChanged, trialCount }) {
   };
 }
 
-// The one row in this file allowed to use the production v0.3 scorer as its
-// own oracle (`.claude/rules/invariants.md`, "the independent-oracle
-// invariant"): "v0.4 never passes what v0.3 fails" is a claim about the
-// relation between the two scorers, so comparing them to each other is not a
-// production computation checking its own work the way every other row here
-// avoids — there is no other oracle for a relational claim between two
-// versions of the same function.
+// One of the three relational rows the file header names, which compare the
+// v0.3 and v0.4 paths to each other (`.claude/rules/invariants.md`, "the
+// independent-oracle invariant"): "v0.4 never passes what v0.3 fails" is a
+// claim about the relation between the two scorers, so comparing them to each
+// other is not a production computation checking its own work the way the
+// literal rows here avoid — there is no other oracle for a relational claim
+// between two versions of the same function.
 test('v0.4 never passes a challenge observation v0.3 fails, over every combination of leader change, status change, trial count 0/1 and expectation', () => {
   for (const leaderChanged of [true, false]) {
     for (const statusChanged of [true, false]) {

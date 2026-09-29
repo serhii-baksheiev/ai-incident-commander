@@ -16,7 +16,7 @@
  * › "preserves the five accepted v0.1 ground truths and replay fixtures" — and
  * are not rewritten. The accepted fields stay what the accepted evaluator
  * version (`behavior-evaluators-v0.2`) reads; this table is what
- * `behavior-evaluators-v0.3` reads.
+ * `behavior-evaluators-v0.3` and `-v0.4` read.
  *
  * Its correspondence with the accepted data is checked rather than trusted:
  * every id is one the scenario's fixture shows, every root cause names the
