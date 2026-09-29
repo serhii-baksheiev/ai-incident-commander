@@ -19,6 +19,13 @@
 # service's published-port interpolation inherited through `extends` below.
 # That is why AIC_LAB_HOST_PORT is required by every command above, not only
 # a `--profile lab` one; `.env.example` documents it for that reason.
+
+# A fixed project name. Without it Compose names the project after this
+# file's directory, `single-user`, and would share a project, a network and a
+# volume with any other stack whose compose file sits in a directory of that
+# name.
+name: aic-single-user
+
 services:
   # POSTGRES_PASSWORD_FILE rather than POSTGRES_PASSWORD: an environment
   # value is readable by anything that can read this container's environment
@@ -28,7 +35,12 @@ services:
   # The `…_FILE:` and `AIC_SECRETS_DIR:` values below sit on their own line.
   # Written on the key's line, a path this long matches the assigned-secret
   # shape `.claude/scripts/lib/secrets.mjs` scans for (a credential keyword,
-  # then a long value), although it is a path and not a secret.
+  # then a long value), although it is a path and not a secret. The same line
+  # break would hide a real value from that scanner too, so the scan row in
+  # test/single-user-compose.test.mjs does not cover these keys. What refuses
+  # an added password value is the exact-environment check on each service:
+  # see single-user-compose.test.mjs › "the postgres service reads its
+  # password from a Docker secret, never from an environment value".
   postgres:
     image: postgres:17-alpine
     environment:

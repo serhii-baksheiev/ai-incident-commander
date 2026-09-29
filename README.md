@@ -201,6 +201,7 @@ packages/observability    trace and run metadata
 datasets/scenarios        scenario notes (fixtures live in packages/evals)
 incident-lab              isolated live incident environment
 infra/postgres            PostgreSQL live-lane / CI support
+infra/single-user         single-user Compose stack and CLI image (docs/onboarding.md)
 docs/decisions            architecture decision records
 docs/evidence             committed evaluation evidence
 ```

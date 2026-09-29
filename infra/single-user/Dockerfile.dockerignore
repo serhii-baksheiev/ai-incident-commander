@@ -20,4 +20,13 @@ docs
 *.md
 **/.env
 **/.env.*
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/secrets
+**/credentials
 .DS_Store

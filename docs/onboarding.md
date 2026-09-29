@@ -14,6 +14,11 @@ covers the stack around the commands.
 You need Docker with Compose v2 and a checkout of this repository. Run every
 command from the repository root.
 
+Build the image through `docker compose`, which builds with BuildKit. The
+build context is the whole repository, and only BuildKit reads
+`infra/single-user/Dockerfile.dockerignore`, the file that keeps `.env` files,
+`.git` and `node_modules` out of it.
+
 1. Copy the example variables:
 
    ```bash
@@ -34,7 +39,7 @@ command from the repository root.
 
    ```bash
    mkdir -p ~/.config/aic/credentials
-   openssl rand -base64 24 > ~/.config/aic/db-password
+   (umask 077; openssl rand -base64 24 > ~/.config/aic/db-password)
    ```
 
    The password reaches PostgreSQL and the CLI as a Docker secret, a file
