@@ -53,7 +53,7 @@ export async function runDoctorCommand(argv: readonly string[], deps: DoctorDeps
 
   if (serviceName === undefined) {
     if (registry.services.length === 0) {
-      deps.stdout(JSON.stringify({ service: null, environment: null, binding: null, status: 'absent' }));
+      deps.stdout(JSON.stringify(unresolvedScopeRow(null, null, null)));
       return { allReady: false };
     }
     scope = [];

@@ -524,3 +524,26 @@ test('source check with no service or environment is refused naming the missing 
     assert.equal(lines.length, 0);
   }
 });
+
+test('source check refuses a credential-shaped service, environment or binding argument without reproducing it, and a fourth positional, before the registry is read', async () => {
+  const { runSourceCheckCommand } = await import('../apps/cli/dist/commands/source-check.js');
+  const token = ['sk', 'ant', 'api03', '7'.repeat(40)].join('-');
+  for (const argv of [[token, 'prod'], ['checkout', token], ['checkout', 'prod', token], ['checkout', 'prod', 'gh', 'extra']]) {
+    let snapshotCalls = 0;
+    const lines = [];
+    await assert.rejects(
+      () =>
+        runSourceCheckCommand(argv, {
+          store: { snapshot: async () => { snapshotCalls += 1; return { services: [], environments: [], sourceBindings: [], credentialRefs: [], actionPolicies: [] }; } },
+          resolveSecret: async () => ({ status: 'absent' }),
+          stdout: (text) => lines.push(text),
+        }),
+      (error) => {
+        assert.ok(!error.message.includes(token), 'the refusal must not reproduce the argument');
+        return true;
+      },
+    );
+    assert.equal(snapshotCalls, 0, `argv ${argv.length} tokens must not read the registry`);
+    assert.equal(lines.length, 0);
+  }
+});

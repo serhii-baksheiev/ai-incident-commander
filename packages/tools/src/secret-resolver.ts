@@ -15,7 +15,10 @@ import { SecretNameSchema } from '@aic/domain';
  * Stated limits:
  * - A symbolic link inside the directory is followed. That is deliberate:
  *   container-projected secrets (Docker, Kubernetes) are symlinks. Whoever can
- *   write the secrets directory is trusted with every secret in it.
+ *   write the secrets directory is trusted with every secret in it — see
+ *   secret-resolver.test.mjs › "states its limit: a symbolic link inside the
+ *   directory is followed to the file it names, the way container-projected
+ *   secrets are laid out".
  * - The file is opened non-blocking, so a FIFO (or other non-regular entry) is
  *   refused as `unreadable` by the `isFile()` check on the same handle instead
  *   of waiting for a writer — see secret-resolver.test.mjs › "a FIFO in the

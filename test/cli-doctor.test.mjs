@@ -396,3 +396,54 @@ test('a secret name the resolver refuses is one misconfigured row, and the run c
   const byBinding = Object.fromEntries(sink.rows().filter((row) => 'binding' in row).map((row) => [row.binding, row.status]));
   assert.deepEqual(byBinding, { gh: 'misconfigured', lab: 'ready' });
 });
+
+test('doctor refuses a credential-shaped service or environment argument without reproducing it, before the registry is read', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  const token = ['sk', 'ant', 'api03', '7'.repeat(40)].join('-');
+  for (const argv of [[token], ['checkout', token]]) {
+    let snapshotCalls = 0;
+    const sink = createStdoutSink();
+    await assert.rejects(
+      () =>
+        runDoctorCommand(argv, {
+          store: { snapshot: async () => { snapshotCalls += 1; return makeRegistry(); } },
+          resolveSecret: neverResolveSecret,
+          stdout: sink.stdout,
+        }),
+      (error) => {
+        assert.ok(!error.message.includes(token), 'the refusal must not reproduce the argument');
+        return true;
+      },
+    );
+    assert.equal(snapshotCalls, 0);
+    assert.equal(sink.lines.length, 0);
+  }
+});
+
+test('doctor refuses a third positional argument before the registry is read', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  let snapshotCalls = 0;
+  await assert.rejects(
+    () =>
+      runDoctorCommand(['checkout', 'prod', 'extra'], {
+        store: { snapshot: async () => { snapshotCalls += 1; return makeRegistry(); } },
+        resolveSecret: neverResolveSecret,
+        stdout: () => {},
+      }),
+    /extra positional/,
+  );
+  assert.equal(snapshotCalls, 0);
+});
+
+test('doctor <service> for a known service with no environments reports it absent and is not ready', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  const service = makeService({ name: 'lonely' });
+  const sink = createStdoutSink();
+  const summary = await runDoctorCommand([service.name], {
+    store: fakeStore(makeRegistry({ services: [service] })),
+    resolveSecret: neverResolveSecret,
+    stdout: sink.stdout,
+  });
+  assert.equal(summary.allReady, false);
+  assert.deepEqual(sink.rows(), [{ service: 'lonely', environment: null, binding: null, status: 'absent' }]);
+});

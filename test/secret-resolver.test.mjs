@@ -31,7 +31,12 @@
  *     throw.
  *   - a file over 64 KiB resolves `{ status: 'unreadable' }`.
  *   - a directory entry that is not a regular file (e.g. a subdirectory
- *     named like a secret) resolves `{ status: 'unreadable' }`.
+ *     named like a secret, or a FIFO, without waiting for a writer) resolves
+ *     `{ status: 'unreadable' }`.
+ *   - an empty or newline-only file resolves `{ status: 'unreadable' }`,
+ *     never a found empty value.
+ *   - a symbolic link inside the directory is followed (a stated limit:
+ *     container-projected secrets are symlinks).
  *   - exactly one trailing newline is trimmed from a found value — a second
  *     trailing newline is part of the value, not stripped too.
  *   - no returned status, and no thrown `SecretNameError`'s message, ever
@@ -42,7 +47,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -243,5 +248,16 @@ test('a FIFO in the secrets directory is unreadable, and resolving it returns pr
     const result = await tools.createDirectorySecretResolver({ directory: dir }).resolve(name);
     assert.deepEqual(result, { status: 'unreadable' });
     assert.ok(Date.now() - started < 5_000, 'resolve must not block on a FIFO with no writer');
+  });
+});
+
+test('states its limit: a symbolic link inside the directory is followed to the file it names, the way container-projected secrets are laid out', async () => {
+  await withSecretsDir(async (dir) => {
+    const target = join(dir, 'projected-data');
+    writeFileSync(target, 'projectedvalue\n');
+    const name = ['LINKED', 'SECRET'].join('_');
+    symlinkSync(target, join(dir, name));
+    const result = await tools.createDirectorySecretResolver({ directory: dir }).resolve(name);
+    assert.deepEqual(result, { status: 'found', value: 'projectedvalue' });
   });
 });

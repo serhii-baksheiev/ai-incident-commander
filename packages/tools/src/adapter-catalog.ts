@@ -56,7 +56,6 @@ function isValidLabConfig(config: Record<string, string>): config is { baseUrl: 
   return keys.length === 1 && typeof config.baseUrl === 'string';
 }
 
-/** `{ owner, repo }` exactly — no extra key, no missing key. */
 /** A lab base URL must parse and use http or https; anything else is `invalid-config`. */
 function isHttpUrl(value: string): boolean {
   try {
@@ -67,6 +66,7 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/** `{ owner, repo }` exactly — no extra key, no missing key. */
 function isValidGithubConfig(config: Record<string, string>): config is { owner: string; repo: string } {
   const keys = Object.keys(config);
   return keys.length === 2 && typeof config.owner === 'string' && typeof config.repo === 'string';

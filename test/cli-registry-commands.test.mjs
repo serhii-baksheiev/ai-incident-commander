@@ -739,3 +739,24 @@ test('a service, environment or record name that is not a registry slug is refus
     }
   }
 });
+
+test('an unknown flag whose name is itself credential-shaped is refused without reproducing it, even though it is lowercase and hyphenated', async () => {
+  const registry = await loadRegistryCommands();
+  // Lowercase members of three families the domain credential screen knows,
+  // assembled at runtime rather than written as literals.
+  const shapes = [['sk', 'ant', 'a'.repeat(16)].join('-'), ['xoxb', 'a'.repeat(16)].join('-'), ['glpat', 'a'.repeat(16)].join('-')];
+  for (const shape of shapes) {
+    const { store, calls } = createFakeStore();
+    const { stdout, lines } = createStdoutSink();
+    await assert.rejects(
+      () => registry.runRegistryCommand('service', ['add', 'checkout', `--${shape}`, 'x'], { store, stdout }),
+      (error) => {
+        assert.match(error.message, /unknown flag/);
+        assert.ok(!error.message.includes(shape), `the refusal must not reproduce a credential-shaped flag name: ${error.message}`);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(lines.length, 0);
+  }
+});
