@@ -703,8 +703,9 @@ for (const status of [401, 403]) {
 
 test('an HTTP 429 from lab@1 is unavailable/rate_limited', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
   const constructed = await createBoundInvestigationExecutor({
-    bindings: [makeBinding()],
+    bindings: [binding],
     mode: 'live',
     store: tools.createMemoryReplayStore(),
     clock: fixedClock,
@@ -714,13 +715,14 @@ test('an HTTP 429 from lab@1 is unavailable/rate_limited', async () => {
 
   assert.equal(constructed.ok, true, JSON.stringify(constructed));
   const outcome = await constructed.executor.execute(baseContext());
-  assert.deepEqual(outcome, { status: 'unavailable', reason: 'rate_limited' });
+  assert.deepEqual(outcome, { status: 'unavailable', reason: 'rate_limited', refusal: { reason: 'rate_limited', sourceBindingId: binding.id } });
 });
 
 test('a source call that never settles within the configured timeoutMs is unavailable/timeout', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
   const constructed = await createBoundInvestigationExecutor({
-    bindings: [makeBinding()],
+    bindings: [binding],
     mode: 'live',
     store: tools.createMemoryReplayStore(),
     clock: fixedClock,
@@ -731,7 +733,7 @@ test('a source call that never settles within the configured timeoutMs is unavai
 
   assert.equal(constructed.ok, true, JSON.stringify(constructed));
   const outcome = await constructed.executor.execute(baseContext());
-  assert.deepEqual(outcome, { status: 'unavailable', reason: 'timeout' });
+  assert.deepEqual(outcome, { status: 'unavailable', reason: 'timeout', refusal: { reason: 'timeout', sourceBindingId: binding.id } });
 });
 
 test('an HTTP 400 from lab@1 is error/adapter_error, with no echoed body text, and a typed refusal naming the routed binding (AIC-146 b4)', async () => {
@@ -818,7 +820,7 @@ test('a github@1 binding routes no ToolId: every read-only tool id is refused un
   for (const { id: toolId } of tools.READ_ONLY_TOOL_REGISTRY) {
     // eslint-disable-next-line no-await-in-loop
     const outcome = await constructed.executor.execute(baseContext({ tool: toolId, input: {} }));
-    assert.deepEqual(outcome, { status: 'unavailable', reason: 'unavailable' }, `tool ${toolId}`);
+    assert.deepEqual(outcome, { status: 'unavailable', reason: 'unavailable', refusal: { reason: 'unavailable', sourceBindingId: null } }, `tool ${toolId}`);
   }
   assert.equal(fetchFn.calls.length, 0);
 });
@@ -987,7 +989,7 @@ test('a binding whose adapter describes a non-read-only operation alongside a re
   assert.equal(constructed.ok, true, JSON.stringify(constructed));
 
   const rollbackOutcome = await constructed.executor.execute(baseContext({ tool: 'rollback', input: {} }));
-  assert.deepEqual(rollbackOutcome, { status: 'unavailable', reason: 'unavailable' });
+  assert.deepEqual(rollbackOutcome, { status: 'unavailable', reason: 'unavailable', refusal: { reason: 'unavailable', sourceBindingId: null } });
   assert.equal(calls.execute, 0, 'a non-read-only operation must never reach source.execute()');
 
   const deploymentsOutcome = await constructed.executor.execute(baseContext({ tool: 'deployments' }));
