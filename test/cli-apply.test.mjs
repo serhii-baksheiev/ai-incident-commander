@@ -907,6 +907,42 @@ services:
   }
 });
 
+test('a collection-valued mapping key in the manifest, run through the built CLI, exits non-zero and never lets the key text reach stdout or stderr', async () => {
+  // yaml logs this case from toJS itself (a collection key is stringified,
+  // and the warning quotes the first 36 characters of the stringified key),
+  // so it is a separate path from the parse-time warnings the row above
+  // covers, and the assertion is on a prefix of the value.
+  const secret = pastedSecret();
+  const secretPrefix = secret.slice(0, 16);
+  const dir = mkdtempSync(join(tmpdir(), 'aic-cli-apply-'));
+  const filePath = join(dir, 'manifest.yaml');
+  const manifest = `apiVersion: aic.onboarding/v1
+kind: Onboarding
+services: []
+? [${secret}]
+: 1
+`;
+  writeFileSync(filePath, manifest, 'utf8');
+  try {
+    const result = spawnSync(process.execPath, [cliPath, 'apply', '-f', filePath], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: childEnv(),
+    });
+    assert.notEqual(
+      result.status,
+      0,
+      `expected a non-zero exit for an unrecognised top-level key; stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.ok(
+      !result.stdout.includes(secretPrefix) && !result.stderr.includes(secretPrefix),
+      `neither stdout nor stderr may echo any of the collection key's text; stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a manifest carrying an unresolved YAML tag on an ordinary, non-credential-shaped field is refused before any store call, rather than silently applying the tag\'s fallback value', async () => {
   const { runApplyCommand } = await loadApplyCommand();
   const { store, calls } = createFakeRegistryStore();

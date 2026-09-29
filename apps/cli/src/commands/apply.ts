@@ -96,15 +96,19 @@ function readManifestText(path: string): string {
  * A YAML refusal — syntax error, duplicate key, or an unresolved tag warning
  * — names only the line and column a real `yaml` `errors`/`warnings` entry
  * carries — never `error.message`, whose own rendering includes a source
- * snippet of the surrounding manifest text. `logLevel: 'error'` turns off
- * `yaml`'s own console logging, so no source line reaches stderr either way;
- * a warning (an unresolved tag) is read as a refusal here, not silently
- * applied with its fallback value.
+ * snippet of the surrounding manifest text. `parseDocument` collects its
+ * errors and warnings rather than logging them, and a warning (an unresolved
+ * tag) is read as a refusal here, not silently applied with its fallback
+ * value. `toJS` logs one warning of its own — a collection-valued key, quoted
+ * — and `logLevel: 'error'` is what keeps that one off stderr.
  * see cli-apply.test.mjs › "invalid YAML syntax is refused naming only the
  * line and column, never the surrounding text"
  * see cli-apply.test.mjs › "an unresolved YAML tag in the manifest, run
  * through the built CLI, exits non-zero and never lets the credential-shaped
  * value or the tag text reach stdout or stderr"
+ * see cli-apply.test.mjs › "a collection-valued mapping key in the manifest,
+ * run through the built CLI, exits non-zero and never lets the key text reach
+ * stdout or stderr"
  */
 function parseManifestYaml(path: string, text: string): unknown {
   const document = parseDocument(text, { uniqueKeys: true, logLevel: 'error' });
