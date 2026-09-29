@@ -752,6 +752,141 @@ test('on an error result: records an error trial with no evidenceIds, emits no e
   assert.deepEqual(result.evidence, []);
 });
 
+/* -------------------------------------------------------------------------- */
+/* AIC-146 b4: the typed refusal reason is recorded on the Trial              */
+/* -------------------------------------------------------------------------- */
+
+/** A well-formed TrialRefusal, fresh every call, mirroring validProvenance above. */
+function validRefusal(overrides = {}) {
+  return { reason: 'denied', sourceBindingId: randomUUID(), ...overrides };
+}
+
+test('on an unavailable result: a well-formed refusal naming a binding UUID is recorded on the trial (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const refusal = validRefusal();
+  const execute = recordingExecutor(async () => ({ status: 'unavailable', reason: 'denied', refusal }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.deepEqual(result.trials[0].refusal, refusal);
+  domain.TrialSchema.parse(result.trials[0]);
+});
+
+test('on an unavailable result: a well-formed refusal naming a null sourceBindingId (no route) is recorded on the trial (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const refusal = validRefusal({ reason: 'unavailable', sourceBindingId: null });
+  const execute = recordingExecutor(async () => ({ status: 'unavailable', reason: 'unavailable', refusal }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.deepEqual(result.trials[0].refusal, refusal);
+  domain.TrialSchema.parse(result.trials[0]);
+});
+
+test('on an unavailable result carrying no refusal: the recorded trial carries no refusal key at all (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  // A planned-replay port's free-text reason: exactly what the b2 golden's
+  // scripted/replay lanes produce. It must never become a refusal.
+  const execute = recordingExecutor(async () => ({ status: 'unavailable', reason: 'tool disabled' }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(
+    Object.hasOwn(result.trials[0], 'refusal'),
+    false,
+    'an outcome carrying no refusal must record a trial with no refusal key, not one set to undefined',
+  );
+});
+
+test('on an error result: a well-formed refusal naming a binding UUID is recorded on the trial (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const refusal = validRefusal({ reason: 'adapter_error' });
+  const execute = recordingExecutor(async () => ({ status: 'error', message: 'adapter_error', refusal }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.deepEqual(result.trials[0].refusal, refusal);
+  domain.TrialSchema.parse(result.trials[0]);
+});
+
+test('on an error result carrying no refusal: the recorded trial carries no refusal key at all (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'error', message: 'boom' }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(Object.hasOwn(result.trials[0], 'refusal'), false);
+});
+
+test('on an unavailable result: an accessor "refusal" on the outcome makes the node throw and records nothing, and its getter is never called (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  let getterCalls = 0;
+  const outcome = { status: 'unavailable', reason: 'denied' };
+  Object.defineProperty(outcome, 'refusal', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error('SENTINEL: outcome.refusal getter must never be called');
+    },
+  });
+  const execute = recordingExecutor(async () => outcome);
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState));
+  assert.equal(getterCalls, 0, 'the accessor\'s own getter must never be invoked');
+});
+
+test('on an unavailable result: a refusal carrying an unknown key makes the node throw and records nothing (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({
+    status: 'unavailable',
+    reason: 'denied',
+    refusal: { ...validRefusal(), extra: 'unused-fixture' },
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState));
+});
+
+test('on an unavailable result: a refusal whose reason is outside the six frozen reasons makes the node throw and records nothing (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({
+    status: 'unavailable',
+    reason: 'denied',
+    refusal: validRefusal({ reason: 'not-a-real-reason' }),
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState));
+});
+
+test('on an unavailable result: a refusal whose sourceBindingId is neither a UUID nor null makes the node throw and records nothing (AIC-146 b4)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({
+    status: 'unavailable',
+    reason: 'denied',
+    refusal: validRefusal({ sourceBindingId: 'incident-lab' }),
+  }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState));
+});
+
 test('propagates a thrown error from execute instead of swallowing it', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const execute = async () => {

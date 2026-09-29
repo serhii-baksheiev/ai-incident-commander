@@ -239,9 +239,10 @@ test('publishes explicit state and baseline status-rule versions', () => {
   // AIC-123 slice 1 (owner ruling D1): the schema bumps 4 -> 5 for typed,
   // versioned predictions and the hypothesis cause, with no migration.
   // AIC-146 slice a bumps it again, 5 -> 6, for Evidence's optional
-  // provenance field — see test/state-cutover.test.mjs for the resume-side
-  // refusal each bump forces.
-  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 6);
+  // provenance field, and slice b4 bumps it once more, 6 -> 7, for the
+  // optional `Trial.refusal` field — see test/state-cutover.test.mjs for the
+  // resume-side refusal each bump forces.
+  assert.equal(domain.INCIDENT_STATE_SCHEMA_VERSION, 7);
   // AIC-119 slice 1 bumps the current status-rules version to v0.2, while
   // `BASELINE_STATUS_RULES` stays the historical v0.1 table (a literal here,
   // not `domain.STATUS_RULES_VERSION`, or this pin would float with the

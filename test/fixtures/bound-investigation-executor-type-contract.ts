@@ -25,6 +25,7 @@
  * test/bound-investigation-executor.test.mjs's own "compiles the
  * bound-investigation-executor type contract" row, which runs the former.
  */
+import type { TrialRefusal } from '@aic/domain';
 import { createInvestigationNodes } from '@aic/graph';
 import {
   createBoundInvestigationExecutor,
@@ -39,6 +40,17 @@ import type {
 // The one true shape a port's `execute` must satisfy: read off the real
 // function `createInvestigationNodes` declares, never restated by hand here.
 type CreateInvestigationNodesExecuteParam = Parameters<typeof createInvestigationNodes>[0]['execute'];
+
+// AIC-146 b4: the unavailable/error variants gain an optional `refusal`,
+// typed as exactly `@aic/domain`'s own `TrialRefusal`, never a second,
+// hand-typed copy of that shape.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type UnavailableOutcome = Extract<BoundInvestigationExecutorOutcome, { status: 'unavailable' }>;
+type ErrorOutcome = Extract<BoundInvestigationExecutorOutcome, { status: 'error' }>;
+const unavailableRefusalIsExactlyOptional: Same<UnavailableOutcome['refusal'], TrialRefusal | undefined> = true;
+const errorRefusalIsExactlyOptional: Same<ErrorOutcome['refusal'], TrialRefusal | undefined> = true;
+void unavailableRefusalIsExactlyOptional;
+void errorRefusalIsExactlyOptional;
 
 function acceptsCreateInvestigationNodesExecute(execute: CreateInvestigationNodesExecuteParam): void {
   void execute;

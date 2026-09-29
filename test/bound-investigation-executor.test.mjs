@@ -679,10 +679,11 @@ test('a genuine describe() mismatch among two otherwise-healthy bindings is stil
 /* -------------------------------------------------------------------------- */
 
 for (const status of [401, 403]) {
-  test(`an HTTP ${status} from lab@1 is unavailable/denied`, async () => {
+  test(`an HTTP ${status} from lab@1 is unavailable/denied, with a typed refusal naming the routed binding (AIC-146 b4)`, async () => {
     const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+    const binding = makeBinding();
     const constructed = await createBoundInvestigationExecutor({
-      bindings: [makeBinding()],
+      bindings: [binding],
       mode: 'live',
       store: tools.createMemoryReplayStore(),
       clock: fixedClock,
@@ -692,7 +693,11 @@ for (const status of [401, 403]) {
 
     assert.equal(constructed.ok, true, JSON.stringify(constructed));
     const outcome = await constructed.executor.execute(baseContext());
-    assert.deepEqual(outcome, { status: 'unavailable', reason: 'denied' });
+    assert.deepEqual(outcome, {
+      status: 'unavailable',
+      reason: 'denied',
+      refusal: { reason: 'denied', sourceBindingId: binding.id },
+    });
   });
 }
 
@@ -729,10 +734,11 @@ test('a source call that never settles within the configured timeoutMs is unavai
   assert.deepEqual(outcome, { status: 'unavailable', reason: 'timeout' });
 });
 
-test('an HTTP 400 from lab@1 is error/adapter_error, with no echoed body text', async () => {
+test('an HTTP 400 from lab@1 is error/adapter_error, with no echoed body text, and a typed refusal naming the routed binding (AIC-146 b4)', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
   const constructed = await createBoundInvestigationExecutor({
-    bindings: [makeBinding()],
+    bindings: [binding],
     mode: 'live',
     store: tools.createMemoryReplayStore(),
     clock: fixedClock,
@@ -745,6 +751,7 @@ test('an HTTP 400 from lab@1 is error/adapter_error, with no echoed body text', 
 
   assert.equal(outcome.status, 'error');
   assert.equal(outcome.message, 'adapter_error');
+  assert.deepEqual(outcome.refusal, { reason: 'adapter_error', sourceBindingId: binding.id });
   assert.equal(JSON.stringify(outcome).includes('do-not-echo-this-upstream-body-text'), false);
 });
 
@@ -752,7 +759,7 @@ test('an HTTP 400 from lab@1 is error/adapter_error, with no echoed body text', 
 /* No route for the requested tool                                           */
 /* -------------------------------------------------------------------------- */
 
-test('a tool no binding describes is refused unavailable, without ever reaching the registry: store.get and fetch are never called', async () => {
+test('a tool no binding describes is refused unavailable, without ever reaching the registry: store.get and fetch are never called, and the refusal names no binding (AIC-146 b4)', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
   const fetchFn = createRefusingFetch('no route means fetch is never reached');
 
@@ -774,7 +781,11 @@ test('a tool no binding describes is refused unavailable, without ever reaching 
   assert.equal(constructed.ok, true, JSON.stringify(constructed));
   const outcome = await constructed.executor.execute(baseContext({ tool: 'not-a-real-tool', input: {} }));
 
-  assert.deepEqual(outcome, { status: 'unavailable', reason: 'unavailable' });
+  assert.deepEqual(outcome, {
+    status: 'unavailable',
+    reason: 'unavailable',
+    refusal: { reason: 'unavailable', sourceBindingId: null },
+  });
   assert.equal(fetchFn.calls.length, 0);
 });
 
