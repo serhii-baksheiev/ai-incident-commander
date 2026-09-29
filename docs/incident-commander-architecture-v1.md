@@ -143,6 +143,19 @@ type Evidence = {
   rawRef: string;
   reliability?: "high" | "medium" | "low";
   observation?: { version: 1; facts: ObservedFact[] }; // 1 to 16 facts; set at the replay boundary from the observation table
+  provenance?: EvidenceProvenance; // absent on replay and scripted evidence
+};
+
+// Where a piece of Evidence came from, as the bound source registry recorded it
+// at fetch time (docs/decisions/integration-boundary.md, "Trust boundary").
+// Never a credential's value or secret name. A tool's own output cannot set
+// it: the graph drops a supplied `provenance` when it records the evidence.
+type EvidenceProvenance = {
+  sourceBindingId: string; // UUID
+  adapter: string; // "<adapterId>@<adapterVersion>"
+  credentialRefId: string | null; // null for a binding with no credential
+  fetchedAt: string; // ISO-8601 UTC
+  requestFingerprint: string; // "sha256:<64 hex>"
 };
 
 // Typed data about one evidence item, in the same three forms as ExpectedObservation.
@@ -317,13 +330,14 @@ the test tree returns. The per-budget calibration statements are published by
 `summarizeBudgetPolicyEvidence`.
 see budget-policy.test.mjs › "states in the report that llmCallBudget is not empirically calibrated, and why"
 
-`schemaVersion` is `5`. It moves whenever state written under one version
+`schemaVersion` is `6`. It moves whenever state written under one version
 would be read wrongly by the other:
 - `2` for the logical budget counters;
 - `3` for `resumeCount`;
 - `4` for `incident.primaryScope` (AIC-96, the v0.2 → v0.3 cutover);
 - `5` for typed expected observations and the optional hypothesis `cause`
-  (AIC-123).
+  (AIC-123);
+- `6` for the optional `Evidence.provenance` (AIC-146).
 
 State persisted under an older version is refused rather than coerced to an
 invented usage, scope or observation. On the `kind: 'start'` path the schema's
@@ -336,6 +350,10 @@ The message names what that version lacks. Below v4 that is the `primaryScope`:
 see state-cutover.test.mjs › "refuses to resume a schema-version-3 checkpoint paused at the HITL interrupt, because it predates primaryScope"
 At v4 it is the typed predictions and the hypothesis cause:
 see state-cutover.test.mjs › "refuses to resume a schema-version-4 checkpoint paused at the HITL interrupt, because it predates typed predictions and hypothesis cause"
+A v5 checkpoint lacks nothing, because `provenance` is optional. It is refused
+by the version policy alone, and the message says it predates evidence
+provenance rather than naming a missing field:
+see state-cutover.test.mjs › "refuses to resume a schema-version-5 checkpoint paused at the HITL interrupt, because it predates evidence provenance"
 The `aic start` / `aic resume` spike runner's checkpoints carry no incident and
 are read unchanged:
 see state-cutover.test.mjs › "resumes a spike-runner checkpoint stamped at schema version 3 and returns its trials/evidence unchanged (pin: this state carries no incident)"
