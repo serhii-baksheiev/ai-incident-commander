@@ -357,7 +357,17 @@ function parseReplayFileContent(raw: unknown): ReplayFileContent {
   }
   const incidentResult = IncidentSchema.safeParse(record.incident);
   if (!incidentResult.success) {
-    throw new Error(`--replay file incident is invalid: ${incidentResult.error.message}`);
+    // Zod's rendered message carries an unrecognised key verbatim, and a key
+    // is file text no other bound covers, so the refusal is built from each
+    // issue's fixed code and its path, every path segment capped.
+    const detail = incidentResult.error.issues
+      .slice(0, 5)
+      .map((issue) => {
+        const path = issue.path.map((segment) => JSON.stringify(String(segment).slice(0, 40))).join('.');
+        return `${path || '(root)'}: ${issue.code}`;
+      })
+      .join('; ');
+    throw new Error(`--replay file incident is invalid: ${detail}`);
   }
   const fixture = parseFixture(record.fixture);
   return {

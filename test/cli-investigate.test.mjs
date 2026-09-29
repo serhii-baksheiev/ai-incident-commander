@@ -1226,9 +1226,9 @@ test(
 );
 
 /**
- * a symlink to
- * `/dev/zero` has `stat().size === 0` too, so the size bound never fires and
- * an unbounded read runs indefinitely. Same fix, same fail-closed refusal.
+ * A symlink to `/dev/zero` has `stat().size === 0` too, so a stat-then-read
+ * size bound would never fire for it and an unbounded read would never end.
+ * It is refused by the same not-a-regular-file check, before any read.
  */
 test(
   'a --replay path that is a symlink to /dev/zero, not a regular file, is refused by name before any read, and never hangs reading an infinite device',
@@ -1261,11 +1261,10 @@ test(
 );
 
 /**
- * the `.result` and
- * `.input` refusals echo the untrusted value through an unbounded recursive
- * `JSON.stringify` BEFORE any bounded walk runs. `ownRecord` rejects arrays,
- * so a deep ARRAY never reaches `boundedJsonViolation` at all — it dies in
- * the throw expression's own `JSON.stringify`, printing the bare
+ * The `.result` and `.input` values pass the bounded walk before any shape
+ * check reads them, and no refusal echoes them through `JSON.stringify`. A
+ * deep ARRAY is the shape that would otherwise reach such an echo first,
+ * because `ownRecord` rejects arrays; echoing it would print the bare
  * `RangeError` message the CLI's other deep-value rows above already forbid
  * for the object-nesting shape. Built iteratively, never recursively, the
  * same way the existing 200000-deep OBJECT `.input` row above builds its
@@ -1361,10 +1360,9 @@ test(
 );
 
 /**
- * the same echo is bounded only by
- * the 16 MiB file bound, so a large non-record `.result` prints its whole
- * value to the operator's stderr. The refusal
- * must name the field and the value's KIND, never the value itself.
+ * A large non-record `.result` is bounded only by the 16 MiB file bound, so
+ * echoing it would print the whole value to the operator's stderr. The
+ * refusal names the field and the value's KIND, never the value itself.
  */
 test(
   'a --replay file whose fixture.entries[0].result is a ~12 MiB non-object string is refused with bounded stderr, never echoing the value whole',
@@ -1446,11 +1444,9 @@ test(
 );
 
 /**
- * `'input' in entryRecord`
- * treats `input` as optional, while `PlannedReplayScenarioEntry`
- * (`packages/tools/replay/index.ts`) declares it required. An entry with no
- * `input` at all must be refused the same way a present-but-wrong-shaped one
- * already is, naming the same field.
+ * `PlannedReplayScenarioEntry` (`packages/tools/replay/index.ts`) declares
+ * `input` required. An entry with no `input` at all is refused the same way a
+ * present-but-wrong-shaped one is, naming the same field.
  */
 test(
   'a --replay file whose fixture.entries[0] carries no input field at all is refused naming fixture.entries[0].input, since PlannedReplayScenarioEntry declares input required',
@@ -1479,8 +1475,8 @@ test(
 );
 
 /* -------------------------------------------------------------------------- */
-/* 16. No refusal echoes an untrusted value whole: budget, asOf and          */
-/*     fixture.version name the field and the value's kind too.             */
+/* 16. The budget, asOf and fixture.version refusals name the field and    */
+/*     the value's kind, never the value whole.                             */
 /* -------------------------------------------------------------------------- */
 
 for (const [field, mutate] of [
@@ -1529,3 +1525,80 @@ for (const field of ['budget.maxIterations', 'fixture.version']) {
     });
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* 17. A required field that is absent is refused with its own message, not  */
+/*     with whatever a later shape check happens to say about `undefined`.    */
+/* -------------------------------------------------------------------------- */
+
+for (const [field, drop, expected] of [
+  [
+    'incident',
+    (content) => {
+      const { incident, ...rest } = content;
+      return rest;
+    },
+    'aic: --replay file is missing required field incident',
+  ],
+  [
+    'fixture.entries[0].result',
+    (content) => {
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const { result, ...entry } = firstEntry;
+      return { ...content, fixture: { ...content.fixture, entries: [entry, ...restEntries] } };
+    },
+    'aic: --replay file fixture.entries[0].result is required',
+  ],
+  [
+    'fixture.entries[0].input',
+    (content) => {
+      const [firstEntry, ...restEntries] = content.fixture.entries;
+      const { input, ...entry } = firstEntry;
+      return { ...content, fixture: { ...content.fixture, entries: [entry, ...restEntries] } };
+    },
+    'aic: --replay file fixture.entries[0].input is required',
+  ],
+]) {
+  test(`a --replay file with no ${field} at all is refused with exactly "${expected}" on stderr`, async () => {
+    await withTempDir(async (dir) => {
+      const scenario = calibrationScenario();
+      const content = drop(replayFileContentFor(annotatedFixtureFor(scenario)));
+      const replayPath = writeReplayFile(dir, content);
+
+      const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+      const result = runCli(args);
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.equal(result.stdout, '', `no stdout may be written on refusal: ${commandDiagnostics(args, result)}`);
+      assert.equal(
+        result.stderr.trim(),
+        expected,
+        `stderr must be exactly the missing-field refusal for ${field}: ${commandDiagnostics(args, result)}`,
+      );
+    });
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* 18. An incident the domain schema refuses is reported by issue code and    */
+/*     path, never by a message that carries the file's own text.            */
+/* -------------------------------------------------------------------------- */
+
+test('a --replay file whose incident.primaryScope carries a ~12 MiB unrecognised key is refused with bounded stderr naming incident, never echoing the key', async () => {
+  await withTempDir(async (dir) => {
+    const scenario = calibrationScenario();
+    const content = replayFileContentFor(annotatedFixtureFor(scenario));
+    const bigKey = 'k'.repeat(12 * 1024 * 1024);
+    content.incident = { ...content.incident, primaryScope: { ...content.incident.primaryScope, [bigKey]: 1 } };
+    const replayPath = writeReplayFile(dir, content);
+
+    const args = ['investigate', '--replay', replayPath, '--roles', 'scripted'];
+    const result = runCli(args);
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.equal(result.stdout, '', 'no stdout may be written on refusal');
+    assert.ok(result.stderr.length < 4096, `stderr must stay bounded, got ${result.stderr.length} bytes`);
+    assert.match(result.stderr, /--replay file incident is invalid: /, 'stderr must name incident as the problem');
+    assert.ok(!result.stderr.includes('kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk'), 'stderr must not echo the key');
+  });
+});
