@@ -300,8 +300,9 @@ async function main() {
       `refusing to evaluate the hold-out with uncommitted changes under a candidate path:\n${dirty}\nA fingerprint that does not describe what ran is not evidence.`,
     );
   }
-  // 2b. package.json, .npmrc and npm-shrinkwrap.json configure the command
-  // line the lane runs under and are not part of the candidate fingerprint
+  // 2b. package.json and .npmrc configure the command line the lane runs
+  // under, and npm-shrinkwrap.json decides what `npm ci` installs; none is
+  // part of the candidate fingerprint
   // (package.json deliberately so — see FINAL_EVALUATION_CANDIDATE_PATHS's
   // comment in final-evaluation-record.ts), so an uncommitted change to any
   // of them would make a record whose workingTreeClean is untrue.
@@ -309,7 +310,7 @@ async function main() {
   const dirtyCommandLineFiles = git(['status', '--porcelain', '--', 'package.json', '.npmrc', 'npm-shrinkwrap.json']);
   if (dirtyCommandLineFiles.length > 0) {
     throw new Error(
-      `refusing to evaluate the hold-out with uncommitted changes to the command line it runs under:\n${dirtyCommandLineFiles}\nA fingerprint that does not describe what ran is not evidence.`,
+      `refusing to evaluate the hold-out with uncommitted changes to the command line it runs under or to what npm installs for it:\n${dirtyCommandLineFiles}\nA fingerprint that does not describe what ran is not evidence.`,
     );
   }
 
