@@ -1,0 +1,32 @@
+# Build context for infra/single-user/Dockerfile is the repository root
+# (../..), so this file excludes the whole monorepo's working tree except
+# what the CLI image's build actually needs: manifests, tsconfig files, and
+# the apps/packages source trees the Dockerfile COPYs explicitly.
+node_modules
+**/node_modules
+.git
+.claude
+.codex
+.agents
+.rig
+**/dist
+coverage
+test
+**/tests
+**/*.test.mjs
+**/*.test.ts
+**/*.live.mjs
+docs
+*.md
+**/.env
+**/.env.*
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/secrets
+**/credentials
+.DS_Store

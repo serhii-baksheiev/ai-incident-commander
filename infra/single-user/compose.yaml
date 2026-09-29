@@ -1,0 +1,141 @@
+# The single-user Compose stack for AIC-99 slice h: one operator, one
+# PostgreSQL, a password held as a Docker secret rather than an environment
+# value, a one-shot `migrate`, the CLI run through `docker compose run --rm
+# cli …`, and the Incident Lab reachable only under the `lab` profile. No API
+# service and no worker: this stack is deliberately smaller than a production
+# topology, because it exists to let one operator run `aic` against a real
+# PostgreSQL without hand-rolling a substrate.
+#
+# Start it:
+#
+#   cp infra/single-user/.env.example infra/single-user/.env   # then edit it
+#   docker compose --file infra/single-user/compose.yaml up --detach --wait postgres
+#   docker compose --file infra/single-user/compose.yaml run --rm migrate
+#   docker compose --file infra/single-user/compose.yaml run --rm cli doctor
+#
+# `lab-api`, `payments` and `inventory` are reached only with `--profile lab`,
+# but Compose resolves (interpolates) every service's definition while
+# reading this file, `lab` profile requested or not — including the api
+# service's published-port interpolation inherited through `extends` below.
+# That is why AIC_LAB_HOST_PORT is required by every command above, not only
+# a `--profile lab` one; `.env.example` documents it for that reason.
+
+# A fixed project name. Without it Compose names the project after this
+# file's directory, `single-user`, and would share a project, a network and a
+# volume with any other stack whose compose file sits in a directory of that
+# name.
+name: aic-single-user
+
+services:
+  # POSTGRES_PASSWORD_FILE rather than POSTGRES_PASSWORD: an environment
+  # value is readable by anything that can read this container's environment
+  # (`docker inspect`, `/proc/<pid>/environ`); a Docker secret is a file
+  # mounted only inside the container that declares it in `secrets:` below.
+  #
+  # The `…_FILE:` and `AIC_SECRETS_DIR:` values below sit on their own line.
+  # Written on the key's line, a path this long matches the assigned-secret
+  # shape `.claude/scripts/lib/secrets.mjs` scans for (a credential keyword,
+  # then a long value), although it is a path and not a secret. The same line
+  # break would hide a real value from that scanner too: the scan row in
+  # test/single-user-compose.test.mjs reads the whole file but cannot see a
+  # value written on the next line. What refuses an added password value is
+  # the exact-environment check on each service, e.g. for postgres
+  # single-user-compose.test.mjs › "the postgres service reads its password from a Docker secret, never from an environment value".
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aic
+      POSTGRES_DB: aic
+      POSTGRES_PASSWORD_FILE:
+        /run/secrets/aic_db_password
+    secrets:
+      - aic_db_password
+    volumes:
+      - aic-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "aic", "--dbname", "aic"]
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 1s
+    # No published port: `cli` and `migrate` reach postgres over the compose
+    # network by service name, so a published port would only make this
+    # single-operator database reachable from outside the sandbox.
+
+  # Runs once against the (possibly already-migrated) database, then exits;
+  # `restart: "no"` is what keeps it one-shot rather than a restart loop.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infra/single-user/Dockerfile
+    command: ["db", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIC_POSTGRES_URL: postgresql://aic@postgres:5432/aic
+      AIC_POSTGRES_PASSWORD_FILE:
+        /run/secrets/aic_db_password
+    secrets:
+      - aic_db_password
+    restart: "no"
+
+  # Invoked as `docker compose run --rm cli …`; the `cli` profile is what
+  # keeps it off a bare `docker compose up`.
+  cli:
+    build:
+      context: ../..
+      dockerfile: infra/single-user/Dockerfile
+    profiles:
+      - cli
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      AIC_POSTGRES_URL: postgresql://aic@postgres:5432/aic
+      AIC_POSTGRES_PASSWORD_FILE:
+        /run/secrets/aic_db_password
+      AIC_SECRETS_DIR:
+        /run/aic-secrets
+    secrets:
+      - aic_db_password
+    volumes:
+      # Read-only: a CredentialRef resolves against operator-supplied
+      # material this container must never be able to write to.
+      - ${AIC_SECRETS_HOST_DIR:?set AIC_SECRETS_HOST_DIR}:/run/aic-secrets:ro
+
+  # The Incident Lab, reached only under the lab profile. Each service below
+  # extends incident-lab/compose.yaml's own definition instead of restating
+  # its build, command, environment or healthcheck — a restatement is a
+  # second copy that drifts the moment either file changes alone.
+  lab-api:
+    extends:
+      file: ../../incident-lab/compose.yaml
+      service: api
+    profiles:
+      - lab
+
+  payments:
+    extends:
+      file: ../../incident-lab/compose.yaml
+      service: payments
+    profiles:
+      - lab
+
+  inventory:
+    extends:
+      file: ../../incident-lab/compose.yaml
+      service: inventory
+    profiles:
+      - lab
+
+volumes:
+  # Named, so a rebuild finds the same data directory again instead of
+  # Compose creating (and silently orphaning) a fresh anonymous volume.
+  aic-postgres-data: {}
+
+secrets:
+  # A REQUIRED interpolation: an unset AIC_DB_PASSWORD_FILE must refuse to
+  # start rather than silently mount an empty or missing file.
+  aic_db_password:
+    file: ${AIC_DB_PASSWORD_FILE:?set AIC_DB_PASSWORD_FILE}

@@ -201,6 +201,7 @@ packages/observability    trace and run metadata
 datasets/scenarios        scenario notes (fixtures live in packages/evals)
 incident-lab              isolated live incident environment
 infra/postgres            PostgreSQL live-lane / CI support
+infra/single-user         single-user Compose stack and CLI image (docs/onboarding.md)
 docs/decisions            architecture decision records
 docs/evidence             committed evaluation evidence
 ```
@@ -241,8 +242,9 @@ npm run cli -- --help
 ```
 
 The onboarding commands keep their registry in PostgreSQL and read its
-connection string from `AIC_POSTGRES_URL`. Apply the schema once, then
-register a scope:
+connection string from `AIC_POSTGRES_URL`. To run them against a PostgreSQL
+in Docker instead of your own, see [Onboarding on one machine](docs/onboarding.md).
+Apply the schema once, then register a scope:
 
 ```bash
 npm run cli -- db migrate
@@ -468,6 +470,7 @@ The UI design gate is intentionally late: backend/domain contracts should exist 
 | [Architecture v1](docs/incident-commander-architecture-v1.md) | Canonical domain, graph, tool, evaluation, and roadmap baseline |
 | [Integration boundary](docs/decisions/integration-boundary.md) | Service × Environment integration model |
 | [Durable run execution](docs/decisions/durable-run-execution.md) | PostgreSQL ownership, fencing, committed execution, recovery |
+| [Onboarding on one machine](docs/onboarding.md) | The single-user Compose stack: PostgreSQL, migrate, the CLI and the Incident Lab |
 | [v0.2 exit gate](docs/v0.2-exit-gate.md) | Current v0.2 acceptance evidence and gate history |
 | [Evidence](docs/evidence) | Versioned calibration, Oracle, preregistration, and final evaluation artifacts |
 | [Journal](journal/README.md) | Human-readable development history |
