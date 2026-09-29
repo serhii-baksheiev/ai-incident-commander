@@ -1,13 +1,14 @@
 import {
-  EvidenceSchema,
   InvestigationTestSchema,
   TrialSchema,
   type Evidence,
+  type EvidenceProvenance,
   type IncidentState,
   type InvestigationTest,
   type Trial,
 } from '@aic/domain';
 
+import { ingestEvidence } from '../evidence-ingestion.js';
 import { deriveTrialId } from '../identity.js';
 import type { InvestigationNode, InvestigationNodeResult } from '../investigation.js';
 import type { ExecuteInvestigationContext } from '../index.js';
@@ -24,7 +25,7 @@ import type { ExecuteInvestigationContext } from '../index.js';
  * ToolResult: every tool result is accepted and both name the same statuses".
  */
 export type ExecuteInvestigationOutcome =
-  | { status: 'ok'; output: readonly Evidence[] }
+  | { status: 'ok'; output: readonly Evidence[]; provenance?: EvidenceProvenance }
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; message: string };
 
@@ -147,15 +148,17 @@ export function createExecuteInvestigation({
           if (claimedEvidenceIds.has(item.id)) continue;
           claimedEvidenceIds.add(item.id);
           evidenceIds.push(item.id);
-          // Provenance on recorded Evidence is written only by the stamping
-          // layer from BoundSourceRegistry's own outcome, never taken from
-          // what a tool returned — a tool's own output item is exactly as
-          // trusted as any other caller-supplied field. see
-          // investigation-execution.test.mjs › "on an ok result: a
-          // provenance block on the tool's own output item never survives
-          // into the recorded evidence (AIC-146 slice a)"
-          const { provenance: _provenance, ...fields } = item;
-          evidence.push(EvidenceSchema.parse({ ...fields, trialId }));
+          // Provenance travels alongside the outcome, never inside an item:
+          // an item carrying its own `provenance` is refused outright by
+          // `ingestEvidence`, and a well-formed `outcome.provenance` is
+          // stamped onto every newly recorded item exactly as given — see
+          // investigation-execution.test.mjs › "on an ok result: an evidence
+          // item carrying its own provenance is refused, naming the evidence
+          // id, and nothing is recorded (AIC-146 b2)" and › "on an ok result:
+          // a well-formed provenance block on the outcome is stamped onto
+          // every newly recorded evidence item, exactly as given (AIC-146
+          // b2)".
+          evidence.push(ingestEvidence({ item, trialId, provenanceSource: outcome }));
         }
         trials.push(TrialSchema.parse({ ...trialBase, status: 'ok', evidenceIds }));
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'executed' }));
