@@ -156,7 +156,8 @@ Addendum (AIC-99 slice d, 2026-09-29): none of those commands creates a
 secret's name and access level only: see credential-ref-secrets.test.mjs ›
 "CredentialRef declares exactly id, environmentId, access, name, secretName"
 and › "refuses every secret shape the repository’s vocabulary knows, as a
-secretName".
+secretName". `aic db migrate` applies the application schema's migrations; it
+is operator maintenance, not an onboarding noun.
 The existing `aic start` persistence spike, and `aic resume` beside it, are not
 among them; AIC-99's scope moves both behind an explicit development-only
 command.

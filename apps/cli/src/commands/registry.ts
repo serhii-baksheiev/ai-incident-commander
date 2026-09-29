@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { SourceBindingSchema } from '@aic/domain';
+import { ServiceInputSchema, SourceBindingSchema } from '@aic/domain';
 import { APP_SCHEMA_VERSION, type RegistryStore } from '@aic/persistence';
 
 /**
@@ -43,9 +43,24 @@ function requireSubcommand(noun: string, argv: readonly string[], allowed: reado
     throw new Error(`aic ${noun} requires a subcommand: one of ${allowed.join(', ')}`);
   }
   if (!allowed.includes(sub)) {
-    throw new Error(`aic ${noun} has no subcommand "${sub}"; expected one of: ${allowed.join(', ')}`);
+    throw new Error(`aic ${noun} got an unknown subcommand; expected one of: ${allowed.join(', ')}`);
   }
   return sub;
+}
+
+/**
+ * The registry's own slug rule for Service, Environment, CredentialRef and
+ * SourceBinding names (`@aic/domain`), read through `ServiceInputSchema`
+ * rather than restated. A name is checked here, before any store call, so a
+ * refusal never has to reproduce an unbounded or unprintable argv token.
+ */
+const RegistryNameSchema = ServiceInputSchema.shape.name;
+
+function requireRegistryName(label: string, value: string): string {
+  if (!RegistryNameSchema.safeParse(value).success) {
+    throw new Error(`<${label}> must be a lowercase, hyphen-separated slug of at most 100 characters`);
+  }
+  return value;
 }
 
 function requirePositionals(positionals: readonly string[], names: readonly string[]): string[] {
@@ -53,10 +68,13 @@ function requirePositionals(positionals: readonly string[], names: readonly stri
     throw new Error(`missing required argument <${names[positionals.length]}>`);
   }
   if (positionals.length > names.length) {
-    throw new Error(`unexpected extra positional argument: ${positionals[names.length]}`);
+    throw new Error(`unexpected extra positional argument at position ${names.length + 1}`);
   }
-  return [...positionals];
+  return positionals.map((value, index) => requireRegistryName(names[index], value));
 }
+
+/** A flag name is echoed only when it is itself short and plain. */
+const ECHOABLE_FLAG_NAME = /^[a-z][a-z-]{0,39}$/;
 
 interface FlagSpec {
   readonly name: string;
@@ -86,7 +104,7 @@ function parseFlags(args: readonly string[], specs: readonly FlagSpec[]): Parsed
       const name = token.slice(2);
       const spec = specByName.get(name);
       if (spec === undefined) {
-        throw new Error(`unknown flag --${name}`);
+        throw new Error(ECHOABLE_FLAG_NAME.test(name) ? `unknown flag --${name}` : 'unknown flag');
       }
       const value = args[index + 1];
       if (value === undefined || value.startsWith('--')) {
@@ -154,7 +172,7 @@ async function runCredentialCommand(argv: readonly string[], deps: StoreDeps): P
 
   const access = flags.get('access')?.[0] ?? 'read';
   if (access !== 'read' && access !== 'write') {
-    throw new Error(`--access must be "read" or "write", got ${JSON.stringify(access)}`);
+    throw new Error('--access must be "read" or "write"');
   }
 
   const result = await deps.store.addCredentialRef({
@@ -175,20 +193,30 @@ async function runCredentialCommand(argv: readonly string[], deps: StoreDeps): P
 function parseAdapter(raw: string): { adapterId: string; adapterVersion: string } {
   const parts = raw.split('@');
   if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
-    throw new Error(`--adapter must be "<adapterId>@<adapterVersion>", got ${JSON.stringify(raw)}`);
+    throw new Error('--adapter must be "<adapterId>@<adapterVersion>"');
   }
   return { adapterId: parts[0], adapterVersion: parts[1] };
 }
 
-/** `--config key=value`, split at the FIRST `=` — a value may itself carry `=`. */
+/**
+ * `--config key=value`, split at the FIRST `=` — a value may itself carry `=`.
+ * The record has no prototype, so `__proto__` lands as an own key and reaches
+ * `SourceBindingSchema`'s prototype-key refusal instead of being swallowed by
+ * `Object.prototype`'s setter. A key given twice is refused, like a repeated
+ * single-valued flag.
+ */
 function parseConfig(values: readonly string[]): Record<string, string> {
-  const config: Record<string, string> = {};
+  const config: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const raw of values) {
     const eq = raw.indexOf('=');
     if (eq === -1) {
-      throw new Error(`--config must be "key=value", got ${JSON.stringify(raw)}`);
+      throw new Error('--config must be "key=value"');
     }
-    config[raw.slice(0, eq)] = raw.slice(eq + 1);
+    const key = raw.slice(0, eq);
+    if (Object.hasOwn(config, key)) {
+      throw new Error('--config sets the same key twice');
+    }
+    config[key] = raw.slice(eq + 1);
   }
   return config;
 }
@@ -241,7 +269,8 @@ async function runSourceCommand(argv: readonly string[], deps: StoreDeps): Promi
   const config = parseConfig(flags.get('config') ?? []);
   assertConfigIsSafe(name, adapterId, adapterVersion, config);
 
-  const credentialRefName = flags.get('credential')?.[0] ?? null;
+  const credentialValue = flags.get('credential')?.[0];
+  const credentialRefName = credentialValue === undefined ? null : requireRegistryName('credential', credentialValue);
 
   const result = await deps.store.addSourceBinding({
     serviceName: service,
@@ -249,7 +278,9 @@ async function runSourceCommand(argv: readonly string[], deps: StoreDeps): Promi
     name,
     adapterId,
     adapterVersion,
-    config,
+    // A plain record for the store: the prototype-free one existed only so
+    // validation could see every key, and `__proto__` has been refused above.
+    config: { ...config },
     credentialRefName,
   });
   writeJsonLine(deps.stdout, result);
@@ -268,7 +299,7 @@ async function runPolicyCommand(argv: readonly string[], deps: StoreDeps): Promi
     serviceName: service,
     environmentName: environment,
     allowedActionTypes: flags.get('allow') ?? [],
-    writeCredentialRefNames: flags.get('write-credential') ?? [],
+    writeCredentialRefNames: (flags.get('write-credential') ?? []).map((value) => requireRegistryName('write-credential', value)),
   });
   writeJsonLine(deps.stdout, result);
 }
@@ -276,7 +307,7 @@ async function runPolicyCommand(argv: readonly string[], deps: StoreDeps): Promi
 async function runDbCommand(argv: readonly string[], deps: RegistryCommandDeps): Promise<void> {
   const [sub] = argv;
   if (sub !== 'migrate') {
-    throw new Error(`aic db has no subcommand "${sub ?? ''}"; the only known db subcommand is migrate`);
+    throw new Error('aic db requires a known subcommand; the only known db subcommand is migrate');
   }
   if (deps.setupApplicationSchema === undefined || deps.connectionString === undefined) {
     throw new Error('aic db migrate is misconfigured: no setupApplicationSchema/connectionString were provided');

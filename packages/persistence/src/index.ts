@@ -206,10 +206,10 @@ export {
  * normalized tables (`app-schema.ts`).
  *
  * AIC-99 slice d adds `RegistryConflictError` and `RegistryValidationError`
- * to this export list: `apps/cli/src/commands/registry.ts` is a caller
- * outside this package that constructs and catches them BY CLASS (its own
- * fake store rows throw the real classes, never a look-alike), which the
- * previous "read by `error.name`" callers never needed to do.
+ * to this export list, so code outside this package can construct and
+ * recognise them by class. Today that code is the CLI's fake-store rows,
+ * which throw the real classes rather than look-alikes; the CLI itself prints
+ * the message and does not branch on the class.
  * see test/cli-registry-commands.test.mjs › "RegistryConflictError and
  * RegistryValidationError are exported from @aic/persistence, so a caller
  * can construct and catch them by class"

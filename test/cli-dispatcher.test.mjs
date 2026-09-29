@@ -122,6 +122,19 @@ for (const noun of REGISTRY_NOUNS) {
   });
 }
 
+test('aic db with an unknown subcommand, and no connection string configured, is refused as a subcommand problem and writes nothing to the working directory', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['db', 'bogus'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.equal(result.stdout, '', commandDiagnostics(args, result));
+    assert.match(result.stderr, /subcommand/i, commandDiagnostics(args, result));
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
 test('aic source check ... remains not implemented in this build in this slice, exits non-zero, and writes nothing to the working directory', () => {
   withTempCwd((cwd) => {
     const before = readdirSync(cwd);

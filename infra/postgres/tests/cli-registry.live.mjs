@@ -11,8 +11,9 @@
  *
  * `test/cli-registry-commands.test.mjs` pins `runRegistryCommand(noun, argv,
  * deps)`'s own argv-parsing and store-call contract against a FAKE store,
- * with no database — including the `AIC_POSTGRES_URL`-absent refusal, which
- * needs no live PostgreSQL either. This file is the other half: the same
+ * with no database. The `AIC_POSTGRES_URL`-absent refusal needs no database
+ * either, but lives at the end of THIS file, because no file under `test/`
+ * may name the connection variable. This file is the other half: the same
  * commands, spawned as the real `apps/cli/dist/index.js` process, over a
  * real `createRegistryStore(pool)`. Not repeated here in full — see that
  * file's own header for the full design-choice list (stdout shapes, error
@@ -82,19 +83,17 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
 /**
- * The minimal env a spawned `aic` process needs for this file's rows: `PATH`
- * (to find node's own runtime dependencies) and `AIC_POSTGRES_URL`. Unlike
- * `test/fixtures/child-env.mjs`'s own allow-list (built for the no-network,
- * no-tracing suite under `npm test`), this file's spawn always needs a real
- * outbound PostgreSQL connection, so it is not reused here — but it still
- * never inherits the parent's ambient environment wholesale, for the same
- * "an override replaces rather than merges" reasoning that fixture's own
- * header gives.
+ * A spawned `aic` process gets the shared `childEnv` allow-list plus, when a
+ * row passes one, the connection string. A bounded timeout turns a CLI that
+ * never exits (a pool left open) into a red row rather than a hung lane.
  */
+const CLI_TIMEOUT_MS = 30_000;
+
 function runCli(args, connectionString) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: projectRoot,
     encoding: 'utf8',
+    timeout: CLI_TIMEOUT_MS,
     env: childEnv(connectionString === undefined ? {} : { [CONNECTION_VARIABLE]: connectionString }),
   });
 }
@@ -350,4 +349,16 @@ test('aic db migrate with no AIC_POSTGRES_URL in the environment exits non-zero,
   assert.notEqual(result.status, 0, commandDiagnostics(args, result));
   assert.equal(result.stdout, '', commandDiagnostics(args, result));
   assert.match(result.stderr, /AIC_POSTGRES_URL/, commandDiagnostics(args, result));
+});
+
+test('a registry command whose database cannot be reached is refused with the connection failure alone, never with the aic db migrate remedy', () => {
+  // A loopback port nothing listens on: the failure is the connection, which
+  // migrating the schema cannot fix.
+  const unreachable = 'postgresql://aic@127.0.0.1:1/aic';
+  const args = ['service', 'add', 'checkout'];
+  const result = runCli(args, unreachable);
+
+  assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+  assert.equal(result.stdout, '', commandDiagnostics(args, result));
+  assert.doesNotMatch(result.stderr, /aic db migrate/, commandDiagnostics(args, result));
 });

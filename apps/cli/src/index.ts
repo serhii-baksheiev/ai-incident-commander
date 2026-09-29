@@ -74,8 +74,10 @@ function requirePostgresUrl(env: NodeJS.ProcessEnv): string {
  * see test/postgres-checkpointer.test.mjs › "keeps checkpointer storage,
  * the application schema's tables, and the PostgreSQL driver out of every
  * layer but persistence"
- * see cli-dispatcher.test.mjs › "the noun with no subcommand ... names
- * 'subcommand' as the problem" (spawned with no AIC_POSTGRES_URL at all)
+ * see cli-dispatcher.test.mjs › "the "service" noun with no subcommand exits
+ * non-zero, names "subcommand" as the problem rather than claiming to be
+ * unimplemented, and writes nothing to the working directory" (spawned with
+ * no connection string at all; one row per registry noun)
  */
 function createConnectedRegistryStore(env: NodeJS.ProcessEnv): RegistryStore {
   const connected = (): RegistryStore => createRegistryStore(requirePostgresUrl(env));
@@ -148,11 +150,14 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   if (command === 'db') {
-    const connectionString = requirePostgresUrl(process.env);
+    // A getter, so the connection variable is read only once the subcommand
+    // is known to be `migrate`: a bad subcommand is refused as such.
     const deps: RegistryCommandDeps = {
       stdout: writeStdoutLine,
       setupApplicationSchema,
-      connectionString,
+      get connectionString() {
+        return requirePostgresUrl(process.env);
+      },
     };
     await runRegistryCommand('db', rest, deps);
     return;

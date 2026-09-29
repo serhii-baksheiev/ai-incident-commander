@@ -12,7 +12,7 @@ import {
   type SourceBinding,
 } from '@aic/domain';
 
-import { APPLICATION_SCHEMA, assertApplicationSchemaVersion } from './app-schema.js';
+import { APPLICATION_SCHEMA, ApplicationSchemaVersionError, assertApplicationSchemaVersion } from './app-schema.js';
 
 /**
  * AIC-99 slice c: the transactional registry store the owner's 2026-09-25
@@ -645,6 +645,21 @@ function createPooledRegistryStore(pool: Pool): RegistryStore {
  * CLI: one process, one command) wants, as opposed to
  * `createPooledRegistryStore`'s caller-held, long-lived `Pool`.
  */
+/**
+ * Only a schema that is reachable but not migrated earns the `aic db migrate`
+ * remedy: a version mismatch, or PostgreSQL's undefined_table (42P01) /
+ * invalid_schema_name (3F000) when `aic_app` does not exist yet. A connection,
+ * DNS or authentication failure propagates as it is, because migrating cannot
+ * fix it — see cli-registry.live.mjs › "a registry command whose database
+ * cannot be reached is refused with the connection failure alone, never with
+ * the aic db migrate remedy".
+ */
+function isUnmigratedSchema(error: unknown): boolean {
+  if (error instanceof ApplicationSchemaVersionError) return true;
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return code === '42P01' || code === '3F000';
+}
+
 async function withConnectionScopedPool<T>(
   connectionString: string,
   call: (pool: Pool) => Promise<T>,
@@ -654,8 +669,9 @@ async function withConnectionScopedPool<T>(
     try {
       await assertApplicationSchemaVersion(pool);
     } catch (error) {
+      if (!isUnmigratedSchema(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`${message} Run \`aic db migrate\` to bring the application schema up to date.`);
+      throw new Error(`${message}. Run \`aic db migrate\` to bring the application schema up to date.`);
     }
     return await call(pool);
   } finally {

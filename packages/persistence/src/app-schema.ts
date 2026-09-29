@@ -355,12 +355,25 @@ export interface ApplicationSchemaVersionSource {
  * refuses a mismatched and a missing version on a fake source, and accepts the
  * current one".
  */
+/**
+ * The refusal `assertApplicationSchemaVersion` raises when the schema is
+ * reachable but at another migration version: a class, so a caller inside
+ * this package can tell it from a connection or authentication failure
+ * without reading its wording.
+ */
+export class ApplicationSchemaVersionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApplicationSchemaVersionError';
+  }
+}
+
 export async function assertApplicationSchemaVersion(source: ApplicationSchemaVersionSource): Promise<void> {
   const { rows } = await source.query(`select max(version) as v from "${APPLICATION_SCHEMA}".schema_migrations`);
   const applied = rows[0]?.v ?? null;
 
   if (applied !== APP_SCHEMA_VERSION) {
-    throw new Error(
+    throw new ApplicationSchemaVersionError(
       `the application schema "${APPLICATION_SCHEMA}" is at migration version ${applied}, and this build expects ${APP_SCHEMA_VERSION}: refusing before execution rather than reading a store written by a different application schema`,
     );
   }

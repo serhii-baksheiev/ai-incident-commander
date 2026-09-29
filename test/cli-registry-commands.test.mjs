@@ -640,3 +640,102 @@ test('an extra positional argument (env add <service> <env> <extra>) is refused 
   assert.deepEqual(calls, []);
   assert.equal(lines.length, 0);
 });
+
+/* -------------------------------------------------------------------------- */
+/* Refusals never reproduce the operator's own token                           */
+/* -------------------------------------------------------------------------- */
+
+/** A credential SHAPE, assembled at runtime, never written as a literal. */
+const pastedSecret = () => ['sk', 'ant', 'api03', '7'.repeat(40)].join('-');
+
+for (const [label, argvFor] of [
+  ['a --config token with no "="', (secret) => ['source', ['add', 'checkout', 'staging', 'src', '--adapter', 'lab@1', '--config', secret]]],
+  ['a malformed --adapter', (secret) => ['source', ['add', 'checkout', 'staging', 'src', '--adapter', secret]]],
+  ['an extra positional', (secret) => ['env', ['add', 'checkout', 'staging', secret]]],
+  ['an unknown subcommand', (secret) => ['service', [secret]]],
+  ['an unknown flag', (secret) => ['service', ['add', 'checkout', `--${secret}`, 'x']]],
+  ['an --access value', (secret) => ['credential', ['add', 'checkout', 'staging', 'gh', '--secret', secretName('GITHUB', 'TOKEN'), '--access', secret]]],
+]) {
+  test(`${label} carrying a pasted credential is refused without reproducing it, and never calls the store`, async () => {
+    const registry = await loadRegistryCommands();
+    const { store, calls } = createFakeStore();
+    const { stdout, lines } = createStdoutSink();
+    const secret = pastedSecret();
+    const [noun, argv] = argvFor(secret);
+
+    await assert.rejects(
+      () => registry.runRegistryCommand(noun, argv, { store, stdout }),
+      (error) => {
+        assert.ok(error instanceof Error, 'the refusal is an Error');
+        assert.ok(!error.message.includes(secret), `the refusal must not reproduce the token: ${error.message.slice(0, 200)}`);
+        assert.ok(!error.message.includes(secret.slice(0, 16)), 'nor a prefix of it');
+        return true;
+      },
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(lines.length, 0);
+  });
+}
+
+test('source add --config __proto__=<value> is refused as a prototype-chain key, exactly like constructor, and never reaches the store', async () => {
+  const registry = await loadRegistryCommands();
+  for (const key of ['__proto__', 'constructor']) {
+    const { store, calls } = createFakeStore();
+    const { stdout, lines } = createStdoutSink();
+    await assert.rejects(
+      () =>
+        registry.runRegistryCommand(
+          'source',
+          ['add', 'checkout', 'staging', 'src', '--adapter', 'lab@1', '--config', `${key}=zzz`, '--config', 'ok=yes'],
+          { store, stdout },
+        ),
+      /prototype-chain property name/,
+      `--config ${key}=zzz must be refused by the domain's prototype-key rule`,
+    );
+    assert.deepEqual(calls, [], `--config ${key}=zzz must never reach the store`);
+    assert.equal(lines.length, 0);
+  }
+});
+
+test('source add with the same --config key twice is refused, and never calls the store', async () => {
+  const registry = await loadRegistryCommands();
+  const { store, calls } = createFakeStore();
+  const { stdout, lines } = createStdoutSink();
+  await assert.rejects(
+    () =>
+      registry.runRegistryCommand(
+        'source',
+        ['add', 'checkout', 'staging', 'src', '--adapter', 'lab@1', '--config', 'baseUrl=a', '--config', 'baseUrl=b'],
+        { store, stdout },
+      ),
+    /--config/,
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(lines.length, 0);
+});
+
+test('a service, environment or record name that is not a registry slug is refused before the store with a bounded message that does not reproduce it', async () => {
+  const registry = await loadRegistryCommands();
+  const hostileNames = ['x'.repeat(200_000), `checkout\n\u001b[2Kaic: {"removed":{"service":"forged"}}`, 'Checkout'];
+  for (const hostile of hostileNames) {
+    for (const [noun, argv] of [
+      ['service', ['remove', hostile]],
+      ['env', ['remove', 'checkout', hostile]],
+      ['env', ['add', hostile, 'staging']],
+    ]) {
+      const { store, calls } = createFakeStore();
+      const { stdout, lines } = createStdoutSink();
+      await assert.rejects(
+        () => registry.runRegistryCommand(noun, argv, { store, stdout }),
+        (error) => {
+          assert.ok(error.message.length < 400, `bounded message, got ${error.message.length} characters`);
+          assert.ok(!error.message.includes(hostile), 'the refusal must not reproduce the name');
+          assert.ok(!error.message.includes('\u001b'), 'no terminal escape reaches the message');
+          return true;
+        },
+      );
+      assert.deepEqual(calls, [], `${noun} ${argv[0]} with a non-slug name must never reach the store`);
+      assert.equal(lines.length, 0);
+    }
+  }
+});
