@@ -57,24 +57,24 @@ acceptsDomainProvenance(toolsProvenance);
 // Not vacuous: an extra key is refused by BOTH interfaces, or a widened
 // object would satisfy this whole file for the wrong reason. Neither
 // interface carries a field for a secret's own value or name.
-// @ts-expect-error EvidenceProvenance carries no field for a secret value or name
 const domainWithExtraKey: EvidenceProvenance = {
   sourceBindingId: fixtureBindingId,
   adapter: 'lab@1',
   credentialRefId: null,
   fetchedAt: '2026-09-24T00:00:00.000Z',
   requestFingerprint: fixtureFingerprint,
+  // @ts-expect-error EvidenceProvenance carries no field for a secret value or name
   secretValue: 'unused-fixture',
 };
 void domainWithExtraKey;
 
-// @ts-expect-error EvidenceSourceProvenance carries no field for a secret value or name
 const toolsWithExtraKey: EvidenceSourceProvenance = {
   sourceBindingId: fixtureBindingId,
   adapter: 'lab@1',
   credentialRefId: null,
   fetchedAt: '2026-09-24T00:00:00.000Z',
   requestFingerprint: fixtureFingerprint,
+  // @ts-expect-error EvidenceSourceProvenance carries no field for a secret value or name
   secretValue: 'unused-fixture',
 };
 void toolsWithExtraKey;
