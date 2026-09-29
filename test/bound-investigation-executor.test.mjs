@@ -53,8 +53,7 @@
  *   `ambiguous-route` (two bindings whose routes name the same tool,
  *   mirroring `replay/index.ts`'s `assertOneFormPerTool`), and — pinned
  *   below, review round 1 — `duplicate-binding` (the same `sourceBindingId`
- *   passed twice, naming that id — never `adapter-mismatch`, which the
- *   registry's own bare throw currently collapses this into),
+ *   passed twice, naming that id — never `adapter-mismatch`),
  *   `invalid-budgets` and `invalid-mode` (a `budgets` or `mode` value the
  *   registry rejects for every binding, not one — so neither names a
  *   `sourceBindingId`), `credential-environment-mismatch` (a binding's
@@ -121,7 +120,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -579,12 +578,11 @@ test('the same adapter-mismatch construction refusal holds in replay mode, and s
 
 /* -------------------------------------------------------------------------- */
 /* Construction refusal classification (review round 1, code blocker 3):     */
-/* `createBoundSourceRegistry` throws on (at least) five distinct causes —   */
-/* duplicate sourceBindingId, invalid budgets, an unknown mode, an unsafe    */
-/* adapter field and a genuine expectedAdapter mismatch — and the port's own */
-/* bare `catch` collapses all of them into 'adapter-mismatch', sometimes     */
-/* naming an innocent binding. The four rows below pin four DISTINCT typed   */
-/* reasons: 'duplicate-binding' (naming the duplicated id), 'invalid-budgets'*/
+/* `createBoundSourceRegistry` throws on five distinct causes — duplicate    */
+/* sourceBindingId, invalid budgets, an unknown mode, an unsafe adapter      */
+/* field and a genuine expectedAdapter mismatch. The port checks the first   */
+/* three itself, before the registry is built. The four rows below pin four  */
+/* DISTINCT typed reasons: 'duplicate-binding' (naming the duplicated id), 'invalid-budgets'*/
 /* (no sourceBindingId — the value is wrong across every binding, not one),  */
 /* 'invalid-mode' (no sourceBindingId, for the same reason), and             */
 /* 'adapter-mismatch' still, but naming only the truly mismatched binding    */
@@ -1190,7 +1188,7 @@ test('describe() is called exactly once per binding, across construction and eve
 /* A non-UUID binding id                                                     */
 /* -------------------------------------------------------------------------- */
 
-test('a non-UUID binding id ("incident-lab") is refused not-a-registry-binding, with fetch, check, execute and store reads all counted at 0', async () => {
+test('a non-UUID binding id ("incident-lab") is refused not-a-registry-binding without echoing the id, with fetch, check, execute and store reads all counted at 0', async () => {
   const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
   const binding = rawLabBinding({ id: 'incident-lab', name: 'incident-lab-binding' });
   const fetchFn = createRefusingFetch('a non-registry binding must never reach fetch');
@@ -1207,7 +1205,9 @@ test('a non-UUID binding id ("incident-lab") is refused not-a-registry-binding, 
     buildSource,
   });
 
-  assert.deepEqual(constructed, { ok: false, reason: 'not-a-registry-binding', sourceBindingId: 'incident-lab' });
+  // A refusal names a binding only by an id that parses as a registry UUID:
+  // any other string may be anything, a pasted credential included.
+  assert.deepEqual(constructed, { ok: false, reason: 'not-a-registry-binding' });
   assert.equal(fetchFn.calls.length, 0);
   assert.equal(sourceCalls.check, 0);
   assert.equal(sourceCalls.execute, 0);
@@ -1238,6 +1238,49 @@ test('not-a-registry-binding for a record whose id is credential-shaped never ec
     `the refusal must not echo the raw credential-shaped id: ${JSON.stringify(constructed)}`,
   );
   assert.equal(fetchFn.calls.length, 0);
+});
+
+test('not-a-registry-binding never echoes an id shaped like a lowercase hex or base64url secret, which the runtime redactor does not recognise', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  for (const rawId of [
+    randomBytes(16).toString('hex'),
+    randomBytes(32).toString('hex'),
+    randomBytes(32).toString('base64url').toLowerCase().replace(/[^a-z0-9-]/g, 'a'),
+  ]) {
+    const binding = rawLabBinding({ id: rawId, name: 'hex-shaped-id-binding' });
+    const constructed = await createBoundInvestigationExecutor({
+      bindings: [binding],
+      mode: 'live',
+      store: tools.createMemoryReplayStore(),
+      clock: fixedClock,
+      fetch: createRefusingFetch('a non-registry binding must never reach fetch'),
+      resolveSecret: unreachableResolveSecret,
+    });
+    assert.equal(constructed.reason, 'not-a-registry-binding');
+    assert.equal(
+      JSON.stringify(constructed).includes(rawId),
+      false,
+      `the refusal must not echo a ${rawId.length}-character encoded id: ${JSON.stringify(constructed)}`,
+    );
+  }
+});
+
+test('a schema-valid uppercase UUID binding id is still named by a refusal (duplicate-binding)', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const upperId = randomUUID().toUpperCase();
+  const binding = rawLabBinding({ id: upperId });
+  assert.equal(domain.SourceBindingSchema.safeParse(binding).success, true, 'precondition: an uppercase UUID is a valid SourceBinding id');
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding, binding],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: createRefusingFetch('a refused construction must never reach fetch'),
+    resolveSecret: unreachableResolveSecret,
+  });
+
+  assert.deepEqual(constructed, { ok: false, reason: 'duplicate-binding', sourceBindingId: upperId });
 });
 
 /* -------------------------------------------------------------------------- */
