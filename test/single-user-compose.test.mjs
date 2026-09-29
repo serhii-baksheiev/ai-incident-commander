@@ -222,13 +222,10 @@ test('declares the top-level password secret from the required AIC_DB_PASSWORD_F
 });
 
 test('never runs with host networking or a privileged container', () => {
-  const compose = readFileSync(composePath, 'utf8');
-  const uncommented = compose
-    .split('\n')
-    .map((line) => stripComment(line))
-    .join('\n');
-  assert.doesNotMatch(uncommented, /network_mode:\s*["']?host/, 'host networking bypasses every network boundary this compose file otherwise draws');
-  assert.doesNotMatch(uncommented, /privileged:\s*true/, 'a privileged container defeats the point of running one operator\'s worth of infrastructure in a sandbox');
+  for (const [name, service] of Object.entries(readCompose().services)) {
+    assert.notEqual(service.network_mode, 'host', `${name}: host networking bypasses every network boundary this compose file otherwise draws`);
+    assert.notEqual(service.privileged, true, `${name}: a privileged container defeats the point of running one operator's worth of infrastructure in a sandbox`);
+  }
 });
 
 test('carries no credential value anywhere in the compose file', () => {
