@@ -24,6 +24,11 @@ services:
   # value is readable by anything that can read this container's environment
   # (`docker inspect`, `/proc/<pid>/environ`); a Docker secret is a file
   # mounted only inside the container that declares it in `secrets:` below.
+  #
+  # The `…_FILE:` and `AIC_SECRETS_DIR:` values below sit on their own line.
+  # Written on the key's line, a path this long matches the assigned-secret
+  # shape `.claude/scripts/lib/secrets.mjs` scans for (a credential keyword,
+  # then a long value), although it is a path and not a secret.
   postgres:
     image: postgres:17-alpine
     environment:
