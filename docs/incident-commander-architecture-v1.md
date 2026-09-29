@@ -149,7 +149,9 @@ type Evidence = {
 // Where a piece of Evidence came from, as the bound source registry recorded it
 // at fetch time (docs/decisions/integration-boundary.md, "Trust boundary").
 // Never a credential's value or secret name. A tool's own output cannot set
-// it: the graph drops a supplied `provenance` when it records the evidence.
+// it: a supplied `provenance` on an evidence item is refused outright, not
+// silently dropped — provenance is stamped from the outcome that carries it
+// alongside the items, never from inside one.
 type EvidenceProvenance = {
   sourceBindingId: string; // UUID
   adapter: string; // "<adapterId>@<adapterVersion>"

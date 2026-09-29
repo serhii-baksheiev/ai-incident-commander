@@ -19,7 +19,7 @@ import {
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
-import { ingestEvidence } from './evidence-ingestion.js';
+import { ingestEvidence, refuseOwnProvenance } from './evidence-ingestion.js';
 import { deriveEvidenceId, deriveTrialId } from './identity.js';
 
 export * from './identity.js';
@@ -197,13 +197,33 @@ export function createPersistentInvestigationRunner({
         });
         // Provenance travels alongside the result, never inside its
         // evidence: an evidence object carrying its own `provenance` is
-        // refused by `ingestEvidence`, naming this evidence id, and a
-        // well-formed `executed.provenance` becomes part of the persisted
-        // evidence exactly as given — see durable-tool-replay.test.mjs ›
-        // "evidence carrying its own provenance is refused, naming the
-        // evidence id, and nothing is committed" and › "provenance on the
+        // refused, naming this evidence id, and a well-formed
+        // `executed.provenance` becomes part of the persisted evidence
+        // exactly as given — see durable-tool-replay.test.mjs › "evidence
+        // carrying its own provenance is refused, naming the evidence id,
+        // and nothing is committed" and › "provenance on the
         // ExecuteInvestigationResult (alongside evidence, not inside it)
         // becomes part of the persisted evidence".
+        //
+        // The own-provenance check runs HERE, on `executed.evidence` itself,
+        // before it is ever spread into the item below: `{ ...executed.evidence }`
+        // copies only OWN ENUMERABLE properties, so a non-enumerable own
+        // `provenance` would otherwise vanish silently in the copy and never
+        // reach `ingestEvidence`'s own check on the copy — see
+        // durable-tool-replay.test.mjs › "evidence carrying its own
+        // NON-enumerable provenance is refused through the durable site just
+        // like an enumerable one, and nothing is committed". Reusing
+        // `refuseOwnProvenance` (exported by `./evidence-ingestion.js`) keeps
+        // this one own-key check in exactly one implementation
+        // (`.claude/rules/invariants.md`, "one mechanism, one
+        // implementation").
+        refuseOwnProvenance(executed.evidence, evidenceId);
+        // `executed.provenance` is read the same own-data way inside
+        // `ingestEvidence` (via `provenanceSource: executed` below),
+        // including the explicit-`provenance: undefined` refusal — see
+        // durable-tool-replay.test.mjs › "an ExecuteInvestigationResult with
+        // an explicit own provenance: undefined is refused with a message
+        // naming provenance, before anything is committed".
         const evidence = ingestEvidence({
           item: { ...executed.evidence, id: evidenceId },
           trialId,

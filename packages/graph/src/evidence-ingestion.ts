@@ -1,4 +1,4 @@
-import { EvidenceProvenanceSchema, EvidenceSchema, type Evidence } from '@aic/domain';
+import { EvidenceProvenanceSchema, EvidenceSchema, quoteModelText, type Evidence } from '@aic/domain';
 
 /**
  * The one place `@aic/graph`'s own source calls `EvidenceSchema.parse` — see
@@ -12,8 +12,9 @@ import { EvidenceProvenanceSchema, EvidenceSchema, type Evidence } from '@aic/do
  *
  * Provenance travels ALONGSIDE the items a caller hands in, never inside one:
  * `item` is a candidate evidence item (which must never carry its own
- * `provenance` key — that is refused outright, naming the item's id, and the
- * content of the offending value is never echoed), and `provenanceSource` is
+ * `provenance` key — that is refused outright, naming the item's id quoted
+ * and truncated by `quoteModelText` (never the raw id, and never the content
+ * of the offending value), and `provenanceSource` is
  * the object that may carry a shared `provenance` field for every item built
  * from it in this call (the node's `outcome`, or the durable runner's
  * `ExecuteInvestigationResult`). See investigation-execution.test.mjs ›
@@ -51,12 +52,7 @@ export function ingestEvidence({
   trialId: string;
   provenanceSource: object;
 }>): Evidence {
-  if (Object.hasOwn(item, 'provenance')) {
-    const evidenceId = typeof item.id === 'string' ? item.id : '<unknown>';
-    throw new Error(
-      `evidence ${evidenceId} carries its own provenance; provenance travels alongside the outcome that produced it, never inside the item itself`,
-    );
-  }
+  refuseOwnProvenance(item, typeof item.id === 'string' ? item.id : '<unknown>');
 
   const provenance = readOwnProvenance(provenanceSource);
 
@@ -75,6 +71,14 @@ export function ingestEvidence({
 
   const parsed = EvidenceSchema.parse(input);
 
+  // This post-parse check is what catches a `provenance` smuggled past the
+  // FIRST guard above by a Proxy whose `getOwnPropertyDescriptor` trap lies
+  // to `Object.hasOwn` on the first ask and tells the truth to `Object.keys`
+  // (used by the `for (const key of Object.keys(item))` copy above) on every
+  // ask after — see investigation-execution.test.mjs › "on an ok result: a
+  // Proxy evidence item that hides its own provenance from Object.hasOwn but
+  // reveals it to Object.keys is refused, and nothing is recorded (AIC-146 b2
+  // security advisory 1)".
   const parsedHasOwnProvenance = Object.hasOwn(parsed, 'provenance');
   if (provenance === undefined) {
     if (parsedHasOwnProvenance) {
@@ -88,12 +92,49 @@ export function ingestEvidence({
 }
 
 /**
+ * Refuses an item carrying its own `provenance` key — `Object.hasOwn` sees an
+ * own key regardless of enumerability, unlike a `{...item}` spread, which
+ * copies only OWN ENUMERABLE properties and would otherwise let a
+ * non-enumerable own `provenance` vanish silently in the copy. Callers that
+ * build a copy of a candidate evidence item (`./index.ts`'s `recordsOf`) must
+ * therefore run this check on the ORIGINAL object, before ever spreading it —
+ * see durable-tool-replay.test.mjs › "evidence carrying its own NON-enumerable
+ * provenance is refused through the durable site just like an enumerable one,
+ * and nothing is committed". Exported so both ingestion sites share exactly
+ * one implementation of the check (`.claude/rules/invariants.md`, "one
+ * mechanism, one implementation").
+ *
+ * The offending evidence id is named quoted and truncated (`quoteModelText`),
+ * never echoed raw: an unbounded or control-character-laden id could
+ * otherwise make the thrown message itself unbounded, or let a hostile id
+ * inject terminal-control sequences into it — see
+ * investigation-execution.test.mjs › "on an ok result: a hostile
+ * 100,000-character evidence id (CR, CSI erase, BEL) carrying its own
+ * provenance is refused with a short, escaped message (AIC-146 b2 round-1
+ * security fix)".
+ */
+export function refuseOwnProvenance(item: object, evidenceId: string): void {
+  if (Object.hasOwn(item, 'provenance')) {
+    throw new Error(
+      `evidence ${quoteModelText(evidenceId)} carries its own provenance; provenance travels alongside the outcome that produced it, never inside the item itself`,
+    );
+  }
+}
+
+/**
  * Reads `source.provenance` only when it is an own DATA property (never an
  * accessor's getter, and never a value inherited through the prototype
  * chain), and parses it with `EvidenceProvenanceSchema` when present. The
  * parse failure message is deliberately content-free: it never echoes the
  * malformed value, which may carry a real (if invalid) binding id or
  * fingerprint.
+ *
+ * An own `provenance` key set explicitly to `undefined` is refused rather
+ * than treated as absent: the key being PRESENT at all is itself a caller
+ * mistake worth naming, distinct from the key never having been set — see
+ * durable-tool-replay.test.mjs › "an ExecuteInvestigationResult with an
+ * explicit own provenance: undefined is refused with a message naming
+ * provenance, before anything is committed".
  */
 function readOwnProvenance(source: object) {
   const descriptor = Object.getOwnPropertyDescriptor(source, 'provenance');
@@ -104,7 +145,7 @@ function readOwnProvenance(source: object) {
     throw new Error('provenance must be an own data property, not an accessor');
   }
   if (descriptor.value === undefined) {
-    return undefined;
+    throw new Error('provenance must be omitted, not set to undefined');
   }
   const result = EvidenceProvenanceSchema.safeParse(descriptor.value);
   if (!result.success) {
