@@ -261,22 +261,11 @@ export const TrialSchema = z.strictObject({
 });
 
 /**
- * The safe-token pattern a bound source's `describe().adapterId` must match
- * before it is trusted anywhere adapter identity is asserted: an
- * alphanumeric first character (so an all-punctuation string never matches
- * at all), then up to 63 more characters from letters, digits, `.`, `_`,
- * `:` and `-` — 64 characters total, bounded rather than unbounded. `:` is
- * allowed here (and only here, not in `ADAPTER_VERSION_PATTERN` below)
- * because `@aic/tools`'s `BoundSourceRegistry` constructs adapter ids such
- * as `'b:c'` on purpose, as part of its own colon-collision replay-identity
- * design.
- *
- * Owned here (AIC-146 slice b1), moved from `@aic/tools`'s
- * `bound-source-registry.ts` without changing what it accepts — that
- * module's own `SAFE_ADAPTER_ID` is now this exact object, re-exported, not
- * a second, independently-maintained copy of the same spelling
- * (`.claude/rules/invariants.md`, "one mechanism, one implementation") —
- * see test/bound-source-registry.test.mjs › "SAFE_ADAPTER_ID and
+ * The spelling of a bound source's adapter id: an alphanumeric first
+ * character, then up to 63 letters, digits, `.`, `_`, `:` or `-`.
+ * `@aic/tools`'s `BoundSourceRegistry` checks `describe().adapterId` against
+ * this object, exported there as `SAFE_ADAPTER_ID` — see
+ * test/bound-source-registry.test.mjs › "SAFE_ADAPTER_ID and
  * SAFE_ADAPTER_TOKEN are @aic/domain's own ADAPTER_ID_PATTERN /
  * ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of
  * the same spelling (AIC-146 b1)".
@@ -284,14 +273,9 @@ export const TrialSchema = z.strictObject({
 export const ADAPTER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 /**
- * The safe-token pattern a bound source's `describe().version` must match:
- * the same shape as `ADAPTER_ID_PATTERN` above (an alphanumeric first
- * character, 64 characters total) without `:` — no existing behaviour needs
- * a version to carry one, so its character set is kept as narrow as the two
- * patterns can differ by, exactly one character. Also owned here (AIC-146
- * slice b1), moved from `@aic/tools`'s `bound-source-registry.ts`'s
- * `SAFE_ADAPTER_TOKEN`, which is now this exact object, re-exported — see
- * the object-identity test cited above.
+ * The spelling of a bound source's adapter version: the same shape as
+ * `ADAPTER_ID_PATTERN` without `:`. The registry checks `describe().version`
+ * against this object, exported there as `SAFE_ADAPTER_TOKEN`.
  */
 export const ADAPTER_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
