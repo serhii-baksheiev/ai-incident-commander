@@ -58,3 +58,13 @@ export { createGithubEvidenceSource } from './github-source.js';
 export type { GithubEvidenceSourceOptions } from './github-source.js';
 export { migrateReplayFixtureV1 } from './replay-migration.js';
 export type { LegacyReplayFixtureV1, MigratedReplayFixture } from './replay-migration.js';
+export { createDirectorySecretResolver, SecretNameError } from './secret-resolver.js';
+export type { DirectorySecretResolverOptions, ResolveSecretResult, SecretResolver } from './secret-resolver.js';
+export { createEvidenceSourceForBinding } from './adapter-catalog.js';
+export type {
+  AdapterCatalogCredentialRef,
+  AdapterCatalogDeps,
+  AdapterCatalogRefusalReason,
+  AdapterCatalogResult,
+  AdapterCatalogSourceBinding,
+} from './adapter-catalog.js';
