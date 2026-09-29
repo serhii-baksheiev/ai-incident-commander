@@ -124,8 +124,16 @@ export type ExecuteInvestigationOutcome =
  * trial (AIC-146 b4 security round 1)" and › "on an error result carrying no
  * own refusal: a polluted Object.prototype.refusal never becomes an own
  * property of the recorded trial (AIC-146 b4 security round 1)".
+ *
+ * Exported so `../index.js`'s `recordsOf` (the durable runner's own
+ * `TrialSchema.parse` site) reuses this exact function rather than growing a
+ * second copy of the same null-prototype-input-and-post-parse-assert
+ * discipline for a caller that always passes `refusal: undefined` — see
+ * durable-tool-replay.test.mjs › "a polluted Object.prototype.refusal never
+ * becomes an own property of the trial the durable runner records or the
+ * trial it persists through project" (AIC-146 b4).
  */
-function parseTrial(fields: Readonly<Record<string, unknown>>, refusal: TrialRefusal | undefined): Trial {
+export function parseTrial(fields: Readonly<Record<string, unknown>>, refusal: TrialRefusal | undefined): Trial {
   const trial = TrialSchema.parse(nullPrototypeInput(fields));
   if (Object.hasOwn(trial, 'refusal') !== (refusal !== undefined)) {
     throw new Error('parsed trial refusal presence does not match what was supplied for this call');

@@ -1,6 +1,7 @@
 import {
   EvidenceProvenanceSchema,
   EvidenceSchema,
+  ownFieldsOnNullPrototype,
   quoteModelText,
   TrialRefusalSchema,
   type Evidence,
@@ -121,14 +122,15 @@ export function ingestEvidence({
  * trial (AIC-146 b4 security round 1)" and › "on an error result carrying no
  * own refusal: a polluted Object.prototype.refusal never becomes an own
  * property of the recorded trial (AIC-146 b4 security round 1)".
+ *
+ * A thin re-export of `@aic/domain`'s `ownFieldsOnNullPrototype` under this
+ * package's existing local name, so every call site here keeps reading
+ * `nullPrototypeInput` while the one implementation lives where
+ * `@aic/persistence`'s `parseRunProductRows` (`retention.ts`, AIC-146 b4) can
+ * also reach it — `@aic/persistence` cannot import `@aic/graph`
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
  */
-export function nullPrototypeInput(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  const input: Record<string, unknown> = Object.create(null);
-  for (const key of Object.keys(fields)) {
-    input[key] = fields[key];
-  }
-  return input;
-}
+export const nullPrototypeInput = ownFieldsOnNullPrototype;
 
 /**
  * Refuses an item carrying its own `provenance` key — `Object.hasOwn` sees an

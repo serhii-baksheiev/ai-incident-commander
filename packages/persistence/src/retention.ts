@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 
-import { EvidenceSchema, TrialSchema, type Evidence, type Trial } from '@aic/domain';
+import { EvidenceSchema, ownFieldsOnNullPrototype, TrialSchema, type Evidence, type Trial } from '@aic/domain';
 
 import { APPLICATION_SCHEMA } from './app-schema.js';
 import type { RunStore } from './run-store.js';
@@ -47,6 +47,48 @@ export interface RetentionCheckpointer {
 /** Accepts either a `pg.Pool` or a `RunStore`, the same `pool | store` convention the live suite's helpers pass through. */
 function poolOf(poolOrStore: Pool | RunStore): Pool {
   return 'pool' in poolOrStore ? poolOrStore.pool : poolOrStore;
+}
+
+/** A `{ body: string }` row, the exact shape `pool.query<{ body: string }>(...)`'s `rows` already have. */
+export interface RunProductRow {
+  readonly body: string;
+}
+
+/**
+ * Parses a run's trial and evidence rows into `Trial`/`Evidence` domain
+ * objects, immune to a polluted `Object.prototype` the way
+ * `@aic/graph`'s `nullPrototypeInput`/`parseTrial` already make the canonical
+ * `execute_investigation` node and durable runner immune (AIC-146 b2/b4):
+ * each row's `body` is `JSON.parse`d and then copied onto a fresh
+ * null-prototype object (`ownFieldsOnNullPrototype`, `@aic/domain`) before
+ * `TrialSchema`/`EvidenceSchema.parse` ever sees it, so a schema's own
+ * optional-field read (`obj.key`, which walks the prototype chain like any
+ * other property read) can never observe a value inherited from
+ * `Object.prototype.refusal`, `.provenance` or `.reliability` — see
+ * run-product-read-back.test.mjs › "parseRunProductRows: a polluted
+ * Object.prototype.refusal/.provenance/.reliability never becomes an own
+ * field of the parsed trial or evidence".
+ *
+ * `@aic/persistence` cannot import `@aic/graph` (the dependency runs the
+ * other way), which is why the shared null-prototype-input discipline lives
+ * in `@aic/domain` rather than being duplicated here
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ *
+ * `readRunProductSnapshot` (below) calls this function rather than parsing
+ * rows itself, so the live database path is never a second, divergent copy
+ * of the same parse.
+ */
+export function parseRunProductRows({
+  trialRows,
+  evidenceRows,
+}: Readonly<{
+  trialRows: readonly RunProductRow[];
+  evidenceRows: readonly RunProductRow[];
+}>): { trials: Trial[]; evidence: Evidence[] } {
+  return {
+    trials: trialRows.map((row) => TrialSchema.parse(ownFieldsOnNullPrototype(JSON.parse(row.body)))),
+    evidence: evidenceRows.map((row) => EvidenceSchema.parse(ownFieldsOnNullPrototype(JSON.parse(row.body)))),
+  };
 }
 
 /**
@@ -97,13 +139,15 @@ export async function readRunProductSnapshot(
     [runId],
   );
 
+  const { trials, evidence } = parseRunProductRows({ trialRows, evidenceRows });
+
   return {
     runId,
     status: run.status,
     terminalReason: run.terminal_reason,
     interactionId: run.interaction_id,
-    trials: trialRows.map((row) => TrialSchema.parse(JSON.parse(row.body))),
-    evidence: evidenceRows.map((row) => EvidenceSchema.parse(JSON.parse(row.body))),
+    trials,
+    evidence,
     events: eventRows.map((row) => ({
       seq: Number(row.seq),
       type: row.type,
