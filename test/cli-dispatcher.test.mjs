@@ -13,19 +13,26 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
 /**
  * The onboarding command nouns `docs/decisions/integration-boundary.md`
- * (Terminology section, around lines 148-153) fixes for AIC-99:
- * `aic service add`, `aic env add`, `aic source add`/`aic source check`,
- * `aic policy set`, `aic incident start`, plus `aic doctor` and `aic apply -f`.
- * This slice's dispatcher exposes each noun as a stub; the subcommands under
- * a noun are later slices' work.
+ * (Terminology section, around lines 148-153) fixes for AIC-99, plus
+ * `credential` — a new noun for the ADR addendum term CredentialRef
+ * (AIC-99 slice d). Slice d gives `service`, `env`, `source` (its `add`
+ * subcommand), `policy` (its `set` subcommand) and `credential` (its `add`
+ * subcommand) real dispatch over the registry store — see
+ * test/cli-registry-commands.test.mjs and
+ * infra/postgres/tests/cli-registry.live.mjs for their own argv/store
+ * contract. `incident`, `doctor` and `apply` remain full stubs in this
+ * slice, and so does `source check` — `source`'s own bare-noun behaviour and
+ * its `check` subcommand are asserted separately below.
  */
-const ONBOARDING_NOUNS = ['service', 'env', 'source', 'policy', 'incident', 'doctor', 'apply'];
+const STUB_NOUNS = ['incident', 'doctor', 'apply'];
+const REGISTRY_NOUNS = ['service', 'env', 'source', 'policy', 'credential'];
+const ALL_ONBOARDING_NOUNS = [...REGISTRY_NOUNS, ...STUB_NOUNS];
 
-function runCli(args, cwd) {
+function runCli(args, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: cwd ?? projectRoot,
+    cwd: options.cwd ?? projectRoot,
     encoding: 'utf8',
-    env: childEnv(),
+    env: childEnv(options.env),
   });
 }
 
@@ -42,16 +49,16 @@ function withTempCwd(fn) {
   }
 }
 
-test('general help lists every onboarding noun the integration-boundary ADR fixes, and not start or resume as top-level commands', () => {
+test('general help lists every onboarding noun the integration-boundary ADR fixes, plus credential and db, and not start or resume as top-level commands', () => {
   const args = ['--help'];
   const result = runCli(args);
 
   assert.equal(result.status, 0, commandDiagnostics(args, result));
-  for (const noun of ONBOARDING_NOUNS) {
+  for (const noun of [...ALL_ONBOARDING_NOUNS, 'db']) {
     assert.match(
       result.stdout,
       new RegExp(`^\\s*${noun}\\b`, 'm'),
-      `general help must list the "${noun}" onboarding noun the ADR fixes`,
+      `general help must list the "${noun}" command`,
     );
   }
   assert.doesNotMatch(
@@ -66,12 +73,12 @@ test('general help lists every onboarding noun the integration-boundary ADR fixe
   );
 });
 
-for (const noun of ONBOARDING_NOUNS) {
+for (const noun of STUB_NOUNS) {
   test(`the "${noun}" onboarding stub exits non-zero, names itself not implemented, and writes nothing to the working directory`, () => {
     withTempCwd((cwd) => {
       const before = readdirSync(cwd);
       const args = [noun];
-      const result = runCli(args, cwd);
+      const result = runCli(args, { cwd });
 
       assert.notEqual(result.status, 0, commandDiagnostics(args, result));
       assert.match(
@@ -87,6 +94,66 @@ for (const noun of ONBOARDING_NOUNS) {
     });
   });
 }
+
+for (const noun of REGISTRY_NOUNS) {
+  test(`the "${noun}" noun with no subcommand exits non-zero, names "subcommand" as the problem rather than claiming to be unimplemented, and writes nothing to the working directory`, () => {
+    withTempCwd((cwd) => {
+      const before = readdirSync(cwd);
+      const args = [noun];
+      const result = runCli(args, { cwd });
+
+      assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+      assert.match(
+        `${result.stdout}${result.stderr}`,
+        /subcommand/i,
+        `"${noun}" with no subcommand must name "subcommand" as the problem, since "${noun}" itself is implemented in this slice: ${commandDiagnostics(args, result)}`,
+      );
+      assert.doesNotMatch(
+        `${result.stdout}${result.stderr}`,
+        /not implemented/i,
+        `"${noun}" itself is implemented in this slice; only a missing/unknown subcommand is refused, never the whole noun reported as unimplemented: ${commandDiagnostics(args, result)}`,
+      );
+      assert.deepEqual(
+        readdirSync(cwd),
+        before,
+        `"${noun}" with no subcommand must not write to the working directory it is invoked from`,
+      );
+    });
+  });
+}
+
+test('aic db with an unknown subcommand, and no connection string configured, is refused as a subcommand problem and writes nothing to the working directory', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['db', 'bogus'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.equal(result.stdout, '', commandDiagnostics(args, result));
+    assert.match(result.stderr, /subcommand/i, commandDiagnostics(args, result));
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+test('aic source check ... remains not implemented in this build in this slice, exits non-zero, and writes nothing to the working directory', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['source', 'check', 'checkout', 'staging', 'github-source'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      /not implemented/i,
+      `aic source check must say plainly that it is not implemented in this build: ${commandDiagnostics(args, result)}`,
+    );
+    assert.deepEqual(
+      readdirSync(cwd),
+      before,
+      'aic source check must not write to the working directory it is invoked from',
+    );
+  });
+});
 
 for (const command of ['start', 'resume']) {
   test(`aic ${command} exits non-zero and points the caller at aic dev spike`, () => {

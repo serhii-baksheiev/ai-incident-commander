@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Pool, PoolClient } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 
 import {
   RegistrySnapshotSchema,
@@ -12,7 +12,7 @@ import {
   type SourceBinding,
 } from '@aic/domain';
 
-import { APPLICATION_SCHEMA } from './app-schema.js';
+import { APPLICATION_SCHEMA, ApplicationSchemaVersionError, assertApplicationSchemaVersion } from './app-schema.js';
 
 /**
  * AIC-99 slice c: the transactional registry store the owner's 2026-09-25
@@ -376,8 +376,7 @@ async function deleteEnvironmentCascade(client: PoolClient, environmentId: strin
   }
 }
 
-/** Builds a store against `pool` — an already-open `pg.Pool` a caller holds, unlike `createRunStore`'s connection string. */
-export function createRegistryStore(pool: Pool): RegistryStore {
+function createPooledRegistryStore(pool: Pool): RegistryStore {
   return {
     async snapshot() {
       return readConsistentSnapshot(pool);
@@ -636,4 +635,87 @@ export function createRegistryStore(pool: Pool): RegistryStore {
       });
     },
   };
+}
+
+/**
+ * Opens a fresh `Pool` for exactly one call, checks the application schema is
+ * at `APP_SCHEMA_VERSION` against it (naming `aic db migrate` on a mismatch,
+ * the CLI's own remediation), runs the call, and always closes the pool
+ * afterward — the connection-per-call lifecycle a short-lived caller (the
+ * CLI: one process, one command) wants, as opposed to
+ * `createPooledRegistryStore`'s caller-held, long-lived `Pool`.
+ */
+/**
+ * Only a schema that is reachable but not migrated earns the `aic db migrate`
+ * remedy: a version mismatch, or PostgreSQL's undefined_table (42P01) /
+ * invalid_schema_name (3F000) when `aic_app` does not exist yet. A connection,
+ * DNS or authentication failure propagates as it is, because migrating cannot
+ * fix it — see cli-registry.live.mjs › "a registry command whose database
+ * cannot be reached is refused with the connection failure alone, never with
+ * the aic db migrate remedy".
+ */
+function isUnmigratedSchema(error: unknown): boolean {
+  if (error instanceof ApplicationSchemaVersionError) return true;
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return code === '42P01' || code === '3F000';
+}
+
+async function withConnectionScopedPool<T>(
+  connectionString: string,
+  call: (pool: Pool) => Promise<T>,
+): Promise<T> {
+  const pool = new Pool({ connectionString });
+  try {
+    try {
+      await assertApplicationSchemaVersion(pool);
+    } catch (error) {
+      if (!isUnmigratedSchema(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message}. Run \`aic db migrate\` to bring the application schema up to date.`);
+    }
+    return await call(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
+function createConnectionStringRegistryStore(connectionString: string): RegistryStore {
+  const run = <T>(call: (store: RegistryStore) => Promise<T>): Promise<T> =>
+    withConnectionScopedPool(connectionString, (pool) => call(createPooledRegistryStore(pool)));
+  return {
+    snapshot: () => run((store) => store.snapshot()),
+    addService: (input) => run((store) => store.addService(input)),
+    addEnvironment: (input) => run((store) => store.addEnvironment(input)),
+    addCredentialRef: (input) => run((store) => store.addCredentialRef(input)),
+    addSourceBinding: (input) => run((store) => store.addSourceBinding(input)),
+    setActionPolicy: (input) => run((store) => store.setActionPolicy(input)),
+    removeEnvironment: (input) => run((store) => store.removeEnvironment(input)),
+    removeService: (input) => run((store) => store.removeService(input)),
+  };
+}
+
+/**
+ * Builds a `RegistryStore`, from either of two things a caller can hold:
+ *
+ * - An already-open `pg.Pool` (unlike `createRunStore`'s connection string):
+ *   every call runs against that ONE pool — the shape a long-lived caller (a
+ *   server, a test suite) wants.
+ * - A bare connection string: every call instead opens its OWN `Pool`,
+ *   checks `assertApplicationSchemaVersion` against it, runs, and closes the
+ *   pool — the shape a short-lived caller (`apps/cli`, one process per
+ *   command) wants, and what keeps the PostgreSQL driver itself out of
+ *   every layer but this one: `apps/cli` never imports `pg`.
+ *   see test/postgres-checkpointer.test.mjs › "keeps checkpointer storage,
+ *   the application schema's tables, and the PostgreSQL driver out of every
+ *   layer but persistence"
+ *   see infra/postgres/tests/cli-registry.live.mjs › "a registry command
+ *   with AIC_POSTGRES_URL set but no aic_app schema at all exits non-zero,
+ *   writes nothing to stdout, and tells the operator to run aic db migrate"
+ */
+export function createRegistryStore(pool: Pool): RegistryStore;
+export function createRegistryStore(connectionString: string): RegistryStore;
+export function createRegistryStore(poolOrConnectionString: Pool | string): RegistryStore {
+  return typeof poolOrConnectionString === 'string'
+    ? createConnectionStringRegistryStore(poolOrConnectionString)
+    : createPooledRegistryStore(poolOrConnectionString);
 }

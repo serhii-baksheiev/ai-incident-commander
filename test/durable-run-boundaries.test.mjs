@@ -274,6 +274,8 @@ const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'PERSISTENCE_LAYER',
   'RUN_STORE_TRANSITIONS',
   'RUN_WRITE_CONTEXT_FENCE_SQL',
+  'RegistryConflictError',
+  'RegistryValidationError',
   'RunNotTerminalError',
   'UnverifiableContainerError',
   'assertApplicationSchemaVersion',

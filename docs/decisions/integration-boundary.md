@@ -150,6 +150,14 @@ the same names, exactly as written here:
 The planned onboarding commands (AIC-99) use the same nouns:
 `aic service add`, `aic env add`, `aic source add`, `aic source check`,
 `aic policy set`, `aic incident start`, plus `aic doctor` and `aic apply -f`.
+Addendum (AIC-99 slice d, 2026-09-29): none of those commands creates a
+`CredentialRef`, which a `SourceBinding` and an `ActionPolicy` both name, so
+`aic credential add` joins them under the term's own noun. It records the
+secret's name and access level only: see credential-ref-secrets.test.mjs ›
+"CredentialRef declares exactly id, environmentId, access, name, secretName"
+and › "refuses every secret shape the repository’s vocabulary knows, as a
+secretName". `aic db migrate` applies the application schema's migrations; it
+is operator maintenance, not an onboarding noun.
 The existing `aic start` persistence spike, and `aic resume` beside it, are not
 among them; AIC-99's scope moves both behind an explicit development-only
 command.
