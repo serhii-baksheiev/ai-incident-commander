@@ -84,6 +84,31 @@ test('within packages/graph/src, EvidenceSchema.parse and EvidenceSchema.safePar
   );
 });
 
+// Block and line comments removed, so a sentence that names TrialSchema.parse
+// is not read as a call. Coarse on purpose: a `//` inside a string literal
+// also starts a stripped span, which can only hide a call, never invent one.
+function withoutComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+test('across packages/*/src and apps/*/src, TrialSchema.parse and TrialSchema.safeParse appear only in the node that builds trials and in the read-back of stored trials', () => {
+  const sourceDirs = everySourceDir();
+  assert.ok(sourceDirs.some((dir) => dir.endsWith('packages/graph/src')), 'the scan must reach packages/graph/src');
+  assert.ok(sourceDirs.some((dir) => dir.endsWith('packages/persistence/src')), 'the scan must reach packages/persistence/src');
+
+  const TRIAL_PARSE = /\bTrialSchema\.(?:parse|safeParse)\b/;
+  const callingFiles = sourceDirs
+    .flatMap((dir) => walkTsFiles(dir))
+    .map((file) => relative(PROJECT_ROOT, file))
+    .filter((relativePath) => TRIAL_PARSE.test(withoutComments(readFileSync(join(PROJECT_ROOT, relativePath), 'utf8'))));
+
+  assert.deepEqual(
+    callingFiles.slice().sort(),
+    ['packages/graph/src/nodes/execute-investigation.ts', 'packages/persistence/src/retention.ts'],
+    `a Trial is parsed only by parseTrial (packages/graph/src/nodes/execute-investigation.ts) and parseRunProductRows (packages/persistence/src/retention.ts), both on a null-prototype input; the scan found ${JSON.stringify(callingFiles.sort())}`,
+  );
+});
+
 test('no module under packages/*/src or apps/*/src imports projectToolResult, other than its own definition file and the tools package re-export', () => {
   const sourceDirs = everySourceDir();
 
