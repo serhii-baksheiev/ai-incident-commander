@@ -1,7 +1,7 @@
 /**
  * AIC-99 slice e: `runSourceCheckCommand(argv, deps)`
  * (`apps/cli/src/commands/source-check.ts`) — the `aic source check <service>
- * <env> [<binding>]` behaviour `.claude/runs/20260929-aic99e/design.md` pins:
+ * <env> [<binding>]` behaviour this file pins:
  * for every `SourceBinding` in scope, build it through `@aic/tools`'s
  * `createEvidenceSourceForBinding` and `check()` it, classify the result into
  * one of six closed words, and write exactly one JSON line per binding to

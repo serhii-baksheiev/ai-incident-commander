@@ -16,9 +16,8 @@ import { withConnectionScopedPool } from './registry-store.js';
  * AIC-99 slice f: `createIncidentStore` — `aic incident start`'s own
  * transactional store, built on migration 3's `incidents` table
  * (`app-schema.ts`), which carries no foreign key to `services`/
- * `environments`. See `.claude/runs/20260929-aic99f/design.md` and
- * `infra/postgres/tests/incident-store.live.mjs` for the spec this file is
- * built against.
+ * `environments`. See `infra/postgres/tests/incident-store.live.mjs` for
+ * the contract this file is built against.
  */
 
 /**
@@ -46,9 +45,11 @@ export interface IncidentStore {
 
 /**
  * Only what `checkPrimaryScope` reads (`registry.services`/
- * `registry.environments`, by `id`/`serviceId` alone) — read INSIDE this
- * call's own transaction, so a scope that was valid when the caller built
- * the intake but has since been removed is still caught. `name` is left
+ * `registry.environments`, by `id`/`serviceId` alone), read when the call
+ * runs, so a scope removed before the call is caught. A removal that commits
+ * between this read and the insert is not: the Incident is stored, and it
+ * survives removal like any other Incident (the table has no foreign key to
+ * the registry). `name` is left
  * blank: `checkPrimaryScope` never reads it, and this snapshot is never
  * passed to `RegistrySnapshotSchema`.
  */
@@ -135,6 +136,11 @@ async function startIncidentAgainst(
           `SELECT body FROM "${APPLICATION_SCHEMA}".incidents WHERE idempotency_key = $1`,
           [incident.idempotencyKey],
         );
+        if (selectResult.rows.length !== 1) {
+          throw new Error(
+            'an Incident with this idempotency key was neither inserted nor found; the start can be retried',
+          );
+        }
         resultIncident = selectResult.rows[0].body as IntakeDerivedIncident;
         created = false;
       }

@@ -1,8 +1,7 @@
 /**
  * AIC-99 slice e: "adapter factory" — pins the new `@aic/tools` export
  * `createEvidenceSourceForBinding(binding, { credentialRef, resolveSecret,
- * fetch? })` (`packages/tools/src/adapter-catalog.ts`, per
- * `.claude/runs/20260929-aic99e/design.md`). It composes exactly the two
+ * fetch? })` (`packages/tools/src/adapter-catalog.ts`, AIC-99 slice e). It composes exactly the two
  * existing adapters (`./lab-source.ts`'s `createLabEvidenceSource`,
  * `./github-source.ts`'s `createGithubEvidenceSource`) from a `SourceBinding`
  * + its resolved read `CredentialRef`, and is the one place the trust

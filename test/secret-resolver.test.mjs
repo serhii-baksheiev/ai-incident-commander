@@ -1,8 +1,7 @@
 /**
  * AIC-99 slice e: "secret resolver port" — pins the new `@aic/tools` export
  * `createDirectorySecretResolver({ directory })` -> `{ resolve(secretName) }`
- * (`packages/tools/src/secret-resolver.ts`, per
- * `.claude/runs/20260929-aic99e/design.md`). A pure filesystem read: given a
+ * (`packages/tools/src/secret-resolver.ts`, AIC-99 slice e). A pure filesystem read: given a
  * directory (the CLI wires `AIC_SECRETS_DIR`, defaulting to `/run/secrets`,
  * but that default is the CLI's own concern, not this factory's — every row
  * here passes an explicit `directory`), `resolve(secretName)` reads a file

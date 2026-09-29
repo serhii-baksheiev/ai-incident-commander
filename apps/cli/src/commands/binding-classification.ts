@@ -35,8 +35,7 @@ function credentialForBinding(binding: SourceBinding, registry: RegistrySnapshot
 /**
  * Classifies one binding already known to exist: `check()` a source built
  * through `@aic/tools`'s `createEvidenceSourceForBinding`, mapping its
- * outcome into exactly the six words `.claude/runs/20260929-aic99e/design.md`
- * pins. A factory refusal never reaches the filesystem/network path below —
+ * outcome into exactly the six words `BindingStatus` names. A factory refusal never reaches the filesystem/network path below —
  * `secret-absent` reads as `absent`; every other factory refusal reads as
  * `misconfigured`, naming its own reason.
  */

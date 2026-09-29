@@ -47,7 +47,12 @@ const SlugSchema = z
  * and `SignalSchema.source`/`statement`.
  */
 export const screenedText = (max: number) =>
-  z.string().min(1).max(max).refine((value) => !looksLikeCredential(value), NOT_A_CREDENTIAL);
+  // The screen reads the whole field: `.max(max)` refuses a longer value
+  // before the refinement runs, so the scan is bounded by the field's own cap
+  // — see incident-intake-credential-screen.test.mjs › "a credential pasted
+  // past the first 512 characters of a signal statement is still refused: the
+  // screen reads the whole field".
+  z.string().min(1).max(max).refine((value) => !looksLikeCredential(value, max), NOT_A_CREDENTIAL);
 
 /**
  * A server-assigned registry identifier (the decision record's "identity is
@@ -162,11 +167,11 @@ const DOMAIN_SECRET_PATTERNS = [
  * reads it - the credential scan never reads past this slice, whatever the
  * candidate's actual length.
  */
-const boundedCredentialSlice = (value: string) =>
-  value.length > MAX_CONFIG_VALUE_LENGTH ? value.slice(0, MAX_CONFIG_VALUE_LENGTH) : value;
+const boundedCredentialSlice = (value: string, limit: number) =>
+  value.length > limit ? value.slice(0, limit) : value;
 
-const looksLikeCredential = (value: string) =>
-  DOMAIN_SECRET_PATTERNS.some((pattern) => pattern.test(boundedCredentialSlice(value)));
+const looksLikeCredential = (value: string, limit: number = MAX_CONFIG_VALUE_LENGTH) =>
+  DOMAIN_SECRET_PATTERNS.some((pattern) => pattern.test(boundedCredentialSlice(value, limit)));
 
 /**
  * A per-adapter config object.

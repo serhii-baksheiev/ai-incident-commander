@@ -313,3 +313,14 @@ test('an Incident started through createIncidentStore survives its owning Servic
   const { rows } = await pool.query('select id from aic_app.incidents where id = $1', [incident.id]);
   assert.equal(rows.length, 1, 'the Incident row must survive removeService, since aic_app.incidents carries no foreign key to services/environments');
 });
+
+test('startIncident itself refuses an intake the domain schema refuses, whatever the caller checked, and stores nothing', async (t) => {
+  const { registryStore, incidentStore, pool } = await freshStores(t);
+  const scope = await seedScope(registryStore, 'checkout', 'prod');
+  // A credential SHAPE, assembled at runtime rather than written as a literal.
+  const pasted = ['ghp', 'B'.repeat(28)].join('_');
+  for (const overrides of [{ title: `rotate ${pasted}` }, { startedAt: 'yesterday' }]) {
+    await assert.rejects(() => incidentStore.startIncident(buildIntake(scope, overrides), { id: randomUUID() }));
+  }
+  assert.equal(await incidentRowCount(pool), 0, 'a refused intake must store no row');
+});

@@ -19,11 +19,19 @@ export const SignalSchema = z.strictObject({
   observedAt: z.iso.datetime({ offset: true }),
 });
 
+/**
+ * At most this many signals per intake: bounded by construction, like the
+ * registry's config (sixteen keys), so validation never scales with an
+ * unbounded caller-supplied array — see incident-intake-credential-screen.test.mjs
+ * › "an intake carries at most a bounded number of signals".
+ */
+export const MAX_INTAKE_SIGNALS = 100;
+
 export const IncidentIntakeSchema = z.strictObject({
   primaryScope: PrimaryScopeSchema,
   title: screenedText(200),
   startedAt: z.iso.datetime({ offset: true }),
-  signals: z.array(SignalSchema),
+  signals: z.array(SignalSchema).max(MAX_INTAKE_SIGNALS),
   externalRef: screenedText(256).optional(),
   idempotencyKey: screenedText(256).optional(),
 });

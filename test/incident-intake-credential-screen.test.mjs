@@ -1,9 +1,7 @@
 /**
  * AIC-99 slice f: `aic incident start` refuses a credential-shaped
  * `--title` / `--external-ref` / `--idempotency-key` / signal `source` or
- * `statement` without ever echoing the pasted value
- * (`.claude/runs/20260929-aic99f/design.md`, "Title/ref/key/signal text
- * screened").
+ * `statement` without ever echoing the pasted value (AIC-99 slice f).
  *
  * ## Design choice this file pins
  *
@@ -115,4 +113,26 @@ test('IncidentIntakeSchema refuses a credential-shaped signal statement, and the
 test('an ordinary title, externalRef, idempotencyKey and signal text are still accepted: the screen refuses only a credential shape, not free text in general', () => {
   const intake = baseIntake({ externalRef: 'pagerduty:incident-123', idempotencyKey: 'checkout-prod-run-one' });
   assert.equal(domain.IncidentIntakeSchema.safeParse(intake).success, true, 'ordinary, non-credential-shaped text must not be refused by the new screen');
+});
+
+test('a credential pasted past the first 512 characters of a signal statement is still refused: the screen reads the whole field', () => {
+  const secret = pastedSecret();
+  const logLine = '10.0.0.1 - - [29/Sep/2026:10:00:00 +0000] "GET /checkout HTTP/1.1" 502 0\n';
+  let statement = '';
+  while (statement.length < 1_500) statement += logLine;
+  statement += `Authorization: token ${secret}`;
+  assert.ok(statement.length <= 2_000 && statement.indexOf(secret) > 512, 'fixture sanity: the secret sits past character 512, inside the field cap');
+  const result = domain.IncidentIntakeSchema.safeParse(
+    baseIntake({ signals: [{ source: 'pagerduty', statement, observedAt: '2026-09-29T10:00:00Z' }] }),
+  );
+  assert.equal(result.success, false, 'a secret anywhere inside the field must be refused');
+  assert.ok(!JSON.stringify(result.error.issues).includes(secret));
+});
+
+test('an intake carries at most a bounded number of signals', () => {
+  const signal = { source: 'pagerduty', statement: 'checkout error rate spike', observedAt: '2026-09-29T10:00:00Z' };
+  const many = domain.IncidentIntakeSchema.safeParse(baseIntake({ signals: Array.from({ length: 1_000 }, () => signal) }));
+  assert.equal(many.success, false, 'a thousand signals must be refused by a cap, not parsed');
+  const few = domain.IncidentIntakeSchema.safeParse(baseIntake({ signals: Array.from({ length: 10 }, () => signal) }));
+  assert.equal(few.success, true, 'an ordinary number of signals is accepted');
 });

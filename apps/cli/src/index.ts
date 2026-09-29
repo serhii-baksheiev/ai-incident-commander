@@ -39,7 +39,7 @@ Commands:
   source       Register and check evidence SourceBindings
   credential   Register a CredentialRef (a secret NAME, never its value)
   policy       Set the ActionPolicy for an Environment
-  incident     Start an Incident investigation
+  incident     Record an Incident for a scope (runs nothing)
   investigate  Run one investigation over a replay file
   doctor       Check onboarding health
   apply        Apply a declarative onboarding manifest

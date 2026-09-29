@@ -12,7 +12,7 @@
  * variable is never named under `test/` (postgres-checkpointer.test.mjs ›
  * "keeps the database-backed lane out of npm test and npm run check").
  *
- * ## Design choices this file pins (`.claude/runs/20260929-aic99f/design.md` leaves them open)
+ * ## Design choices this file pins
  *
  *   - `argv` passed to `runIncidentCommand` is the `start` subcommand's OWN
  *     remainder — `apps/cli/src/index.ts` consumes `incident start` itself
@@ -33,10 +33,9 @@
  *     — never a value the CLI invents from argv.
  *   - a signal's `observedAt` defaults to the resolved `startedAt`
  *     (`--started-at` or `deps.now()`) unless `--signal-at` is given, in
- *     which case EVERY signal in the call gets that one value — the task
- *     brief explicitly leaves this open ("decide and pin"), and a single
- *     `--signal-at` naming one instant for the whole batch is the simplest
- *     reading of the usage line's singular `[--signal-at <iso>]`.
+ *     which case EVERY signal in the call gets that one value: one flag
+ *     naming one instant for the whole batch is the simplest form that lets
+ *     an operator record signals observed before the incident started.
  *   - `<service>`/`<env>` are screened by the same
  *     `requireRegistryName`/slug rule `apps/cli/src/commands/registry.ts`
  *     already uses, imported from that module rather than re-implemented,

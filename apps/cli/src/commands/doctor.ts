@@ -10,8 +10,7 @@ import { requireRegistryName } from './registry.js';
  * (`./binding-classification.ts`), the same per-binding classification
  * `aic source check` reports, and adds one informational `actionPolicy` row
  * per Environment in scope. See test/cli-doctor.test.mjs for the full pinned
- * argv/deps/output contract, and `.claude/runs/20260929-aic99e/design.md`
- * for the design this satisfies.
+ * argv/deps/output contract.
  */
 
 export interface DoctorStore {
