@@ -36,11 +36,11 @@ services:
   # Written on the key's line, a path this long matches the assigned-secret
   # shape `.claude/scripts/lib/secrets.mjs` scans for (a credential keyword,
   # then a long value), although it is a path and not a secret. The same line
-  # break would hide a real value from that scanner too, so the scan row in
-  # test/single-user-compose.test.mjs does not cover these keys. What refuses
-  # an added password value is the exact-environment check on each service:
-  # see single-user-compose.test.mjs › "the postgres service reads its
-  # password from a Docker secret, never from an environment value".
+  # break would hide a real value from that scanner too: the scan row in
+  # test/single-user-compose.test.mjs reads the whole file but cannot see a
+  # value written on the next line. What refuses an added password value is
+  # the exact-environment check on each service, e.g. for postgres
+  # single-user-compose.test.mjs › "the postgres service reads its password from a Docker secret, never from an environment value".
   postgres:
     image: postgres:17-alpine
     environment:

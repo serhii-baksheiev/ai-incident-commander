@@ -87,6 +87,14 @@ test('declares exactly six services, none named api or worker', () => {
   );
 });
 
+test('names its own Compose project, so it never shares a project, network or volume with another stack in a directory named single-user', () => {
+  assert.equal(
+    readCompose().name,
+    'aic-single-user',
+    'without a top-level name Compose names the project after the directory, single-user, which any unrelated stack in a directory of that name would share',
+  );
+});
+
 test('the postgres service reads its password from a Docker secret, never from an environment value', () => {
   const { postgres } = readCompose().services;
   assert.equal(postgres.image, 'postgres:17-alpine');
@@ -315,6 +323,13 @@ test('Dockerfile.dockerignore excludes node_modules, .git, .claude and every .en
   const text = readFileSync(dockerignorePath, 'utf8');
   for (const pattern of [/^node_modules\/?$/m, /^\.git\/?$/m, /^\.claude\/?$/m, /^\*\*\/\.env$/m]) {
     assert.match(text, pattern, `Dockerfile.dockerignore must exclude the pattern ${pattern}`);
+  }
+});
+
+test('Dockerfile.dockerignore excludes credential files by extension and by directory name', () => {
+  const lines = new Set(readFileSync(dockerignorePath, 'utf8').split('\n').map((line) => line.trim()));
+  for (const pattern of ['**/.npmrc', '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx', '**/*.jks', '**/*.keystore', '**/secrets', '**/credentials']) {
+    assert.ok(lines.has(pattern), `Dockerfile.dockerignore must carry the line ${pattern}: the build context is the whole repository, and a credential file anywhere in it would otherwise reach a build-stage layer`);
   }
 });
 
