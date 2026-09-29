@@ -505,3 +505,22 @@ test('never writes a resolved secret value into any JSON line', async () => {
     assert.doesNotMatch(line, new RegExp(resolvedSecretValue));
   }
 });
+
+test('source check with no service or environment is refused naming the missing argument, before the registry is read', async () => {
+  const { runSourceCheckCommand } = await import('../apps/cli/dist/commands/source-check.js');
+  for (const argv of [[], ['checkout']]) {
+    let snapshotCalls = 0;
+    const lines = [];
+    await assert.rejects(
+      () =>
+        runSourceCheckCommand(argv, {
+          store: { snapshot: async () => { snapshotCalls += 1; return { services: [], environments: [], sourceBindings: [], credentialRefs: [], actionPolicies: [] }; } },
+          resolveSecret: async () => ({ status: 'absent' }),
+          stdout: (text) => lines.push(text),
+        }),
+      /missing required argument/,
+    );
+    assert.equal(snapshotCalls, 0, `argv ${JSON.stringify(argv)} must not read the registry`);
+    assert.equal(lines.length, 0);
+  }
+});

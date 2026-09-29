@@ -41,12 +41,15 @@
  *     `SourceBindingConfigSchema` both already follow).
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import * as tools from '@aic/tools';
+
+import { childEnv } from './fixtures/child-env.mjs';
 
 /**
  * A well-formed `SecretNameSchema` value, built from parts rather than one
@@ -77,10 +80,11 @@ function secretNameErrorClass() {
   return tools.SecretNameError;
 }
 
-function withSecretsDir(fn) {
+/** Awaits the callback before removing the directory, so no row races its own cleanup. */
+async function withSecretsDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'aic-secret-resolver-'));
   try {
-    return fn(dir);
+    return await fn(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -217,4 +221,27 @@ test('a thrown SecretNameError never echoes the refused secretName text in its m
       return true;
     },
   );
+});
+
+test('an empty (or newline-only) secret file is unreadable, never a found empty value', async () => {
+  await withSecretsDir(async (dir) => {
+    const name = ['EMPTY', 'SECRET'].join('_');
+    for (const content of ['', '\n']) {
+      writeFileSync(join(dir, name), content);
+      const result = await tools.createDirectorySecretResolver({ directory: dir }).resolve(name);
+      assert.deepEqual(result, { status: 'unreadable' }, `content ${JSON.stringify(content)}`);
+    }
+  });
+});
+
+test('a FIFO in the secrets directory is unreadable, and resolving it returns promptly instead of waiting for a writer', async () => {
+  await withSecretsDir(async (dir) => {
+    const name = ['PIPE', 'SECRET'].join('_');
+    const made = spawnSync('mkfifo', [join(dir, name)], { env: childEnv() });
+    assert.equal(made.status, 0, 'fixture sanity: mkfifo must create the pipe');
+    const started = Date.now();
+    const result = await tools.createDirectorySecretResolver({ directory: dir }).resolve(name);
+    assert.deepEqual(result, { status: 'unreadable' });
+    assert.ok(Date.now() - started < 5_000, 'resolve must not block on a FIFO with no writer');
+  });
 });

@@ -1,4 +1,4 @@
-import { createEvidenceSourceForBinding, type ResolveSecretResult } from '@aic/tools';
+import { createEvidenceSourceForBinding, SecretNameError, type ResolveSecretResult } from '@aic/tools';
 import type { CredentialRef, Environment, RegistrySnapshot, SourceBinding } from '@aic/domain';
 
 /**
@@ -13,7 +13,7 @@ import type { CredentialRef, Environment, RegistrySnapshot, SourceBinding } from
 export type BindingStatus = 'ready' | 'denied' | 'unreachable' | 'error' | 'absent' | 'misconfigured';
 
 export interface BindingRow {
-  readonly service: string;
+  readonly service: string | null;
   readonly environment: string | null;
   readonly binding: string | null;
   readonly status: BindingStatus;
@@ -48,11 +48,21 @@ async function classifyKnownBinding(
   deps: ClassificationDeps,
 ): Promise<BindingRow> {
   const credentialRef = credentialForBinding(binding, registry);
-  const built = await createEvidenceSourceForBinding(binding, {
-    credentialRef,
-    resolveSecret: deps.resolveSecret,
-    fetch: deps.fetch,
-  });
+  // One binding the catalog cannot build (a stored secret name the resolver
+  // refuses, anything else that throws) is that binding's own
+  // `misconfigured` row with a fixed reason word; it never ends the run and
+  // never carries the thrown message, which may name a stored value.
+  let built;
+  try {
+    built = await createEvidenceSourceForBinding(binding, {
+      credentialRef,
+      resolveSecret: deps.resolveSecret,
+      fetch: deps.fetch,
+    });
+  } catch (error) {
+    const reason = error instanceof SecretNameError ? 'invalid-secret-name' : 'catalog-error';
+    return { service, environment, binding: binding.name, status: 'misconfigured', reason };
+  }
 
   if (built.status === 'refused') {
     if (built.reason === 'secret-absent') {
@@ -136,7 +146,7 @@ export async function classifyEnvironmentBindings(
 
 /** One `absent` row for a service/environment name this registry does not resolve. */
 export function unresolvedScopeRow(
-  service: string,
+  service: string | null,
   environment: string | null,
   binding: string | null,
 ): BindingRow {

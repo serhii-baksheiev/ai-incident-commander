@@ -8,6 +8,7 @@ import {
   unresolvedScopeRow,
   type BindingRow,
 } from './binding-classification.js';
+import { requireRegistryName } from './registry.js';
 
 /**
  * AIC-99 slice e: `runSourceCheckCommand(argv, deps)` — `aic source check
@@ -39,7 +40,15 @@ export async function runSourceCheckCommand(
   argv: readonly string[],
   deps: SourceCheckDeps,
 ): Promise<SourceCheckSummary> {
-  const [serviceName, environmentName, bindingName] = argv;
+  if (argv.length < 2) {
+    throw new Error(`missing required argument <${argv.length === 0 ? 'service' : 'environment'}>`);
+  }
+  if (argv.length > 3) {
+    throw new Error('unexpected extra positional argument at position 4');
+  }
+  const serviceName = requireRegistryName('service', argv[0]);
+  const environmentName = requireRegistryName('environment', argv[1]);
+  const bindingName = argv[2] === undefined ? undefined : requireRegistryName('binding', argv[2]);
   const registry = await deps.store.snapshot();
 
   const service = findService(registry, serviceName);

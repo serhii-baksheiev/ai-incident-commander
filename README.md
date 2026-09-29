@@ -240,9 +240,30 @@ npm run build
 npm run cli -- --help
 ```
 
-The onboarding nouns (`service`, `env`, `source`, `policy`, `incident`,
-`doctor`, `apply`) that `--help` lists are stubs as of AIC-99 slice a; each
-prints "not implemented in this build" and exits non-zero.
+The onboarding commands keep their registry in PostgreSQL and read its
+connection string from `AIC_POSTGRES_URL`. Apply the schema once, then
+register a scope:
+
+```bash
+npm run cli -- db migrate
+npm run cli -- service add checkout
+npm run cli -- env add checkout prod
+npm run cli -- credential add checkout prod gh-read --secret GITHUB_READ_TOKEN
+npm run cli -- source add checkout prod gh --adapter github@1 \
+  --config owner=acme --config repo=checkout --credential gh-read
+npm run cli -- policy set checkout prod
+npm run cli -- source check checkout prod
+npm run cli -- doctor
+```
+
+A `CredentialRef` records a secret's name only. The value is read at check
+time from a file of that name in `AIC_SECRETS_DIR` (default `/run/secrets`,
+one file per secret). `source check` and `doctor` print one JSON line per
+binding: `ready`, `denied`, `unreachable`, `error`, `absent` or
+`misconfigured`, and exit non-zero unless every binding is ready. `doctor`
+also reports an empty registry, or a service with no environment, as
+`absent`. `incident` and `apply` are still stubs that print "not implemented
+in this build" and exit non-zero.
 
 `investigate` runs one real investigation over a replay file, through the
 same node composition the evaluation lanes use:

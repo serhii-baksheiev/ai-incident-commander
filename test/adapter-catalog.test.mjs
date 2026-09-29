@@ -348,3 +348,36 @@ test('refuses secret-unreadable when the credential’s secret file is unreadabl
 
   assert.deepEqual(result, { status: 'refused', reason: 'secret-unreadable' });
 });
+
+/* -------------------------------------------------------------------------- */
+/* A present but malformed config value is refused, never thrown or echoed    */
+/* -------------------------------------------------------------------------- */
+
+test('refuses invalid-config for a github@1 owner or repo that is present but not a valid name, without throwing or reproducing the value, before ever resolving a secret', async () => {
+  const createEvidenceSourceForBinding = adapterCatalogFactory();
+  const opaque = ['abc+def', 'ghi=jkl', 'x'.repeat(40)].join('/');
+  for (const config of [
+    { owner: opaque, repo: REPO },
+    { owner: OWNER, repo: opaque },
+  ]) {
+    const credentialRef = makeReadCredentialRef();
+    const binding = makeBinding({ adapterId: 'github', adapterVersion: '1', config, credentialRefId: credentialRef.id });
+    const result = await createEvidenceSourceForBinding(binding, {
+      credentialRef,
+      resolveSecret: unreachableResolver().resolve,
+    });
+    assert.deepEqual(result, { status: 'refused', reason: 'invalid-config' });
+    assert.ok(!JSON.stringify(result).includes(opaque));
+  }
+});
+
+test('refuses invalid-config for a lab@1 baseUrl that is not an http or https URL', async () => {
+  const createEvidenceSourceForBinding = adapterCatalogFactory();
+  for (const baseUrl of ['not a url', 'ftp://lab.example.test', 'file:///etc/passwd']) {
+    const result = await createEvidenceSourceForBinding(makeBinding({ config: { baseUrl } }), {
+      credentialRef: null,
+      resolveSecret: unreachableResolver().resolve,
+    });
+    assert.deepEqual(result, { status: 'refused', reason: 'invalid-config' }, `baseUrl ${JSON.stringify(baseUrl)}`);
+  }
+});

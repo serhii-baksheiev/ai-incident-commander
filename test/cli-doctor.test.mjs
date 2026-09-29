@@ -297,3 +297,102 @@ test('never writes a resolved secret value into any JSON line', async () => {
     assert.doesNotMatch(line, new RegExp(secretMarker));
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* Absent configuration is never reported as healthy, and one bad binding     */
+/* never ends the run                                                          */
+/* -------------------------------------------------------------------------- */
+
+test('an empty registry is absent configuration: doctor reports an absent row and is not ready', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  const sink = createStdoutSink();
+  const summary = await runDoctorCommand([], {
+    store: fakeStore(makeRegistry()),
+    resolveSecret: neverResolveSecret,
+    stdout: sink.stdout,
+  });
+  assert.equal(summary.allReady, false);
+  assert.ok(sink.rows().some((row) => row.status === 'absent'), JSON.stringify(sink.rows()));
+});
+
+test('a service with no environments is absent configuration: doctor reports it and is not ready', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  const service = makeService();
+  const sink = createStdoutSink();
+  const summary = await runDoctorCommand([], {
+    store: fakeStore(makeRegistry({ services: [service] })),
+    resolveSecret: neverResolveSecret,
+    stdout: sink.stdout,
+  });
+  assert.equal(summary.allReady, false);
+  assert.ok(
+    sink.rows().some((row) => row.service === service.name && row.status === 'absent'),
+    JSON.stringify(sink.rows()),
+  );
+});
+
+test('a binding the catalog cannot build is one misconfigured row that never reproduces its config, and the next binding is still checked', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  const service = makeService();
+  const environment = makeEnvironment(service.id);
+  const opaque = ['abc+def', 'ghi=jkl', 'y'.repeat(40)].join('/');
+  const credentialRef = {
+    id: randomUUID(),
+    environmentId: environment.id,
+    access: 'read',
+    name: 'github-read',
+    secretName: ['GITHUB', 'READ', 'TOKEN'].join('_'),
+  };
+  const bad = makeBinding(environment.id, {
+    name: 'gh-bad',
+    adapterId: 'github',
+    adapterVersion: '1',
+    config: { owner: opaque, repo: 'demo' },
+    credentialRefId: credentialRef.id,
+  });
+  const good = makeBinding(environment.id, { name: 'lab-good' });
+  const sink = createStdoutSink();
+  const summary = await runDoctorCommand([], {
+    store: fakeStore(makeRegistry({ services: [service], environments: [environment], sourceBindings: [bad, good], credentialRefs: [credentialRef] })),
+    resolveSecret: neverResolveSecret,
+    fetch: labFetchAnswering(200),
+    stdout: sink.stdout,
+  });
+  const byBinding = Object.fromEntries(sink.rows().filter((row) => 'binding' in row).map((row) => [row.binding, row.status]));
+  assert.deepEqual(byBinding, { 'gh-bad': 'misconfigured', 'lab-good': 'ready' });
+  assert.equal(summary.allReady, false);
+  assert.ok(!sink.lines.join('\n').includes(opaque));
+});
+
+test('a secret name the resolver refuses is one misconfigured row, and the run continues', async () => {
+  const { runDoctorCommand } = await loadDoctorCommand();
+  const tools = await import('@aic/tools');
+  const service = makeService();
+  const environment = makeEnvironment(service.id);
+  const credentialRef = {
+    id: randomUUID(),
+    environmentId: environment.id,
+    access: 'read',
+    name: 'github-read',
+    secretName: ['GITHUB', 'READ', 'TOKEN'].join('_'),
+  };
+  const gh = makeBinding(environment.id, {
+    name: 'gh',
+    adapterId: 'github',
+    adapterVersion: '1',
+    config: { owner: 'octo', repo: 'demo' },
+    credentialRefId: credentialRef.id,
+  });
+  const lab = makeBinding(environment.id, { name: 'lab' });
+  const sink = createStdoutSink();
+  await runDoctorCommand([], {
+    store: fakeStore(makeRegistry({ services: [service], environments: [environment], sourceBindings: [gh, lab], credentialRefs: [credentialRef] })),
+    resolveSecret: async () => {
+      throw new tools.SecretNameError();
+    },
+    fetch: labFetchAnswering(200),
+    stdout: sink.stdout,
+  });
+  const byBinding = Object.fromEntries(sink.rows().filter((row) => 'binding' in row).map((row) => [row.binding, row.status]));
+  assert.deepEqual(byBinding, { gh: 'misconfigured', lab: 'ready' });
+});

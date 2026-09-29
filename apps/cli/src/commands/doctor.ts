@@ -2,6 +2,7 @@ import type { Environment, RegistrySnapshot, Service } from '@aic/domain';
 import type { ResolveSecretResult } from '@aic/tools';
 
 import { classifyEnvironmentBindings, findEnvironment, findService, unresolvedScopeRow } from './binding-classification.js';
+import { requireRegistryName } from './registry.js';
 
 /**
  * AIC-99 slice e: `runDoctorCommand(argv, deps)` — `aic doctor [<service>
@@ -38,15 +39,32 @@ function environmentsOfService(registry: RegistrySnapshot, service: Service): En
 }
 
 export async function runDoctorCommand(argv: readonly string[], deps: DoctorDeps): Promise<DoctorSummary> {
-  const [serviceName, environmentName] = argv;
+  if (argv.length > 2) {
+    throw new Error('unexpected extra positional argument at position 3');
+  }
+  const serviceName = argv[0] === undefined ? undefined : requireRegistryName('service', argv[0]);
+  const environmentName = argv[1] === undefined ? undefined : requireRegistryName('environment', argv[1]);
   const registry = await deps.store.snapshot();
 
   let scope: EnvironmentInScope[];
+  // Absent configuration is never reported as healthy: an empty registry, or a
+  // service with no environment, is an `absent` row and makes the run not ready.
+  let absentConfiguration = false;
 
   if (serviceName === undefined) {
-    scope = registry.services.flatMap((service) =>
-      environmentsOfService(registry, service).map((environment) => ({ service, environment })),
-    );
+    if (registry.services.length === 0) {
+      deps.stdout(JSON.stringify({ service: null, environment: null, binding: null, status: 'absent' }));
+      return { allReady: false };
+    }
+    scope = [];
+    for (const service of registry.services) {
+      const environments = environmentsOfService(registry, service);
+      if (environments.length === 0) {
+        deps.stdout(JSON.stringify(unresolvedScopeRow(service.name, null, null)));
+        absentConfiguration = true;
+      }
+      scope.push(...environments.map((environment) => ({ service, environment })));
+    }
   } else {
     const service = findService(registry, serviceName);
     if (!service) {
@@ -55,6 +73,10 @@ export async function runDoctorCommand(argv: readonly string[], deps: DoctorDeps
     }
     if (environmentName === undefined) {
       scope = environmentsOfService(registry, service).map((environment) => ({ service, environment }));
+      if (scope.length === 0) {
+        deps.stdout(JSON.stringify(unresolvedScopeRow(service.name, null, null)));
+        absentConfiguration = true;
+      }
     } else {
       const environment = findEnvironment(registry, service.id, environmentName);
       if (!environment) {
@@ -65,7 +87,7 @@ export async function runDoctorCommand(argv: readonly string[], deps: DoctorDeps
     }
   }
 
-  let allReady = true;
+  let allReady = !absentConfiguration;
   for (const { service, environment } of scope) {
     const hasActionPolicy = registry.actionPolicies.some((policy) => policy.environmentId === environment.id);
     deps.stdout(JSON.stringify({ service: service.name, environment: environment.name, actionPolicy: hasActionPolicy }));

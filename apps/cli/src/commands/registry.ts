@@ -56,9 +56,11 @@ function requireSubcommand(noun: string, argv: readonly string[], allowed: reado
  */
 const RegistryNameSchema = ServiceInputSchema.shape.name;
 
-function requireRegistryName(label: string, value: string): string {
+export function requireRegistryName(label: string, value: string): string {
   if (!RegistryNameSchema.safeParse(value).success) {
-    throw new Error(`<${label}> must be a lowercase, hyphen-separated slug of at most 100 characters`);
+    throw new Error(
+      `<${label}> must be a lowercase, hyphen-separated slug of at most 100 characters that is not shaped like a credential`,
+    );
   }
   return value;
 }
@@ -92,6 +94,14 @@ interface ParsedArgs {
  * called. Unlike `node:util`'s `parseArgs`, every declared flag here takes
  * exactly one value, so no separate "which token is a value" inference is
  * needed.
+ *
+ * Stated limits: there is no `--` escape, so a flag value that itself begins
+ * with `--` is refused as a missing value; and an unknown flag whose name is
+ * short, lowercase and hyphenated (at most 40 characters) is named in the
+ * refusal — the existing contract in cli-registry-commands.test.mjs › "an
+ * unknown flag is refused by name, writes nothing to stdout, and never calls
+ * the store". No credential shape the repository's vocabulary knows is
+ * lowercase-only, and any other flag name is refused without being echoed.
  */
 function parseFlags(args: readonly string[], specs: readonly FlagSpec[]): ParsedArgs {
   const specByName = new Map(specs.map((spec) => [spec.name, spec] as const));

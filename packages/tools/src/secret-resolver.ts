@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -10,6 +11,19 @@ import { SecretNameSchema } from '@aic/domain';
  * `AIC_SECRETS_DIR`, default `/run/secrets`; that default is the CLI's own
  * concern, never this factory's). See test/secret-resolver.test.mjs for the
  * full pinned contract.
+ *
+ * Stated limits:
+ * - A symbolic link inside the directory is followed. That is deliberate:
+ *   container-projected secrets (Docker, Kubernetes) are symlinks. Whoever can
+ *   write the secrets directory is trusted with every secret in it.
+ * - The file is opened non-blocking, so a FIFO (or other non-regular entry) is
+ *   refused as `unreadable` by the `isFile()` check on the same handle instead
+ *   of waiting for a writer — see secret-resolver.test.mjs › "a FIFO in the
+ *   secrets directory is unreadable, and resolving it returns promptly instead
+ *   of waiting for a writer".
+ * - An empty value (after one trailing newline is trimmed) is `unreadable`,
+ *   never a found empty credential — see › "an empty (or newline-only) secret
+ *   file is unreadable, never a found empty value".
  */
 
 /** At most this many bytes are ever read for one secret; anything larger is `unreadable`. */
@@ -73,7 +87,7 @@ export function createDirectorySecretResolver(options: DirectorySecretResolverOp
       const path = join(directory, secretName);
       let handle;
       try {
-        handle = await open(path, 'r');
+        handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
       } catch (error: unknown) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
@@ -94,6 +108,9 @@ export function createDirectorySecretResolver(options: DirectorySecretResolverOp
         let value = buffer.toString('utf8');
         if (value.endsWith('\n')) {
           value = value.slice(0, -1);
+        }
+        if (value === '') {
+          return { status: 'unreadable' };
         }
         return { status: 'found', value };
       } catch {

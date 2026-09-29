@@ -57,6 +57,16 @@ function isValidLabConfig(config: Record<string, string>): config is { baseUrl: 
 }
 
 /** `{ owner, repo }` exactly — no extra key, no missing key. */
+/** A lab base URL must parse and use http or https; anything else is `invalid-config`. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function isValidGithubConfig(config: Record<string, string>): config is { owner: string; repo: string } {
   const keys = Object.keys(config);
   return keys.length === 2 && typeof config.owner === 'string' && typeof config.repo === 'string';
@@ -69,17 +79,40 @@ export async function createEvidenceSourceForBinding(
   const { adapterId, adapterVersion, config } = binding;
 
   if (adapterId === 'lab' && adapterVersion === '1') {
-    if (!isValidLabConfig(config)) {
+    if (!isValidLabConfig(config) || !isHttpUrl(config.baseUrl)) {
       return refused('invalid-config');
     }
-    return {
-      status: 'ready',
-      source: createLabEvidenceSource({ baseUrl: config.baseUrl, fetch: deps.fetch as never }),
-    };
+    try {
+      return {
+        status: 'ready',
+        source: createLabEvidenceSource({ baseUrl: config.baseUrl, fetch: deps.fetch as never }),
+      };
+    } catch {
+      return refused('invalid-config');
+    }
   }
 
   if (adapterId === 'github' && adapterVersion === '1') {
     if (!isValidGithubConfig(config)) {
+      return refused('invalid-config');
+    }
+    // The adapter validates owner and repo at construction and names the
+    // refused value in its error, so it is built before any secret is read
+    // and a throw becomes the closed `invalid-config` refusal, never an
+    // echoed value. Its token getter reads the secret resolved below.
+    let token: string | undefined;
+    let source: EvidenceSource;
+    try {
+      source = createGithubEvidenceSource({
+        owner: config.owner,
+        repo: config.repo,
+        token: () => {
+          if (token === undefined) throw new Error('the github@1 token was read before it was resolved');
+          return token;
+        },
+        fetch: deps.fetch,
+      });
+    } catch {
       return refused('invalid-config');
     }
     const { credentialRef } = deps;
@@ -96,16 +129,8 @@ export async function createEvidenceSourceForBinding(
     if (secretResult.status === 'unreadable') {
       return refused('secret-unreadable');
     }
-    const value = secretResult.value;
-    return {
-      status: 'ready',
-      source: createGithubEvidenceSource({
-        owner: config.owner,
-        repo: config.repo,
-        token: () => value,
-        fetch: deps.fetch,
-      }),
-    };
+    token = secretResult.value;
+    return { status: 'ready', source };
   }
 
   return refused('unsupported-adapter');

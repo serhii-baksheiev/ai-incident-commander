@@ -84,22 +84,6 @@ function requirePostgresUrl(env: NodeJS.ProcessEnv): string {
  * unimplemented, and writes nothing to the working directory" (spawned with
  * no connection string at all; one row per registry noun)
  */
-const SECRETS_DIR_VARIABLE = 'AIC_SECRETS_DIR';
-const DEFAULT_SECRETS_DIR = '/run/secrets';
-
-/**
- * AIC-99 slice e: the directory a resolved `CredentialRef.secretName` is read
- * from — `AIC_SECRETS_DIR`, defaulting to `/run/secrets`. Built fresh per
- * dispatch (never at module load), so a parse error still refuses before any
- * filesystem path is even computed, mirroring `createConnectedRegistryStore`
- * below.
- */
-function createSecretResolver(env: NodeJS.ProcessEnv) {
-  const configured = env[SECRETS_DIR_VARIABLE];
-  const directory = typeof configured === 'string' && configured.trim() !== '' ? configured : DEFAULT_SECRETS_DIR;
-  return createDirectorySecretResolver({ directory });
-}
-
 function createConnectedRegistryStore(env: NodeJS.ProcessEnv): RegistryStore {
   const connected = (): RegistryStore => createRegistryStore(requirePostgresUrl(env));
   return {
@@ -112,6 +96,22 @@ function createConnectedRegistryStore(env: NodeJS.ProcessEnv): RegistryStore {
     removeEnvironment: (input) => connected().removeEnvironment(input),
     removeService: (input) => connected().removeService(input),
   };
+}
+
+const SECRETS_DIR_VARIABLE = 'AIC_SECRETS_DIR';
+const DEFAULT_SECRETS_DIR = '/run/secrets';
+
+/**
+ * AIC-99 slice e: the directory a resolved `CredentialRef.secretName` is read
+ * from — `AIC_SECRETS_DIR`, defaulting to `/run/secrets`. Built fresh per
+ * dispatch (never at module load), so a parse error still refuses before any
+ * filesystem path is even computed, mirroring `createConnectedRegistryStore`
+ * above.
+ */
+function createSecretResolver(env: NodeJS.ProcessEnv) {
+  const configured = env[SECRETS_DIR_VARIABLE];
+  const directory = typeof configured === 'string' && configured.trim() !== '' ? configured : DEFAULT_SECRETS_DIR;
+  return createDirectorySecretResolver({ directory });
 }
 
 /**

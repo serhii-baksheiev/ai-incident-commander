@@ -152,6 +152,7 @@ test('aic db with an unknown subcommand, and no connection string configured, is
  */
 test('aic source check no longer reports itself as not implemented in this build', () => {
   withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
     const args = ['source', 'check', 'checkout', 'staging', 'github-source'];
     const result = runCli(args, { cwd });
 
@@ -161,11 +162,13 @@ test('aic source check no longer reports itself as not implemented in this build
       /not implemented/i,
       `aic source check is real in this slice; it must never again claim to be unimplemented: ${commandDiagnostics(args, result)}`,
     );
+    assert.deepEqual(readdirSync(cwd), before, 'it must not write to the working directory it is invoked from');
   });
 });
 
 test('aic doctor no longer reports itself as not implemented in this build', () => {
   withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
     const args = ['doctor'];
     const result = runCli(args, { cwd });
 
@@ -175,6 +178,7 @@ test('aic doctor no longer reports itself as not implemented in this build', () 
       /not implemented/i,
       `aic doctor is real in this slice; it must never again claim to be unimplemented: ${commandDiagnostics(args, result)}`,
     );
+    assert.deepEqual(readdirSync(cwd), before, 'it must not write to the working directory it is invoked from');
   });
 });
 
