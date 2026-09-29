@@ -172,8 +172,14 @@ export const DEFAULT_SOURCE_BUDGETS: SourceBudgets = Object.freeze({
  * the same way an unknown `mode` or a duplicate `sourceBindingId` already do.
  * See test/bound-source-registry.test.mjs's "refuses construction with a
  * non-positive or non-integer budgets field" rows.
+ *
+ * Exported (AIC-146 slice b3) so `createBoundInvestigationExecutor`
+ * (`./bound-investigation-executor.ts`) can pre-validate a caller's
+ * `budgets` option before ever building a source, reusing this exact
+ * validation rather than restating its rules
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
  */
-function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): SourceBudgets {
+export function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): SourceBudgets {
   const merged: SourceBudgets = { ...DEFAULT_SOURCE_BUDGETS, ...budgets };
   for (const key of ['timeoutMs', 'maxResultBytes', 'maxPages'] as const) {
     const value = merged[key];
@@ -408,7 +414,14 @@ function parseReplayIdentity(identity: string): ParsedReplayIdentity | null {
   return { sourceBindingId: parsed[0], adapter: parsed[1], requestFingerprint: parsed[2] };
 }
 
-const BOUND_SOURCE_MODES: readonly BoundSourceMode[] = ['live', 'record', 'replay'];
+/**
+ * The closed set of `BoundSourceMode` values, exported (AIC-146 slice b3) so
+ * `createBoundInvestigationExecutor` (`./bound-investigation-executor.ts`)
+ * can validate a caller's `mode` option against this SAME list, rather than
+ * restating `'live' | 'record' | 'replay'` a second time
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ */
+export const BOUND_SOURCE_MODES: readonly BoundSourceMode[] = ['live', 'record', 'replay'];
 
 /**
  * Normalizes an adapter-RETURNED refusal `reason` to one of the six typed
