@@ -949,13 +949,14 @@ test('refuses a challenge carrying no discriminating test in the role, where a m
  * above) is enforced by the provider only — a fake port answering raw text,
  * exactly like "refuses an answer that carries no JSON document at all" above,
  * bypasses it the same way a provider that ignores `output_config.format`
- * would. Measured directly against this role with such a port: today it
- * passes an unrefused `Infinity` or a deeply nested `input` straight through,
- * and `planInvestigation`'s `canonicalJson` (`packages/domain/src/execution.ts`)
- * is what throws instead, inside the challenge round: a `TypeError` on a
- * non-finite number, and a `RangeError` (stack overflow — measured directly:
- * `canonicalJson` enforces no explicit depth limit, and a plain recursive walk
- * over a 20000-level input throws consistently) on nesting. Both are
+ * would. Measured directly against this role with such a port, without this
+ * guard: an unrefused `Infinity` or a deeply nested `input` passed straight
+ * through, and `planInvestigation`'s `canonicalJson`
+ * (`packages/domain/src/execution.ts`) is what threw instead, inside the
+ * challenge round: a `TypeError` on a non-finite number, and a `RangeError`
+ * (stack overflow — measured directly: `canonicalJson` enforces no explicit
+ * depth limit, and a plain recursive walk over a 20000-level input threw
+ * consistently) on nesting. Both are
  * JSON-reachable: a model can emit the literal `1e999`, which `JSON.parse`
  * reads as `Infinity`, and nothing bounds how deep a JSON document nests.
  * see investigation-planning.test.mjs › "planInvestigation throws when an
@@ -1004,8 +1005,8 @@ test('refuses a discriminating test whose input nests deeper than canonicalJson 
   const ModelRoleOutputError = requireExport('ModelRoleOutputError');
   // Measured directly against canonicalJson (packages/domain/src/execution.ts):
   // its plain recursive walk, with no explicit depth cap, throws "RangeError:
-  // Maximum call stack size exceeded" well below this depth (observed failing
-  // consistently already at 20000 levels); this input is comfortably past that.
+  // Maximum call stack size exceeded" at this depth — observed failing
+  // consistently at 20000 levels.
   const nestedArrayText = '['.repeat(20000) + '1' + ']'.repeat(20000);
   const rawText =
     '{"alternative":{"id":"alt-1","statement":"the dependency, not the deploy","cause":{"component":"dependency-pool","mechanism":"capacity-exhaustion"}},' +
@@ -1066,6 +1067,275 @@ test('does not refuse a discriminating test whose input is an ordinary closed-sh
   const result = await challenge(state, 'h-1');
 
   assert.deepEqual(result.discriminatingTests[0].input, { service: 'orders-db', window: 'incident' });
+});
+
+/**
+ * The round-1 gate on AIC-135 (code-reviewer and security-scanner, both HOLD)
+ * measured that `investigation-roles.ts:838`'s refusal restates
+ * `JSON.stringify(test.id)` by hand instead of `quoteModelText`
+ * (`packages/domain/src/conclusion-rules.ts`), so a hostile id is escaped but
+ * not truncated. This is the sibling of `roles-model-nodes.test.mjs` ›
+ * "escapes and truncates a hostile hypothesisId before it reaches the refusal
+ * message", for the discriminating test's own id.
+ */
+test('escapes and truncates a hostile discriminating-test id before it reaches the refusal message', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const hostileId = `"quoted"\nline-two-${'x'.repeat(780)}`;
+  assert.ok(hostileId.length > 700, 'the fixture id must exceed 700 characters');
+  // Built as raw text, not a JS object passed through JSON.stringify:
+  // JSON.stringify(Infinity) is "null", which would silently lose the
+  // non-finite input this row relies on to reach the refusal at all.
+  const rawText =
+    '{"alternative":{"id":"alt-1","statement":"the dependency, not the deploy","cause":{"component":"dependency-pool","mechanism":"capacity-exhaustion"}},' +
+    '"discriminatingTests":[{"id":' +
+    JSON.stringify(hostileId) +
+    ',"predictionId":"p-1","tool":"logs.search","input":{"service":1e999},"cost":"cheap"}]}';
+  const { port } = fakePort([rawText]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'challenge_hypothesis');
+      assert.ok(
+        !error.message.includes('\n'),
+        'a raw newline from a hostile discriminating-test id must never reach the refusal message',
+      );
+      // The first 80 characters of the fixture hold exactly 62 x's, so a run
+      // of 63 or more can only come from the part truncation must drop.
+      assert.doesNotMatch(
+        error.message,
+        /x{63,}/,
+        'the id must be truncated to 80 characters before it reaches the message',
+      );
+      const expectedEscaped = JSON.stringify(hostileId.slice(0, 80));
+      assert.ok(
+        error.message.includes(expectedEscaped),
+        `the message must carry the id JSON-escaped and truncated to 80 chars, per quoteModelText's contract: ${JSON.stringify(error.message)}`,
+      );
+      return true;
+    },
+  );
+});
+
+/**
+ * The round-1 gate also measured that the depth bound and the node budget
+ * mask each other: removing either check left every existing row green,
+ * because the OTHER bound caught the removed one's own fixture. These four
+ * rows trip one bound at a time, with the other bound's own wording asserted
+ * absent, so a future regression that silences one bound cannot hide behind
+ * the other's message. The wording pinned here is the guard's OWN bound
+ * (`CANONICALISABLE_INPUT_MAX_DEPTH` / `CANONICALISABLE_INPUT_MAX_NODES` in
+ * `investigation-roles.ts`), not the planner's.
+ */
+function nestedArrayOfDepth(levels) {
+  let value = 1;
+  for (let i = 0; i < levels; i += 1) value = [value];
+  return value;
+}
+
+test('refuses a discriminating test whose input nests exactly 33 levels deep, one past the guard\'s own depth bound', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        {
+          id: 'dt-depth-33',
+          predictionId: 'p-1',
+          tool: 'logs.search',
+          input: nestedArrayOfDepth(33),
+          cost: 'cheap',
+        },
+      ],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'challenge_hypothesis');
+      assert.match(
+        error.message,
+        /nests deeper than 32 levels/,
+        "the depth refusal must name the guard's own bound, not the planner's",
+      );
+      assert.doesNotMatch(
+        error.message,
+        /has more than 5000 values/,
+        'a depth-only violation must not also read as the node-budget wording, or the two bounds are masking each other',
+      );
+      return true;
+    },
+  );
+});
+
+test('does not refuse a discriminating test whose input nests exactly 32 levels deep, the most the guard accepts', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const input = nestedArrayOfDepth(32);
+  const { port } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        { id: 'dt-depth-32', predictionId: 'p-1', tool: 'logs.search', input, cost: 'cheap' },
+      ],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  const result = await challenge(state, 'h-1');
+
+  assert.deepEqual(result.discriminatingTests[0].input, input);
+});
+
+// Node budget arithmetic (CANONICALISABLE_INPUT_MAX_NODES = 5000): the walk
+// visits the top-level object itself (1 node) + the array it owns (1 node) +
+// every element of that array (one node each) = elementCount + 2 nodes total,
+// at depth 2 for the elements — well inside the depth bound either way, so
+// only the node budget can fire.
+function shallowWideInput(elementCount) {
+  return { key: Array.from({ length: elementCount }, () => 'a') };
+}
+
+test('refuses a discriminating test whose input carries more than 5000 values, one key holding a 5001-element array', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        {
+          id: 'dt-wide-5001',
+          predictionId: 'p-1',
+          tool: 'logs.search',
+          input: shallowWideInput(5001),
+          cost: 'cheap',
+        },
+      ],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'challenge_hypothesis');
+      assert.match(
+        error.message,
+        /has more than 5000 values/,
+        "the node-budget refusal must name the guard's own bound, not the planner's",
+      );
+      assert.doesNotMatch(
+        error.message,
+        /nests deeper than 32 levels/,
+        'a node-budget-only violation must not also read as the depth wording, or the two bounds are masking each other',
+      );
+      return true;
+    },
+  );
+});
+
+test('does not refuse a discriminating test whose input stays within the node budget, one key holding a 4998-element array (5000 nodes visited in total)', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const input = shallowWideInput(4998);
+  const { port } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        { id: 'dt-wide-4998', predictionId: 'p-1', tool: 'logs.search', input, cost: 'cheap' },
+      ],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  const result = await challenge(state, 'h-1');
+
+  assert.deepEqual(result.discriminatingTests[0].input, input);
+});
+
+/**
+ * Security-scanner's round-1 advisory: `input` is undefined when the key is
+ * entirely absent, `canonicalJson(undefined)` throws, and the provider schema
+ * requires `input` so no compliant answer is affected — but the three
+ * original AIC-135 rows never covered it. Pinned here so the gap is closed
+ * rather than merely noted.
+ */
+test('refuses a discriminating test that carries no input key at all', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  const { port } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        { id: 'dt-no-input', predictionId: 'p-1', tool: 'logs.search', cost: 'cheap' },
+      ],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(error instanceof ModelRoleOutputError, `expected a ModelRoleOutputError, got ${error}`);
+      assert.equal(error.role, 'challenge_hypothesis');
+      assert.match(
+        error.message,
+        /dt-no-input/,
+        'the refusal must name the discriminating test it refused',
+      );
+      return true;
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */

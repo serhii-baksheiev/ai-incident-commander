@@ -666,7 +666,12 @@ export function createModelInterpretResidualEvidence({
 // input) with an explicit depth bound and a node-count budget, never a catch
 // around a stack overflow: `.claude/rules/invariants.md`, "A guard that fails
 // open must do provably bounded work" — a caught `RangeError`'s threshold
-// depends on ambient stack size, which is not a bound at all.
+// depends on ambient stack size, which is not a bound at all. Both bounds are
+// this role's own and stricter than the planner's: the provider's closed
+// challenge schema allows an `input` of at most four string properties, so no
+// conforming answer comes near either bound.
+// see roles-model-nodes.test.mjs › "refuses a discriminating test whose input nests exactly 33 levels deep, one past the guard's own depth bound"
+// see roles-model-nodes.test.mjs › "refuses a discriminating test whose input carries more than 5000 values, one key holding a 5001-element array"
 // see roles-model-nodes.test.mjs › "refuses a discriminating test whose input
 // carries a value canonicalJson cannot serialise (a non-finite number from
 // the JSON literal 1e999)"
@@ -682,10 +687,10 @@ function uncanonicalisableInputViolation(input: unknown): string | undefined {
     const frame = stack.pop() as { value: unknown; depth: number };
     visited += 1;
     if (visited > CANONICALISABLE_INPUT_MAX_NODES) {
-      return 'is too large to canonicalise';
+      return `has more than ${CANONICALISABLE_INPUT_MAX_NODES} values, the most this role accepts`;
     }
     if (frame.depth > CANONICALISABLE_INPUT_MAX_DEPTH) {
-      return 'nests deeper than the planner can canonicalise';
+      return `nests deeper than ${CANONICALISABLE_INPUT_MAX_DEPTH} levels, the most this role accepts`;
     }
 
     const { value } = frame;
@@ -700,7 +705,7 @@ function uncanonicalisableInputViolation(input: unknown): string | undefined {
     }
     if (Array.isArray(value)) {
       if (visited + stack.length + value.length > CANONICALISABLE_INPUT_MAX_NODES) {
-        return 'is too large to canonicalise';
+        return `has more than ${CANONICALISABLE_INPUT_MAX_NODES} values, the most this role accepts`;
       }
       for (const item of value) stack.push({ value: item, depth: frame.depth + 1 });
       continue;
@@ -712,7 +717,7 @@ function uncanonicalisableInputViolation(input: unknown): string | undefined {
       }
       const keys = Object.keys(value as Record<string, unknown>);
       if (visited + stack.length + keys.length > CANONICALISABLE_INPUT_MAX_NODES) {
-        return 'is too large to canonicalise';
+        return `has more than ${CANONICALISABLE_INPUT_MAX_NODES} values, the most this role accepts`;
       }
       for (const key of keys) {
         stack.push({ value: (value as Record<string, unknown>)[key], depth: frame.depth + 1 });
@@ -723,7 +728,6 @@ function uncanonicalisableInputViolation(input: unknown): string | undefined {
   }
   return undefined;
 }
-
 
 /**
  * `challenge_hypothesis`, backed by the model.
@@ -747,7 +751,6 @@ function uncanonicalisableInputViolation(input: unknown): string | undefined {
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative cause carrying an unknown key"
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: the system prompt contains exactly the mechanism vocabulary sentence"
  */
-
 export function createModelChallengeHypothesis({
   port,
   execution,
@@ -835,7 +838,7 @@ export function createModelChallengeHypothesis({
       if (violation !== undefined) {
         throw new ModelRoleOutputError(
           role,
-          `discriminating test ${JSON.stringify(test.id)} carries an input that ${violation}`,
+          `discriminating test ${quoteModelText(test.id)} carries an input that ${violation}`,
         );
       }
     }
