@@ -113,10 +113,6 @@
  * test/adapter-catalog.test.mjs's own `resolvedSecretValue`; `secretName`
  * builds a `CredentialRef.secretName` from parts at runtime, mirroring the
  * same file's own helper.
- *
- * All rows below fail right now because `createBoundInvestigationExecutor`
- * is not yet exported from `@aic/tools` — the factory helper's own
- * assertion is the first thing every row hits.
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -819,13 +815,11 @@ test('a github@1 binding routes no ToolId: every read-only tool id is refused un
 /* -------------------------------------------------------------------------- */
 /* Construction refusal: a credentialRefId naming a CredentialRef in a       */
 /* DIFFERENT Environment (review round 1, security advisory 1).             */
-/* `RegistrySnapshotSchema` (`@aic/domain`'s scope.ts) refuses exactly this  */
-/* pairing on the mutation path, but this port matches a binding's own      */
-/* `credentialRefId` by id alone (`credentialRefsById.get(...)`), never      */
-/* comparing the two records' `environmentId`s — so a caller that passes    */
-/* one environment's bindings alongside the whole registry's credentialRefs */
-/* (a documented, currently-legal call shape) would resolve the wrong       */
-/* environment's secret.                                                    */
+/* `RegistrySnapshotSchema` (`@aic/domain`'s scope.ts) refuses this pairing */
+/* on the mutation path; the port refuses it too, before any secret is      */
+/* resolved, so a caller that passes one environment's bindings alongside   */
+/* the whole registry's credentialRefs never resolves another environment's */
+/* secret.                                                                  */
 /* -------------------------------------------------------------------------- */
 
 test('a github@1 binding whose credentialRefId names a read CredentialRef in a DIFFERENT environment is refused credential-environment-mismatch, and resolveSecret is never called', async () => {
@@ -998,8 +992,8 @@ test('a binding whose adapter describes a non-read-only operation alongside a re
 // Note (review round 1, code blocker 1): this row's `provenance` value is
 // itself malformed ({ notEvenAUuid: true }), so `EvidenceSchema.safeParse`
 // alone already refuses it — this row does NOT exercise the own-provenance
-// PRESENCE check (`Object.hasOwn(item, 'provenance')`,
-// packages/tools/src/bound-investigation-executor.ts:249-251). The next row
+// PRESENCE check (`Object.hasOwn(item, 'provenance')` in
+// packages/tools/src/bound-investigation-executor.ts). The next row
 // pins that check with a SCHEMA-VALID provenance value, which
 // `EvidenceSchema` alone would accept.
 test('an output item carrying its own MALFORMED provenance is refused adapter_error via EvidenceSchema itself, and no evidence is returned', async () => {
