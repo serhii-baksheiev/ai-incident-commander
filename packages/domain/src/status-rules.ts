@@ -9,7 +9,8 @@
  *   `Prediction.observationVersion` with a typed `ExpectedObservation`
  *   (AIC-123);
  * - older code would carry an optional field it does not validate: 4 -> 5
- *   also covers the hypothesis `cause`.
+ *   also covers the hypothesis `cause`, and 5 -> 6 for the optional
+ *   `Evidence.provenance` (AIC-146) — older code would carry it unvalidated.
  *
  * Nothing coerces a missing counter to a default — a run that resumed with an
  * invented usage count would under-report what it had spent.
@@ -40,7 +41,7 @@
  * `IncidentStateControlSchema` — see status-rules-v02.test.mjs › "publishes
  * STATUS_RULES with the historical v0.1 table and the new v0.2 table".
  */
-export const INCIDENT_STATE_SCHEMA_VERSION = 5 as const;
+export const INCIDENT_STATE_SCHEMA_VERSION = 6 as const;
 export const STATUS_RULES_VERSION = 'v0.2' as const;
 
 export const BASELINE_STATUS_RULES = {

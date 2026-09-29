@@ -263,7 +263,7 @@ export const TrialSchema = z.strictObject({
 /**
  * The bound-source-registry side of `adapter`: one `<adapterId>@<adapterVersion>`
  * string, each side 1-200 characters with no `@` — within the
- * bound `SourceBindingSchema.adapterId` / `.adapterVersion` already carry
+ * bounds `SourceBindingSchema.adapterId` / `.adapterVersion` already carry
  * (`packages/domain/src/scope.ts`), so a provenance record can never claim an
  * adapter identity `SourceBindingSchema` itself would refuse. A regex rather
  * than a `.refine`: a refinement is a `custom` check, which the checkpoint

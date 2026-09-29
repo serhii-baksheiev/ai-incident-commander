@@ -193,8 +193,16 @@ export function createPersistentInvestigationRunner({
           trialId,
           payloadFingerprint: executed.payloadFingerprint,
         });
+        // Provenance on recorded Evidence is written only by the stamping
+        // layer from BoundSourceRegistry's own outcome, never taken from
+        // what executeInvestigation returned — its own evidence is exactly
+        // as trusted as any other caller-supplied field. see
+        // durable-tool-replay.test.mjs › "a provenance block
+        // executeInvestigation returns on its evidence never survives into
+        // the persisted evidence"
+        const { provenance: _provenance, ...executedEvidenceFields } = executed.evidence;
         const evidence = EvidenceSchema.parse({
-          ...executed.evidence,
+          ...executedEvidenceFields,
           id: evidenceId,
           trialId,
         });

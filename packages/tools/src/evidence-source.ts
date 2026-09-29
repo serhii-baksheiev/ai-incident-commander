@@ -49,10 +49,14 @@ export type EvidenceSourceRefusalReason =
  *
  * The same shape as `@aic/domain`'s `EvidenceProvenance` (the validated
  * contract `Evidence.provenance` carries) — one spelling, not two
- * (`.claude/rules/invariants.md`, "one mechanism, one implementation"). See
- * test/fixtures/evidence-provenance-type-contract.ts.
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * `Readonly`: `BoundSourceRegistry` is the single writer of provenance, so no
+ * holder of a value typed against this interface may mutate a field of it.
+ * See test/fixtures/evidence-provenance-type-contract.ts, whose `Exact` check
+ * pins the two types to exactly the same key set and whose readonly probe
+ * pins the assignment refusal.
  */
-export type EvidenceSourceProvenance = EvidenceProvenance;
+export type EvidenceSourceProvenance = Readonly<EvidenceProvenance>;
 
 /** The result of a single EvidenceSource#execute call. */
 export type EvidenceSourceOutcome<Output> =
