@@ -361,10 +361,10 @@ test('refuses to resume a schema-version-5 checkpoint paused at the HITL interru
       namesPredatesEvidenceProvenance,
       `the v5 clause must say the persisted state predates evidence provenance: ${outcome.error.message}`,
     );
-    assert.match(
+    assert.doesNotMatch(
       outcome.error.message,
       /cannot be migrated/i,
-      `the v5 clause must say this cannot be migrated without inventing the missing data: ${outcome.error.message}`,
+      `a v5 checkpoint's evidence is valid v6 evidence with no provenance, so the clause must not claim the state cannot be migrated; the refusal is the version policy: ${outcome.error.message}`,
     );
     assert.match(
       outcome.error.message,
