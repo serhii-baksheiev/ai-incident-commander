@@ -314,12 +314,38 @@ export interface BoundSourceRegistryOptions {
   readonly budgets?: Partial<SourceBudgets>;
 }
 
+/**
+ * One binding's read-only snapshot, as captured once at construction:
+ * `sourceBindingId`, its `` `${adapterId}@${version}` `` string and its
+ * `operations` list — the exact three fields `describeBindings()` exposes.
+ * See that method's own doc comment.
+ */
+export interface BoundSourceEntrySnapshot {
+  readonly sourceBindingId: string;
+  readonly adapter: string;
+  readonly operations: readonly string[];
+}
+
 export interface BoundSourceRegistry {
   execute(
     sourceBindingId: string,
     operation: string,
     input: unknown,
   ): Promise<EvidenceSourceOutcome<unknown>>;
+  /**
+   * AIC-146 slice b3: a read-only accessor over the SAME construction-time
+   * `describe()` snapshot `execute()` already reuses (`BoundSourceEntry`
+   * above) — it never calls a binding's `describe()` again. This is what lets
+   * a caller such as `createBoundInvestigationExecutor`
+   * (`./bound-investigation-executor.ts`) build a route table from every
+   * binding's operations without a second `describe()` call per binding, so
+   * `describe()` runs exactly once per binding in total, across construction
+   * and every later `execute()` or `describeBindings()` call — see
+   * test/bound-investigation-executor.test.mjs › "describe() is called
+   * exactly once per binding, across construction and every subsequent
+   * execute()".
+   */
+  describeBindings(): readonly BoundSourceEntrySnapshot[];
 }
 
 /**
@@ -754,6 +780,14 @@ export function createBoundSourceRegistry(
       }
 
       return outcome;
+    },
+
+    describeBindings() {
+      return Array.from(bindingsById.entries(), ([sourceBindingId, entry]) => ({
+        sourceBindingId,
+        adapter: entry.adapter,
+        operations: entry.operations,
+      }));
     },
   };
 }
