@@ -59,6 +59,6 @@ measured.
   of scripts/eval-oracle.mjs --evaluator-version behavior-evaluators-v0.4, and
   reaches best on every metric including challenge_effect"
 
-The oracle's own `challengeEffect` projection always reports one executed
-discriminating trial (`oracleAnswerFor`), so it reaches best on
-`challenge_effect` under v0.4 exactly as it does under v0.3.
+The row above asserts that the oracle still reaches best on `challenge_effect`
+under v0.4: its projected challenge observation carries an executed
+discriminating trial (`oracleAnswerFor`).
