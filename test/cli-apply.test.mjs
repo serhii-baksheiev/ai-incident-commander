@@ -23,9 +23,9 @@
  *     setActionPolicy, never a remove* call), stdout: (text: string) => void, readManifest?:
  *     (path: string) => unknown }`. `readManifest` is the injectable seam
  *     over the real bounded, single-descriptor manifest reader
- *     (`apps/cli/src/commands/investigate.ts`'s `readReplayFile` pattern,
- *     reused here over YAML instead of JSON, with a 1 MiB bound rather than
- *     16 MiB): every row in this file omits it and exercises the real
+ *     (`apps/cli/src/commands/bounded-file.ts`'s `readBoundedRegularFile`,
+ *     the reader `aic investigate --replay` also uses, here with a 1 MiB
+ *     bound rather than 16 MiB): every row in this file omits it and exercises the real
  *     reader against an actual file, so the byte-bound/duplicate-key/alias
  *     refusals below are measured against the real pipeline, not a fake.
  *   - `runApplyCommand` resolves to `{ clean: boolean }`: `clean` is `false`
