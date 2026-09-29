@@ -654,6 +654,77 @@ export function createModelInterpretResidualEvidence({
   };
 }
 
+// AIC-135: `discriminatingTests[].input` is `z.unknown()`
+// (`InvestigationTestSchema`), so a hostile port can hand through a value
+// `canonicalJson` (`packages/domain/src/execution.ts`) cannot serialise — a
+// non-finite number reached via the JSON literal `1e999`, or nesting deep
+// enough to overflow `canonicalJson`'s own plain recursive walk. This check
+// runs BEFORE the input ever reaches the planner, so the refusal is reported
+// as a model-quality failure rather than a crash deep inside a later round.
+//
+// It is deliberately iterative (an explicit stack, no recursion over the
+// input) with an explicit depth bound and a node-count budget, never a catch
+// around a stack overflow: `.claude/rules/invariants.md`, "A guard that fails
+// open must do provably bounded work" — a caught `RangeError`'s threshold
+// depends on ambient stack size, which is not a bound at all.
+// see roles-model-nodes.test.mjs › "refuses a discriminating test whose input
+// carries a value canonicalJson cannot serialise (a non-finite number from
+// the JSON literal 1e999)"
+// see roles-model-nodes.test.mjs › "refuses a discriminating test whose input
+// nests deeper than canonicalJson can walk (20000 levels)"
+const CANONICALISABLE_INPUT_MAX_DEPTH = 32;
+const CANONICALISABLE_INPUT_MAX_NODES = 5000;
+
+function uncanonicalisableInputViolation(input: unknown): string | undefined {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: input, depth: 0 }];
+  let visited = 0;
+  while (stack.length > 0) {
+    const frame = stack.pop() as { value: unknown; depth: number };
+    visited += 1;
+    if (visited > CANONICALISABLE_INPUT_MAX_NODES) {
+      return 'is too large to canonicalise';
+    }
+    if (frame.depth > CANONICALISABLE_INPUT_MAX_DEPTH) {
+      return 'nests deeper than the planner can canonicalise';
+    }
+
+    const { value } = frame;
+    if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+      continue;
+    }
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return 'carries a value that is not a finite number';
+      }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      if (visited + stack.length + value.length > CANONICALISABLE_INPUT_MAX_NODES) {
+        return 'is too large to canonicalise';
+      }
+      for (const item of value) stack.push({ value: item, depth: frame.depth + 1 });
+      continue;
+    }
+    if (typeof value === 'object') {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        return 'contains a value that is not a plain JSON object';
+      }
+      const keys = Object.keys(value as Record<string, unknown>);
+      if (visited + stack.length + keys.length > CANONICALISABLE_INPUT_MAX_NODES) {
+        return 'is too large to canonicalise';
+      }
+      for (const key of keys) {
+        stack.push({ value: (value as Record<string, unknown>)[key], depth: frame.depth + 1 });
+      }
+      continue;
+    }
+    return 'contains a value that is not a JSON-serialisable shape';
+  }
+  return undefined;
+}
+
+
 /**
  * `challenge_hypothesis`, backed by the model.
  *
@@ -676,6 +747,7 @@ export function createModelInterpretResidualEvidence({
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: refuses an alternative cause carrying an unknown key"
  * see cause-emitting-roles.test.mjs › "createModelChallengeHypothesis: the system prompt contains exactly the mechanism vocabulary sentence"
  */
+
 export function createModelChallengeHypothesis({
   port,
   execution,
@@ -753,6 +825,20 @@ export function createModelChallengeHypothesis({
         status: 'planned',
       }),
     );
+
+    // AIC-135: refuse any discriminating test whose input the planner cannot
+    // canonicalise before it ever reaches `planInvestigation` — see
+    // `uncanonicalisableInputViolation` above for why this is iterative and
+    // bounded rather than a caught `RangeError`.
+    for (const test of discriminatingTests) {
+      const violation = uncanonicalisableInputViolation(test.input);
+      if (violation !== undefined) {
+        throw new ModelRoleOutputError(
+          role,
+          `discriminating test ${JSON.stringify(test.id)} carries an input that ${violation}`,
+        );
+      }
+    }
 
     // 🔴 An empty list is a MODEL-QUALITY failure, and it is refused HERE so it
     // is reported as one.

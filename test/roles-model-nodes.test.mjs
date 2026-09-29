@@ -940,6 +940,135 @@ test('refuses a challenge carrying no discriminating test in the role, where a m
 });
 
 /* -------------------------------------------------------------------------- */
+/* D2b: a discriminating test input canonicalJson cannot serialise (AIC-135)  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * AIC-135: `discriminatingTests[].input` is `InvestigationTestSchema`'s
+ * `z.unknown()`, and the PROVIDER's own closed schema (`challengeSchema`,
+ * above) is enforced by the provider only — a fake port answering raw text,
+ * exactly like "refuses an answer that carries no JSON document at all" above,
+ * bypasses it the same way a provider that ignores `output_config.format`
+ * would. Measured directly against this role with such a port: today it
+ * passes an unrefused `Infinity` or a deeply nested `input` straight through,
+ * and `planInvestigation`'s `canonicalJson` (`packages/domain/src/execution.ts`)
+ * is what throws instead, inside the challenge round: a `TypeError` on a
+ * non-finite number, and a `RangeError` (stack overflow — measured directly:
+ * `canonicalJson` enforces no explicit depth limit, and a plain recursive walk
+ * over a 20000-level input throws consistently) on nesting. Both are
+ * JSON-reachable: a model can emit the literal `1e999`, which `JSON.parse`
+ * reads as `Infinity`, and nothing bounds how deep a JSON document nests.
+ * see investigation-planning.test.mjs › "planInvestigation throws when an
+ * existing test's input cannot be canonicalised (a BigInt value)" and ›
+ * "planInvestigation throws when an existing test's input cannot be
+ * canonicalised (a circular reference)" for the planner's own stated limit,
+ * left untouched: these rows ask the role to refuse a shape as a
+ * MODEL-QUALITY failure before it ever reaches the planner, not to change
+ * what the planner itself does.
+ */
+test('refuses a discriminating test whose input carries a value canonicalJson cannot serialise (a non-finite number from the JSON literal 1e999)', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  // Built as raw text, not a JS object passed through JSON.stringify: JSON.stringify(Infinity)
+  // is "null", which would silently lose the exact shape this row exists to pin.
+  const rawText =
+    '{"alternative":{"id":"alt-1","statement":"the dependency, not the deploy","cause":{"component":"dependency-pool","mechanism":"capacity-exhaustion"}},' +
+    '"discriminatingTests":[{"id":"dt-infinity","predictionId":"p-1","tool":"logs.search","input":{"service":1e999},"cost":"cheap"}]}';
+  const { port } = fakePort([rawText]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(
+        error instanceof ModelRoleOutputError,
+        'a discriminating test input the planner cannot serialise is a model-quality refusal, not a crash inside a later round',
+      );
+      assert.equal(error.role, 'challenge_hypothesis');
+      assert.match(
+        error.message,
+        /dt-infinity/,
+        'the refusal must name the discriminating test it refused',
+      );
+      return true;
+    },
+  );
+});
+
+test('refuses a discriminating test whose input nests deeper than canonicalJson can walk (20000 levels)', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const ModelRoleOutputError = requireExport('ModelRoleOutputError');
+  // Measured directly against canonicalJson (packages/domain/src/execution.ts):
+  // its plain recursive walk, with no explicit depth cap, throws "RangeError:
+  // Maximum call stack size exceeded" well below this depth (observed failing
+  // consistently already at 20000 levels); this input is comfortably past that.
+  const nestedArrayText = '['.repeat(20000) + '1' + ']'.repeat(20000);
+  const rawText =
+    '{"alternative":{"id":"alt-1","statement":"the dependency, not the deploy","cause":{"component":"dependency-pool","mechanism":"capacity-exhaustion"}},' +
+    '"discriminatingTests":[{"id":"dt-deep","predictionId":"p-1","tool":"logs.search","input":{"service":"x","nested":' +
+    nestedArrayText +
+    '},"cost":"cheap"}]}';
+  const { port } = fakePort([rawText]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  await assert.rejects(
+    () => challenge(state, 'h-1'),
+    (error) => {
+      assert.ok(
+        error instanceof ModelRoleOutputError,
+        'a discriminating test input nested deeper than the planner can canonicalise is a model-quality refusal, not a stack overflow inside a later round',
+      );
+      assert.equal(error.role, 'challenge_hypothesis');
+      assert.match(
+        error.message,
+        /dt-deep/,
+        'the refusal must name the discriminating test it refused',
+      );
+      return true;
+    },
+  );
+});
+
+test('does not refuse a discriminating test whose input is an ordinary closed-shape value', async () => {
+  const createModelChallengeHypothesis = requireExport('createModelChallengeHypothesis');
+  const { port } = fakePort([
+    {
+      alternative: {
+        id: 'alt-1',
+        statement: 'the dependency, not the deploy',
+        cause: { component: 'dependency-pool', mechanism: 'capacity-exhaustion' },
+      },
+      discriminatingTests: [
+        {
+          id: 'dt-ordinary',
+          predictionId: 'p-1',
+          tool: 'metrics',
+          input: { service: 'orders-db', window: 'incident' },
+          cost: 'cheap',
+        },
+      ],
+    },
+  ]);
+  const challenge = createModelChallengeHypothesis({ port, at, mechanisms: MECHANISMS });
+  const state = initialState();
+  state.hypotheses = [
+    { id: 'h-1', statement: 'the checkout deploy did it', createdBy: 'initial' },
+  ];
+
+  const result = await challenge(state, 'h-1');
+
+  assert.deepEqual(result.discriminatingTests[0].input, { service: 'orders-db', window: 'incident' });
+});
+
+/* -------------------------------------------------------------------------- */
 /* D3: the asymmetry between the two channels, pinned                         */
 /* -------------------------------------------------------------------------- */
 
