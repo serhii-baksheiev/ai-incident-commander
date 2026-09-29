@@ -190,6 +190,12 @@ test('states the evaluator, ground-truth, prompt, status-rules and model version
   const body = registrationDirectory();
   for (const version of [
     evals.STRUCTURAL_EVALUATOR_VERSION,
+    // AIC-138: behavior-evaluators-v0.4 (the discriminating-trial
+    // challenge_effect guard) must be named in the registration directory too
+    // — supplement 8 is where it lands, so this row stays red until that
+    // supplement exists and names it, and the sha pin above only follows once
+    // the file is committed (Green, per the plan's docblock convention).
+    evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION,
     evals.STRUCTURAL_GROUND_TRUTH_VERSION,
     REFERENCE_PROMPT_VERSION,
     NAIVE_PROMPT_VERSION,

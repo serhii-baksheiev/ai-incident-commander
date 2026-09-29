@@ -15,7 +15,7 @@ import {
   type BenchmarkVersions,
   type NotApplicableMetrics,
 } from './benchmark-evaluation.js';
-import { BEHAVIOR_METRIC_KEYS, STRUCTURAL_EVALUATOR_VERSION } from './behavior-evaluators.js';
+import { BEHAVIOR_METRIC_KEYS, scoresStructurally } from './behavior-evaluators.js';
 import { BENCHMARK_BUDGET_POLICY } from './budget-policy.js';
 import { predictionGapCountsOf, type PredictionGapCounts } from './prediction-gap.js';
 import { BENCHMARK_SCENARIO_PARTITIONS } from './replay-scenarios.js';
@@ -213,10 +213,13 @@ export const LIVE_MODEL_LANE_INFORMATION_MODE = Object.freeze({
  * ground-truth prose and the observed one is a fixture evidence `statement`.
  * Those two strings are never equal in this corpus, so ANY graph-executed run
  * scored under that version scores `evidence_coverage = 0` for a harness
- * reason that has nothing to do with the model. `behavior-evaluators-v0.3`
- * matches by evidence id instead, and under that version this lane reports
- * `evidence_coverage` rather than withholding it.
+ * reason that has nothing to do with the model. `behavior-evaluators-v0.3` and
+ * `behavior-evaluators-v0.4` (AIC-138 — the two differ only in
+ * `challenge_effect`, not in how evidence is matched) both match by evidence id
+ * instead, and under either version this lane reports `evidence_coverage`
+ * rather than withholding it.
  * see four-arm-lane.test.mjs › "reports evidence_coverage under behavior-evaluators-v0.3, with withheld empty"
+ * see four-arm-lane.test.mjs › "reports evidence_coverage under behavior-evaluators-v0.4, with withheld empty"
  *
  * This is a real pre-existing defect in the v0.2 evaluator, filed separately
  * and out of scope here. Withholding is not a fix for a record still declaring
@@ -480,7 +483,7 @@ function withheldMetricsFor(
   metadata: BenchmarkVersions,
 ): Readonly<Partial<Record<GateMetricKey, string>>> {
   // Spelled so that a version this lane does not recognise withholds.
-  return metadata.evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION
+  return scoresStructurally(metadata.evaluatorVersion)
     ? {}
     : LIVE_MODEL_LANE_WITHHELD_METRICS;
 }

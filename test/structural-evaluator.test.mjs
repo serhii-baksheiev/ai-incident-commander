@@ -323,7 +323,10 @@ test('evaluateBenchmarkRecord refuses an unknown evaluator version even on a sce
   };
   assert.throws(
     () => evals.evaluateBenchmarkRecord({ record, outcome }),
-    /evaluator version must be behavior-evaluators-v0\.2 or behavior-evaluators-v0\.3/,
+    // AIC-138 registers behavior-evaluators-v0.4 (the discriminating-trial
+    // challenge_effect guard), so the refusal must name it beside v0.2 and
+    // v0.3 or a caller reads a stale list of what the evaluator accepts.
+    /evaluator version must be behavior-evaluators-v0\.2, behavior-evaluators-v0\.3 or behavior-evaluators-v0\.4/,
   );
 });
 
@@ -871,11 +874,15 @@ test('persistBenchmarkExperiment refuses a v0.3-tagged behavior metric inside a 
   assert.equal(capture.runs.length, 0);
 });
 
-test('persistBenchmarkExperiment still refuses an evaluator version neither v0.2 nor v0.3 names', async () => {
-  const record = calibrationRecord('false-alert', 'behavior-evaluators-v0.4');
+// AIC-138 registers behavior-evaluators-v0.4, so it is no longer an "unknown
+// version" fixture for this row (that premise is exactly what the ticket
+// changes) — retargeted to v0.99, a version no evaluator ever names, so the
+// row still exercises a genuine refusal rather than one the ticket resolves.
+test('persistBenchmarkExperiment still refuses an evaluator version neither v0.2, v0.3 nor v0.4 names', async () => {
+  const record = calibrationRecord('false-alert', 'behavior-evaluators-v0.99');
   const result = v03Result(record, {
     false_alert_correctness: {
-      evaluatorVersion: 'behavior-evaluators-v0.4',
+      evaluatorVersion: 'behavior-evaluators-v0.99',
       key: 'false_alert_correctness',
       score: 1,
       reason: 'passed',

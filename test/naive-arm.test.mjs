@@ -568,6 +568,10 @@ const NOT_APPLICABLE_TABLE_ROWS = Object.freeze([
 const NOT_APPLICABLE_TABLE_EVALUATOR_VERSIONS = Object.freeze([
   evals.BEHAVIOR_EVALUATOR_VERSION,
   'behavior-evaluators-v0.3',
+  // AIC-138: behavior-evaluators-v0.4 applies the same three behavior metrics
+  // under the same conditions as v0.3 — only challenge_effect's scoring
+  // differs, never its applicability.
+  evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION,
 ]);
 
 for (const row of NOT_APPLICABLE_TABLE_ROWS) {

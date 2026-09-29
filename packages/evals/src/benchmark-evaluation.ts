@@ -9,18 +9,20 @@ import {
 import {
   BEHAVIOR_EVALUATOR_VERSION,
   BEHAVIOR_METRIC_KEYS,
-  STRUCTURAL_EVALUATOR_VERSION,
   evaluateChallengeEffect,
   evaluateFalseAlertOutcome,
   evaluateMisleadingEvidenceHandling,
   evaluateStructuralChallengeEffect,
   evaluateStructuralFalseAlertOutcome,
   evaluateStructuralMisleadingEvidenceHandling,
+  knownVersionsMessage,
+  scoresStructurally,
   type BehaviorMetric,
   type BehaviorMetricKey,
   type ChallengeEffectObservation,
   type EvidenceAssessmentObservation,
   type RootCause,
+  type StructuralEvaluatorVersion,
 } from './behavior-evaluators.js';
 import {
   BENCHMARK_SCENARIO_PARTITIONS,
@@ -541,13 +543,11 @@ export function evaluateBenchmarkRecord({
   // see structural-evaluator.test.mjs › "evaluateBenchmarkRecord refuses an
   // unknown evaluator version even on a scenario with no behavior metric"
   const { evaluatorVersion } = record.metadata;
-  if (evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION) {
-    return evaluateStructuralRecord({ record, outcome, resources, notApplicable, skipped });
+  if (scoresStructurally(evaluatorVersion)) {
+    return evaluateStructuralRecord({ record, outcome, resources, notApplicable, skipped, evaluatorVersion });
   }
   if (evaluatorVersion !== BEHAVIOR_EVALUATOR_VERSION) {
-    throw new Error(
-      `evaluator version must be ${BEHAVIOR_EVALUATOR_VERSION} or ${STRUCTURAL_EVALUATOR_VERSION}`,
-    );
+    throw new Error(`evaluator version must be ${knownVersionsMessage()}`);
   }
   const unsupportedClaimRate = evaluateUnsupportedClaimRate(outcome);
   const evidenceCoverage = evaluateEvidenceCoverage({
@@ -666,12 +666,14 @@ function evaluateStructuralRecord({
   resources,
   notApplicable,
   skipped,
+  evaluatorVersion,
 }: Readonly<{
   record: BenchmarkRecord;
   outcome: BenchmarkOutcome;
   resources?: BenchmarkResourceEvidence;
   notApplicable?: NotApplicableMetrics;
   skipped: ReadonlySet<string>;
+  evaluatorVersion: StructuralEvaluatorVersion;
 }>): BenchmarkEvaluation {
   const { groundTruth } = record.scenario;
   const truth = structuralGroundTruthFor(record.scenario.id);
@@ -700,33 +702,39 @@ function evaluateStructuralRecord({
   ) {
     defineBehaviorMetric(
       behaviorMetrics,
-      evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }),
+      evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }, evaluatorVersion),
     );
   }
   if (groundTruth.expectedConclusionKind === 'no-incident' && !skipped.has('false_alert_correctness')) {
     defineBehaviorMetric(
       behaviorMetrics,
-      evaluateStructuralFalseAlertOutcome({
-        truth,
-        expectedStopKind: groundTruth.expectedStopKind,
-        expectedConclusionKind: groundTruth.expectedConclusionKind,
-        outcome,
-      }),
+      evaluateStructuralFalseAlertOutcome(
+        {
+          truth,
+          expectedStopKind: groundTruth.expectedStopKind,
+          expectedConclusionKind: groundTruth.expectedConclusionKind,
+          outcome,
+        },
+        evaluatorVersion,
+      ),
     );
   }
   if (groundTruth.expectedLeaderChangeAfterChallenge !== undefined && !skipped.has('challenge_effect')) {
     defineBehaviorMetric(
       behaviorMetrics,
-      evaluateStructuralChallengeEffect({
-        groundTruth: {
-          expectedLeaderChangeAfterChallenge: groundTruth.expectedLeaderChangeAfterChallenge,
+      evaluateStructuralChallengeEffect(
+        {
+          groundTruth: {
+            expectedLeaderChangeAfterChallenge: groundTruth.expectedLeaderChangeAfterChallenge,
+          },
+          outcome: outcome.challengeEffect ?? {
+            challengeNodeExecuted: false,
+            challengeInvocationCount: 0,
+            executedDiscriminatingTrialCount: 0,
+          },
         },
-        outcome: outcome.challengeEffect ?? {
-          challengeNodeExecuted: false,
-          challengeInvocationCount: 0,
-          executedDiscriminatingTrialCount: 0,
-        },
-      }),
+        evaluatorVersion,
+      ),
     );
   }
 

@@ -9,7 +9,7 @@ import {
 } from './benchmark-evaluation.js';
 import {
   BEHAVIOR_EVALUATOR_VERSION,
-  STRUCTURAL_EVALUATOR_VERSION,
+  scoresStructurally,
   type ChallengeEffectObservation,
 } from './behavior-evaluators.js';
 import { structuralGroundTruthFor } from './structural-ground-truth.js';
@@ -92,7 +92,7 @@ function identifiedEvidenceIds(
  */
 function projectedTruth(scenario: IncidentScenario, evaluatorVersion: string) {
   const { groundTruth } = scenario;
-  if (evaluatorVersion === STRUCTURAL_EVALUATOR_VERSION) {
+  if (scoresStructurally(evaluatorVersion)) {
     const truth = structuralGroundTruthFor(scenario.id);
     return {
       expectedIds: [...truth.expectedEvidenceIds],

@@ -57,6 +57,16 @@ const v3Metadata = Object.freeze({
   evaluatorVersion: evals.STRUCTURAL_EVALUATOR_VERSION,
 });
 
+/**
+ * AIC-138: the v0.4 twin of `v3Metadata`, everything else unchanged. v0.4
+ * differs from v0.3 only in `challenge_effect`'s scoring; every other axis is
+ * byte-identical between the two versions.
+ */
+const v4Metadata = Object.freeze({
+  ...benchmarkVersions,
+  evaluatorVersion: evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION,
+});
+
 /** Every metric key this lane compares — three benchmark, three behavior. */
 function sixMetricKeys() {
   return [...evals.BENCHMARK_METRIC_KEYS, ...evals.BEHAVIOR_METRIC_KEYS];
@@ -123,6 +133,73 @@ test('oracleArm covers the calibration plan under v0.3 metadata, and the lane re
       entry.comparable,
       true,
       `the committed oracle evidence says every axis reaches its best under v0.3 — including ${key}`,
+    );
+  }
+});
+
+/**
+ * AIC-138 (F3): the v0.4 twin of the row above. Section 3's own comment on
+ * `docs/evidence/oracle/behavior-evaluators-v0.4.json` (generated, never
+ * hand-written) is the independent-oracle discipline for this row too — read
+ * as a committed file, never computed by calling `lane-arms.mjs` itself.
+ */
+test('oracleArm covers the calibration plan under behavior-evaluators-v0.4 metadata, and the lane reports it completed and comparable on every one of the six metrics', async () => {
+  const { oracleArm } = await import('../scripts/lane-arms.mjs');
+  const { scriptedNodes } = await import('../scripts/eval-live-model.mjs');
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const runOracleArm = oracleArm({ experimentId: 'aic-138-oracle-calibration-v04' });
+
+  async function scriptedGraphExperiment(experimentId, plan) {
+    return evals.runGraphBenchmarkExperiment({
+      experimentId,
+      scenarioSet: plan.scenarioSet,
+      runsPerScenario: plan.runsPerScenario,
+      metadata: plan.metadata,
+      createNodes: (record) => scriptedNodes(record),
+      async recordEvaluation() {},
+    });
+  }
+
+  const report = await runLiveModelLane({
+    env: { [MODEL_API_KEY_VARIABLE]: fakeApiKey() },
+    scenarioSet: 'calibration',
+    experimentId: 'aic-138-oracle-lane-v04',
+    headSha: HEAD_SHA,
+    metadata: v4Metadata,
+    runOracleArm,
+    async runControlArm(plan) {
+      return scriptedGraphExperiment('aic-138-oracle-control-v04', plan);
+    },
+    async runModelArm(plan) {
+      return scriptedGraphExperiment('aic-138-oracle-model-v04', plan);
+    },
+  });
+
+  assert.equal(report.arms.oracle.status, 'completed');
+
+  // Oracle reaching best everywhere under v0.4 is measured, not asserted here:
+  // docs/evidence/oracle/behavior-evaluators-v0.4.json (partition: calibration)
+  // carries bestValues equal to every scenario's own score, on all six axes.
+  const evidencePath = join(
+    REPO_ROOT,
+    'docs/evidence/oracle/behavior-evaluators-v0.4.json',
+  );
+  const oracleEvidence = JSON.parse(readFileSync(evidencePath, 'utf8'));
+  assert.equal(oracleEvidence.partition, 'calibration');
+
+  const metricKeys = sixMetricKeys();
+  assert.equal(metricKeys.length, 6);
+  assert.deepEqual(Object.keys(oracleEvidence.bestValues).sort(), [...metricKeys].sort());
+
+  assert.ok(report.comparability !== undefined, 'a completed oracle arm must publish comparability');
+  for (const key of metricKeys) {
+    const entry = report.comparability[key];
+    assert.ok(entry !== undefined, `comparability must cover ${key}`);
+    assert.equal(
+      entry.comparable,
+      true,
+      `the committed oracle evidence says every axis reaches its best under v0.4 — including ${key}`,
     );
   }
 });
@@ -217,7 +294,12 @@ test('naiveArm drives the naive role from a fake port: exactly one completion pe
  * three things this row checks are each a fixed phrase rather than a
  * structural question about the call site.
  */
-test('both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and naiveArm from ./lane-arms.mjs, wire them into runLiveModelLane, and declare the v0.3 structural evaluator', () => {
+// AIC-138: the live lane, the final hold-out and the oracle report move to
+// behavior-evaluators-v0.4 (the discriminating-trial challenge_effect guard),
+// so this source audit now asserts the v0.4 constant rather than v0.3 — the
+// two scripts' own declared evaluatorVersion moves with them, not the
+// literal string this row already named.
+test("both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and naiveArm from ./lane-arms.mjs, wire them into runLiveModelLane, and declare the lane's evaluator behavior-evaluators-v0.4", () => {
   for (const relativePath of ['scripts/eval-live-model.mjs', 'scripts/eval-final-holdout.mjs']) {
     const source = readFileSync(join(REPO_ROOT, relativePath), 'utf8');
 
@@ -247,8 +329,8 @@ test('both eval-live-model.mjs and eval-final-holdout.mjs import oracleArm and n
     );
     assert.match(
       source,
-      /evaluatorVersion:\s*evals\.STRUCTURAL_EVALUATOR_VERSION/,
-      `${relativePath} must declare evaluatorVersion as evals.STRUCTURAL_EVALUATOR_VERSION`,
+      /evaluatorVersion:\s*evals\.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION/,
+      `${relativePath} must declare evaluatorVersion as evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION`,
     );
   }
 });
@@ -657,6 +739,66 @@ test('the committed control baseline files each equal what the scripted control 
       observed,
       declared,
       `over ${scenarioSet}, its own committed baseline file must equal what the scripted control arm observes under v0.3`,
+    );
+  }
+});
+
+/**
+ * AIC-138 (F3): the v0.4 twin of the row above. The plan's premise (section
+ * 3) is that neither baseline value can move: the scripted control plans and
+ * fetches nothing, so it never executes a discriminating trial either, and a
+ * challenge-round pass it never earned under v0.3 it does not earn under v0.4.
+ * The same two committed files are the independent oracle for both versions —
+ * no new file, no new `_history` entry.
+ */
+test('the committed control baseline files each equal what the scripted control arm observes under behavior-evaluators-v0.4 — control-baseline.json for final-evaluation, control-baseline-calibration.json for calibration — with no axis missing and none extra', async () => {
+  const { scriptedNodes, CALIBRATION_CONTROL_BASELINE_PATH } = await import('../scripts/eval-live-model.mjs');
+  const { readControlBaseline } = await import('../scripts/eval-final-holdout.mjs');
+  const runLiveModelLane = requireExport('runLiveModelLane');
+
+  const declaredByScenarioSet = {
+    calibration: readControlBaseline(CALIBRATION_CONTROL_BASELINE_PATH),
+    'final-evaluation': readControlBaseline(),
+  };
+
+  for (const scenarioSet of ['calibration', 'final-evaluation']) {
+    async function scriptedGraphExperiment(experimentId, plan) {
+      return evals.runGraphBenchmarkExperiment({
+        experimentId,
+        scenarioSet: plan.scenarioSet,
+        runsPerScenario: plan.runsPerScenario,
+        metadata: plan.metadata,
+        createNodes: (record) => scriptedNodes(record),
+        async recordEvaluation() {},
+      });
+    }
+
+    // eslint-disable-next-line no-await-in-loop -- two independent corpora, run one after the other on purpose
+    const report = await runLiveModelLane({
+      env: { [MODEL_API_KEY_VARIABLE]: fakeApiKey() },
+      scenarioSet,
+      experimentId: `aic-138-control-baseline-v04-${scenarioSet}`,
+      headSha: HEAD_SHA,
+      metadata: v4Metadata,
+      async runControlArm(plan) {
+        return scriptedGraphExperiment(`aic-138-control-v04-${scenarioSet}`, plan);
+      },
+      async runModelArm(plan) {
+        return scriptedGraphExperiment(`aic-138-model-v04-${scenarioSet}`, plan);
+      },
+    });
+
+    const observed = report.arms.control.observedBaseline;
+    const declared = declaredByScenarioSet[scenarioSet];
+    assert.deepEqual(
+      Object.keys(observed).sort(),
+      Object.keys(declared).sort(),
+      `over ${scenarioSet}, its own committed baseline file must declare exactly the axes the scripted control observes under v0.4 — no axis missing, none extra`,
+    );
+    assert.deepEqual(
+      observed,
+      declared,
+      `over ${scenarioSet}, its own committed baseline file must equal what the scripted control arm observes under v0.4`,
     );
   }
 });
