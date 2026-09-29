@@ -37,19 +37,25 @@
  *    reaching best on every metric including `challenge_effect` (section D).
  *  - the observability persistence boundary accepts a `behavior-evaluators-v0.4`
  *    record whose `challenge_effect` reason is `no-discriminating-trial`
- *    (section E; the companion "still refuses an unknown version" row moved
- *    to `structural-evaluator.test.mjs` since v0.4 stops being that fixture's
- *    unknown version).
+ *    (section E; the companion "still refuses an unknown version" row in
+ *    `structural-evaluator.test.mjs` was retargeted in place from v0.4 to
+ *    v0.99, since v0.4 stops being that fixture's unknown version).
  *
  * Independent-oracle discipline (`.claude/rules/invariants.md`): every
  * expected value below is written literally — hand-traced against
  * `behavior-evaluators.ts` and `replay-scenarios.ts`, the way
  * `oracle-positive-control.test.mjs` already does for the v0.2 table and
  * `structural-evaluator.test.mjs` for v0.3 — never computed by calling the
- * production code under test. The one exception is B5's monotonicity
- * property, which compares the v0.3 and v0.4 scorers to each other by
- * nature (a "v0.4 never passes what v0.3 fails" claim has no other oracle);
- * every other row's expectation is independent of both.
+ * production code under test. Three rows are relational by nature and
+ * compare the v0.3 and v0.4 paths to each other instead: "v0.4 never passes
+ * a challenge observation v0.3 fails, …", "v0.4 scores evidence_coverage,
+ * misleading_evidence_handling and false_alert_correctness exactly as v0.3
+ * …" and "oracleAnswerFor projects the same structural answer and challenge
+ * observation under behavior-evaluators-v0.4 as under v0.3". Each claims only
+ * equality or order between the versions, so it can catch the versions
+ * drifting apart but not a defect both share; the literal rows in sections B
+ * and C, and the v0.3 rows in `structural-evaluator.test.mjs`, pin the values
+ * themselves.
  *
  * Sections:
  *   A. DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION guard

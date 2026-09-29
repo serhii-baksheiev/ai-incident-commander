@@ -288,8 +288,9 @@ export function evaluateChallengeEffect(
   return scoreChallengeEffect(input, BEHAVIOR_EVALUATOR_VERSION);
 }
 
-// One scoring of the challenge effect for both versions: the structural
-// version changed how evidence and root causes are matched, not this.
+// One scoring of the challenge effect for every version. v0.3 changed how
+// evidence and root causes are matched, not this; v0.4 (AIC-138) changes
+// exactly this, through the one version-gated guard below.
 function scoreChallengeEffect(
   input: Readonly<{
     groundTruth: Readonly<{ expectedLeaderChangeAfterChallenge: boolean }>;
@@ -344,7 +345,7 @@ function scoreChallengeEffect(
 }
 
 /**
- * The structural (`behavior-evaluators-v0.3`) behaviour metrics.
+ * The structural (`behavior-evaluators-v0.3` and `-v0.4`) behaviour metrics.
  *
  * Same questions as the accepted evaluators above, answered from
  * `STRUCTURAL_GROUND_TRUTH`: evidence counts as investigated only when the arm

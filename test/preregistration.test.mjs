@@ -83,7 +83,7 @@ const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm-supplement-5.md': 'sha256:48c0ac078079edbde06882e2a47e8be139dbef54fe96b374b0f75fdd44b4b329',
   'v0.2-four-arm-supplement-6.md': 'sha256:d0720a1b7d0095e8216b45a126fe850de89e5919c9bed67ca149349738a4f9c7',
   'v0.2-four-arm-supplement-7.md': 'sha256:49de9f7589474298be36d3faa55bf32d1728a63edd12049b28668a47a0b3ee56',
-  'v0.2-four-arm-supplement-8.md': 'sha256:82a1397dc6c34093971f5ee0c3bbf835533a6566fac6b11432fa0d1b15cf9de5',
+  'v0.2-four-arm-supplement-8.md': 'sha256:72ad3bbad9d496b13d11e27c7dbeb5a42fa8ffdead33d6bbc60b8e4972aa76a8',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');

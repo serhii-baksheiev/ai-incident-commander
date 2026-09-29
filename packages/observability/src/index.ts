@@ -103,7 +103,8 @@ const PERSISTED_OPTIONAL_METADATA_KEYS = [
 // structural one (AIC-105), and the discriminating-challenge one (AIC-138). A
 // second spelling of the versions @aic/evals defines, because this package
 // does not import evals; the persistence rows in structural-evaluator.test.mjs
-// publish a record under each and refuse any other.
+// (v0.2, v0.3, and the refusal of any other) and
+// challenge-effect-discriminating-evaluator.test.mjs (v0.4) publish under each.
 const PERSISTED_BEHAVIOR_EVALUATOR_VERSIONS: ReadonlySet<string> = new Set([
   'behavior-evaluators-v0.2',
   'behavior-evaluators-v0.3',

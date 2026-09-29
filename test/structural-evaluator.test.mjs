@@ -363,7 +363,7 @@ for (const [scenarioId, metricKey, outcome] of STRUCTURAL_BEHAVIOR_METRIC_WRITES
   });
 }
 
-test('evaluateBenchmarkRecord throws for a metadata evaluatorVersion neither v0.2 nor v0.3 names', () => {
+test('evaluateBenchmarkRecord throws for a metadata evaluatorVersion neither v0.2, v0.3 nor v0.4 names', () => {
   const record = calibrationRecord('false-alert', 'behavior-evaluators-v0.99');
   assert.throws(() => evals.evaluateBenchmarkRecord({ record, outcome: falseAlertOutcome() }));
 });

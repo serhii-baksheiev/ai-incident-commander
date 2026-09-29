@@ -654,7 +654,8 @@ function defineBehaviorMetric(
 }
 
 /**
- * The structural evaluator (`behavior-evaluators-v0.3`, AIC-105): the same six
+ * The structural evaluator (`behavior-evaluators-v0.3`, AIC-105, and `-v0.4`,
+ * AIC-138, which differs only in challenge_effect): the same six
  * metrics, with evidence matched by the ids the run REFERENCED against
  * `STRUCTURAL_GROUND_TRUTH`, and the root cause matched structurally. Which
  * metrics apply to a scenario is still decided by its accepted ground truth, so
