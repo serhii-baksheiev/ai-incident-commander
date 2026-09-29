@@ -20,10 +20,12 @@ export const SignalSchema = z.strictObject({
 });
 
 /**
- * At most this many signals per intake: bounded by construction, like the
- * registry's config (sixteen keys), so validation never scales with an
- * unbounded caller-supplied array — see incident-intake-credential-screen.test.mjs
- * › "an intake carries at most a bounded number of signals".
+ * At most this many signals per intake. The count is checked before any
+ * signal is parsed, so validation cost never scales with an oversized
+ * caller-supplied array — see incident-intake-credential-screen.test.mjs ›
+ * "an intake carries at most a bounded number of signals" and › "an intake
+ * with far more signals than the cap is refused before any signal is parsed,
+ * well under half a second".
  */
 export const MAX_INTAKE_SIGNALS = 100;
 
@@ -31,7 +33,9 @@ export const IncidentIntakeSchema = z.strictObject({
   primaryScope: PrimaryScopeSchema,
   title: screenedText(200),
   startedAt: z.iso.datetime({ offset: true }),
-  signals: z.array(SignalSchema).max(MAX_INTAKE_SIGNALS),
+  // The count is checked on unparsed elements first, so an oversized array is
+  // refused before any signal is parsed.
+  signals: z.array(z.unknown()).max(MAX_INTAKE_SIGNALS).pipe(z.array(SignalSchema)),
   externalRef: screenedText(256).optional(),
   idempotencyKey: screenedText(256).optional(),
 });

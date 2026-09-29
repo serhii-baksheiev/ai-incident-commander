@@ -136,3 +136,29 @@ test('an intake carries at most a bounded number of signals', () => {
   const few = domain.IncidentIntakeSchema.safeParse(baseIntake({ signals: Array.from({ length: 10 }, () => signal) }));
   assert.equal(few.success, true, 'an ordinary number of signals is accepted');
 });
+
+/** An ordinary long word-character run, the shape of a base64 blob in a pasted log. */
+const base64Run = (length) => 'QUJDRGVmZ2hpams0NTY3ODkrLw'.repeat(Math.ceil(length / 26)).slice(0, length);
+
+test('validating an accepted intake of the full signal count, each statement a 2000-character base64-like run, stays well under half a second', () => {
+  const signals = Array.from({ length: domain.MAX_INTAKE_SIGNALS }, () => ({
+    source: 'pagerduty',
+    statement: base64Run(2_000),
+    observedAt: '2026-09-29T10:00:00Z',
+  }));
+  const started = performance.now();
+  const result = domain.IncidentIntakeSchema.safeParse(baseIntake({ signals }));
+  const elapsed = performance.now() - started;
+  assert.equal(result.success, true, 'an ordinary long run is not a credential');
+  assert.ok(elapsed < 500, `validation took ${elapsed.toFixed(1)} ms`);
+});
+
+test('an intake with far more signals than the cap is refused before any signal is parsed, well under half a second', () => {
+  const signal = { source: 'pagerduty', statement: base64Run(2_000), observedAt: '2026-09-29T10:00:00Z' };
+  const signals = Array.from({ length: 2_000 }, () => signal);
+  const started = performance.now();
+  const result = domain.IncidentIntakeSchema.safeParse(baseIntake({ signals }));
+  const elapsed = performance.now() - started;
+  assert.equal(result.success, false);
+  assert.ok(elapsed < 500, `refusal took ${elapsed.toFixed(1)} ms`);
+});

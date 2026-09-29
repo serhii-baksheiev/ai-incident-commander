@@ -141,7 +141,12 @@ const MAX_CONFIG_VALUE_LENGTH = 512;
  * excludes `:` so there is only one place the required `:` can match, and the
  * second class excludes `@` so its run and the trailing `@` cannot overlap -
  * the ambiguous `[^/@]*:[^/@]*@` shape this replaced backtracked
- * quadratically over a value with many colons and no closing `@` (see the
+ * quadratically over a value with many colons and no closing `@`. The scheme
+ * run is bounded at 32 characters, because an unbounded `[a-zA-Z0-9+.-]*`
+ * re-scans a long word-character run from every start position — see
+ * incident-intake-credential-screen.test.mjs › "validating an accepted intake
+ * of the full signal count, each statement a 2000-character base64-like run,
+ * stays well under half a second" (see the
  * "Bounded by construction" comment on `SourceBindingConfigSchema` below for
  * the measured rows).
  */
@@ -158,7 +163,7 @@ const DOMAIN_SECRET_PATTERNS = [
   /\bnpm_[A-Za-z0-9]{30,}/, // npm-token
   /\bglpat-[A-Za-z0-9_-]{16,}/, // gitlab-pat
   /\bBearer [A-Za-z0-9\-._~+/]+=*/, // domain-only: Bearer-prefixed value
-  /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/@:\s]*:[^/@\s]*@/, // domain-only: scheme://user:pass@ userinfo (linear form)
+  /[a-zA-Z][a-zA-Z0-9+.-]{0,31}:\/\/[^/@:\s]*:[^/@\s]*@/, // domain-only: scheme://user:pass@ userinfo (linear form)
   /\bASIA[A-Z0-9]{16}\b/, // domain-only: AWS STS session key id
 ];
 

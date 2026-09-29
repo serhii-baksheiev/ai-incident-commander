@@ -320,7 +320,10 @@ test('startIncident itself refuses an intake the domain schema refuses, whatever
   // A credential SHAPE, assembled at runtime rather than written as a literal.
   const pasted = ['ghp', 'B'.repeat(28)].join('_');
   for (const overrides of [{ title: `rotate ${pasted}` }, { startedAt: 'yesterday' }]) {
-    await assert.rejects(() => incidentStore.startIncident(buildIntake(scope, overrides), { id: randomUUID() }));
+    await assert.rejects(
+      () => incidentStore.startIncident(buildIntake(scope, overrides), { id: randomUUID() }),
+      /incident intake is invalid/,
+    );
   }
   assert.equal(await incidentRowCount(pool), 0, 'a refused intake must store no row');
 });

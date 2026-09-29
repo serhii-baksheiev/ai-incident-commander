@@ -136,11 +136,6 @@ async function startIncidentAgainst(
           `SELECT body FROM "${APPLICATION_SCHEMA}".incidents WHERE idempotency_key = $1`,
           [incident.idempotencyKey],
         );
-        if (selectResult.rows.length !== 1) {
-          throw new Error(
-            'an Incident with this idempotency key was neither inserted nor found; the start can be retried',
-          );
-        }
         resultIncident = selectResult.rows[0].body as IntakeDerivedIncident;
         created = false;
       }

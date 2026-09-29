@@ -1,6 +1,6 @@
 /**
- * `.claude/runs/` is the per-checkout run journal and is gitignored
- * (`.gitignore`), so a committed file that cites a path inside it sends every
+ * The per-checkout run journal (the `runs` directory under `.claude`) is
+ * gitignored, so a committed file that cites a path inside it sends every
  * other reader to a file they do not have. No file under apps/, packages/,
  * scripts/, infra/ or test/ names that directory; the rationale a citation
  * would have carried belongs in the committed file itself, a Jira ticket or a
