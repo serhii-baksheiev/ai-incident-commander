@@ -381,3 +381,75 @@ test('a real BoundSourceRegistry live-mode outcome\'s provenance parses with Evi
     requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-146 slice b1 — the domain owns the adapter spelling                    */
+/*                                                                            */
+/* `@aic/tools`'s `bound-source-registry.ts` privately holds the safe-token   */
+/* shape a `describe().adapterId` / `.version` must match before either is   */
+/* trusted in `provenance.adapter`: `SAFE_ADAPTER_ID` (an alphanumeric first  */
+/* character, up to 64 characters total, `:` additionally allowed) and       */
+/* `SAFE_ADAPTER_TOKEN` (the same shape, without `:`) — read verbatim from    */
+/* `packages/tools/src/bound-source-registry.ts` at the lines this ticket     */
+/* names. `EvidenceProvenanceSchema.adapter` currently only bounds each side  */
+/* to 1-200 arbitrary non-`@` characters (`ProvenanceAdapterFieldSchema`),    */
+/* which is far wider than the registry's own spelling — so a provenance     */
+/* envelope can claim an `adapter` string the registry itself would never    */
+/* have produced. `@aic/domain` is meant to export `ADAPTER_ID_PATTERN` and  */
+/* `ADAPTER_VERSION_PATTERN` (the registry's two patterns, moved here) and   */
+/* build `ProvenanceAdapterFieldSchema` from them, so the registry's own     */
+/* `SAFE_ADAPTER_ID`/`SAFE_ADAPTER_TOKEN` become aliases of these domain      */
+/* objects rather than a second, independently-maintained copy of the same   */
+/* spelling (pinned as object identity in                                    */
+/* test/bound-source-registry.test.mjs).                                     */
+/*                                                                            */
+/* Independent oracle: every row below is a hand-written string with its     */
+/* expected accept/refuse verdict, decided by reading the registry's two     */
+/* patterns directly — never by constructing the expectation from the new    */
+/* `ADAPTER_ID_PATTERN`/`ADAPTER_VERSION_PATTERN` exports themselves.        */
+/* -------------------------------------------------------------------------- */
+
+test('@aic/domain exports ADAPTER_ID_PATTERN and ADAPTER_VERSION_PATTERN as RegExp objects (AIC-146 b1)', () => {
+  assert.equal(
+    domain.ADAPTER_ID_PATTERN instanceof RegExp,
+    true,
+    '@aic/domain must export ADAPTER_ID_PATTERN: RegExp, the safe-token pattern an adapter\'s adapterId side must match (moved here from packages/tools/src/bound-source-registry.ts\'s SAFE_ADAPTER_ID)',
+  );
+  assert.equal(
+    domain.ADAPTER_VERSION_PATTERN instanceof RegExp,
+    true,
+    '@aic/domain must export ADAPTER_VERSION_PATTERN: RegExp, the safe-token pattern an adapter\'s version side must match (moved here from packages/tools/src/bound-source-registry.ts\'s SAFE_ADAPTER_TOKEN)',
+  );
+});
+
+test('EvidenceProvenanceSchema refuses an adapter whose adapterId side is 65 characters, one character past the registry\'s own SAFE_ADAPTER_ID bound — accepted today by the wider 200-character domain bound (AIC-146 b1)', () => {
+  const adapter = `${'a'.repeat(65)}@1`;
+  assert.equal(
+    domain.EvidenceProvenanceSchema.safeParse(validProvenance({ adapter })).success,
+    false,
+    `${JSON.stringify(adapter)} must be refused once the domain owns the registry's own adapterId spelling (65 characters is one past SAFE_ADAPTER_ID's 64-character bound)`,
+  );
+});
+
+/**
+ * Hand-written accept/refuse table for `EvidenceProvenanceSchema.adapter`,
+ * decided directly from the registry's own two patterns (an alphanumeric
+ * first character; `SAFE_ADAPTER_ID` additionally allows `:` in the
+ * adapterId side; `SAFE_ADAPTER_TOKEN` never allows `:` in the version
+ * side; neither allows a leading space or any other punctuation outside
+ * `._:-`), never by calling `ADAPTER_ID_PATTERN`/`ADAPTER_VERSION_PATTERN`
+ * to compute the expectation.
+ */
+const ADAPTER_SPELLING_ROWS = [
+  { adapter: 'lab@1', expected: true, why: 'an ordinary one-character id and version, exactly what the registry produces for lab@1' },
+  { adapter: 'lab@v:1', expected: false, why: 'the version side "v:1" carries a colon, which SAFE_ADAPTER_TOKEN never allows' },
+  { adapter: ' lab@1', expected: false, why: 'the adapterId side starts with a space, not an alphanumeric first character' },
+  { adapter: 'lab@-1', expected: false, why: 'the version side starts with "-", not an alphanumeric first character' },
+  { adapter: 'b:c@1', expected: true, why: 'a colon inside the adapterId side is exactly what SAFE_ADAPTER_ID\'s colon-collision design allows' },
+];
+
+for (const { adapter, expected, why } of ADAPTER_SPELLING_ROWS) {
+  test(`EvidenceProvenanceSchema ${expected ? 'accepts' : 'refuses'} adapter ${JSON.stringify(adapter)} (AIC-146 b1: ${why})`, () => {
+    assert.equal(domain.EvidenceProvenanceSchema.safeParse(validProvenance({ adapter })).success, expected);
+  });
+}
