@@ -11,21 +11,21 @@ import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
 
-import { PrimaryScopeSchema } from './scope.js';
+import { PrimaryScopeSchema, screenedText } from './scope.js';
 
 export const SignalSchema = z.strictObject({
-  source: z.string().min(1).max(200),
-  statement: z.string().min(1).max(2000),
+  source: screenedText(200),
+  statement: screenedText(2000),
   observedAt: z.iso.datetime({ offset: true }),
 });
 
 export const IncidentIntakeSchema = z.strictObject({
   primaryScope: PrimaryScopeSchema,
-  title: z.string().min(1).max(200),
+  title: screenedText(200),
   startedAt: z.iso.datetime({ offset: true }),
   signals: z.array(SignalSchema),
-  externalRef: z.string().min(1).max(256).optional(),
-  idempotencyKey: z.string().min(1).max(256).optional(),
+  externalRef: screenedText(256).optional(),
+  idempotencyKey: screenedText(256).optional(),
 });
 
 export type IncidentIntake = z.infer<typeof IncidentIntakeSchema>;

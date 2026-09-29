@@ -220,3 +220,9 @@ export {
   RegistryValidationError,
   type RegistryStore,
 } from './registry-store.js';
+
+/**
+ * AIC-99 slice f: `aic incident start`'s own transactional store, built on
+ * migration 3's `incidents` table (`app-schema.ts`).
+ */
+export { createIncidentStore, IncidentScopeError, type IncidentStore } from './incident-store.js';

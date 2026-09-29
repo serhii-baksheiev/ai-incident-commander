@@ -223,6 +223,9 @@ const ALLOWED_APPLICATION_SCHEMA_WRITERS = Object.freeze([
   // creates (services, environments, credential_refs, source_bindings,
   // action_policies, registry_events).
   'registry-store.ts',
+  // AIC-99 slice f: the incident store writes migration 3's `incidents`
+  // table.
+  'incident-store.ts',
 ]);
 
 test('only the allow-listed modules in packages/persistence/src write an aic_app table', () => {
@@ -269,6 +272,7 @@ const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'DESERIALIZATION_MAX_DEPTH',
   'DESERIALIZATION_MAX_NODES',
   'DeserializationBudgetError',
+  'IncidentScopeError',
   'MAX_RUN_EVENT_READ_LIMIT',
   'MIN_RUN_EVENT_POLL_INTERVAL_MS',
   'PERSISTENCE_LAYER',
@@ -282,6 +286,7 @@ const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'assertCheckpointerSchemaVersion',
   'createFencedCheckpointer',
   'createPostgresCheckpointer',
+  'createIncidentStore',
   'createRegistryStore',
   'createRunEventStreamSource',
   'createRunStore',

@@ -2,10 +2,13 @@
 
 import { parseArgs } from 'node:util';
 
+import { randomUUID } from 'node:crypto';
+
 import { createDirectorySecretResolver } from '@aic/tools';
-import { createRegistryStore, setupApplicationSchema, type RegistryStore } from '@aic/persistence';
+import { createIncidentStore, createRegistryStore, setupApplicationSchema, type RegistryStore } from '@aic/persistence';
 
 import { runRegistryCommand, type RegistryCommandDeps } from './commands/registry.js';
+import { runIncidentCommand, type IncidentCommandStore } from './commands/incident.js';
 import { runDevSpike } from './commands/dev-spike.js';
 import { runInvestigate } from './commands/investigate.js';
 import { runSourceCheckCommand } from './commands/source-check.js';
@@ -13,9 +16,10 @@ import { runDoctorCommand } from './commands/doctor.js';
 
 // The onboarding nouns docs/decisions/integration-boundary.md's Terminology
 // section fixes for AIC-99, still stubs in this slice. `doctor` and
-// `source check` stop being stubs in slice e — see runDoctorCommand and
-// runSourceCheckCommand below.
-const STUB_NOUNS = ['incident', 'apply'] as const;
+// `source check` stop being stubs in slice e, `incident` (its `start`
+// subcommand) in slice f — see runDoctorCommand, runSourceCheckCommand and
+// runIncidentCommand below.
+const STUB_NOUNS = ['apply'] as const;
 type StubNoun = (typeof STUB_NOUNS)[number];
 
 // AIC-99 slice d: real dispatch over the registry store — `credential` is a
@@ -95,6 +99,21 @@ function createConnectedRegistryStore(env: NodeJS.ProcessEnv): RegistryStore {
     setActionPolicy: (input) => connected().setActionPolicy(input),
     removeEnvironment: (input) => connected().removeEnvironment(input),
     removeService: (input) => connected().removeService(input),
+  };
+}
+
+/**
+ * AIC-99 slice f: `aic incident start`'s own store — `snapshot()` (to resolve
+ * `<service>`/`<env>` names, reusing `createConnectedRegistryStore` above)
+ * plus `startIncident` (`@aic/persistence`'s `createIncidentStore`), built
+ * fresh per call so `AIC_POSTGRES_URL` is read only when a method is
+ * actually called — the same lazy convention `createConnectedRegistryStore`
+ * follows.
+ */
+function createConnectedIncidentStore(env: NodeJS.ProcessEnv): IncidentCommandStore {
+  return {
+    snapshot: () => createConnectedRegistryStore(env).snapshot(),
+    startIncident: (intake, opts) => createIncidentStore(requirePostgresUrl(env)).startIncident(intake, opts),
   };
 }
 
@@ -196,6 +215,22 @@ async function main(argv: readonly string[]): Promise<void> {
     if (!summary.allReady) {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (command === 'incident') {
+    const { command: sub, rest: incidentRest } = nextPositional(rest);
+    if (sub !== 'start') {
+      // Fixed text: "incident" itself is implemented in this slice, so this
+      // is a subcommand problem, never the "not implemented" stub wording.
+      throw new Error('aic incident requires a subcommand: start');
+    }
+    await runIncidentCommand(incidentRest, {
+      store: createConnectedIncidentStore(process.env),
+      stdout: writeStdoutLine,
+      now: () => new Date().toISOString(),
+      generateId: randomUUID,
+    });
     return;
   }
 

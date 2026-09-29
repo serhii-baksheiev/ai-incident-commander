@@ -39,7 +39,14 @@ const SlugSchema = z
  * never echoes the value" and › "refuses a credential-shaped allowed action
  * type on an ActionPolicy, and never echoes the value".
  */
-const screenedText = (max: number) =>
+/**
+ * Exported so a sibling domain module can screen its own free-text fields
+ * with this SAME mechanism rather than a second copy of it
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
+ * `intake.ts`'s `IncidentIntakeSchema.title`/`externalRef`/`idempotencyKey`
+ * and `SignalSchema.source`/`statement`.
+ */
+export const screenedText = (max: number) =>
   z.string().min(1).max(max).refine((value) => !looksLikeCredential(value), NOT_A_CREDENTIAL);
 
 /**
