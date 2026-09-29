@@ -7,6 +7,7 @@ import {
   IncidentSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   LogicalCountSchema,
+  routeRequestVocabulary,
   STATUS_RULES_VERSION,
   type BoundedJsonViolation,
   type Incident,
@@ -438,10 +439,11 @@ export function buildInitialState(
  */
 export function createModelReasoning(port: ModelPort): InvestigationReasoning {
   const mechanisms = Object.keys(PREDICTION_TEMPLATES.byMechanism);
+  const requestVocabulary = routeRequestVocabulary(INVESTIGATION_ROUTES);
   return {
     generate_hypotheses: createModelGenerateHypotheses({ port, mechanisms }),
     interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
-    challenge_hypothesis: createModelChallengeHypothesis({ port, mechanisms }),
+    challenge_hypothesis: createModelChallengeHypothesis({ port, mechanisms, requestVocabulary }),
     propose_conclusion: createModelProposeConclusion({ port, mechanisms }),
   };
 }

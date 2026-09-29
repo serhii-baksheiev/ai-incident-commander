@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 
-import type { ExpectedObservation, InvestigationTest, Prediction, ToolId } from './contracts.js';
+import {
+  LogClassSchema,
+  ObservationWindowSchema,
+  SignalKindSchema,
+  type ExpectedObservation,
+  type InvestigationTest,
+  type Prediction,
+  type ToolId,
+} from './contracts.js';
 import { canonicalJson } from './execution.js';
 
 /**
@@ -247,4 +255,184 @@ export function planInvestigation({
   }
 
   return planned;
+}
+
+/**
+ * One request-input key a `ToolRequestShape` names. `values` is absent for a
+ * key mapped to the observation's `subject` (the service under test) — every
+ * other admissible field is closed, so it always carries the domain enum (or
+ * the routed signals) it may take.
+ */
+export interface RequestInputKey {
+  readonly key: string;
+  readonly values?: readonly string[];
+}
+
+/** One tool a route table can request, with its exact, closed input keys. */
+export interface ToolRequestShape {
+  readonly tool: ToolId;
+  readonly input: readonly RequestInputKey[];
+}
+
+/** (AIC-143) The closed request vocabulary `routeRequestVocabulary` derives from a route table. */
+export type RequestVocabulary = readonly ToolRequestShape[];
+
+const OBSERVATION_FIELD_KEYS = new Set(['subject', 'window', 'signal', 'logClass']);
+
+interface ToolAccumulator {
+  readonly tool: ToolId;
+  readonly inputMapping: Readonly<Record<string, string>>;
+  readonly signalValues: Map<string, Set<string>>;
+  readonly allSignalFields: Set<string>;
+}
+
+function mappingsEqual(a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>): boolean {
+  const aEntries = Object.entries(a);
+  const bEntries = Object.entries(b);
+  if (aEntries.length !== bEntries.length) return false;
+  return aEntries.every(([key, value], index) => bEntries[index][0] === key && bEntries[index][1] === value);
+}
+
+/**
+ * (AIC-143) Turns an `InvestigationRouteTable` into the closed request
+ * vocabulary a challenge role may be told: one `ToolRequestShape` per tool the
+ * table can reach, each naming its input keys and, where the value is closed,
+ * every value that key may take — derived purely from the table and the
+ * domain's own observation enums (`ObservationWindowSchema`, `LogClassSchema`,
+ * `SignalKindSchema`), never from the replay corpus.
+ *
+ * Tools are ordered by first appearance reading `byForm` in its own key order
+ * (`Object.keys`, so only own string-keyed entries are ever visited) and,
+ * inside a `bySignal` selector, signals in `SignalKindSchema` order; a refused
+ * signal contributes nothing, and a signal absent from the selector is the
+ * same as refused — see request-vocabulary.test.mjs › "routeRequestVocabulary
+ * orders tools by first appearance (byForm key order, then bySignal in
+ * SignalKindSchema order), merges the signals routed to one tool under one
+ * metric values list, and skips a refused signal entirely" and ›
+ * "routeRequestVocabulary(INVESTIGATION_ROUTES) names exactly deployments,
+ * metrics, dependencies and logs, in that order, each with its exact input
+ * keys and values, and service carries no values".
+ *
+ * Each input key's values come from the observation field the route's `input`
+ * mapping names it after: `window` -> `ObservationWindowSchema.options`,
+ * `logClass` -> `LogClassSchema.options`, `signal` -> the signals (in
+ * `SignalKindSchema` order) whose route names this tool — every signal for a
+ * flat route, exactly the routed ones for a `bySignal` selector — and
+ * `subject` carries no `values` key at all, since it names the service under
+ * test rather than a closed set. A mapping naming any other observation field
+ * is a table this module cannot describe, so it throws, naming the field —
+ * see request-vocabulary.test.mjs › "routeRequestVocabulary throws naming the
+ * field when a route maps an input key to an observation field outside
+ * subject, window, signal or logClass".
+ *
+ * A request's vocabulary is per TOOL, not per route entry: two routes naming
+ * the same tool must name it with the identical input mapping, or the tool's
+ * shape would be ambiguous — refused, naming the tool (the replay port
+ * already refuses such a table on the execution side) — see
+ * request-vocabulary.test.mjs › "routeRequestVocabulary throws naming the
+ * tool when two routes name it with different input mappings".
+ *
+ * The whole vocabulary, and every object and array nested in it, is frozen —
+ * see request-vocabulary.test.mjs › "routeRequestVocabulary(INVESTIGATION_ROUTES)
+ * is deeply frozen" — and the both-direction correspondence with
+ * `planInvestigation` over every `ExpectedObservation` variant, plus the
+ * corpus-value check, live in the same file — see request-vocabulary.test.mjs
+ * › "routeRequestVocabulary(INVESTIGATION_ROUTES) names exactly the (tool,
+ * key, value) triples planInvestigation can form over every
+ * ExpectedObservation variant, in both directions, and latency appears in no
+ * entry’s values" and › "the vocabulary for INVESTIGATION_ROUTES names no
+ * replay-corpus value: no scenario id, evidence id, annotation subject, or
+ * recorded input value".
+ *
+ * Pure: no clock, env or I/O, and `routes` is never mutated.
+ */
+export function routeRequestVocabulary(routes: InvestigationRouteTable): RequestVocabulary {
+  const order: ToolId[] = [];
+  const accumulators = new Map<ToolId, ToolAccumulator>();
+
+  function ensureAccumulator(tool: ToolId, inputMapping: Readonly<Record<string, string>>): ToolAccumulator {
+    const existing = accumulators.get(tool);
+    if (existing !== undefined) {
+      if (!mappingsEqual(existing.inputMapping, inputMapping)) {
+        throw new Error(
+          `routeRequestVocabulary: tool ${JSON.stringify(tool)} is named by routes with different input mappings`,
+        );
+      }
+      return existing;
+    }
+    for (const observationField of Object.values(inputMapping)) {
+      if (!OBSERVATION_FIELD_KEYS.has(observationField)) {
+        throw new Error(
+          `routeRequestVocabulary: route input maps to an unknown observation field ${JSON.stringify(observationField)}`,
+        );
+      }
+    }
+    const accumulator: ToolAccumulator = {
+      tool,
+      inputMapping,
+      signalValues: new Map(),
+      allSignalFields: new Set(),
+    };
+    accumulators.set(tool, accumulator);
+    order.push(tool);
+    return accumulator;
+  }
+
+  function addFlatRoute(route: InvestigationRouteEntry): void {
+    const accumulator = ensureAccumulator(route.tool, route.input);
+    for (const [requestField, observationField] of Object.entries(route.input)) {
+      if (observationField === 'signal') accumulator.allSignalFields.add(requestField);
+    }
+  }
+
+  function addSignalRoute(route: InvestigationRouteEntry, signal: string): void {
+    const accumulator = ensureAccumulator(route.tool, route.input);
+    for (const [requestField, observationField] of Object.entries(route.input)) {
+      if (observationField !== 'signal') continue;
+      const values = accumulator.signalValues.get(requestField) ?? new Set<string>();
+      values.add(signal);
+      accumulator.signalValues.set(requestField, values);
+    }
+  }
+
+  for (const formKey of Object.keys(routes.byForm)) {
+    const formValue = routes.byForm[formKey];
+    if (Object.hasOwn(formValue, 'bySignal')) {
+      const bySignal = (
+        formValue as { readonly bySignal: Readonly<Record<string, InvestigationRouteEntry | InvestigationRouteRefusal>> }
+      ).bySignal;
+      for (const signal of SignalKindSchema.options) {
+        if (!Object.hasOwn(bySignal, signal)) continue;
+        const entry = bySignal[signal];
+        if (Object.hasOwn(entry, 'refused')) continue;
+        addSignalRoute(entry as InvestigationRouteEntry, signal);
+      }
+    } else {
+      addFlatRoute(formValue as InvestigationRouteEntry);
+    }
+  }
+
+  const vocabulary: ToolRequestShape[] = order.map((tool) => {
+    const accumulator = accumulators.get(tool)!;
+    const input: RequestInputKey[] = Object.entries(accumulator.inputMapping).map(
+      ([requestField, observationField]) => {
+        if (observationField === 'subject') return Object.freeze({ key: requestField });
+        if (observationField === 'window') {
+          return Object.freeze({ key: requestField, values: Object.freeze([...ObservationWindowSchema.options]) });
+        }
+        if (observationField === 'logClass') {
+          return Object.freeze({ key: requestField, values: Object.freeze([...LogClassSchema.options]) });
+        }
+        // observationField === 'signal'
+        const routedSignals = accumulator.signalValues.get(requestField);
+        const values = accumulator.allSignalFields.has(requestField)
+          ? [...SignalKindSchema.options]
+          : SignalKindSchema.options.filter((signal) => routedSignals?.has(signal) === true);
+        return Object.freeze({ key: requestField, values: Object.freeze(values) });
+      },
+    );
+    return Object.freeze({ tool, input: Object.freeze(input) });
+  });
+
+  return Object.freeze(vocabulary);
 }

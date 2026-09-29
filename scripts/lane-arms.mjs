@@ -16,6 +16,7 @@
  * see lane-arms.test.mjs › "modelNodes(record, port).propose_conclusion is a model role: the fake port sees exactly one call, carrying the mechanism vocabulary sentence built from evals.ROOT_CAUSE_MECHANISMS"
  * see lane-arms.test.mjs › "both eval-live-model.mjs and eval-final-holdout.mjs reach modelNodes from ./lane-arms.mjs, the single implementation"
  */
+import { routeRequestVocabulary } from '@aic/domain';
 import * as evals from '@aic/evals';
 import { runOracleBenchmarkExperiment } from '@aic/evals/oracle';
 import { INVESTIGATION_ROUTES, createInvestigationNodes } from '@aic/graph';
@@ -86,6 +87,13 @@ export function scriptedNodes(record) {
  * every stage — is classified against the one vocabulary the lane measures
  * against.
  * see lane-arms.test.mjs › "modelNodes(record, port).generate_hypotheses and .challenge_hypothesis are given the mechanism vocabulary evals.ROOT_CAUSE_MECHANISMS: the provider schema's cause mechanism enum equals it exactly, and the system prompt carries the vocabulary sentence"
+ *
+ * AIC-143: `challenge_hypothesis` is also given the closed request vocabulary
+ * the route table can form — `routeRequestVocabulary(INVESTIGATION_ROUTES)`
+ * (`@aic/domain` / `@aic/graph`) — so its system prompt names the admissible
+ * tool ids and input keys the same way `describeMechanismVocabulary` already
+ * names the mechanism vocabulary above.
+ * see lane-arms.test.mjs › "modelNodes(record, port).challenge_hypothesis's captured system prompt contains describeRequestVocabulary(routeRequestVocabulary(INVESTIGATION_ROUTES))"
  */
 export function modelNodes(record, port) {
   return {
@@ -98,6 +106,7 @@ export function modelNodes(record, port) {
     challenge_hypothesis: createModelChallengeHypothesis({
       port,
       mechanisms: evals.ROOT_CAUSE_MECHANISMS,
+      requestVocabulary: routeRequestVocabulary(INVESTIGATION_ROUTES),
     }),
     propose_conclusion: createModelProposeConclusion({ port, mechanisms: evals.ROOT_CAUSE_MECHANISMS }),
   };

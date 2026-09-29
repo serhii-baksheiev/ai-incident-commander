@@ -78,6 +78,11 @@ const ORACLE_REPORT = join(REPO_ROOT, 'docs', 'evidence', 'oracle', 'behavior-ev
  * the route table `investigation-routes-v2`, which routes signal-state by
  * signal, and the measured reachability after the repair. Its entry follows
  * the same rule.
+ *
+ * `v0.2-four-arm-supplement-10.md` (dated 2026-09-29) is AIC-143's addition:
+ * prompt `reference-roles-prompt-v0.6`, under which the challenge role is told
+ * the request vocabulary the route table accepts. Its entry follows the same
+ * rule.
  */
 const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm.md': 'sha256:f58f0af7e745e674b78793289b17858fbe533563b261aab4ebe768626509a74d',
@@ -90,6 +95,7 @@ const PINNED_SHA256 = Object.freeze({
   'v0.2-four-arm-supplement-7.md': 'sha256:49de9f7589474298be36d3faa55bf32d1728a63edd12049b28668a47a0b3ee56',
   'v0.2-four-arm-supplement-8.md': 'sha256:72ad3bbad9d496b13d11e27c7dbeb5a42fa8ffdead33d6bbc60b8e4972aa76a8',
   'v0.2-four-arm-supplement-9.md': 'sha256:02b83c64e84d76c04aea970228f5e8b7022d48a7e8b6c298fb435af8617b6474',
+  'v0.2-four-arm-supplement-10.md': 'sha256:1a2e576fba5185074f2baa17dd978f1bb51f7f2034e93847ec979c73f5102468',
 });
 
 const text = () => readFileSync(PREREGISTRATION, 'utf8');

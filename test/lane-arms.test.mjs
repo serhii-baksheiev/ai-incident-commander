@@ -32,6 +32,7 @@ import * as domain from '@aic/domain';
 import * as evals from '@aic/evals';
 import * as graph from '@aic/graph';
 import { MODEL_API_KEY_VARIABLE } from '@aic/roles';
+import * as roles from '@aic/roles';
 import { NAIVE_PROMPT_VERSION } from '@aic/roles/naive';
 
 import { benchmarkVersions } from './fixtures/benchmark-experiment.mjs';
@@ -504,6 +505,48 @@ test("modelNodes(record, port).generate_hypotheses and .challenge_hypothesis are
     challengeRequest.outputSchema.properties.alternative.properties.cause.properties.mechanism.enum,
     [...evals.ROOT_CAUSE_MECHANISMS],
     'challenge_hypothesis must declare the cause mechanism enum from evals.ROOT_CAUSE_MECHANISMS, not a role-invented list',
+  );
+});
+
+/**
+ * AIC-143: `challenge_hypothesis` is also given the closed request
+ * vocabulary the route table can form — `routeRequestVocabulary(INVESTIGATION_ROUTES)`
+ * (`@aic/domain` / `@aic/graph`) — so its system prompt names the admissible
+ * tool ids and input keys the same way `describeMechanismVocabulary` already
+ * names the mechanism vocabulary above.
+ */
+test("modelNodes(record, port).challenge_hypothesis's captured system prompt contains describeRequestVocabulary(routeRequestVocabulary(INVESTIGATION_ROUTES))", async () => {
+  const { modelNodes } = await import('../scripts/lane-arms.mjs');
+  const input = calibrationExecutionInput();
+
+  const requests = [];
+  const port = {
+    async complete(request) {
+      requests.push(request);
+      throw new Error('stop here: this row reads the request the node sent, not an answer');
+    },
+  };
+
+  const nodes = modelNodes(input, port);
+  const state = {
+    incident: { id: 'aic143-fake-incident' },
+    hypotheses: [{ id: 'h-1', statement: 'a candidate cause', createdBy: 'initial' }],
+    predictions: [],
+    tests: [],
+    trials: [],
+    evidence: [],
+    assessments: [],
+    control: { stopKind: 'sufficient', challengeRounds: 0 },
+  };
+
+  await nodes.challenge_hypothesis(state, 'h-1').catch(() => {});
+
+  assert.equal(requests.length, 1, 'challenge_hypothesis must make exactly one model call per invocation');
+  const vocabulary = domain.routeRequestVocabulary(graph.INVESTIGATION_ROUTES);
+  const sentence = roles.describeRequestVocabulary(vocabulary);
+  assert.ok(
+    requests[0].system.includes(sentence),
+    `expected the system prompt to carry describeRequestVocabulary(routeRequestVocabulary(INVESTIGATION_ROUTES)): ${JSON.stringify(requests[0].system)}`,
   );
 });
 
