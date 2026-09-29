@@ -154,7 +154,7 @@ type EvidenceProvenance = {
   sourceBindingId: string; // UUID
   adapter: string; // "<adapterId>@<adapterVersion>"
   credentialRefId: string | null; // null for a binding with no credential
-  fetchedAt: string; // ISO-8601 UTC
+  fetchedAt: string; // ISO-8601 UTC, exactly three fractional digits (toISOString())
   requestFingerprint: string; // "sha256:<64 hex>"
 };
 

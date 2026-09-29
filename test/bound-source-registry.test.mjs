@@ -194,6 +194,7 @@ import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import * as domain from '@aic/domain';
 import * as tools from '@aic/tools';
 
 import { childEnv } from './fixtures/child-env.mjs';
@@ -3693,4 +3694,107 @@ test('redactEvidenceOutput skips a non-private -----BEGIN header that precedes a
   const certificate = ['-----BEGIN ', 'CERTIFICATE-----'].join('') + '\nMIIBcert\n' + ['-----END ', 'CERTIFICATE-----'].join('');
   const privateBlock = ['-----BEGIN ', 'RSA PRIVATE KEY-----'].join('') + '\nbodyline\n' + ['-----END ', 'RSA PRIVATE KEY-----'].join('');
   assert.equal(redactEvidenceOutput(`${certificate}\nbetween\n${privateBlock}\ntail`), `${certificate}\nbetween\n[REDACTED]\ntail`);
+});
+
+/* ============================================================================ */
+/* AIC-146 slice b1 — the domain owns the adapter spelling; a replayed         */
+/* fetchedAt is validated                                                      */
+/*                                                                              */
+/* `SAFE_ADAPTER_ID`/`SAFE_ADAPTER_TOKEN` stop being this module's own,        */
+/* privately-defined patterns and become aliases of `@aic/domain`'s            */
+/* `ADAPTER_ID_PATTERN`/`ADAPTER_VERSION_PATTERN` — one spelling, not two      */
+/* that could quietly diverge (`.claude/rules/invariants.md`'s "one            */
+/* mechanism, one implementation"). Pinned here as object identity (`===`),    */
+/* an exported seam on both sides, never by re-deriving the character class.   */
+/*                                                                              */
+/* `isWellFormedStoredOutcome` validates a stored `provenance.fetchedAt` with */
+/* `EvidenceProvenanceSchema.shape.fetchedAt`; a recording that fails that     */
+/* check is treated exactly like the existing "nothing recorded" miss:         */
+/* `{status: 'refused', reason: 'unavailable'}`, never handed back verbatim    */
+/* (the same helper as the "replay treats a stored record …" rows above).      */
+/* ============================================================================ */
+
+test('SAFE_ADAPTER_ID and SAFE_ADAPTER_TOKEN are @aic/domain\'s own ADAPTER_ID_PATTERN / ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of the same spelling (AIC-146 b1)', () => {
+  assert.equal(
+    tools.SAFE_ADAPTER_ID,
+    domain.ADAPTER_ID_PATTERN,
+    '@aic/tools\'s SAFE_ADAPTER_ID must be the exact same RegExp object as @aic/domain\'s ADAPTER_ID_PATTERN (===), not a re-written copy',
+  );
+  assert.equal(
+    tools.SAFE_ADAPTER_TOKEN,
+    domain.ADAPTER_VERSION_PATTERN,
+    '@aic/tools\'s SAFE_ADAPTER_TOKEN must be the exact same RegExp object as @aic/domain\'s ADAPTER_VERSION_PATTERN (===), not a re-written copy',
+  );
+});
+
+test('replay treats a stored ok recording whose provenance.fetchedAt is not an ISO-8601 UTC datetime ("yesterday") as unavailable — a replay miss, never returned as ok (AIC-146 b1)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  await replaceRecordedEntryWith(store, {
+    status: 'ok',
+    output: {},
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: 'yesterday',
+      requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
+    },
+  });
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable');
+});
+
+test('replay treats a stored ok recording whose provenance.fetchedAt carries a non-UTC offset (+02:00) as unavailable — a replay miss, never returned as ok (AIC-146 b1)', async () => {
+  const createBoundSourceRegistry = createBoundSourceRegistryFactory();
+  const createMemoryReplayStore = memoryReplayStoreFactory();
+  const store = createMemoryReplayStore();
+
+  const recorder = createBoundSourceRegistry({
+    mode: 'record',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildOkSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+  await recorder.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  await replaceRecordedEntryWith(store, {
+    status: 'ok',
+    output: {},
+    provenance: {
+      sourceBindingId: 'binding-a',
+      adapter: 'fixture-adapter@1.0.0',
+      credentialRefId: null,
+      fetchedAt: '2026-09-24T00:00:00.000+02:00',
+      requestFingerprint: handBuiltFingerprint('fetch-logs', { service: 'checkout' }),
+    },
+  });
+
+  const replayer = createBoundSourceRegistry({
+    mode: 'replay',
+    bindings: [{ sourceBindingId: 'binding-a', source: buildRefusingToBeCalledSource(), credentialRefId: null }],
+    store,
+    clock: fixedClock('2026-09-24T00:00:00.000Z'),
+  });
+
+  const outcome = await replayer.execute('binding-a', 'fetch-logs', { service: 'checkout' });
+  assert.equal(outcome.status, 'refused');
+  assert.equal(outcome.reason, 'unavailable');
 });

@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 
 import {
+  ADAPTER_ID_PATTERN,
+  ADAPTER_VERSION_PATTERN as SAFE_ADAPTER_TOKEN,
+  EvidenceProvenanceSchema,
+} from '@aic/domain';
+
+import {
   EVIDENCE_SOURCE_REFUSAL_REASONS,
   classifyEvidenceSourceFailure,
   createRequestFingerprint,
@@ -204,8 +210,21 @@ function validateSourceBudgets(budgets: Partial<SourceBudgets> | undefined): Sou
  * "construction refuses a version that is a credential shape" rows, and its
  * "SAFE_ADAPTER_TOKEN accepts a 64-character token and refuses a
  * 65-character token" row (review round 2, finding 5).
+ *
+ * Owned by `@aic/domain` since AIC-146 slice b1, as `ADAPTER_VERSION_PATTERN`
+ * — imported above under this original local name rather than re-written as
+ * a second, independently-maintained copy of the same spelling
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation"). See
+ * test/bound-source-registry.test.mjs › "SAFE_ADAPTER_ID and
+ * SAFE_ADAPTER_TOKEN are @aic/domain's own ADAPTER_ID_PATTERN /
+ * ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of
+ * the same spelling (AIC-146 b1)".
  */
-export const SAFE_ADAPTER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Re-exported by name rather than as `export const … = ADAPTER_VERSION_PATTERN`:
+// that assignment matches the assigned-secret shape in
+// `.claude/scripts/lib/secrets.mjs` (a credential word, then a long
+// identifier), although the value is a RegExp.
+export { SAFE_ADAPTER_TOKEN };
 
 /**
  * The safe-token pattern a binding's `describe().adapterId` must match: the
@@ -221,8 +240,12 @@ export const SAFE_ADAPTER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * accepts adapterId \"b:c\"" rows (review round 2), and its "SAFE_ADAPTER_ID
  * accepts a 64-character id and refuses a 65-character id" row (review round
  * 2, finding 5).
+ *
+ * Owned by `@aic/domain` since AIC-146 slice b1, as `ADAPTER_ID_PATTERN` —
+ * imported above and re-exported here under this original name. See the
+ * object-identity test cited above.
  */
-export const SAFE_ADAPTER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+export const SAFE_ADAPTER_ID = ADAPTER_ID_PATTERN;
 
 /**
  * Refuses (synchronously, at construction) a `describe()` field that either
@@ -379,11 +402,19 @@ function normalizeRefusalReason(reason: unknown): EvidenceSourceRefusalReason {
  * A stored value is trusted only once it is checked to be a well-formed
  * `EvidenceSourceOutcome`: `status` is `ok` or `refused`; a `refused` status
  * carries a `reason` inside `EVIDENCE_SOURCE_REFUSAL_REASONS`; `provenance` is
- * an object whose `fetchedAt` is a string (the one field a replay hit reuses
- * verbatim). Anything else — including a value with no `provenance` at all —
- * is malformed and treated as a miss (`unavailable`), never handed back to
- * the caller verbatim. See test/bound-source-registry.test.mjs's "replay
- * treats a stored record …" rows (security blocker 5b).
+ * an object whose `fetchedAt` parses with `@aic/domain`'s
+ * `EvidenceProvenanceSchema.shape.fetchedAt` — an ISO-8601 UTC datetime with
+ * exactly three fractional digits, the `toISOString()` form this registry
+ * writes, not merely `typeof fetchedAt === 'string'` (AIC-146 slice b1) — because
+ * `fetchedAt` is the one field a replay hit reuses verbatim, straight from
+ * the stored recording. Anything else — including a value with no
+ * `provenance` at all, or a `fetchedAt` that is a string but not a
+ * UTC datetime of that form (`'yesterday'`, a non-UTC offset, a second- or
+ * microsecond-precision value) — is malformed
+ * and treated as a miss (`unavailable`), never handed back to the caller
+ * verbatim. See test/bound-source-registry.test.mjs's "replay treats a
+ * stored record …" rows (security blocker 5b) and its "replay treats a
+ * stored ok recording whose provenance.fetchedAt …" rows (AIC-146 b1).
  */
 function isWellFormedStoredOutcome(value: unknown): value is EvidenceSourceOutcome<unknown> {
   if (typeof value !== 'object' || value === null) {
@@ -394,7 +425,7 @@ function isWellFormedStoredOutcome(value: unknown): value is EvidenceSourceOutco
     return false;
   }
   const fetchedAt = (record.provenance as { fetchedAt?: unknown }).fetchedAt;
-  if (typeof fetchedAt !== 'string') {
+  if (!EvidenceProvenanceSchema.shape.fetchedAt.safeParse(fetchedAt).success) {
     return false;
   }
   if (record.status === 'ok') {
