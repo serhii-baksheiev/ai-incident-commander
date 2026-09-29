@@ -261,17 +261,63 @@ export const TrialSchema = z.strictObject({
 });
 
 /**
+ * The safe-token pattern a bound source's `describe().adapterId` must match
+ * before it is trusted anywhere adapter identity is asserted: an
+ * alphanumeric first character (so an all-punctuation string never matches
+ * at all), then up to 63 more characters from letters, digits, `.`, `_`,
+ * `:` and `-` — 64 characters total, bounded rather than unbounded. `:` is
+ * allowed here (and only here, not in `ADAPTER_VERSION_PATTERN` below)
+ * because `@aic/tools`'s `BoundSourceRegistry` constructs adapter ids such
+ * as `'b:c'` on purpose, as part of its own colon-collision replay-identity
+ * design.
+ *
+ * Owned here (AIC-146 slice b1), moved from `@aic/tools`'s
+ * `bound-source-registry.ts` without changing what it accepts — that
+ * module's own `SAFE_ADAPTER_ID` is now this exact object, re-exported, not
+ * a second, independently-maintained copy of the same spelling
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") —
+ * see test/bound-source-registry.test.mjs › "SAFE_ADAPTER_ID and
+ * SAFE_ADAPTER_TOKEN are @aic/domain's own ADAPTER_ID_PATTERN /
+ * ADAPTER_VERSION_PATTERN objects, not a second, possibly-diverging copy of
+ * the same spelling (AIC-146 b1)".
+ */
+export const ADAPTER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
+/**
+ * The safe-token pattern a bound source's `describe().version` must match:
+ * the same shape as `ADAPTER_ID_PATTERN` above (an alphanumeric first
+ * character, 64 characters total) without `:` — no existing behaviour needs
+ * a version to carry one, so its character set is kept as narrow as the two
+ * patterns can differ by, exactly one character. Also owned here (AIC-146
+ * slice b1), moved from `@aic/tools`'s `bound-source-registry.ts`'s
+ * `SAFE_ADAPTER_TOKEN`, which is now this exact object, re-exported — see
+ * the object-identity test cited above.
+ */
+export const ADAPTER_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
  * The bound-source-registry side of `adapter`: one `<adapterId>@<adapterVersion>`
- * string, each side 1-200 characters with no `@` — within the
- * bounds `SourceBindingSchema.adapterId` / `.adapterVersion` already carry
- * (`packages/domain/src/scope.ts`), so a provenance record can never claim an
- * adapter identity `SourceBindingSchema` itself would refuse. A regex rather
- * than a `.refine`: a refinement is a `custom` check, which the checkpoint
+ * string, built by joining `ADAPTER_ID_PATTERN` and `ADAPTER_VERSION_PATTERN`
+ * above into a single anchored `RegExp` (their sources, stripped of their own
+ * `^`/`$`, joined by a literal `@`) and checked with `.regex(...)` — never
+ * `.refine`: a refinement is a zod `custom` check, which the checkpoint
  * schema walk reads as a value the serializer would store as an lc record —
  * see checkpoint-serde-own-values.test.mjs › "states its limit: a declared lc
  * record's loaded counterpart is handed back unverified".
+ *
+ * This is NARROWER than the bounds `SourceBindingSchema.adapterId` /
+ * `.adapterVersion` carry (`packages/domain/src/scope.ts`: 1-200 arbitrary
+ * characters each), not equal to them: every string this field accepts is
+ * also one `SourceBindingSchema` would accept, so a provenance record can
+ * never claim an adapter identity `SourceBindingSchema` itself would refuse
+ * — but the reverse does not hold. A value `SourceBindingSchema` accepts
+ * (arbitrary punctuation, or either side past 64 characters) can still fail
+ * this narrower field.
  */
-const ProvenanceAdapterFieldSchema = z.string().regex(/^[^@]{1,200}@[^@]{1,200}$/);
+const provenanceAdapterFieldPattern = new RegExp(
+  `^${ADAPTER_ID_PATTERN.source.slice(1, -1)}@${ADAPTER_VERSION_PATTERN.source.slice(1, -1)}$`,
+);
+const ProvenanceAdapterFieldSchema = z.string().regex(provenanceAdapterFieldPattern);
 
 /**
  * Evidence carries `provenance` (AIC-146 slice a) when it was produced
