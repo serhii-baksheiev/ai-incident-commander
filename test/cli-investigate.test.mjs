@@ -1,5 +1,5 @@
 /**
- * AIC-126 slice b: `aic investigate --replay <file> [--roles model|scripted]
+ * AIC-126 slice b: `aic investigate --replay <file> --roles model|scripted
  * [--run-id <id>]` — a minimal real product entry that runs one investigation
  * through the SAME canonical composition the lanes use
  * (`createInvestigationNodes` + the planned-replay port), outside any eval
@@ -11,7 +11,8 @@
  * `ScenarioReplayFixture` already carries. Evidence items in `fixture` may
  * carry `observation` inline (`{ version, facts }`); no observation table is
  * read by the CLI itself. `budget` is `{ maxIterations, llmCallBudget,
- * reservedChallengeBudget }`, all required positive integers — the CLI never
+ * reservedChallengeBudget }`, all required non-negative integers under the
+ * domain's own `LogicalCountSchema` — the CLI never
  * invents a budget of its own, so a benchmark-style comparison (row 5 below)
  * can build the file's `budget` from the same `evals.BENCHMARK_BUDGET_POLICY`
  * the lanes are measured under and compare like with like.
@@ -824,7 +825,7 @@ test('createModelReasoning(fakePort) wires generate_hypotheses, challenge_hypoth
  * The fake port refuses every call; that is deliberate — this row reads what
  * the port and the factory SAW, not a successful run.
  */
-test('runInvestigate(["--replay", file, "--roles", "model"], { env, createModelPort }) calls the injected factory once with the env credential, and the fake port it returns sees at least one call before the run ends', async () => {
+test('runInvestigate with --replay, --roles model and injected env and createModelPort calls the injected factory once with the env credential, and the fake port it returns sees at least one call before the run ends', async () => {
   await withTempDir(async (dir) => {
     const investigateModule = await import('../apps/cli/dist/commands/investigate.js');
     assert.equal(

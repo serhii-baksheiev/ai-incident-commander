@@ -310,7 +310,7 @@ async function main() {
       // not true and was not true before either. What IS true is narrower and is
       // the property worth having: exactly one function reads it.
       // see roles-boundary.test.mjs › "reads the credential value in
-      // readModelCredential and nowhere else in packages or scripts"
+      // readModelCredential and nowhere else in packages, apps or scripts"
       const port = sharedPort();
       modelExperiment = await evals.runGraphBenchmarkExperiment({
         experimentId: `aic-94-model-${headSha().slice(0, 12)}`,

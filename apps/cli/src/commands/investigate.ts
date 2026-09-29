@@ -262,8 +262,8 @@ export interface RunInvestigateDeps {
  * value to the port factory — `requireModelConfig` throws
  * `MissingModelCredentialError`, naming the missing variable, before the
  * factory (or any network) is ever reached.
- * see cli-investigate.test.mjs › "runInvestigate(['--replay', file, '--roles',
- * 'model'], { env, createModelPort }) calls the injected factory once with
+ * see cli-investigate.test.mjs › "runInvestigate with --replay, --roles model
+ * and injected env and createModelPort calls the injected factory once with
  * the env credential, and the fake port it returns sees at least one call
  * before the run ends"
  */
