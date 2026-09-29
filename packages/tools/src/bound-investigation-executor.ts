@@ -1,6 +1,7 @@
 import {
   EvidenceProvenanceSchema,
   EvidenceSchema,
+  RegistryIdSchema,
   SourceBindingSchema,
   type CredentialRef,
   type Evidence,
@@ -27,7 +28,6 @@ import {
 } from './bound-source-registry.js';
 import { isReadOnlyToolId } from './contracts.js';
 import { evidenceSourceOutcomeToToolResult, type EvidenceSourceOutcome } from './evidence-source.js';
-import { redactEvidenceOutput } from './redaction.js';
 import type { ResolveSecretResult } from './secret-resolver.js';
 
 /**
@@ -37,8 +37,8 @@ import type { ResolveSecretResult } from './secret-resolver.js';
  * turns that outcome into the shape `execute_investigation`
  * (`@aic/graph`'s `createInvestigationNodes`) expects. See
  * test/bound-investigation-executor.test.mjs's header for the full pinned
- * contract this file satisfies, including the nine closed construction
- * refusal reasons and the routing rules below.
+ * contract this file satisfies, including the closed construction refusal
+ * reasons and the routing rules below.
  *
  * `@aic/tools` never imports `@aic/graph` (`packages/tools/package.json`
  * depends on `@aic/domain` only), so `BoundInvestigationExecutorContext` /
@@ -132,7 +132,7 @@ export interface BoundInvestigationExecutor {
 }
 
 /**
- * The thirteen closed construction-refusal reasons: the six borrowed
+ * The closed construction-refusal reasons: the six borrowed
  * verbatim from `AdapterCatalogRefusalReason` (`./adapter-catalog.js`, since a
  * catalog refusal IS a construction refusal here); `not-a-registry-binding`
  * (a binding whose id, environmentId or credentialRefId fails
@@ -140,7 +140,7 @@ export interface BoundInvestigationExecutor {
  * compatibility-handshake throw, caught and reported without echoing its
  * message — see this file's own header, "Construction order"); and
  * `ambiguous-route` (two bindings whose routes name the same tool) — all from
- * the original slice — plus four more, pinned by review round 1 (see this
+ * the original slice — plus five more, pinned by review round 1 (see this
  * file's own header for exactly where each is checked): `duplicate-binding`
  * (the same `sourceBindingId` passed twice, naming the duplicated id),
  * `invalid-budgets` and `invalid-mode` (a `budgets` or `mode` value the
@@ -205,42 +205,16 @@ function readCandidateId(candidate: unknown): string | undefined {
 }
 
 /**
- * The character shape a candidate id must have before this port ever echoes
- * it back in a refusal: a lowercase letter or digit, then up to 127 more
- * lowercase letters, digits or hyphens — the same alphabet a
- * `SourceBindingSchema`-valid `id` (a UUID) or a caller-chosen slug-style
- * label already uses. Bounded at 128 characters and built from a single,
- * non-backtracking character class, so a match attempt costs at most 128
- * characters of work regardless of the candidate's actual length.
+ * A refusal names a binding only by an id that parses as `RegistryIdSchema`
+ * (a UUID, either case). Any other string is omitted: `not-a-registry-binding`
+ * covers every `SourceBindingSchema` failure, so a refused record's `id` may be
+ * anything, a pasted credential included, and no allow-list of other shapes can
+ * tell a label from an encoded secret. See test/bound-investigation-executor.test.mjs
+ * › "not-a-registry-binding never echoes an id shaped like a lowercase hex or
+ * base64url secret, which the runtime redactor does not recognise".
  */
-const SAFE_ECHO_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,127}$/;
-
-/**
- * Decides whether a raw construction candidate's `id` is safe to echo back in
- * a `not-a-registry-binding` refusal. `not-a-registry-binding` covers ANY
- * `SourceBindingSchema` failure, so the candidate's `id` field may be
- * anything at all — including a pasted credential (a GitHub PAT, an API key)
- * — never only a plausible, benign non-UUID label like `'incident-lab'`. This
- * is deliberately NOT a credential detector (see `./redaction.ts`'s own
- * stated limits on what it does and does not recognise): it is a narrow,
- * conservative allow-list that echoes a candidate id only when it is built
- * entirely from `SAFE_ECHO_ID_PATTERN`'s alphabet AND survives
- * `redactEvidenceOutput` unchanged (the same two-part recipe
- * `validateSafeAdapterField`, `./bound-source-registry.ts`, already uses for
- * an adapter's own `describe()` fields) — anything else, including a value
- * this port's own redaction vocabulary does not happen to recognise, is
- * omitted rather than guessed at. See
- * test/bound-investigation-executor.test.mjs's "credential-shaped id" and
- * "non-UUID binding id" rows.
- */
-function safeEchoId(id: string | undefined): string | undefined {
-  if (id === undefined) {
-    return undefined;
-  }
-  if (!SAFE_ECHO_ID_PATTERN.test(id)) {
-    return undefined;
-  }
-  return redactEvidenceOutput(id) === id ? id : undefined;
+function namedBinding(id: string | undefined): { readonly sourceBindingId?: string } {
+  return id !== undefined && RegistryIdSchema.safeParse(id).success ? { sourceBindingId: id } : {};
 }
 
 /**
@@ -411,11 +385,11 @@ export async function createBoundInvestigationExecutor(
   for (const candidate of bindings) {
     const parsedBinding = SourceBindingSchema.safeParse(candidate);
     if (!parsedBinding.success) {
-      return { ok: false, reason: 'not-a-registry-binding', sourceBindingId: safeEchoId(readCandidateId(candidate)) };
+      return { ok: false, reason: 'not-a-registry-binding', ...namedBinding(readCandidateId(candidate)) };
     }
     const binding = parsedBinding.data;
     if (seenSourceBindingIds.has(binding.id)) {
-      return { ok: false, reason: 'duplicate-binding', sourceBindingId: safeEchoId(binding.id) };
+      return { ok: false, reason: 'duplicate-binding', ...namedBinding(binding.id) };
     }
     seenSourceBindingIds.add(binding.id);
     parsedBindings.push(binding);
@@ -429,7 +403,7 @@ export async function createBoundInvestigationExecutor(
       const resolvedCredentialRef = credentialRefsById.get(binding.credentialRefId);
       if (resolvedCredentialRef !== undefined) {
         if (resolvedCredentialRef.environmentId !== binding.environmentId) {
-          return { ok: false, reason: 'credential-environment-mismatch', sourceBindingId: safeEchoId(binding.id) };
+          return { ok: false, reason: 'credential-environment-mismatch', ...namedBinding(binding.id) };
         }
         credentialRef = resolvedCredentialRef;
       }
@@ -443,7 +417,7 @@ export async function createBoundInvestigationExecutor(
     });
 
     if (catalogResult.status === 'refused') {
-      return { ok: false, reason: catalogResult.reason, sourceBindingId: safeEchoId(binding.id) };
+      return { ok: false, reason: catalogResult.reason, ...namedBinding(binding.id) };
     }
 
     registryBindings.push({
@@ -461,7 +435,7 @@ export async function createBoundInvestigationExecutor(
     return {
       ok: false,
       reason: 'adapter-mismatch',
-      sourceBindingId: safeEchoId(findMismatchedBindingId(registryBindings, { mode, store, clock, budgets })),
+      ...namedBinding(findMismatchedBindingId(registryBindings, { mode, store, clock, budgets })),
     };
   }
 
