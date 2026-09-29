@@ -458,6 +458,27 @@ test('the challenge round refuses a derive_predictions result that is not an obj
   assert.equal(planCallsWithAlternative, 0, 'a doomed round must not spend a plan_investigation call');
 });
 
+test('AIC-136: the challenge round refuses a plan_investigation result that is not an object, by name — the plan-side counterpart of the derive-side row above, over readOwnArrayResult\'s other call site', async () => {
+  const nodes = planningWrapperNodes({
+    generateHypotheses: causelessLeaderHypotheses,
+    deriveePredictions: emptyDerive,
+    planInvestigationNode: (state) => {
+      const alternative = state.hypotheses.find((hypothesis) => hypothesis.createdBy === 'challenge');
+      if (alternative === undefined) return { tests: [] };
+      return null;
+    },
+    challengeHypothesisResult: STUB_CHALLENGE_RESULT,
+    executeSpy: () => {},
+  });
+
+  const investigationGraph = graph.createInvestigationGraph({ nodes });
+
+  await assert.rejects(
+    investigationGraph.execute({ kind: 'start', state: planningWrapperInitialState() }),
+    /plan_investigation returned a non-object result/,
+  );
+});
+
 test('the challenge-time plan_investigation call does not count a logical iteration: iterationsUsed is unchanged by it', async () => {
   const executeCalls = [];
   let planInvestigationCalls = 0;

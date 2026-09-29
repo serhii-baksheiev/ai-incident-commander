@@ -327,3 +327,130 @@ test('discriminating credit: a pre-challenge test that ran again or fetched evid
     'a trial that predates the first challenge round must never earn discriminating credit, even though its own trial fetched evidence before the challenge ever ran',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-136: the pre-challenge baseline is taken once, before the FIRST round  */
+/* -------------------------------------------------------------------------- */
+
+const TWO_ROUND_ALTERNATIVE_ID_1 = 'aic125d-tworound-alternative-1';
+const TWO_ROUND_ALTERNATIVE_ID_2 = 'aic125d-tworound-alternative-2';
+
+/**
+ * A two-round variant of `creditNodes` above: `termination_check` forces
+ * exactly two challenge rounds — `challengeRounds > 1` is the only terminal
+ * condition, so it answers `challenge-required` before round 1
+ * (`challengeRounds === 0`) and again before round 2
+ * (`challengeRounds === 1`), then terminal once `challengeRounds === 2` —
+ * and `challenge_hypothesis` answers its first invocation with `round1Test`
+ * and its second with `round2Test`, each under its own fresh alternative id.
+ * `LEADER_ID` stays fixed across both rounds, the same as `creditNodes`, so
+ * `challenge_effect` is still driven by exactly one axis: whether a
+ * discriminating trial with new evidence was executed.
+ */
+function twoRoundCreditNodes({ round1Test, round2Test, executeMap }) {
+  const noop = async () => ({});
+  let challengeCalls = 0;
+  return {
+    normalize_incident: noop,
+    collect_baseline: noop,
+    async generate_hypotheses() {
+      return {
+        hypotheses: [{
+          id: LEADER_ID,
+          statement: 'the leader candidate cause',
+          createdBy: 'initial',
+        }],
+      };
+    },
+    derive_predictions: graph.createDerivePredictions(),
+    plan_investigation: graph.createPlanInvestigation(),
+    execute_investigation: graph.createExecuteInvestigation({ execute: portFrom(executeMap) }),
+    evaluate_predictions: noop,
+    interpret_residual_evidence: noop,
+    derive_hypothesis_state: noop,
+    async termination_check(state) {
+      return state.control.challengeRounds > 1
+        ? { route: 'terminal', stopKind: 'sufficient', leaderId: LEADER_ID }
+        : { route: 'challenge-required', leaderId: LEADER_ID };
+    },
+    async challenge_hypothesis() {
+      challengeCalls += 1;
+      return challengeCalls === 1
+        ? {
+          alternative: {
+            id: TWO_ROUND_ALTERNATIVE_ID_1,
+            statement: 'the first-round alternative candidate cause',
+            createdBy: 'challenge',
+          },
+          discriminatingTests: [round1Test],
+        }
+        : {
+          alternative: {
+            id: TWO_ROUND_ALTERNATIVE_ID_2,
+            statement: 'the second-round alternative candidate cause',
+            createdBy: 'challenge',
+          },
+          discriminatingTests: [round2Test],
+        };
+    },
+    async propose_conclusion() {
+      return { conclusion: { kind: 'inconclusive', causes: [] } };
+    },
+  };
+}
+
+async function runTwoRoundCreditExperiment({ experimentId, ...nodesOptions }) {
+  const runGraphBenchmarkExperiment = requireFunction(evals, 'runGraphBenchmarkExperiment', '@aic/evals');
+  return runGraphBenchmarkExperiment({
+    experimentId,
+    scenarioSet: 'ad-hoc',
+    scenarios: CREDIT_SCENARIOS,
+    runsPerScenario: 3,
+    metadata: benchmarkVersions,
+    createNodes: () => twoRoundCreditNodes(nodesOptions),
+    async recordEvaluation() {},
+  });
+}
+
+test('discriminating credit: a first-round discriminating test whose ok trial fetched new evidence still counts once a second challenge round has also run — the pre-challenge baseline is taken once, before the first round, and does not move to the second round\'s own start', async () => {
+  const round1Test = Object.freeze({
+    id: 'aic125d-tworound-round1-test',
+    predictionId: 'aic125d-tworound-round1-prediction',
+    tool: 'logs',
+    input: { service: 'aic125d-tworound-r1', window: 'incident', query: 'error' },
+    cost: 'cheap',
+    status: 'planned',
+  });
+  const round2Test = Object.freeze({
+    id: 'aic125d-tworound-round2-test',
+    predictionId: 'aic125d-tworound-round2-prediction',
+    tool: 'logs',
+    input: { service: 'aic125d-tworound-r2', window: 'incident', query: 'error' },
+    cost: 'cheap',
+    status: 'planned',
+  });
+  const executeMap = new Map([
+    [requestKey(round1Test.tool, round1Test.input), {
+      status: 'ok',
+      output: [evidenceItem('aic125d-tworound-round1-evidence', { kind: 'log', source: 'logs' })],
+    }],
+    // The second round's own trial deliberately fetches no new evidence — the
+    // same shape row 2 above uses in isolation — so this row's credit can only
+    // come from the FIRST round's test. A passing score here reads as "the
+    // baseline that decided round 1's credit is still the one in force after
+    // round 2 ran", never as "round 2 also happened to earn credit on its own".
+    [requestKey(round2Test.tool, round2Test.input), { status: 'ok', output: [] }],
+  ]);
+
+  const experiment = await runTwoRoundCreditExperiment({
+    experimentId: 'aic125d-discriminating-credit-tworound',
+    round1Test,
+    round2Test,
+    executeMap,
+  });
+
+  assertCredited(
+    experiment,
+    'a first-round discriminating test whose ok trial fetched new evidence must still earn discriminating credit once a second challenge round has also run',
+  );
+});
