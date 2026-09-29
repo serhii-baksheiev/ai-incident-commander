@@ -424,6 +424,86 @@ test('the root package.json pins packageManager and the repository has no root .
 });
 
 /**
+ * A COMMITTED `npm-shrinkwrap.json` beside an in-sync `package-lock.json`
+ * overrides it for `npm ci` — same npm documentation section as `.npmrc`'s
+ * `node-options` above — at an unchanged candidate fingerprint, because
+ * `package-lock.json` (declared in `FINAL_EVALUATION_CANDIDATE_PATHS`) would
+ * not have moved. Pinned here rather than folded into the row above: that row
+ * is about npm's own CONFIGURATION of the lane commands (which npm runs them,
+ * what preload every spawned node process gets); this is about which lockfile
+ * npm ci reads to decide what gets installed, a different axis entirely.
+ */
+test('the repository has no root npm-shrinkwrap.json, so the declared package-lock.json alone decides what npm ci installs', () => {
+  assert.equal(
+    existsSync(join(REPO_ROOT, 'npm-shrinkwrap.json')),
+    false,
+    'a committed npm-shrinkwrap.json overrides an in-sync package-lock.json for npm ci, at an unchanged candidate fingerprint (package-lock.json is declared in FINAL_EVALUATION_CANDIDATE_PATHS; npm-shrinkwrap.json is not), so adding one must redden this row',
+  );
+});
+
+/**
+ * Every `package.json` npm's install resolves against for this repository:
+ * the root manifest plus one per workspace, expanded from the root's own
+ * `workspaces` array rather than hard-coded, so a workspace added later is
+ * covered without this row needing to know its name. A trailing `*` path
+ * segment (e.g. `packages/*`) is expanded to every directory entry beneath
+ * it; this repository's own `workspaces` array happens to name each package
+ * explicitly today, but the row must not silently stop covering new packages
+ * the day that array is rewritten as a glob.
+ */
+function workspacePackageJsonPaths() {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+  const globs = Array.isArray(manifest.workspaces) ? manifest.workspaces : [];
+
+  const expanded = globs.flatMap((glob) => {
+    const segments = glob.split('/');
+    const starIndex = segments.indexOf('*');
+    if (starIndex < 0) return [glob];
+
+    const base = segments.slice(0, starIndex).join('/');
+    return readdirSync(join(REPO_ROOT, base), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => [...segments.slice(0, starIndex), entry.name, ...segments.slice(starIndex + 1)].join('/'));
+  });
+
+  return expanded.map((workspacePath) => join(REPO_ROOT, workspacePath, 'package.json'));
+}
+
+/**
+ * npm runs `preinstall`/`install`/`postinstall`/`prepare` around `npm ci`
+ * itself, BEFORE either lane command even starts — so any of the two
+ * command-line rows above (the exact-string pin and this section's own
+ * `.npmrc`/`packageManager` row) would already have passed by the time such a
+ * hook ran, and nothing in `FINAL_EVALUATION_CANDIDATE_PATHS` or the working
+ * tree guards fingerprints what it writes. A hook could rewrite the
+ * gitignored `dist` output any `packages` workspace builds into — the two
+ * lane scripts import it — with no row anywhere noticing.
+ */
+test('no package.json in the repository declares an npm install lifecycle script (preinstall, install, postinstall, prepare), because npm ci runs them before the lane and nothing fingerprints what they write', () => {
+  const lifecycleScriptNames = ['preinstall', 'install', 'postinstall', 'prepare'];
+  const manifestPaths = [join(REPO_ROOT, 'package.json'), ...workspacePackageJsonPaths()];
+
+  assert.ok(
+    manifestPaths.length > 1,
+    'sanity: at least one workspace package.json must be found, or this row checks only the root',
+  );
+
+  const offenders = manifestPaths.flatMap((manifestPath) => {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const scripts = manifest.scripts ?? {};
+    return lifecycleScriptNames
+      .filter((name) => Object.prototype.hasOwnProperty.call(scripts, name))
+      .map((name) => `${relative(REPO_ROOT, manifestPath)}: ${name}`);
+  });
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `an npm install lifecycle script runs before the lane commands and writes outside every declared candidate path, so its output is unfingerprinted: ${JSON.stringify(offenders)}`,
+  );
+});
+
+/**
  * Derived from the tsconfig files themselves rather than hard-coded: whatever
  * every package or app `tsconfig.json` declares as `extends`,
  * resolved relative to each file, must fall under a declared candidate path —
@@ -601,6 +681,14 @@ test('the candidate fingerprint moves when tsconfig.base.json changes', async ()
 /*    FINAL_EVALUATION_CANDIDATE_PATHS already exists and is pinned by the    */
 /*    row at the end of this section; these rows are its sibling over the     */
 /*    three paths that command's own working tree still leaves unguarded.     */
+/*                                                                            */
+/*    Every row below runs scripts/eval-final-holdout.mjs from a DETACHED     */
+/*    scratch worktree of the COMMITTED HEAD (withScratchWorktree, section 4  */
+/*    above) — `git worktree add --detach dir HEAD` checks out what is        */
+/*    committed, never this worktree's uncommitted edits. So an uncommitted   */
+/*    change to scripts/eval-final-holdout.mjs itself is invisible to every   */
+/*    row in this section until it is committed: the copy of the script       */
+/*    these rows spawn is the one HEAD names, not the one on disk here.       */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -678,6 +766,11 @@ test('the final hold-out command refuses to run with an uncommitted package.json
       result.stderr,
       /no model provider credential is configured/,
       'the refusal must be the working-tree guard, not the unrelated missing-credential guard',
+    );
+    assert.match(
+      result.stderr,
+      /refusing to evaluate the hold-out with uncommitted changes to the command line it runs under/,
+      "the refusal must be specifically the command-line guard (package.json/.npmrc/npm-shrinkwrap.json) — the sibling guard over an uncommitted change under a candidate path shares the same 'refusing to evaluate the hold-out with uncommitted changes' prefix but continues 'under a candidate path', not 'to the command line it runs under', so this pins which of the two fired",
     );
   });
 });
