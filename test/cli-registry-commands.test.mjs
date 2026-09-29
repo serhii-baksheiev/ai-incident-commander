@@ -8,8 +8,10 @@
  * file pins argv parsing and the success/error/stdout contract only.
  * `infra/postgres/tests/cli-registry.live.mjs` pins the same commands end to
  * end through `createRegistryStore(pool)` against a real PostgreSQL,
- * including the `AIC_POSTGRES_URL`-present-but-schema-not-migrated refusal
- * this file cannot exercise without one.
+ * including the refusals for an absent connection string and for a schema
+ * that is not migrated. The connection variable is never named under
+ * `test/`: see postgres-checkpointer.test.mjs › "keeps the database-backed
+ * lane out of npm test and npm run check".
  *
  * ## Design choices this file pins (the task brief leaves them open)
  *
@@ -45,17 +47,9 @@
  *     a literal (`.claude/rules/autonomy.md`, "Never").
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import * as persistence from '@aic/persistence';
-
-import { childEnv } from './fixtures/child-env.mjs';
-
-const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
 /**
  * A CredentialRef's `secretName` is itself an UPPERCASE_WITH_UNDERSCORES
@@ -70,18 +64,6 @@ const secretName = (...parts) => parts.join('_');
 
 function loadRegistryCommands() {
   return import('../apps/cli/dist/commands/registry.js');
-}
-
-function runCli(args, options = {}) {
-  return spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: options.cwd ?? projectRoot,
-    encoding: 'utf8',
-    env: childEnv(options.env),
-  });
-}
-
-function commandDiagnostics(args, result) {
-  return `aic ${args.join(' ')} exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
 }
 
 function createStdoutSink() {
@@ -657,34 +639,4 @@ test('an extra positional argument (env add <service> <env> <extra>) is refused 
   );
   assert.deepEqual(calls, []);
   assert.equal(lines.length, 0);
-});
-
-/* -------------------------------------------------------------------------- */
-/* AIC_POSTGRES_URL: absent — the one row this file can exercise via spawn    */
-/* without a real database; the schema-not-migrated refusal needs one and    */
-/* lives in infra/postgres/tests/cli-registry.live.mjs instead.              */
-/* -------------------------------------------------------------------------- */
-
-test('aic service add with no AIC_POSTGRES_URL in the environment exits non-zero, writes nothing to stdout, and names AIC_POSTGRES_URL on stderr', () => {
-  const env = childEnv();
-  assert.ok(
-    !('AIC_POSTGRES_URL' in env),
-    'fixture sanity: childEnv() with no overrides must carry no AIC_POSTGRES_URL',
-  );
-
-  const args = ['service', 'add', 'checkout'];
-  const result = runCli(args);
-
-  assert.notEqual(result.status, 0, commandDiagnostics(args, result));
-  assert.equal(result.stdout, '', commandDiagnostics(args, result));
-  assert.match(result.stderr, /AIC_POSTGRES_URL/, commandDiagnostics(args, result));
-});
-
-test('aic db migrate with no AIC_POSTGRES_URL in the environment exits non-zero, writes nothing to stdout, and names AIC_POSTGRES_URL on stderr', () => {
-  const args = ['db', 'migrate'];
-  const result = runCli(args);
-
-  assert.notEqual(result.status, 0, commandDiagnostics(args, result));
-  assert.equal(result.stdout, '', commandDiagnostics(args, result));
-  assert.match(result.stderr, /AIC_POSTGRES_URL/, commandDiagnostics(args, result));
 });

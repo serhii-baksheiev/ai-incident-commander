@@ -55,6 +55,7 @@ import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 
 import * as persistence from '@aic/persistence';
+import { childEnv } from '../../../test/fixtures/child-env.mjs';
 
 const CONNECTION_VARIABLE = 'AIC_POSTGRES_URL';
 
@@ -91,11 +92,11 @@ const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
  * header gives.
  */
 function runCli(args, connectionString) {
-  const env = { AIC_POSTGRES_URL: connectionString };
-  for (const name of ['PATH', 'HOME']) {
-    if (process.env[name] !== undefined) env[name] = process.env[name];
-  }
-  return spawnSync(process.execPath, [cliPath, ...args], { cwd: projectRoot, encoding: 'utf8', env });
+  return spawnSync(process.execPath, [cliPath, ...args], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    env: childEnv(connectionString === undefined ? {} : { [CONNECTION_VARIABLE]: connectionString }),
+  });
 }
 
 function commandDiagnostics(args, result) {
@@ -321,4 +322,32 @@ test('a registry command with AIC_POSTGRES_URL set but no aic_app schema at all 
   assert.notEqual(result.status, 0, commandDiagnostics(args, result));
   assert.equal(result.stdout, '', commandDiagnostics(args, result));
   assert.match(result.stderr, /aic db migrate/i, commandDiagnostics(args, result));
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC_POSTGRES_URL absent: refused by name before any database is reached. */
+/* -------------------------------------------------------------------------- */
+
+test('aic service add with no AIC_POSTGRES_URL in the environment exits non-zero, writes nothing to stdout, and names AIC_POSTGRES_URL on stderr', () => {
+  const env = childEnv();
+  assert.ok(
+    !('AIC_POSTGRES_URL' in env),
+    'fixture sanity: childEnv() with no overrides must carry no AIC_POSTGRES_URL',
+  );
+
+  const args = ['service', 'add', 'checkout'];
+  const result = runCli(args, undefined);
+
+  assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+  assert.equal(result.stdout, '', commandDiagnostics(args, result));
+  assert.match(result.stderr, /AIC_POSTGRES_URL/, commandDiagnostics(args, result));
+});
+
+test('aic db migrate with no AIC_POSTGRES_URL in the environment exits non-zero, writes nothing to stdout, and names AIC_POSTGRES_URL on stderr', () => {
+  const args = ['db', 'migrate'];
+  const result = runCli(args, undefined);
+
+  assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+  assert.equal(result.stdout, '', commandDiagnostics(args, result));
+  assert.match(result.stderr, /AIC_POSTGRES_URL/, commandDiagnostics(args, result));
 });

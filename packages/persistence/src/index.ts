@@ -203,12 +203,20 @@ export {
 
 /**
  * AIC-99 slice c: the transactional registry store built on migration 3's
- * normalized tables (`app-schema.ts`). `RegistryValidationError` and
- * `RegistryConflictError` are deliberately NOT re-exported here: this
- * repository's only caller so far (registry-store.live.mjs) reads a rejected
- * mutation by `error.name` and, for a validation failure, `error.issues` —
- * never by importing the class — so the export list this module already
- * pins (`durable-run-boundaries.test.mjs`) stays unchanged apart from
- * `createRegistryStore` itself.
+ * normalized tables (`app-schema.ts`).
+ *
+ * AIC-99 slice d adds `RegistryConflictError` and `RegistryValidationError`
+ * to this export list: `apps/cli/src/commands/registry.ts` is a caller
+ * outside this package that constructs and catches them BY CLASS (its own
+ * fake store rows throw the real classes, never a look-alike), which the
+ * previous "read by `error.name`" callers never needed to do.
+ * see test/cli-registry-commands.test.mjs › "RegistryConflictError and
+ * RegistryValidationError are exported from @aic/persistence, so a caller
+ * can construct and catch them by class"
  */
-export { createRegistryStore, type RegistryStore } from './registry-store.js';
+export {
+  createRegistryStore,
+  RegistryConflictError,
+  RegistryValidationError,
+  type RegistryStore,
+} from './registry-store.js';
