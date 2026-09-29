@@ -111,8 +111,7 @@ function requireExport(name) {
  * and alternative, and their system prompts carry the mechanism vocabulary
  * sentence `describeMechanismVocabulary` builds, the same sentence
  * `propose_conclusion`'s prompt already carried. The pin moved to
- * `reference-roles-prompt-v0.5`, the same version `conclusion-role.test.mjs`
- * › "REFERENCE_PROMPT_VERSION is reference-roles-prompt-v0.5" pinned.
+ * `reference-roles-prompt-v0.5`.
  *
  * AIC-143: the prompt set changes a fourth time — `challenge_hypothesis`'s
  * system prompt now also carries `describeRequestVocabulary(requestVocabulary)`
@@ -166,9 +165,7 @@ const MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustion']);
  * requires, built the same way `scripts/lane-arms.mjs` and
  * `apps/cli/src/commands/investigate.ts` build it —
  * `routeRequestVocabulary(INVESTIGATION_ROUTES)` (`@aic/domain` /
- * `@aic/graph`). The optional call is deliberate: until `@aic/domain` ships
- * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
- * other row in this file at import time.
+ * `@aic/graph`).
  */
 const REQUEST_VOCABULARY = domain.routeRequestVocabulary(graph.INVESTIGATION_ROUTES);
 

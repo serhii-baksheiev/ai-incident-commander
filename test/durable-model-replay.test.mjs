@@ -102,9 +102,7 @@ const CONCLUSION_MECHANISMS = Object.freeze(['config-drift', 'capacity-exhaustio
  * requires, built the same way `scripts/lane-arms.mjs` and
  * `apps/cli/src/commands/investigate.ts` build it —
  * `routeRequestVocabulary(INVESTIGATION_ROUTES)` (`@aic/domain` /
- * `@aic/graph`). The optional call is deliberate: until `@aic/domain` ships
- * `routeRequestVocabulary`, this stays `undefined` rather than crashing every
- * other row in this file at import time.
+ * `@aic/graph`).
  */
 const REQUEST_VOCABULARY = domain.routeRequestVocabulary(graphPackage.INVESTIGATION_ROUTES);
 
