@@ -113,6 +113,53 @@ function structuralChallengeResult(expectedLeaderChangeAfterChallenge, outcome, 
   );
 }
 
+/*
+ * AIC-141: evaluateStructuralChallengeEffect takes a caller-supplied
+ * evaluatorVersion constrained only by TypeScript types, and is exported from
+ * @aic/evals into untyped .mjs callers. A version that does not score
+ * structurally must be refused, naming the version the call received.
+ */
+test('evaluateStructuralChallengeEffect throws for an evaluatorVersion that does not score structurally, naming the version it got', () => {
+  const outcome = {
+    challengeNodeExecuted: true,
+    challengeInvocationCount: 1,
+    leaderBeforeChallengeId: 'leader-a',
+    leaderAfterChallengeId: 'leader-b',
+    executedDiscriminatingTrialCount: 1,
+  };
+  assert.throws(
+    () => structuralChallengeResult(true, outcome, evals.BEHAVIOR_EVALUATOR_VERSION),
+    /behavior-evaluators-v0\.2/,
+  );
+  assert.throws(
+    () => structuralChallengeResult(true, outcome, 'behavior-evaluators-v0.99'),
+    /behavior-evaluators-v0\.99/,
+  );
+  assert.throws(
+    () => structuralChallengeResult(true, outcome, 42),
+    /42/,
+  );
+});
+
+test('evaluateStructuralChallengeEffect still scores passed under v0.3, v0.4 and the default version', () => {
+  const outcome = {
+    challengeNodeExecuted: true,
+    challengeInvocationCount: 1,
+    leaderBeforeChallengeId: 'leader-a',
+    leaderAfterChallengeId: 'leader-b',
+    executedDiscriminatingTrialCount: 1,
+  };
+  for (const version of [evals.STRUCTURAL_EVALUATOR_VERSION, evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION, undefined]) {
+    const result = structuralChallengeResult(true, outcome, version);
+    assert.deepEqual(result, {
+      evaluatorVersion: version ?? evals.STRUCTURAL_EVALUATOR_VERSION,
+      key: 'challenge_effect',
+      score: 1,
+      reason: 'passed',
+    });
+  }
+});
+
 test('under behavior-evaluators-v0.4, a challenge that changes the leader as expected with no executed discriminating trial scores 0 with reason no-discriminating-trial', () => {
   const result = structuralChallengeResult(
     true,
@@ -243,11 +290,10 @@ test('v0.4 never passes a challenge observation v0.3 fails, over every combinati
   }
 });
 
-// Guard row, green from the start: the AIC-138 guard applies only to v0.4, so
-// the exact observation the ticket flags — a leader change with zero executed
-// discriminating trials, matching the expectation — must keep scoring 1
-// 'passed' under v0.2 and v0.3. Both calls below already return that today;
-// this row exists so a later change to the shared scorer cannot silently
+// Guard row: the AIC-138 guard applies only to v0.4, so the exact observation
+// the ticket flags — a leader change with zero executed discriminating trials,
+// matching the expectation — keeps scoring 1 'passed' under v0.2 and v0.3.
+// The row pins that, so a later change to the shared scorer cannot silently
 // widen the v0.4 guard onto the versions it must never touch.
 test('the leader-change-without-trial observation still scores 1 passed under behavior-evaluators-v0.3 and behavior-evaluators-v0.2', () => {
   const groundTruth = { expectedLeaderChangeAfterChallenge: true };

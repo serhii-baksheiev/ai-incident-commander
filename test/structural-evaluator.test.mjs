@@ -86,6 +86,75 @@ test('STRUCTURAL_EVALUATOR_VERSION is pinned to behavior-evaluators-v0.3, and v0
   assert.equal(evals.BEHAVIOR_EVALUATOR_VERSION, 'behavior-evaluators-v0.2');
 });
 
+/*
+ * AIC-141: evaluateStructuralMisleadingEvidenceHandling and
+ * evaluateStructuralFalseAlertOutcome take a caller-supplied evaluatorVersion
+ * constrained only by TypeScript types, and both are exported from @aic/evals
+ * into untyped .mjs callers. A version that does not score structurally must
+ * be refused, naming the version the call received.
+ */
+test('evaluateStructuralMisleadingEvidenceHandling throws for an evaluatorVersion that does not score structurally, naming the version it got', () => {
+  const truth = evals.structuralGroundTruthFor('dependency-caused-incident-b');
+  const outcome = depBOutcome();
+  assert.throws(
+    () => evals.evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }, evals.BEHAVIOR_EVALUATOR_VERSION),
+    /behavior-evaluators-v0\.2/,
+  );
+  assert.throws(
+    () => evals.evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }, 'behavior-evaluators-v0.99'),
+    /behavior-evaluators-v0\.99/,
+  );
+  assert.throws(
+    () => evals.evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }, 42),
+    /42/,
+  );
+});
+
+test('evaluateStructuralMisleadingEvidenceHandling still scores passed under v0.3, v0.4 and the default version', () => {
+  const truth = evals.structuralGroundTruthFor('dependency-caused-incident-b');
+  const outcome = depBOutcome();
+  for (const version of [evals.STRUCTURAL_EVALUATOR_VERSION, evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION, undefined]) {
+    const result = evals.evaluateStructuralMisleadingEvidenceHandling({ truth, outcome }, version);
+    assert.deepEqual(result, {
+      evaluatorVersion: version ?? evals.STRUCTURAL_EVALUATOR_VERSION,
+      key: 'misleading_evidence_handling',
+      score: 1,
+      reason: 'passed',
+    });
+  }
+});
+
+test('evaluateStructuralFalseAlertOutcome throws for an evaluatorVersion that does not score structurally, naming the version it got', () => {
+  const truth = evals.structuralGroundTruthFor('false-alert');
+  const input = { truth, expectedStopKind: 'sufficient', expectedConclusionKind: 'no-incident', outcome: falseAlertOutcome() };
+  assert.throws(
+    () => evals.evaluateStructuralFalseAlertOutcome(input, evals.BEHAVIOR_EVALUATOR_VERSION),
+    /behavior-evaluators-v0\.2/,
+  );
+  assert.throws(
+    () => evals.evaluateStructuralFalseAlertOutcome(input, 'behavior-evaluators-v0.99'),
+    /behavior-evaluators-v0\.99/,
+  );
+  assert.throws(
+    () => evals.evaluateStructuralFalseAlertOutcome(input, 42),
+    /42/,
+  );
+});
+
+test('evaluateStructuralFalseAlertOutcome still scores passed under v0.3, v0.4 and the default version', () => {
+  const truth = evals.structuralGroundTruthFor('false-alert');
+  const input = { truth, expectedStopKind: 'sufficient', expectedConclusionKind: 'no-incident', outcome: falseAlertOutcome() };
+  for (const version of [evals.STRUCTURAL_EVALUATOR_VERSION, evals.DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION, undefined]) {
+    const result = evals.evaluateStructuralFalseAlertOutcome(input, version);
+    assert.deepEqual(result, {
+      evaluatorVersion: version ?? evals.STRUCTURAL_EVALUATOR_VERSION,
+      key: 'false_alert_correctness',
+      score: 1,
+      reason: 'passed',
+    });
+  }
+});
+
 /* -------------------------------------------------------------------------- */
 /* B. evaluateBenchmarkRecord: v0.3 dispatch                                  */
 /* -------------------------------------------------------------------------- */

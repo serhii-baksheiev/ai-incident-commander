@@ -360,6 +360,23 @@ function referencesEvery(
   return expected.every((id) => ids.has(id));
 }
 
+/**
+ * Refuses an evaluatorVersion that does not score structurally, naming the
+ * version it got. `scoresStructurally`'s parameter type is `string`, but each
+ * structural evaluator below is reachable from untyped `.mjs` callers with any
+ * value at all, so this checks at the actual call boundary rather than
+ * trusting the TypeScript parameter type.
+ * see structural-evaluator.test.mjs › "evaluateStructuralMisleadingEvidenceHandling throws for an evaluatorVersion that does not score structurally, naming the version it got"
+ */
+function requireStructuralVersion(evaluatorVersion: unknown): void {
+  if (!scoresStructurally(evaluatorVersion as string)) {
+    const knownStructural = `${STRUCTURAL_EVALUATOR_VERSION} or ${DISCRIMINATING_CHALLENGE_EVALUATOR_VERSION}`;
+    throw new Error(
+      `structural evaluation needs a structural evaluator version (${knownStructural}), got ${JSON.stringify(evaluatorVersion)}`,
+    );
+  }
+}
+
 export function evaluateStructuralMisleadingEvidenceHandling(
   input: Readonly<{
     truth: StructuralGroundTruthEntry;
@@ -372,6 +389,7 @@ export function evaluateStructuralMisleadingEvidenceHandling(
   }>,
   evaluatorVersion: StructuralEvaluatorVersion = STRUCTURAL_EVALUATOR_VERSION,
 ): BehaviorMetric<'misleading_evidence_handling'> {
+  requireStructuralVersion(evaluatorVersion);
   const { truth, outcome } = input;
   const metric = (score: 0 | 1, reason: string) =>
     behaviorMetric('misleading_evidence_handling', score, reason, evaluatorVersion);
@@ -417,6 +435,7 @@ export function evaluateStructuralFalseAlertOutcome(
   }>,
   evaluatorVersion: StructuralEvaluatorVersion = STRUCTURAL_EVALUATOR_VERSION,
 ): BehaviorMetric<'false_alert_correctness'> {
+  requireStructuralVersion(evaluatorVersion);
   const { truth, outcome } = input;
   const metric = (score: 0 | 1, reason: string) =>
     behaviorMetric('false_alert_correctness', score, reason, evaluatorVersion);
@@ -439,5 +458,6 @@ export function evaluateStructuralChallengeEffect(
   }>,
   evaluatorVersion: StructuralEvaluatorVersion = STRUCTURAL_EVALUATOR_VERSION,
 ): BehaviorMetric<'challenge_effect'> {
+  requireStructuralVersion(evaluatorVersion);
   return scoreChallengeEffect(input, evaluatorVersion);
 }
