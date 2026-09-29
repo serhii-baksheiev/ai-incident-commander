@@ -22,16 +22,22 @@
  *     `TrialRefusalSchema`, optional — a Trial that never went through a
  *     bound source, or that succeeded, carries no `refusal` key at all.
  *   - `@aic/tools`'s `EVIDENCE_SOURCE_REFUSAL_REASONS` deep-equals
- *     `EvidenceSourceRefusalReasonSchema.options` and stays frozen: the tools
- *     package re-exports the domain's own list rather than keeping a second,
- *     possibly-diverging one. Checked by deep equality rather than reference
- *     identity, because `z.enum(...).options` is not guaranteed to be the
- *     exact array object a caller passed in when constructing the enum (the
- *     independent-oracle rule in `.claude/rules/invariants.md` asks for an
- *     alternative implementation or externally observable behaviour, and a
- *     structural equality check over a closed six-element list is exactly
- *     that: it fails the moment either side gains, loses or reorders an
- *     entry).
+ *     `EvidenceSourceRefusalReasonSchema.options` and stays frozen: this
+ *     pins the IDENTITY of the source, not an independent guard against
+ *     drift — `EVIDENCE_SOURCE_REFUSAL_REASONS` is built by spreading
+ *     `EvidenceSourceRefusalReasonSchema.options` itself
+ *     (`packages/tools/src/evidence-source.ts`), so the two staying equal is
+ *     the derivation holding, and reverting either side to a fresh,
+ *     independently-typed six-element literal keeps this row green (checked
+ *     by deep equality rather than reference identity only because
+ *     `z.enum(...).options` is not guaranteed to be the exact array object a
+ *     caller passed in when constructing the enum). The six-reason
+ *     vocabulary itself is pinned against gaining, losing or reordering an
+ *     entry by the independent literal at
+ *     `test/evidence-source-contract.test.mjs` › "publishes exactly the six
+ *     typed refusal reasons, frozen (AIC-100 slice c adds
+ *     budget_exceeded)" (the independent-oracle rule in
+ *     `.claude/rules/invariants.md`).
  *
  * The port (`packages/tools/src/bound-investigation-executor.ts`) and the
  * node (`packages/graph/src/nodes/execute-investigation.ts`) sides of this
@@ -175,7 +181,7 @@ test('TrialSchema refuses a Trial whose refusal names a reason outside the six f
 /* One spelling — @aic/tools re-exports the domain's own reason list         */
 /* -------------------------------------------------------------------------- */
 
-test('EVIDENCE_SOURCE_REFUSAL_REASONS (tools) deep-equals EvidenceSourceRefusalReasonSchema.options (domain), one spelling', () => {
+test('EVIDENCE_SOURCE_REFUSAL_REASONS (tools) is the same list @aic/tools derives from EvidenceSourceRefusalReasonSchema.options (domain), one spelling and not a second copy', () => {
   assert.deepEqual(
     [...tools.EVIDENCE_SOURCE_REFUSAL_REASONS],
     [...domain.EvidenceSourceRefusalReasonSchema.options],
@@ -185,4 +191,11 @@ test('EVIDENCE_SOURCE_REFUSAL_REASONS (tools) deep-equals EvidenceSourceRefusalR
 
 test('EVIDENCE_SOURCE_REFUSAL_REASONS (tools) stays frozen', () => {
   assert.equal(Object.isFrozen(tools.EVIDENCE_SOURCE_REFUSAL_REASONS), true);
+});
+
+test('EvidenceSourceRefusalReasonSchema.options (domain) is frozen, the same array reference every access, so it cannot be widened after construction (AIC-146 b4 security round 1 advisory)', () => {
+  const first = domain.EvidenceSourceRefusalReasonSchema.options;
+  const second = domain.EvidenceSourceRefusalReasonSchema.options;
+  assert.equal(first, second, 'zod returns the same options array reference on every access, not a fresh copy');
+  assert.equal(Object.isFrozen(first), true);
 });

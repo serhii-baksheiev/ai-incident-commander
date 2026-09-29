@@ -542,6 +542,81 @@ test('on an ok result: a polluted Object.prototype.provenance never leaks onto r
   }
 });
 
+test('on an ok result carrying no own refusal: a polluted Object.prototype.refusal never becomes an own property of the recorded trial, even on a real ok trial (AIC-146 b4 security round 1)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [] }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  Object.defineProperty(Object.prototype, 'refusal', {
+    value: { reason: 'denied', sourceBindingId: null },
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const result = await node(testState);
+
+    assert.equal(
+      Object.hasOwn(result.trials[0], 'refusal'),
+      false,
+      'a prototype-inherited refusal must never become an own property on a recorded trial, not even a successful one',
+    );
+  } finally {
+    delete Object.prototype.refusal;
+  }
+});
+
+test('on an unavailable result carrying no own refusal: a polluted Object.prototype.refusal never becomes an own property of the recorded trial (AIC-146 b4 security round 1)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'unavailable', reason: 'tool disabled' }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  Object.defineProperty(Object.prototype, 'refusal', {
+    value: { reason: 'denied', sourceBindingId: null },
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const result = await node(testState);
+
+    assert.equal(
+      Object.hasOwn(result.trials[0], 'refusal'),
+      false,
+      'a prototype-inherited refusal must never become an own property on a recorded trial',
+    );
+  } finally {
+    delete Object.prototype.refusal;
+  }
+});
+
+test('on an error result carrying no own refusal: a polluted Object.prototype.refusal never becomes an own property of the recorded trial (AIC-146 b4 security round 1)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'error', message: 'boom' }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  Object.defineProperty(Object.prototype, 'refusal', {
+    value: { reason: 'denied', sourceBindingId: null },
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const result = await node(testState);
+
+    assert.equal(
+      Object.hasOwn(result.trials[0], 'refusal'),
+      false,
+      'a prototype-inherited refusal must never become an own property on a recorded trial',
+    );
+  } finally {
+    delete Object.prototype.refusal;
+  }
+});
+
 test('on an ok result: an evidence item carrying its own provenance is refused, naming the evidence id, and nothing is recorded (AIC-146 b2)', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   // The tool's own output item attests a binding, adapter and fingerprint
@@ -848,7 +923,7 @@ test('on an unavailable result: an accessor "refusal" on the outcome makes the n
   assert.equal(getterCalls, 0, 'the accessor\'s own getter must never be invoked');
 });
 
-test('on an unavailable result: a refusal carrying an unknown key makes the node throw and records nothing (AIC-146 b4)', async () => {
+test('on an unavailable result: a refusal carrying an unknown key makes the node throw with the content-free refusal message, echoing neither the key name nor its value, and records nothing (AIC-146 b4)', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const execute = recordingExecutor(async () => ({
     status: 'unavailable',
@@ -858,10 +933,19 @@ test('on an unavailable result: a refusal carrying an unknown key makes the node
   const node = createExecuteInvestigation({ execute });
   const testState = state({ tests: [plannedTest('test-a')] });
 
-  await assert.rejects(() => node(testState));
+  await assert.rejects(
+    () => node(testState),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.equal(error.message, 'trial refusal failed validation');
+      assert.ok(!error.message.includes('extra'), 'the message must not echo the offending key name');
+      assert.ok(!error.message.includes('unused-fixture'), 'the message must not echo the offending value');
+      return true;
+    },
+  );
 });
 
-test('on an unavailable result: a refusal whose reason is outside the six frozen reasons makes the node throw and records nothing (AIC-146 b4)', async () => {
+test('on an unavailable result: a refusal whose reason is outside the six frozen reasons makes the node throw with the content-free refusal message, never echoing the malformed reason, and records nothing (AIC-146 b4)', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const execute = recordingExecutor(async () => ({
     status: 'unavailable',
@@ -871,10 +955,18 @@ test('on an unavailable result: a refusal whose reason is outside the six frozen
   const node = createExecuteInvestigation({ execute });
   const testState = state({ tests: [plannedTest('test-a')] });
 
-  await assert.rejects(() => node(testState));
+  await assert.rejects(
+    () => node(testState),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.equal(error.message, 'trial refusal failed validation');
+      assert.ok(!error.message.includes('not-a-real-reason'), 'the message must not echo the malformed reason');
+      return true;
+    },
+  );
 });
 
-test('on an unavailable result: a refusal whose sourceBindingId is neither a UUID nor null makes the node throw and records nothing (AIC-146 b4)', async () => {
+test('on an unavailable result: a refusal whose sourceBindingId is neither a UUID nor null makes the node throw with the content-free refusal message, never echoing the malformed binding id, and records nothing (AIC-146 b4)', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const execute = recordingExecutor(async () => ({
     status: 'unavailable',
@@ -884,7 +976,15 @@ test('on an unavailable result: a refusal whose sourceBindingId is neither a UUI
   const node = createExecuteInvestigation({ execute });
   const testState = state({ tests: [plannedTest('test-a')] });
 
-  await assert.rejects(() => node(testState));
+  await assert.rejects(
+    () => node(testState),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.equal(error.message, 'trial refusal failed validation');
+      assert.ok(!error.message.includes('incident-lab'), 'the message must not echo the malformed binding id');
+      return true;
+    },
+  );
 });
 
 test('propagates a thrown error from execute instead of swallowing it', async () => {
