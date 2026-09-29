@@ -1,26 +1,10 @@
 /**
- * Preload: remove the tracer's enablement flags before any test module loads.
- *
- * The suite invokes the investigation graph in-process, and
- * `@langchain/core`'s `isTracingEnabled()` reads this process's own
- * `process.env` — not anything a test passes. So a developer whose shell
- * exports tracing writes real runs into a real LangSmith workspace, with a real
- * key, on every `npm test`. Measured before this preload against a local
- * counting sink: 23 `POST /runs/multipart` and 3 `GET /info` per suite run.
- *
- * Only the four enablement flags are cleared. The api key, project and endpoint
- * are left alone: they decide *where* a trace would go, and clearing them would
- * mask a misconfiguration rather than prevent a request. Tests that need
- * tracing supply it explicitly to a child through `test/fixtures/child-env.mjs`.
- *
- * The list is the tracer's own, from
- * `@langchain/core/dist/utils/callbacks.js` `isTracingEnabled`.
+ * The suite's preload. It calls the one implementation, which lives under
+ * `scripts/` so the lane commands can preload it too without loading a file
+ * under `test/` (AIC-137). It calls the function rather than relying on the
+ * import's side effect, because a module body runs once per process and a
+ * re-import of this fixture must clear the flags again.
  */
-for (const flag of [
-  'LANGSMITH_TRACING_V2',
-  'LANGCHAIN_TRACING_V2',
-  'LANGSMITH_TRACING',
-  'LANGCHAIN_TRACING',
-]) {
-  delete process.env[flag];
-}
+import { clearAmbientTracing } from '../../scripts/lib/no-ambient-tracing.mjs';
+
+clearAmbientTracing();
