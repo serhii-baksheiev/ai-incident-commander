@@ -680,3 +680,44 @@ test('evidence id is independent of provenance: the same payloadFingerprint with
     'sanity: the two runs must actually carry different fetchedAt values',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* Row 10 (AIC-146 b4) - a polluted Object.prototype.refusal never becomes an */
+/* own property of the trial the durable runner records or persists          */
+/* -------------------------------------------------------------------------- */
+
+test('a polluted Object.prototype.refusal never becomes an own property of the trial the durable runner records or the trial it persists through project', async () => {
+  const fake = createFakeCommittedExecution();
+
+  const runner = createPersistentInvestigationRunner({
+    checkpointer: new MemorySaver(),
+    execution: fake,
+    executeInvestigation: countingExecuteInvestigation([]),
+  });
+
+  Object.defineProperty(Object.prototype, 'refusal', {
+    value: { reason: 'denied', sourceBindingId: null },
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const result = await runner.start({ runId: RUN_ID, test: buildTest() });
+
+    assert.equal(
+      Object.hasOwn(result.trials[0], 'refusal'),
+      false,
+      'a prototype-inherited refusal must never become an own property on the trial the runner returns',
+    );
+
+    assert.equal(fake.projectionCalls.length, 1, 'project must be called exactly once, for the one new commit');
+    const [{ projection }] = fake.projectionCalls;
+    assert.equal(
+      Object.hasOwn(projection.trials[0], 'refusal'),
+      false,
+      'a prototype-inherited refusal must never become an own property on the trial persisted through project',
+    );
+  } finally {
+    delete Object.prototype.refusal;
+  }
+});
