@@ -39,8 +39,20 @@ const SlugSchema = z
  * never echoes the value" and › "refuses a credential-shaped allowed action
  * type on an ActionPolicy, and never echoes the value".
  */
-const screenedText = (max: number) =>
-  z.string().min(1).max(max).refine((value) => !looksLikeCredential(value), NOT_A_CREDENTIAL);
+/**
+ * Exported so a sibling domain module can screen its own free-text fields
+ * with this SAME mechanism rather than a second copy of it
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation") — see
+ * `intake.ts`'s `IncidentIntakeSchema.title`/`externalRef`/`idempotencyKey`
+ * and `SignalSchema.source`/`statement`.
+ */
+export const screenedText = (max: number) =>
+  // The screen reads the whole field: `.max(max)` refuses a longer value
+  // before the refinement runs, so the scan is bounded by the field's own cap
+  // — see incident-intake-credential-screen.test.mjs › "a credential pasted
+  // past the first 512 characters of a signal statement is still refused: the
+  // screen reads the whole field".
+  z.string().min(1).max(max).refine((value) => !looksLikeCredential(value, max), NOT_A_CREDENTIAL);
 
 /**
  * A server-assigned registry identifier (the decision record's "identity is
@@ -129,7 +141,12 @@ const MAX_CONFIG_VALUE_LENGTH = 512;
  * excludes `:` so there is only one place the required `:` can match, and the
  * second class excludes `@` so its run and the trailing `@` cannot overlap -
  * the ambiguous `[^/@]*:[^/@]*@` shape this replaced backtracked
- * quadratically over a value with many colons and no closing `@` (see the
+ * quadratically over a value with many colons and no closing `@`. The scheme
+ * run is bounded at 32 characters, because an unbounded `[a-zA-Z0-9+.-]*`
+ * re-scans a long word-character run from every start position — see
+ * incident-intake-credential-screen.test.mjs › "validating an accepted intake
+ * of the full signal count, each statement a 2000-character base64-like run,
+ * stays well under half a second" (see the
  * "Bounded by construction" comment on `SourceBindingConfigSchema` below for
  * the measured rows).
  */
@@ -146,7 +163,7 @@ const DOMAIN_SECRET_PATTERNS = [
   /\bnpm_[A-Za-z0-9]{30,}/, // npm-token
   /\bglpat-[A-Za-z0-9_-]{16,}/, // gitlab-pat
   /\bBearer [A-Za-z0-9\-._~+/]+=*/, // domain-only: Bearer-prefixed value
-  /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/@:\s]*:[^/@\s]*@/, // domain-only: scheme://user:pass@ userinfo (linear form)
+  /[a-zA-Z][a-zA-Z0-9+.-]{0,31}:\/\/[^/@:\s]*:[^/@\s]*@/, // domain-only: scheme://user:pass@ userinfo (linear form)
   /\bASIA[A-Z0-9]{16}\b/, // domain-only: AWS STS session key id
 ];
 
@@ -155,11 +172,11 @@ const DOMAIN_SECRET_PATTERNS = [
  * reads it - the credential scan never reads past this slice, whatever the
  * candidate's actual length.
  */
-const boundedCredentialSlice = (value: string) =>
-  value.length > MAX_CONFIG_VALUE_LENGTH ? value.slice(0, MAX_CONFIG_VALUE_LENGTH) : value;
+const boundedCredentialSlice = (value: string, limit: number) =>
+  value.length > limit ? value.slice(0, limit) : value;
 
-const looksLikeCredential = (value: string) =>
-  DOMAIN_SECRET_PATTERNS.some((pattern) => pattern.test(boundedCredentialSlice(value)));
+const looksLikeCredential = (value: string, limit: number = MAX_CONFIG_VALUE_LENGTH) =>
+  DOMAIN_SECRET_PATTERNS.some((pattern) => pattern.test(boundedCredentialSlice(value, limit)));
 
 /**
  * A per-adapter config object.

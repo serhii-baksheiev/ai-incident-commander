@@ -13,8 +13,7 @@ import { requireRegistryName } from './registry.js';
 /**
  * AIC-99 slice e: `runSourceCheckCommand(argv, deps)` — `aic source check
  * <service> <env> [<binding>]`. See test/cli-source-check.test.mjs for the
- * full pinned argv/deps/classification contract, and
- * `.claude/runs/20260929-aic99e/design.md` for the design this satisfies.
+ * full pinned argv/deps/classification contract.
  */
 
 export interface SourceCheckStore {

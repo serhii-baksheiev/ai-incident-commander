@@ -1,7 +1,7 @@
 /**
  * AIC-99 slice e: `runDoctorCommand(argv, deps)`
  * (`apps/cli/src/commands/doctor.ts`) — the `aic doctor [<service>
- * [<environment>]]` behaviour `.claude/runs/20260929-aic99e/design.md` pins:
+ * [<environment>]]` behaviour this file pins:
  * for every Environment in scope, report whether an `ActionPolicy` exists
  * (informational) and classify every `SourceBinding` exactly as
  * `runSourceCheckCommand` does (test/cli-source-check.test.mjs) — reusing

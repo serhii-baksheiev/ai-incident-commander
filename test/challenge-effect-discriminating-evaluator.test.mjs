@@ -10,7 +10,7 @@
  * no executed discriminating trial is judgement over evidence the run
  * already had, not investigation.
  *
- * Fix (Option A, `.claude/runs/20260929-aic138/plan.md`): a new evaluator
+ * Fix (Option A of the AIC-138 plan, recorded on the Jira ticket): a new evaluator
  * version, `behavior-evaluators-v0.4`, differing from v0.3 only in
  * `challenge_effect` — a pass requires `executedDiscriminatingTrialCount >=
  * 1`; a leader or status change with none scores 0 with the reason

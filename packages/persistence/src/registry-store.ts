@@ -660,7 +660,13 @@ function isUnmigratedSchema(error: unknown): boolean {
   return code === '42P01' || code === '3F000';
 }
 
-async function withConnectionScopedPool<T>(
+/**
+ * Exported so a sibling store built the same way — `createIncidentStore`
+ * (`incident-store.ts`) — reuses this SAME connection-per-call lifecycle
+ * rather than a second copy of it (`.claude/rules/invariants.md`, "one
+ * mechanism, one implementation").
+ */
+export async function withConnectionScopedPool<T>(
   connectionString: string,
   call: (pool: Pool) => Promise<T>,
 ): Promise<T> {

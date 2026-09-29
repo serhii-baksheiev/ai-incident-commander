@@ -65,7 +65,12 @@ export function requireRegistryName(label: string, value: string): string {
   return value;
 }
 
-function requirePositionals(positionals: readonly string[], names: readonly string[]): string[] {
+/**
+ * Exported so a sibling command — `incident.ts` — reuses this SAME
+ * positional/slug-screening rule rather than a second copy of it
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ */
+export function requirePositionals(positionals: readonly string[], names: readonly string[]): string[] {
   if (positionals.length < names.length) {
     throw new Error(`missing required argument <${names[positionals.length]}>`);
   }
@@ -88,12 +93,12 @@ function isEchoableFlagName(name: string): boolean {
   return ECHOABLE_FLAG_NAME.test(name) && RegistryNameSchema.safeParse(name).success;
 }
 
-interface FlagSpec {
+export interface FlagSpec {
   readonly name: string;
   readonly repeatable: boolean;
 }
 
-interface ParsedArgs {
+export interface ParsedArgs {
   readonly positionals: string[];
   readonly flags: Map<string, string[]>;
 }
@@ -113,8 +118,12 @@ interface ParsedArgs {
  * credential-shaped, which is refused without an echo — see › "an unknown
  * flag whose name is itself credential-shaped is refused without reproducing
  * it, even though it is lowercase and hyphenated".
+ *
+ * Exported so a sibling command — `incident.ts` — reuses this SAME flag
+ * reader rather than a second copy of it (`.claude/rules/invariants.md`,
+ * "one mechanism, one implementation").
  */
-function parseFlags(args: readonly string[], specs: readonly FlagSpec[]): ParsedArgs {
+export function parseFlags(args: readonly string[], specs: readonly FlagSpec[]): ParsedArgs {
   const specByName = new Map(specs.map((spec) => [spec.name, spec] as const));
   const flags = new Map<string, string[]>();
   const positionals: string[] = [];

@@ -254,6 +254,7 @@ npm run cli -- source add checkout prod gh --adapter github@1 \
 npm run cli -- policy set checkout prod
 npm run cli -- source check checkout prod
 npm run cli -- doctor
+npm run cli -- incident start checkout prod --title "Checkout failures"
 ```
 
 A `CredentialRef` records a secret's name only. The value is read at check
@@ -262,8 +263,11 @@ one file per secret). `source check` and `doctor` print one JSON line per
 binding: `ready`, `denied`, `unreachable`, `error`, `absent` or
 `misconfigured`, and exit non-zero unless every binding is ready. `doctor`
 also reports an empty registry, or a service with no environment, as
-`absent`. `incident` and `apply` are still stubs that print "not implemented
-in this build" and exit non-zero.
+`absent`. `incident start` prints one JSON line, `{ incident, created }`;
+repeating it with the same `--idempotency-key`, `--external-ref`, or within
+the same 15-minute scope window reports the first incident again with
+`created: false` rather than creating a second one. `apply` is still a stub
+that prints "not implemented in this build" and exits non-zero.
 
 `investigate` runs one real investigation over a replay file, through the
 same node composition the evaluation lanes use:

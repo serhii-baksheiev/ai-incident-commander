@@ -11,21 +11,33 @@ import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
 
-import { PrimaryScopeSchema } from './scope.js';
+import { PrimaryScopeSchema, screenedText } from './scope.js';
 
 export const SignalSchema = z.strictObject({
-  source: z.string().min(1).max(200),
-  statement: z.string().min(1).max(2000),
+  source: screenedText(200),
+  statement: screenedText(2000),
   observedAt: z.iso.datetime({ offset: true }),
 });
 
+/**
+ * At most this many signals per intake. The count is checked before any
+ * signal is parsed, so validation cost never scales with an oversized
+ * caller-supplied array — see incident-intake-credential-screen.test.mjs ›
+ * "an intake carries at most a bounded number of signals" and › "an intake
+ * with far more signals than the cap is refused before any signal is parsed,
+ * well under half a second".
+ */
+export const MAX_INTAKE_SIGNALS = 100;
+
 export const IncidentIntakeSchema = z.strictObject({
   primaryScope: PrimaryScopeSchema,
-  title: z.string().min(1).max(200),
+  title: screenedText(200),
   startedAt: z.iso.datetime({ offset: true }),
-  signals: z.array(SignalSchema),
-  externalRef: z.string().min(1).max(256).optional(),
-  idempotencyKey: z.string().min(1).max(256).optional(),
+  // The count is checked on unparsed elements first, so an oversized array is
+  // refused before any signal is parsed.
+  signals: z.array(z.unknown()).max(MAX_INTAKE_SIGNALS).pipe(z.array(SignalSchema)),
+  externalRef: screenedText(256).optional(),
+  idempotencyKey: screenedText(256).optional(),
 });
 
 export type IncidentIntake = z.infer<typeof IncidentIntakeSchema>;
