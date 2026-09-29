@@ -8,7 +8,7 @@ import {
   type RegistrySnapshot,
 } from '@aic/domain';
 import type { RegistryStore } from '@aic/persistence';
-import { parse as parseYamlDocument, YAMLParseError } from 'yaml';
+import { parseDocument } from 'yaml';
 
 import { readBoundedRegularFile } from './bounded-file.js';
 import { splitAdapterReference } from './registry.js';
@@ -93,25 +93,34 @@ function readManifestText(path: string): string {
 }
 
 /**
- * A YAML syntax refusal names only the line and column a real
- * `YAMLParseError` carries — never `error.message`, whose own rendering
- * includes a source snippet of the surrounding manifest text.
+ * A YAML refusal — syntax error, duplicate key, or an unresolved tag warning
+ * — names only the line and column a real `yaml` `errors`/`warnings` entry
+ * carries — never `error.message`, whose own rendering includes a source
+ * snippet of the surrounding manifest text. `logLevel: 'error'` turns off
+ * `yaml`'s own console logging, so no source line reaches stderr either way;
+ * a warning (an unresolved tag) is read as a refusal here, not silently
+ * applied with its fallback value.
  * see cli-apply.test.mjs › "invalid YAML syntax is refused naming only the
  * line and column, never the surrounding text"
+ * see cli-apply.test.mjs › "an unresolved YAML tag in the manifest, run
+ * through the built CLI, exits non-zero and never lets the credential-shaped
+ * value or the tag text reach stdout or stderr"
  */
 function parseManifestYaml(path: string, text: string): unknown {
+  const document = parseDocument(text, { uniqueKeys: true, logLevel: 'error' });
+  const issue = [...document.errors, ...document.warnings][0];
+  if (issue !== undefined) {
+    const position = issue.linePos?.[0];
+    const location = position ? ` at line ${position.line}, column ${position.col}` : '';
+    throw new Error(`-f file at ${path} is not valid YAML${location}`);
+  }
   try {
-    return parseYamlDocument(text, { uniqueKeys: true, maxAliasCount: 0 });
+    return document.toJS({ maxAliasCount: 0 });
   } catch (error) {
-    if (error instanceof YAMLParseError) {
-      const position = error.linePos?.[0];
-      const location = position ? ` at line ${position.line}, column ${position.col}` : '';
-      throw new Error(`-f file at ${path} is not valid YAML${location}`);
+    if (error instanceof ReferenceError) {
+      throw new Error(`-f file at ${path} is not valid YAML: aliases and anchors are not accepted`);
     }
-    // A fixed, canned message from the yaml library itself (e.g. "Alias
-    // resolution is disabled") — never manifest text.
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`-f file at ${path} is not valid YAML: ${message}`);
+    throw new Error(`-f file at ${path} is not valid YAML`);
   }
 }
 
@@ -128,12 +137,44 @@ function ownRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
+/**
+ * `error.toString()` (what `assert.rejects`'s `RegExp` form matches against)
+ * prepends `Error: ` unless `name` is the empty string — this refusal's
+ * message would otherwise never satisfy an anchored `/^manifest …/`.
+ * see cli-apply.test.mjs › "an unknown top-level manifest key is refused
+ * with a message that names \"manifest\" exactly once, not \"manifest
+ * manifest\""
+ */
+function manifestError(message: string): Error {
+  const error = new Error(message);
+  error.name = '';
+  return error;
+}
+
 function requireKnownKeys(record: Record<string, unknown>, known: ReadonlySet<string>, label: string): void {
   for (const key of Object.keys(record)) {
     if (!known.has(key)) {
-      throw new Error(`manifest ${label} carries an unrecognised key`);
+      throw label === 'manifest'
+        ? manifestError('manifest carries an unrecognised key')
+        : new Error(`manifest ${label} carries an unrecognised key`);
     }
   }
+}
+
+/**
+ * Refuses the first sibling repeat among names in one list — services,
+ * environments within a service, credentials within an environment, sources
+ * within an environment — before any store call. Never echoes the repeated
+ * name itself, only the duplicate's own array index under `label`.
+ */
+function requireUniqueNames(items: readonly { readonly name: string }[], label: string): void {
+  const seen = new Set<string>();
+  items.forEach((item, index) => {
+    if (seen.has(item.name)) {
+      throw new Error(`manifest ${label}[${index}] duplicates the name of an earlier entry`);
+    }
+    seen.add(item.name);
+  });
 }
 
 function requireArray(value: unknown, label: string): unknown[] {
@@ -262,9 +303,11 @@ function parseManifestEnvironment(raw: unknown, label: string): ManifestEnvironm
   const credentials = requireArray(record.credentials, `${label}.credentials`).map((entry, index) =>
     parseManifestCredential(entry, `${label}.credentials[${index}]`),
   );
+  requireUniqueNames(credentials, `${label}.credentials`);
   const sources = requireArray(record.sources, `${label}.sources`).map((entry, index) =>
     parseManifestSource(entry, `${label}.sources[${index}]`),
   );
+  requireUniqueNames(sources, `${label}.sources`);
   const policy = record.policy === undefined ? null : parseManifestPolicy(record.policy, `${label}.policy`);
   return { name, credentials, sources, policy };
 }
@@ -278,6 +321,7 @@ function parseManifestService(raw: unknown, label: string): ManifestService {
   const environments = requireArray(record.environments, `${label}.environments`).map((entry, index) =>
     parseManifestEnvironment(entry, `${label}.environments[${index}]`),
   );
+  requireUniqueNames(environments, `${label}.environments`);
   return { name, repositoryAliases, environments };
 }
 
@@ -298,9 +342,11 @@ function parseManifest(raw: unknown): ManifestService[] {
   if (record.kind !== 'Onboarding') {
     throw new Error('manifest kind must be "Onboarding"');
   }
-  return requireArray(record.services, 'services').map((entry, index) =>
+  const services = requireArray(record.services, 'services').map((entry, index) =>
     parseManifestService(entry, `services[${index}]`),
   );
+  requireUniqueNames(services, 'services');
+  return services;
 }
 
 /* -------------------------------------------------------------------------- */
