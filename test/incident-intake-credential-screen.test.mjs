@@ -162,3 +162,16 @@ test('an intake with far more signals than the cap is refused before any signal 
   assert.equal(result.success, false);
   assert.ok(elapsed < 500, `refusal took ${elapsed.toFixed(1)} ms`);
 });
+
+test('an oversized signals array is refused on its count alone: exactly one too_big issue at signals, and no issue from inside any element', () => {
+  const invalidSignal = { source: '', statement: '', observedAt: 'not a time' };
+  const result = domain.IncidentIntakeSchema.safeParse(
+    baseIntake({ signals: Array.from({ length: 2_000 }, () => invalidSignal) }),
+  );
+  assert.equal(result.success, false);
+  assert.deepEqual(
+    result.error.issues.map((issue) => [issue.code, issue.path]),
+    [['too_big', ['signals']]],
+    'the count must be checked before any element is parsed',
+  );
+});

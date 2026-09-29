@@ -146,9 +146,10 @@ const MAX_CONFIG_VALUE_LENGTH = 512;
  * re-scans a long word-character run from every start position — see
  * incident-intake-credential-screen.test.mjs › "validating an accepted intake
  * of the full signal count, each statement a 2000-character base64-like run,
- * stays well under half a second" (see the
- * "Bounded by construction" comment on `SourceBindingConfigSchema` below for
- * the measured rows).
+ * stays well under half a second". The bound gives up one shape: a value
+ * whose last 32 characters before `://` include no letter, which no URI
+ * scheme is. (See the "Bounded by construction" comment on
+ * `SourceBindingConfigSchema` below for the config-value timing rows.)
  */
 const DOMAIN_SECRET_PATTERNS = [
   /ATATT3x[A-Za-z0-9_\-=]{16,}/, // atlassian-token
