@@ -40,6 +40,31 @@ import { canonicalJson } from './execution.js';
  *    inherited property name constructor" and › "planInvestigation produces
  *    no test for an observation whose form is the inherited property name
  *    __proto__".
+ *
+ *    (AIC-142) A `byForm[form]` entry may instead be a signal-keyed selector
+ *    `{ bySignal: { [signal]: InvestigationRouteEntry | InvestigationRouteRefusal } }`
+ *    — the form alone does not determine the tool (e.g. `signal-state`, where
+ *    `dependency-health` and `latency` name different source families than
+ *    `error-rate`). When the resolved entry has an own `bySignal` property,
+ *    `observation.signal` is looked up in it by the SAME `Object.hasOwn`
+ *    discipline; a refusal (`{ refused }`) or a missing key plans NO test —
+ *    fail closed, never a fallback to another tool or to the flat form route
+ *    — see investigation-planning.test.mjs › "planInvestigation routes a
+ *    signal-state observation through a bySignal-shaped route entry, using
+ *    observation.signal to select the per-signal route", › "planInvestigation
+ *    plans no test when a bySignal entry refuses the signal, and never falls
+ *    back to another tool", › "planInvestigation plans no test when
+ *    observation.signal has no entry at all in the route's bySignal map (fail
+ *    closed, no fallback)", › "planInvestigation produces no test for a
+ *    bySignal-shaped route entry when the observation's signal is only
+ *    reachable through Object.prototype (toString), even when the prototype
+ *    carries a matching route", › "planInvestigation produces no test for a
+ *    bySignal-shaped route entry when the observation's signal is the
+ *    inherited property name constructor" and › "planInvestigation produces
+ *    no test for a bySignal-shaped route entry when the observation's signal
+ *    is the inherited property name __proto__". Otherwise (no own
+ *    `bySignal`), planning proceeds exactly as before with the resolved
+ *    entry.
  * 4. The route's `input` mapping names, for each request field, which
  *    observation field supplies it (`Object.hasOwn` again, on the
  *    observation) — a mapping naming a field the observation does not carry
@@ -109,13 +134,33 @@ export interface InvestigationRouteEntry {
 }
 
 /**
+ * (AIC-142) A signal names no reachable tool at all — e.g. `latency` names
+ * two source families in the frozen vocabulary and no route picks between
+ * them. A refusal entry names no `tool`, so it can never be planned.
+ */
+export interface InvestigationRouteRefusal {
+  readonly refused: string;
+}
+
+/**
+ * (AIC-142) A `byForm[form]` value is either a flat route, or — when one
+ * form's tool depends on which signal an observation names — a signal-keyed
+ * selector. `planInvestigation` resolves `observation.signal` in `bySignal`
+ * by own-property lookup only (see rule 3 above); a refusal or a missing key
+ * plans no test.
+ */
+export type InvestigationRouteByFormValue =
+  | InvestigationRouteEntry
+  | { readonly bySignal: Readonly<Record<string, InvestigationRouteEntry | InvestigationRouteRefusal>> };
+
+/**
  * The observation-form -> tool-request table `planInvestigation` reads.
  * `version` feeds the id recipe alongside `tool` and `input`, so bumping it
  * changes every id a request would otherwise have produced identically.
  */
 export interface InvestigationRouteTable {
   readonly version: string;
-  readonly byForm: Readonly<Record<string, InvestigationRouteEntry>>;
+  readonly byForm: Readonly<Record<string, InvestigationRouteByFormValue>>;
 }
 
 export interface PlanInvestigationInput {
@@ -168,7 +213,19 @@ export function planInvestigation({
 
     for (const observation of orderedObservations(prediction)) {
       if (!Object.hasOwn(routes.byForm, observation.form)) continue;
-      const route = routes.byForm[observation.form];
+      const formEntry = routes.byForm[observation.form];
+
+      let route: InvestigationRouteEntry;
+      if (Object.hasOwn(formEntry, 'bySignal')) {
+        const bySignal = (formEntry as { readonly bySignal: Readonly<Record<string, InvestigationRouteEntry | InvestigationRouteRefusal>> }).bySignal;
+        const signal = (observation as Readonly<Record<string, unknown>>).signal;
+        if (typeof signal !== 'string' || !Object.hasOwn(bySignal, signal)) continue;
+        const signalEntry = bySignal[signal];
+        if (Object.hasOwn(signalEntry, 'refused')) continue;
+        route = signalEntry as InvestigationRouteEntry;
+      } else {
+        route = formEntry as InvestigationRouteEntry;
+      }
 
       const input = buildRequest(observation, route);
       if (input === undefined) continue;
