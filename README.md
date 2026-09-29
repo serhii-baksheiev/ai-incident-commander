@@ -266,8 +266,51 @@ also reports an empty registry, or a service with no environment, as
 `absent`. `incident start` prints one JSON line, `{ incident, created }`;
 repeating it with the same `--idempotency-key`, `--external-ref`, or within
 the same 15-minute scope window reports the first incident again with
-`created: false` rather than creating a second one. `apply` is still a stub
-that prints "not implemented in this build" and exits non-zero.
+`created: false` rather than creating a second one.
+
+`apply` reconciles a declarative onboarding manifest against the registry —
+idempotent INPUT, never a source of truth: it creates what is missing, reports
+what differs as `drift`, and never deletes an entity the registry has that the
+manifest does not name (`unmanaged`):
+
+```bash
+npm run cli -- apply -f onboarding.yaml [--overwrite] [--dry-run]
+```
+
+The manifest is YAML, `apiVersion: aic.onboarding/v1`, `kind: Onboarding`:
+
+```yaml
+apiVersion: aic.onboarding/v1
+kind: Onboarding
+services:
+  - name: checkout
+    repositoryAliases: []
+    environments:
+      - name: prod
+        credentials:
+          - name: gh-read
+            secret: GH_READ_TOKEN
+            access: read
+        sources:
+          - name: gh
+            adapter: github@1
+            config:
+              owner: acme
+              repo: checkout
+            credential: gh-read
+        policy:
+          allow: [restart-pod]
+          writeCredentials: []
+```
+
+`apply` prints one JSON line per entity — `{ action, entity, service,
+environment, name, fields }`, where `action` is `created`, `unchanged`,
+`drift`, `updated` or `unmanaged` and `fields` names which fields differ
+(never their values) — and exits non-zero unless every line's `action` is
+something other than `drift`. `--overwrite` turns a policy's `drift` into
+`updated`; a differing credential or source is always reported `drift`, since
+the store has no in-place update for either. `--dry-run` prints the same plan
+without writing anything.
 
 `investigate` runs one real investigation over a replay file, through the
 same node composition the evaluation lanes use:
