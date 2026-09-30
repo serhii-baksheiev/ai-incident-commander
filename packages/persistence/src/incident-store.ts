@@ -41,6 +41,7 @@ export interface IncidentStore {
     intake: IncidentIntake,
     opts: { readonly id: string },
   ): Promise<{ readonly incident: IntakeDerivedIncident; readonly created: boolean }>;
+  getIncident(incidentId: string): Promise<IntakeDerivedIncident | null>;
 }
 
 /**
@@ -157,9 +158,29 @@ async function startIncidentAgainst(
   }
 }
 
+/**
+ * The read side of the same table `startIncident` writes: no schema
+ * revalidates `body` on the way out, the same as `startIncident`'s own
+ * `insertResult.rows[0].body as IntakeDerivedIncident` — there is no
+ * `IntakeDerivedIncident` schema to parse it against (`incidentFromIntake`
+ * only produces one; nothing in `@aic/domain` validates one back). See
+ * incident-store.live.mjs › "getIncident returns the body startIncident
+ * stored, matching a raw SELECT independently of the store".
+ */
+async function getIncidentAgainst(pool: Pool, incidentId: string): Promise<IntakeDerivedIncident | null> {
+  const { rows } = await pool.query<{ body: unknown }>(
+    `SELECT body FROM "${APPLICATION_SCHEMA}".incidents WHERE id = $1`,
+    [incidentId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return row.body as IntakeDerivedIncident;
+}
+
 function createPooledIncidentStore(pool: Pool): IncidentStore {
   return {
     startIncident: (intake, opts) => startIncidentAgainst(pool, intake, opts),
+    getIncident: (incidentId) => getIncidentAgainst(pool, incidentId),
   };
 }
 
@@ -167,6 +188,8 @@ function createConnectionStringIncidentStore(connectionString: string): Incident
   return {
     startIncident: (intake, opts) =>
       withConnectionScopedPool(connectionString, (pool) => createPooledIncidentStore(pool).startIncident(intake, opts)),
+    getIncident: (incidentId) =>
+      withConnectionScopedPool(connectionString, (pool) => createPooledIncidentStore(pool).getIncident(incidentId)),
   };
 }
 
