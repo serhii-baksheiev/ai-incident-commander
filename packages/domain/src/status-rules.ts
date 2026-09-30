@@ -22,7 +22,11 @@
  * to nothing else; a `kind: 'resume'` takes its state from the checkpointer,
  * which parses nothing. The resume path is guarded separately, by the graph's
  * own `assertPersistedStateVersion`. Before that guard existed, a version-1
- * checkpoint resumed to completion.
+ * checkpoint resumed to completion. A `kind: 'continue'` (AIC-146) also takes
+ * its state from the checkpointer and is refused by the same guard — see
+ * investigation-continue.test.mjs › "refuses a continue whose persisted
+ * control predates the current schema version, without retrying the crashed
+ * node".
  *
  * ⚠ **Only the resume guard names the version in what a caller sees.** This
  * literal produces a zod issue that does name it, but the graph collapses every

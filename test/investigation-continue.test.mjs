@@ -452,6 +452,44 @@ test('refuses a continue whose persisted control predates the current schema ver
   }
 });
 
+test('refuses a continue whose restored control carries a negative iteration counter, without retrying the crashed node', async () => {
+  const runId = 'run-continue-invalid-counter';
+  const callCounts = {};
+  const harness = createContinueHarness({
+    runId,
+    nodes: countingLifecycleNodes(callCounts, {
+      throwOnFirstCall: 'execute_investigation',
+    }),
+  });
+
+  try {
+    const started = await attemptStart(harness, runId);
+    assert.equal(
+      'error' in started,
+      true,
+      'the premise of this test: the run must be crashed mid-superstep, waiting to be continued',
+    );
+
+    const callsBeforeContinue = { ...callCounts };
+    harness.rewriteEveryPersistedControl((control) => ({
+      ...control,
+      iterationsUsed: -1,
+    }));
+
+    const outcome = await attemptContinue(harness.execution, harness.config);
+
+    assert.equal('error' in outcome, true, 'a continue must not run on a counter that is not a count');
+    assert.match(outcome.error.message, /invalid logical iteration counter/);
+    assert.deepEqual(
+      callCounts,
+      callsBeforeContinue,
+      'the refusal must land before the crashed node is retried',
+    );
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('refuses a continue whose restored control field is supplied by an accessor on the prototype', async () => {
   const runId = 'run-continue-polluted-control';
   const callCounts = {};

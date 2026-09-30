@@ -1294,8 +1294,11 @@ function isLogicalCount(value: unknown): value is number {
  * fractional or negative counter silently changes what "exhausted" means, and a
  * run that continued on one would report usage nobody can reconcile.
  *
- * The path where this is load-bearing is the RESUME path, and only that one: a
- * `kind: 'start'` state is parsed by `IncidentStateSchema` first, so
+ * The paths where this is load-bearing are RESUME and, since AIC-146 (c2),
+ * CONTINUE — both re-enter nodes on a control the checkpointer handed back —
+ * see investigation-continue.test.mjs › "refuses a continue whose restored
+ * control carries a negative iteration counter, without retrying the crashed
+ * node". A `kind: 'start'` state is parsed by `IncidentStateSchema` first, so
  * `LogicalCountSchema` refuses every one of these counters before this function
  * is consulted. The start-path rows prove the schema instead, and say so — see
  * investigation-graph.test.mjs › "refuses ${invalidBudgetCounter.label} at the
