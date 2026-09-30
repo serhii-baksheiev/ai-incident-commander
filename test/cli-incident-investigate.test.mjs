@@ -32,9 +32,9 @@
  *     // Called with the write context on every path but the read-only
  *     // "already completed" one, where it is called with no argument at all
  *     // — production wiring decides whether/how to fence; this command does
- *     // not import `createFencedCheckpointer` itself. A throw (e.g. a real
- *     // "relation does not exist" from an unprovisioned checkpointer schema)
- *     // is mapped to `checkpointer-not-provisioned`.
+ *     // not import `createFencedCheckpointer` itself. A thrown
+ *     // `CheckpointerNotProvisionedError` (exported by the command module) is
+ *     // refused as `checkpointer-not-provisioned`; any other throw propagates.
  *     createCheckpointer(context?: CommittedExecutionLike): Promise<BaseCheckpointSaver> | BaseCheckpointSaver;
  *     fetch: typeof fetch;
  *     resolveSecret(secretName: string): Promise<ResolveSecretResult>;
@@ -417,6 +417,34 @@ test('--roles scripted is refused scripted-roles-unavailable, and calls no deps 
   assert.equal(error.reason, 'scripted-roles-unavailable');
   assert.deepEqual(calls.snapshot, []);
   assert.deepEqual(calls.createRun, []);
+});
+
+test('refuses tracing enabled in process.env with no LangSmith key, naming LANGSMITH_API_KEY, before the registry is read', async () => {
+  const command = await loadIncidentInvestigateCommand();
+  const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
+  const incidentId = randomUUID();
+
+  const saved = {};
+  for (const name of ['LANGSMITH_TRACING', 'LANGSMITH_ENDPOINT', 'LANGCHAIN_ENDPOINT', 'LANGSMITH_API_KEY', 'LANGCHAIN_API_KEY']) {
+    saved[name] = process.env[name];
+  }
+  try {
+    delete process.env.LANGSMITH_API_KEY;
+    delete process.env.LANGCHAIN_API_KEY;
+    // A closed local port, never a real endpoint, in case the refusal ever
+    // fails to fire.
+    process.env.LANGSMITH_TRACING = 'true';
+    process.env.LANGSMITH_ENDPOINT = 'http://127.0.0.1:1';
+    process.env.LANGCHAIN_ENDPOINT = 'http://127.0.0.1:1';
+
+    await assert.rejects(command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps), /LANGSMITH_API_KEY/);
+    assert.deepEqual(calls.snapshot, [], 'the tracing decision must come before any store read');
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
 
 test('an unknown <service> is refused unknown-service, calls no createRun, and never echoes a secret-shaped service argument', async () => {

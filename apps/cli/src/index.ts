@@ -173,16 +173,19 @@ function createConnectedRunSession(env: NodeJS.ProcessEnv) {
   };
 }
 
+/** PostgreSQL's undefined_table SQLSTATE. */
+const UNDEFINED_TABLE = '42P01';
+
 /**
  * The checkpointer half of the same command: the PostgreSQL checkpointer,
  * schema-version-checked first (AIC-55) through the run session's own pool,
  * fenced by the run's write context on every path but the read-only "already
- * completed" one, which passes no context. A version failure is left to
- * throw; `runIncidentInvestigateCommand` maps any throw from here to its
- * `checkpointer-not-provisioned` refusal. Every saver built is ended by
- * `closeAll`, so its pool does not outlive the command.
+ * completed" one, which passes no context. Only a missing checkpointer table
+ * becomes `CheckpointerNotProvisionedError` (which the command refuses as
+ * `checkpointer-not-provisioned`); a version mismatch or a connection failure
+ * propagates as itself. Every saver built is ended by `closeAll`, so its pool
+ * does not outlive the command.
  */
-const UNDEFINED_TABLE = '42P01';
 
 function createConnectedCheckpointers(env: NodeJS.ProcessEnv, versionSource: () => CheckpointerVersionSource) {
   const savers: Array<ReturnType<typeof createPostgresCheckpointer>> = [];

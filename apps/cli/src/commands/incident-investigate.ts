@@ -65,7 +65,8 @@ const REFUSAL_MESSAGES: Readonly<Record<IncidentInvestigateRefusalReason, string
   'incident-scope-mismatch': "the incident's own primary scope disagrees with the resolved <service>/<env>",
   'no-source-bindings': "the incident's Environment has no SourceBindings to investigate over",
   'source-bindings-refused': 'the investigation port refused construction',
-  'run-input-mismatch': 'an existing run under this id disagrees on incident, scope or roles',
+  'run-input-mismatch':
+    'an existing run under this id disagrees on incident, scope or roles, or its stored input is not one this command reads',
   'run-failed': 'this run has already failed',
   'run-waiting-human': 'this run is waiting on a human decision',
   'run-held': 'this run is currently claimed by another worker',
@@ -328,8 +329,10 @@ export async function runIncidentInvestigateCommand(
   // parsing above, which must refuse invalid-arguments/invalid-roles first.
   requireModelConfig(deps.env);
 
-  // The same tracing decision `aic investigate` makes (investigate.ts), from
-  // the real process.env that @langchain/core reads.
+  // Decided from the real process.env, which @langchain/core reads, before
+  // any store is read. see cli-incident-investigate.test.mjs › "refuses
+  // tracing enabled in process.env with no LangSmith key, naming
+  // LANGSMITH_API_KEY, before the registry is read"
   const tracing = resolveTracingConfig(process.env);
   if (tracing.enabled) {
     process.env.LANGCHAIN_CALLBACKS_BACKGROUND ??= 'false';
