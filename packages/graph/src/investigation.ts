@@ -2100,7 +2100,7 @@ export function createInvestigationGraph({
           // already-checkpointed nodes" — and a resume still advances the run
           // too, so both recovery paths stay. Refusing on `tasks.length > 0`
           // instead, as the first version of this did, makes every id a caller
-          // can send an error and a crashed run UNRESUMABLE. That is a
+          // can send an error and a crashed run UNRESUMABLE by resume. That is a
           // recovery path this change has no business removing, and it was
           // removed by accident rather than chosen.
           //

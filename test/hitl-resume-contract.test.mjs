@@ -2124,9 +2124,12 @@ test('completes a resume interleaved with a microtask chain that arms nothing', 
  * `execute`, which would have made route 1's rows green without
  * `pickGraphOwnedControl` doing anything — and, worse, made a run whose node
  * threw unresumable, since such a thread has a pending task and zero pending
- * interrupts and `execute` offers no replay that carries no id. What survives
- * of that idea is narrower and is about answering the wrong question rather
- * than about ownership: a decision naming an interrupt while the run waits on a
+ * interrupts and `execute` then offered no replay that carries no id (since
+ * AIC-146 (c2) `{ kind: 'continue' }` is one — see
+ * investigation-continue.test.mjs › "continue advances a run whose node threw
+ * mid-superstep to completion without re-running already-checkpointed
+ * nodes"). What survives of that idea is narrower and is about answering the wrong question
+ * rather than about ownership: a decision naming an interrupt while the run waits on a
  * DIFFERENT one is refused, and a run waiting on none is still resumable.
  *
  * Measured on `main` (d8bdea1) for route 1, arming
