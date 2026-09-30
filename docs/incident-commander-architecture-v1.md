@@ -375,8 +375,8 @@ The `aic start` / `aic resume` spike runner's checkpoints carry no incident and
 are read unchanged:
 see state-cutover.test.mjs › "resumes a spike-runner checkpoint stamped at schema version 3 and returns its trials/evidence unchanged (pin: this state carries no incident)"
 
-⚠ The two refusals are not equally legible. The resume guard names the version
-it refused on; the start path does not, because `parseInvestigationExecutionInput`
+⚠ The two refusals are not equally legible. The graph's own version guard
+(on resume and on continue) names the version it refused on; the start path does not, because `parseInvestigationExecutionInput`
 collapses every schema failure into a single `invalid investigation execution
 input`. Both refuse, one explains.
 

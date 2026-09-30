@@ -108,8 +108,10 @@ const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
  * at one named run instead of the head of the queue: its candidate filters on
  * `run_id = $1 AND status = 'queued'` rather than ordering the whole table,
  * and it keeps both of `claimNext`'s branches and its `FOR UPDATE SKIP
- * LOCKED` clause. See run-store.live.mjs › "claimRun claims exactly the named run even when an
- * older queued run exists that claimNext would pick".
+ * LOCKED` clause. See run-store.live.mjs › "claimRun claims exactly the named
+ * run even when an older queued run exists that claimNext would pick" and ›
+ * "claimRun returns null without waiting when a concurrent transaction holds
+ * the named run with FOR UPDATE, and leaves the row queued".
  */
 function buildSqlStatements(): RunStore['SQL_STATEMENTS'] {
   return Object.freeze({

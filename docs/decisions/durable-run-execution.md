@@ -187,3 +187,18 @@ after each repetition (#108).
   disaster recovery and migration policy; AIC-42's full worker operating
   policy; Kubernetes, Helm or Terraform (AIC-54, deferred until measured); any
   production UI.
+
+Addendum (AIC-146, 2026-09-30): the canonical investigation graph now runs on
+these semantics, not only the spike runner. Its `execute_investigation` node
+commits each tool call under a `tool.trial` key when it is given a
+`CommittedExecution` (investigation-execution-committed.test.mjs › "a second
+node call on the same pre-checkpoint state reuses the committed outcome:
+execute runs once in total and the replayed evidence provenance matches the
+first call"). Its `{ kind: 'continue' }` input re-enters a run from its last
+checkpoint (investigation-continue.test.mjs › "continue advances a run whose
+node threw mid-superstep to completion without re-running
+already-checkpointed nodes"). `aic incident investigate` runs it as a durable
+run, and a killed run resumes without a second call for a committed tool or
+model request (incident-investigate-kill.live.mjs › "kill after a committed
+tool call, resume without a second call for it" and › "a committed
+model.role answer is not asked again after a kill").
