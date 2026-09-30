@@ -153,6 +153,14 @@ function workerErrorMessage(worker) {
   return `${found.message}\n${found.stack ?? ''}\n${worker.diagnostics()}`;
 }
 
+/**
+ * Each kill row waits in two bounded polls (60 s each) and one bounded exit
+ * wait (20 s) before its resume and onboarding. The row's own deadline sits
+ * above that sum, so a slow run fails on the named poll message rather than
+ * on the runner's generic timeout.
+ */
+const ROW_TIMEOUT_MS = 240_000;
+
 function waitForExit(worker, timeoutMs = 20_000) {
   const { child, diagnostics } = worker;
   if (child.exitCode !== null || child.signalCode !== null) {
@@ -273,7 +281,7 @@ test('refuses to run without a PostgreSQL connection string instead of skipping'
 
 test(
   'kill after a committed tool call, resume without a second call for it',
-  { timeout: 90_000 },
+  { timeout: ROW_TIMEOUT_MS },
   async (t) => {
     const { connectionString, pool, stub, incidentId, baseUrl } = await setUpRow(t);
 
@@ -437,7 +445,7 @@ test(
 
 test(
   'kill while the only request is in flight',
-  { timeout: 90_000 },
+  { timeout: ROW_TIMEOUT_MS },
   async (t) => {
     const { connectionString, pool, stub, incidentId, baseUrl } = await setUpRow(t);
 
@@ -529,7 +537,7 @@ test(
 
 test(
   'a committed model.role answer is not asked again after a kill',
-  { timeout: 90_000 },
+  { timeout: ROW_TIMEOUT_MS },
   async (t) => {
     const { connectionString, pool, incidentId, baseUrl } = await setUpRow(t);
 
