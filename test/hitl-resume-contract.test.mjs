@@ -324,14 +324,18 @@ for (const persisted of outdatedPersistedControls) {
 }
 
 /**
- * The counter guard's remaining job is the RESUME path.
+ * The counter guard's remaining job is the paths that restore a checkpoint:
+ * RESUME, and since AIC-146 (c2) CONTINUE.
  *
  * On `kind: 'start'` the domain schema parses the input first, so a fractional,
  * negative or non-safe-integer counter is refused by `LogicalCountSchema`
  * before the graph's own guard is ever consulted — a start-path table proves
- * the schema, not the guard. A checkpoint is never parsed, so the resume path
- * is the one place where neutering `assertLogicalBudgetCounters` would let a
- * corrupt counter through.
+ * the schema, not the guard. A checkpoint is never parsed, so those two paths
+ * are where neutering `assertLogicalBudgetCounters` would let a corrupt counter
+ * through. This table covers the resume path; the continue path has its own
+ * row — investigation-continue.test.mjs › "refuses a continue whose restored
+ * control carries a negative iteration counter, without retrying the crashed
+ * node".
  *
  * These rows hold the schema version at the CURRENT one on purpose: the
  * refusal has to name the counter rather than the version, or a corrupt
@@ -419,8 +423,8 @@ test('freezes the exported counter list at both levels, so an importer cannot di
 
   // `as const` is type-level only and `Object.freeze` is shallow, so the pairs
   // need their own freeze: rewriting one entry's field would stop that counter
-  // being re-validated on the resume path while every refusal message stayed
-  // correct.
+  // being re-validated on a restored checkpoint while every refusal message
+  // stayed correct.
   //
   // Asserted through `Object.isFrozen` rather than by attempting the writes.
   // The write form was measured and rejected: on a SHALLOW freeze the first
@@ -446,7 +450,7 @@ test('leaves no logical-count control field unguarded between the two graph guar
       ...requireLogicalBudgetCounters().map(([field]) => field),
       ...CHALLENGE_GUARD_COUNTERS,
     ].sort(),
-    'every field the control schema declares a logical count must belong to assertLogicalBudgetCounters or assertChallengeCounters — a new one in neither is a counter nothing re-validates on the resume path',
+    'every field the control schema declares a logical count must belong to assertLogicalBudgetCounters or assertChallengeCounters — a new one in neither is a counter nothing re-validates on a restored checkpoint',
   );
 });
 
@@ -2124,9 +2128,12 @@ test('completes a resume interleaved with a microtask chain that arms nothing', 
  * `execute`, which would have made route 1's rows green without
  * `pickGraphOwnedControl` doing anything — and, worse, made a run whose node
  * threw unresumable, since such a thread has a pending task and zero pending
- * interrupts and `execute` offers no replay that carries no id. What survives
- * of that idea is narrower and is about answering the wrong question rather
- * than about ownership: a decision naming an interrupt while the run waits on a
+ * interrupts and `execute` then offered no replay that carries no id (since
+ * AIC-146 (c2) `{ kind: 'continue' }` is one — see
+ * investigation-continue.test.mjs › "continue advances a run whose node threw
+ * mid-superstep to completion without re-running already-checkpointed
+ * nodes"). What survives of that idea is narrower and is about answering the wrong question
+ * rather than about ownership: a decision naming an interrupt while the run waits on a
  * DIFFERENT one is refused, and a run waiting on none is still resumable.
  *
  * Measured on `main` (d8bdea1) for route 1, arming
@@ -2425,9 +2432,12 @@ test('refuses the value a stale retry launders into a wrapped node', async () =>
  * have silently taken it away.
  *
  * A lifecycle node that throws — or a process that dies mid-superstep — leaves
- * a thread with a pending TASK and **zero** pending interrupts. A resume is the
- * only way to advance it: `execute` has no replay that carries no interrupt id,
- * `getState` is read-only, and `kind: 'start'` overwrites the control. An
+ * a thread with a pending TASK and **zero** pending interrupts. When this was
+ * written a resume was the only way to advance it: `execute` had no replay
+ * that carries no interrupt id, `getState` is read-only, and `kind: 'start'`
+ * overwrites the control. Since AIC-146 (c2) `{ kind: 'continue' }` also
+ * advances it (investigation-continue.test.mjs); this row keeps the resume
+ * route working. An
  * earlier version of this change refused on `tasks.length > 0`, which made
  * every id a caller could send an error and a crashed run unresumable. Nothing
  * asked for that, and nothing would have recorded it.

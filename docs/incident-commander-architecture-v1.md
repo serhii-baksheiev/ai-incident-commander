@@ -352,8 +352,11 @@ would be read wrongly by the other:
 State persisted under an older version is refused rather than coerced to an
 invented usage, scope or observation. On the `kind: 'start'` path the schema's
 version literal refuses it. On the resume path the graph's own version guard
-refuses it, because a restored checkpoint is never parsed by the schema. The
-resume guard also runs at the resume entry, so a finished older run is
+refuses it, because a restored checkpoint is never parsed by the schema. A
+`kind: 'continue'` (AIC-146) restores its state the same way and is refused by
+the same guard, naming the version:
+see investigation-continue.test.mjs › "refuses a continue whose persisted control predates the current schema version, without retrying the crashed node"
+The resume guard also runs at the resume entry, so a finished older run is
 refused rather than returned:
 see state-cutover.test.mjs › "refuses a resume of a FINISHED v3 checkpoint that predates primaryScope, rather than treating it as a no-op"
 The message names what that version lacks. Below v4 that is the `primaryScope`:

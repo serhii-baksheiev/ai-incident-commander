@@ -99,6 +99,15 @@ recovered the run. A recovery path was being removed as a side effect, and
 nothing in the change recorded it — which is the part that made it a defect
 rather than a trade.
 
+Addendum (AIC-146, 2026-09-30): "`execute` exposes no replay that carries no
+interrupt id" stopped being true when `{ kind: 'continue' }` was added — see
+`investigation-continue.test.mjs` › "continue advances a run whose node threw
+mid-superstep to completion without re-running already-checkpointed nodes". A
+resume on a thread waiting on no interrupt still advances the run
+(`hitl-resume-contract.test.mjs` › "advances a run past a transient node
+failure when the caller retries the same id"), so the recovery path this
+section protects is kept, and `continue` is a second one.
+
 The narrower rule is about answering the **wrong** question rather than about
 ownership: a decision naming an interrupt while the run waits on a *different*
 one is refused, because it answers a question that has already been replaced. A
@@ -115,7 +124,8 @@ route". What is still given up on this route is the REPORT, not the value. It wa
 not a path the refusal would have closed — the same gadget reaches a plain `confirm`, which no form of
 this refusal ever covered — so refusing here would remove one path to a limit
 that stays open regardless, at the price of every crashed run's only way
-forward. What the primitive closes on this route is the READ-supplied
+forward (the only one until AIC-146 added `{ kind: 'continue' }` — see the
+addendum above). What the primitive closes on this route is the READ-supplied
 substitution, and that is closed either way.
 
 ## The remedy that was not taken: a define-semantics serde
@@ -275,7 +285,9 @@ comparing interrupt ids read as success.
 
 Unchanged, deliberately, and each pinned by a row: a run waiting on **no**
 interrupt — the shape a thrown lifecycle node or a dead process leaves — is
-still resumable, because a resume is the only way to advance it; and a
+still resumable, because a resume was the only way to advance it (since
+AIC-146, `{ kind: 'continue' }` is a second one — see the addendum under "Two
+mistakes made on the way"); and a
 **finished** run's resume stays a no-op that resolves, since refusing it would
 be a false statement about a thread that has a checkpoint and a real state.
 
