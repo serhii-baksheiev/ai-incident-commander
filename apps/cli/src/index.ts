@@ -165,6 +165,7 @@ function createConnectedRunSession(env: NodeJS.ProcessEnv) {
       renewLease: (claim: RunClaim) => ensure().renewLease(claim),
     },
     openWriteContext: (claim: RunClaim) => openRunWriteContext(ensure(), claim),
+    versionSource: (): CheckpointerVersionSource => ensure().pool,
     close: async (): Promise<void> => {
       if (store !== undefined) await store.close();
     },
@@ -173,21 +174,26 @@ function createConnectedRunSession(env: NodeJS.ProcessEnv) {
 
 /**
  * The checkpointer half of the same command: the PostgreSQL checkpointer,
- * schema-version-checked before use (AIC-55), fenced by the run's own write
- * context on every path but the read-only "already completed" one — no
- * context at all, per `incident-investigate.ts`'s own `deps.createCheckpointer`
- * contract. A schema-version failure (an unprovisioned checkpointer schema)
- * is left to throw here; `runIncidentInvestigateCommand` maps any throw from
- * this function to its own `checkpointer-not-provisioned` refusal.
+ * schema-version-checked first (AIC-55) through the run session's own pool,
+ * fenced by the run's write context on every path but the read-only "already
+ * completed" one, which passes no context. A version failure is left to
+ * throw; `runIncidentInvestigateCommand` maps any throw from here to its
+ * `checkpointer-not-provisioned` refusal. Every saver built is ended by
+ * `closeAll`, so its pool does not outlive the command.
  */
-async function createConnectedCheckpointer(env: NodeJS.ProcessEnv, context?: IncidentInvestigateWriteContext) {
-  const saver = createPostgresCheckpointer(requirePostgresUrl(env));
-  // `saver.pool` is declared `private` in the library's own types (it is a
-  // public, queryable field at runtime — the same field the live persistence
-  // tests read directly), so the version check goes through a structural cast
-  // rather than a second checkpointer construction just to read it.
-  await assertCheckpointerSchemaVersion((saver as unknown as { pool: CheckpointerVersionSource }).pool);
-  return context === undefined ? saver : createFencedCheckpointer(saver, context);
+function createConnectedCheckpointers(env: NodeJS.ProcessEnv, versionSource: () => CheckpointerVersionSource) {
+  const savers: Array<ReturnType<typeof createPostgresCheckpointer>> = [];
+  return {
+    create: async (context?: IncidentInvestigateWriteContext) => {
+      await assertCheckpointerSchemaVersion(versionSource());
+      const saver = createPostgresCheckpointer(requirePostgresUrl(env));
+      savers.push(saver);
+      return context === undefined ? saver : createFencedCheckpointer(saver, context);
+    },
+    closeAll: async (): Promise<void> => {
+      await Promise.all(savers.map((saver) => saver.end()));
+    },
+  };
 }
 
 const SECRETS_DIR_VARIABLE = 'AIC_SECRETS_DIR';
@@ -304,6 +310,7 @@ async function main(argv: readonly string[]): Promise<void> {
     }
     if (sub === 'investigate') {
       const session = createConnectedRunSession(process.env);
+      const checkpointers = createConnectedCheckpointers(process.env, session.versionSource);
       try {
         await runIncidentInvestigateCommand(incidentRest, {
           env: process.env,
@@ -313,7 +320,7 @@ async function main(argv: readonly string[]): Promise<void> {
           },
           runs: session.runs,
           openWriteContext: session.openWriteContext,
-          createCheckpointer: (context) => createConnectedCheckpointer(process.env, context),
+          createCheckpointer: (context) => checkpointers.create(context),
           fetch: globalThis.fetch,
           resolveSecret: (secretName) => createSecretResolver(process.env).resolve(secretName),
           workerId: `aic-cli-${randomUUID()}`,
@@ -321,6 +328,7 @@ async function main(argv: readonly string[]): Promise<void> {
           now: () => new Date().toISOString(),
         });
       } finally {
+        await checkpointers.closeAll();
         await session.close();
       }
       return;

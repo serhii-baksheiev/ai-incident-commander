@@ -436,9 +436,8 @@ export async function runIncidentInvestigateCommand(
       ? await graph.execute({ kind: 'continue' }, { threadId: runId })
       : await graph.execute(
           // `IntakeDerivedIncident` carries no index signature of its own;
-          // `IncidentSchema` is a `looseObject` that accepts it structurally
-          // at runtime (the same relationship `incident.ts`'s own
-          // `resolveIncidentScope` documents), so only the type needs telling.
+          // `IncidentSchema` is a `looseObject`, which the `kind: 'start'`
+          // boundary parses the incident against before any node runs.
           { kind: 'start', state: buildInitialState(runId, { incident: incident as unknown as Incident, budget }) },
           { threadId: runId },
         );
