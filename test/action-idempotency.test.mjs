@@ -231,13 +231,14 @@ test("the key has IdempotencyKeySchema's shape and is not an ExecKeySchema strin
 /* Review round 1 (PR #196)                                                   */
 /* -------------------------------------------------------------------------- */
 
-test('params carrying an own __proto__ key, at the top or nested, are refused rather than given a second identity', () => {
+test('params carrying an own __proto__ key, at the top, nested or inside an array, are refused rather than given a second identity', () => {
   // Kills: canonicalJson keeping an own __proto__ key as ordinary data, so one
   // payload that a strict params schema reads identically derives many keys.
   const top = JSON.parse('{"__proto__":{"a":1},"body":"post this"}');
   const nested = JSON.parse('{"body":"post this","meta":{"__proto__":{"a":1}}}');
-  for (const params of [top, nested]) {
-    assert.throws(() => domain.deriveActionIdempotencyKey({ ...fixtureParts(), params }));
+  const inArray = JSON.parse('{"body":"post this","items":[[{"__proto__":{"a":1}}]]}');
+  for (const params of [top, nested, inArray]) {
+    assert.throws(() => domain.deriveActionIdempotencyKey({ ...fixtureParts(), params }), /own __proto__ key/);
   }
 });
 

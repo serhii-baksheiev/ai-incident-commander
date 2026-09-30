@@ -119,20 +119,13 @@ export const ProposedActionDraftSchema = z.strictObject({
 export type ProposedActionDraft = z.infer<typeof ProposedActionDraftSchema>;
 
 /**
- * One params schema per registered safe-write action id, frozen. Kept in
- * exact correspondence with `RISK_REGISTRY`'s safe-write entries — see
- * proposed-action-contract.test.mjs › "ACTION_PARAMS_SCHEMAS keys are exactly
- * the registry's safe-write action ids, and vice versa"
- * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
- */
-/**
  * `z.strictObject` drops an own `__proto__` key instead of reporting it, and
  * `canonicalJson` keeps one as data, so a params object parsed from JSON with
  * an own `__proto__` would read as the same payload here while deriving a
  * different idempotency key. Refused before the strict parse, with a fixed
  * message that echoes nothing — see proposed-action-contract.test.mjs ›
- * "ACTION_PARAMS_SCHEMAS["incident-comment"] refuses params carrying an own
- * __proto__ key parsed from JSON, and echoes nothing".
+ * "ACTION_PARAMS_SCHEMAS refuses params carrying an own __proto__ key parsed
+ * from JSON, for every action type, and echoes nothing".
  */
 function paramsWithoutOwnProto<T extends z.ZodType>(schema: T) {
   return z
@@ -145,6 +138,13 @@ function paramsWithoutOwnProto<T extends z.ZodType>(schema: T) {
     .pipe(schema);
 }
 
+/**
+ * One params schema per registered safe-write action id, frozen. Kept in
+ * exact correspondence with `RISK_REGISTRY`'s safe-write entries — see
+ * proposed-action-contract.test.mjs › "ACTION_PARAMS_SCHEMAS keys are exactly
+ * the registry's safe-write action ids, and vice versa"
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ */
 export const ACTION_PARAMS_SCHEMAS = Object.freeze({
   'incident-comment': paramsWithoutOwnProto(z.strictObject({ body: screenedText(4000) })),
   'create-follow-up-ticket': paramsWithoutOwnProto(
@@ -229,9 +229,10 @@ const ActionIdempotencyPartsSchema = z.strictObject({
 
 /**
  * True when a canonical value (the output of `canonicalJson`, which keeps an
- * own `__proto__` key as data) carries one at any depth. Walks only what
- * `canonicalJson` has already walked, so it adds no depth `canonicalJson`
- * did not already survive.
+ * own `__proto__` key as data) carries one at any depth — see
+ * action-idempotency.test.mjs › "params carrying an own __proto__ key, at the
+ * top, nested or inside an array, are refused rather than given a second
+ * identity".
  */
 function carriesOwnProtoKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(carriesOwnProtoKey);

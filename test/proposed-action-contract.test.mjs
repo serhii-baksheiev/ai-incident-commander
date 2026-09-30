@@ -272,20 +272,20 @@ test('a well-formed safe-write record parses; a record whose risk is dangerous i
 /* Review round 1 (PR #196)                                                   */
 /* -------------------------------------------------------------------------- */
 
-for (const actionType of ['incident-comment', 'create-follow-up-ticket']) {
-  test(`ACTION_PARAMS_SCHEMAS["${actionType}"] refuses params carrying an own __proto__ key parsed from JSON, and echoes nothing`, () => {
-    // Kills: a strict object that silently drops an own __proto__ key, which
-    // lets one payload carry any number of distinct idempotency identities.
+test('ACTION_PARAMS_SCHEMAS refuses params carrying an own __proto__ key parsed from JSON, for every action type, and echoes nothing', () => {
+  // Kills: a strict object that silently drops an own __proto__ key, which
+  // lets one payload carry any number of distinct idempotency identities.
+  for (const actionType of ['incident-comment', 'create-follow-up-ticket']) {
     const valid = actionType === 'incident-comment' ? { body: 'post this' } : { title: 'follow up', body: 'post this' };
     const marked = JSON.parse(`{"__proto__":{"marker":"proto-sentinel"},${JSON.stringify(valid).slice(1)}`);
     assert.ok(Object.hasOwn(marked, '__proto__'), 'fixture premise: JSON.parse keeps __proto__ as an own key');
 
     const result = domain.ACTION_PARAMS_SCHEMAS[actionType].safeParse(marked);
-    assert.equal(result.success, false);
+    assert.equal(result.success, false, `${actionType} must refuse the marked params`);
     assert.ok(!JSON.stringify(result.error.issues).includes('proto-sentinel'), 'the refusal must not echo the payload');
     assert.equal(domain.ACTION_PARAMS_SCHEMAS[actionType].safeParse(valid).success, true, 'the same params without __proto__ still parse');
-  });
-}
+  }
+});
 
 test('a record carrying an extra key is refused', () => {
   const result = domain.ProposedActionRecordSchema.safeParse({ ...validRecord(), unaudited: 'extra' });
