@@ -333,6 +333,35 @@ test('execute_investigation calls the given execute only for planned tests, and 
   );
 });
 
+/**
+ * AIC-146 b5: `createInvestigationNodes` forwards its own `evidenceProvenance`
+ * option straight to the `execute_investigation` node it builds
+ * (`createExecuteInvestigation`, `./execute-investigation.js`) — the same
+ * option `investigation-execution.test.mjs`'s own "AIC-146 b5" section pins
+ * directly against that node. Driven here through the COMPOSED node, so a
+ * caller that only ever reaches `execute_investigation` through
+ * `createInvestigationNodes` (every lane, and the CLI) gets the same refusal
+ * a caller of the node alone would.
+ */
+test('createInvestigationNodes forwards evidenceProvenance to its execute_investigation node: "required" with an ok outcome lacking provenance throws through the composed node (AIC-146 b5)', async () => {
+  const createInvestigationNodes = requireGraphExport('createInvestigationNodes');
+  const execute = async () => ({ status: 'ok', output: [evidenceItem('e-unstamped')] });
+  const nodes = createInvestigationNodes({
+    reasoning: fakeReasoning(),
+    execute,
+    asOf: asOfConstant(ASOF),
+    evidenceProvenance: 'required',
+  });
+
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(
+    () => nodes.execute_investigation(testState),
+    /provenance/i,
+    'the forwarded "required" option must reach the composed execute_investigation node, not be swallowed at the boundary',
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* 6. evaluate_predictions: the canonical node, honours asOf                 */
 /* -------------------------------------------------------------------------- */

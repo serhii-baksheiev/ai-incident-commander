@@ -93,6 +93,31 @@ consumer; AIC owns only its own records about them.
   (AIC-100, AIC-59). `credentialRefId` is null for a credential-less
   SourceBinding (e.g. `lab@1`); the other provenance fields are still
   recorded.
+  Addendum (AIC-146, 2026-09-30): the five fields are `Evidence.provenance`.
+  The graph stamps it from the provenance the bound-source port returns
+  alongside a call's items; an item that carries its own `provenance` is
+  refused, so a tool cannot supply it — see investigation-execution.test.mjs
+  › "on an ok result: an evidence item carrying its own provenance is
+  refused, naming the evidence id, and nothing is recorded (AIC-146 b2)".
+  "Every" binds evidence collected through a bound source. An investigation
+  over bound sources must be composed with `evidenceProvenance: 'required'`
+  (AIC-146 slice (c) wires `aic incident investigate` that way), which refuses
+  an ok outcome that has evidence and no provenance — see
+  investigation-execution.test.mjs › "createExecuteInvestigation({execute,
+  evidenceProvenance: "required"}): an ok outcome whose output is non-empty
+  but carries no own provenance throws a content-free message naming
+  provenance, and records nothing (AIC-146 b5)" and
+  bound-port-investigation-e2e.test.mjs › "a full createInvestigationGraph
+  run over a real bound-source port with a lab@1 stub completes, records at
+  least one Evidence, and every recorded Evidence carries its own provenance
+  naming the lab binding, independently fingerprinted (AIC-146 b5)". Replay
+  and scripted evidence, which the evaluation lanes use, carries none, and the
+  field is optional for that reason. A refused call leaves no evidence; its
+  typed reason and binding go on the trial (`Trial.refusal`) — see
+  investigation-execution-bound-port.test.mjs › "a 403 from a lab@1 stub
+  through the real b3 port: the test is unavailable, the trial carries a
+  typed denied refusal naming the binding, and the prediction it was meant to
+  test is never refuted (AIC-146 b4)".
 
 ## Removal semantics
 

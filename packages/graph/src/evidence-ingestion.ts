@@ -206,7 +206,15 @@ function readOwnValidatedProperty<T>(
   return result.data;
 }
 
-function readOwnProvenance(source: object) {
+/**
+ * Exported so `createExecuteInvestigation` (`./nodes/execute-investigation.ts`)
+ * can reuse this exact own-data-property reader for its `evidenceProvenance:
+ * 'required'` construction option (AIC-146 b5), rather than growing a second
+ * copy of the same discipline `ingestEvidence` already uses above — one
+ * mechanism, not two (`.claude/rules/invariants.md`, "one mechanism, one
+ * implementation").
+ */
+export function readOwnProvenance(source: object) {
   return readOwnValidatedProperty(source, 'provenance', EvidenceProvenanceSchema, 'evidence provenance');
 }
 

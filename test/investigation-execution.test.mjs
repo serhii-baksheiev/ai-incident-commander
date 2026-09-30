@@ -999,6 +999,193 @@ test('propagates a thrown error from execute instead of swallowing it', async ()
 });
 
 /* -------------------------------------------------------------------------- */
+/* AIC-146 b5: the evidenceProvenance construction option                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `createExecuteInvestigation({ execute, evidenceProvenance })`: a caller on
+ * the bound-source path opts into `'required'` so an adapter's own missing
+ * stamp is refused at the node rather than silently landing as evidence with
+ * no `provenance` field. `'optional'` (or the option omitted entirely) keeps
+ * the existing default behaviour: every row above this section already covers that arm,
+ * and the two rows below re-assert it explicitly under the option's own two
+ * spellings, so a lane never has to guess which spelling the default matches.
+ */
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): an ok outcome whose output is non-empty but carries no own provenance throws a content-free message naming provenance, and records nothing (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('e-unstamped', { statement: 'SENTINEL_DO_NOT_ECHO_b5' })],
+  }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(
+    () => node(testState),
+    (error) => {
+      assert.ok(error instanceof Error, 'the refusal must be a thrown Error');
+      assert.ok(
+        /provenance/i.test(error.message),
+        `expected the message to name provenance, got: ${error.message}`,
+      );
+      assert.ok(
+        !error.message.includes('SENTINEL_DO_NOT_ECHO_b5'),
+        'the message must stay content-free: it must never echo the offending evidence\'s own text',
+      );
+      return true;
+    },
+  );
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): a polluted Object.prototype.provenance does not satisfy the requirement — an ok outcome with no OWN provenance still throws (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const inherited = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-30T00:00:00.000Z',
+    requestFingerprint: `sha256:${createHash('sha256').update('b5-inherited-provenance').digest('hex')}`,
+  };
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [evidenceItem('e-inherited-only')] }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  Object.defineProperty(Object.prototype, 'provenance', { value: inherited, enumerable: false, configurable: true, writable: true });
+  try {
+    await assert.rejects(
+      () => node(state({ tests: [plannedTest('test-a')] })),
+      (error) => {
+        assert.ok(/provenance/i.test(error.message), `expected the message to name provenance, got: ${error.message}`);
+        return true;
+      },
+    );
+  } finally {
+    delete Object.prototype.provenance;
+  }
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): across two planned tests, a later ok outcome missing provenance rejects the whole call — nothing from the earlier, well-stamped test is returned either (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const calls = [];
+  const execute = async (context) => {
+    calls.push(context.testId);
+    if (context.testId === 'test-a') {
+      return { status: 'ok', output: [evidenceItem('e-a')], provenance: validProvenance() };
+    }
+    return { status: 'ok', output: [evidenceItem('e-b')] };
+  };
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a'), plannedTest('test-b')] });
+
+  await assert.rejects(() => node(testState), /provenance/i);
+  assert.deepEqual(
+    calls,
+    ['test-a', 'test-b'],
+    'execute is still called for both tests, in state order, before the second failure surfaces',
+  );
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): an ok outcome with a well-formed provenance records evidence stamped with it, same as the default arm (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const outcomeProvenance = validProvenance();
+  const execute = recordingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('e-new')],
+    provenance: outcomeProvenance,
+  }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.evidence.length, 1);
+  assert.deepEqual(result.evidence[0].provenance, outcomeProvenance);
+  domain.EvidenceSchema.parse(result.evidence[0]);
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): an ok outcome with EMPTY output and no provenance does not throw — there is nothing to stamp (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [] }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.tests[0].status, 'executed');
+  assert.deepEqual(result.trials[0].evidenceIds, []);
+  assert.deepEqual(result.evidence, []);
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): an unavailable outcome with no provenance does not throw — the required option constrains only ok outcomes (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'unavailable', reason: 'denied' }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.tests[0].status, 'unavailable');
+  assert.deepEqual(result.evidence, []);
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): an error outcome with no provenance does not throw — the required option constrains only ok outcomes (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'error', message: 'boom' }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.tests[0].status, 'failed');
+  assert.deepEqual(result.evidence, []);
+});
+
+test('createExecuteInvestigation({execute}) (evidenceProvenance omitted): an ok outcome with no provenance still does not throw, exactly as before AIC-146 b5', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [evidenceItem('e-new')] }));
+  const node = createExecuteInvestigation({ execute });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.evidence.length, 1);
+  assert.equal(Object.hasOwn(result.evidence[0], 'provenance'), false);
+});
+
+test('createExecuteInvestigation({execute, evidenceProvenance: "optional"}): an ok outcome with no provenance does not throw, matching the default exactly (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [evidenceItem('e-new')] }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'optional' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  const result = await node(testState);
+
+  assert.equal(result.evidence.length, 1);
+  assert.equal(Object.hasOwn(result.evidence[0], 'provenance'), false);
+});
+
+test('createExecuteInvestigation refuses an unknown evidenceProvenance option value at construction, before execute is ever called (AIC-146 b5)', () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  let executeCalled = false;
+  const execute = async () => {
+    executeCalled = true;
+    return { status: 'ok', output: [] };
+  };
+
+  assert.throws(
+    () => createExecuteInvestigation({ execute, evidenceProvenance: 'sometimes' }),
+    (error) => {
+      assert.ok(error instanceof Error, 'construction must refuse with a thrown Error');
+      assert.ok(
+        /evidenceProvenance/.test(error.message),
+        `expected the message to name evidenceProvenance, got: ${error.message}`,
+      );
+      return true;
+    },
+  );
+  assert.equal(executeCalled, false, 'execute must never be called when construction itself is refused');
+});
+
+/* -------------------------------------------------------------------------- */
 /* 4. createExecuteInvestigation — within-call dedup and idempotency          */
 /* -------------------------------------------------------------------------- */
 
