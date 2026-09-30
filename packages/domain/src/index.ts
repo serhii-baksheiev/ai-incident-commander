@@ -10,6 +10,7 @@ export * from './null-prototype-input.js';
 export * from './prediction-derivation.js';
 export * from './prediction-evaluation.js';
 export * from './reducers.js';
+export * from './risk-registry.js';
 export * from './run-event-stream.js';
 export * from './scope.js';
 export * from './status-rules.js';

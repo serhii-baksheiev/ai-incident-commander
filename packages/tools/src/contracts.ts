@@ -1,11 +1,16 @@
+import { RISK_REGISTRY } from '@aic/domain';
 import type {
   Evidence,
   InvestigationTest,
   Prediction,
+  RiskClass,
   ToolId,
 } from '@aic/domain';
 
-export type ToolRisk = 'read' | 'safe-write' | 'dangerous';
+// One spelling of the risk vocabulary (AIC-21 slice 1): `ToolRisk` is exactly
+// `@aic/domain`'s `RiskClass`, not a second, independently maintained union —
+// see test/fixtures/risk-registry-type-contract.ts.
+export type ToolRisk = RiskClass;
 
 export type ToolResult<Output> =
   | { status: 'ok'; output: Output }
@@ -45,14 +50,13 @@ export interface ReadOnlyToolDescriptor {
   readonly risk: 'read';
 }
 
-const READ_ONLY_TOOL_DESCRIPTORS = [
-  { id: 'deployments', risk: 'read' },
-  { id: 'logs', risk: 'read' },
-  { id: 'metrics', risk: 'read' },
-  { id: 'traces', risk: 'read' },
-  { id: 'git', risk: 'read' },
-  { id: 'dependencies', risk: 'read' },
-] satisfies ReadOnlyToolDescriptor[];
+// Derived from `@aic/domain`'s `RISK_REGISTRY` (AIC-21 slice 1), in the
+// registry's own order, rather than a private literal list — see
+// test/risk-registry.test.mjs › "READ_ONLY_TOOL_REGISTRY ids are exactly the
+// registry's tool-kind ids, and vice versa".
+const READ_ONLY_TOOL_DESCRIPTORS = RISK_REGISTRY.entries
+  .filter((entry) => entry.kind === 'tool')
+  .map((entry) => ({ id: entry.id, risk: entry.risk })) satisfies ReadOnlyToolDescriptor[];
 
 export const READ_ONLY_TOOL_REGISTRY: readonly Readonly<ReadOnlyToolDescriptor>[] =
   Object.freeze(
