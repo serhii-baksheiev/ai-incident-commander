@@ -124,7 +124,8 @@ route". What is still given up on this route is the REPORT, not the value. It wa
 not a path the refusal would have closed — the same gadget reaches a plain `confirm`, which no form of
 this refusal ever covered — so refusing here would remove one path to a limit
 that stays open regardless, at the price of every crashed run's only way
-forward. What the primitive closes on this route is the READ-supplied
+forward (the only one until AIC-146 added `{ kind: 'continue' }` — see the
+addendum above). What the primitive closes on this route is the READ-supplied
 substitution, and that is closed either way.
 
 ## The remedy that was not taken: a define-semantics serde
@@ -284,7 +285,9 @@ comparing interrupt ids read as success.
 
 Unchanged, deliberately, and each pinned by a row: a run waiting on **no**
 interrupt — the shape a thrown lifecycle node or a dead process leaves — is
-still resumable, because a resume is the only way to advance it; and a
+still resumable, because a resume was the only way to advance it (since
+AIC-146, `{ kind: 'continue' }` is a second one — see the addendum under "Two
+mistakes made on the way"); and a
 **finished** run's resume stays a no-op that resolves, since refusing it would
 be a false statement about a thread that has a checkpoint and a real state.
 

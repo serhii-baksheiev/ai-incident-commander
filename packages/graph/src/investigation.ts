@@ -2120,8 +2120,8 @@ export function createInvestigationGraph({
           // What is still given up is the REPORT: a resume that names a stale
           // id on a thread waiting on nothing is not refused, so an operator
           // learns nothing from it. That is the price of leaving a crashed run
-          // its only way forward, and it is the trade this call takes
-          // deliberately rather than by accident.
+          // a way forward (the only one before `{ kind: 'continue' }`), and it is
+          // the trade this call takes deliberately rather than by accident.
           // see hitl-resume-contract.test.mjs › "advances a run past a
           // transient node failure when the caller retries the same id" and ›
           // "refuses a stale ${label} decision while the run waits on a
