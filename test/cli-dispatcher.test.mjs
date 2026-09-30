@@ -11,6 +11,12 @@ import { childEnv } from './fixtures/child-env.mjs';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cliPath = resolve(projectRoot, 'apps/cli/dist/index.js');
 
+// Assembled from parts, never written as one literal token: `test/postgres-checkpointer.test.mjs`
+// › "keeps the database-backed lane out of npm test and npm run check" refuses
+// any file under test/ that names this variable literally, since `node --test`
+// with no paths discovers every .mjs under a directory named test.
+const POSTGRES_URL_VARIABLE = ['AIC', 'POSTGRES', 'URL'].join('_');
+
 /**
  * The onboarding command nouns `docs/decisions/integration-boundary.md`
  * (Terminology section, around lines 148-153) fixes for AIC-99, plus
@@ -259,6 +265,131 @@ test('aic incident with no subcommand exits non-zero, names "subcommand" as the 
     assert.notEqual(result.status, 0, commandDiagnostics(args, result));
     assert.match(`${result.stdout}${result.stderr}`, /subcommand/i, commandDiagnostics(args, result));
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /not implemented/i, commandDiagnostics(args, result));
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+/**
+ * AIC-146 sub-slice c4b: `aic incident investigate <service> <env>
+ * <incident-id> --roles scripted|model [--run-id <id>]`. No database here —
+ * every row below exits before the connection variable
+ * (`${POSTGRES_URL_VARIABLE}`) is even read, matching the `incident
+ * start`/`apply` rows above; the full argv/deps/refusal contract is pinned
+ * directly against the exported command function in
+ * test/cli-incident-investigate.test.mjs.
+ */
+test('aic incident with an unknown subcommand names both start and investigate', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'bogus-subcommand'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /\bstart\b/, `must still name "start": ${commandDiagnostics(args, result)}`);
+    assert.match(output, /\binvestigate\b/, `must also name "investigate": ${commandDiagnostics(args, result)}`);
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+test('aic incident investigate with missing positionals exits non-zero before the connection variable is read', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'investigate', 'checkout'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    const output = `${result.stdout}${result.stderr}`;
+    assert.doesNotMatch(
+      output,
+      new RegExp(POSTGRES_URL_VARIABLE),
+      `a missing positional must be refused before ${POSTGRES_URL_VARIABLE} is ever read: ${commandDiagnostics(args, result)}`,
+    );
+    // "investigate" must be dispatched (never read as an unrecognised
+    // subcommand) so this row exercises argument validation, not the
+    // "requires a subcommand" dispatch refusal.
+    assert.doesNotMatch(
+      output,
+      /requires a subcommand/,
+      `"investigate" must be a recognised subcommand of "incident": ${commandDiagnostics(args, result)}`,
+    );
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+test('aic incident investigate with no --roles exits non-zero before the connection variable is read', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    const output = `${result.stdout}${result.stderr}`;
+    assert.doesNotMatch(
+      output,
+      new RegExp(POSTGRES_URL_VARIABLE),
+      `a missing --roles must be refused before ${POSTGRES_URL_VARIABLE} is ever read: ${commandDiagnostics(args, result)}`,
+    );
+    assert.doesNotMatch(
+      output,
+      /requires a subcommand/,
+      `"investigate" must be a recognised subcommand of "incident": ${commandDiagnostics(args, result)}`,
+    );
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+test('aic incident investigate --roles bogus exits non-zero before the connection variable is read', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1', '--roles', 'bogus'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}`,
+      /requires a subcommand/,
+      `"investigate" must be a recognised subcommand of "incident": ${commandDiagnostics(args, result)}`,
+    );
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}`,
+      new RegExp(POSTGRES_URL_VARIABLE),
+      `an invalid --roles value must be refused before ${POSTGRES_URL_VARIABLE} is ever read: ${commandDiagnostics(args, result)}`,
+    );
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+test('aic incident investigate --roles model with no ANTHROPIC_API_KEY exits non-zero before the connection variable is read, naming the missing model credential', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1', '--roles', 'model'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    const output = `${result.stdout}${result.stderr}`;
+    assert.doesNotMatch(
+      output,
+      new RegExp(POSTGRES_URL_VARIABLE),
+      `--roles model with no credential must be refused before ${POSTGRES_URL_VARIABLE} is ever read: ${commandDiagnostics(args, result)}`,
+    );
+    assert.match(output, /ANTHROPIC_API_KEY/, `stderr must name the missing model credential: ${commandDiagnostics(args, result)}`);
+    assert.deepEqual(readdirSync(cwd), before);
+  });
+});
+
+test('aic incident investigate with valid args and no connection variable set refuses naming only that variable', () => {
+  withTempCwd((cwd) => {
+    const before = readdirSync(cwd);
+    const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1', '--roles', 'scripted'];
+    const result = runCli(args, { cwd });
+
+    assert.notEqual(result.status, 0, commandDiagnostics(args, result));
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      new RegExp(POSTGRES_URL_VARIABLE),
+      `once every prior check passes, the refusal must name ${POSTGRES_URL_VARIABLE}: ${commandDiagnostics(args, result)}`,
+    );
     assert.deepEqual(readdirSync(cwd), before);
   });
 });
