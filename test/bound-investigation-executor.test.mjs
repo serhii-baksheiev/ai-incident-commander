@@ -999,6 +999,53 @@ test('a binding whose adapter describes a non-read-only operation alongside a re
 });
 
 /* -------------------------------------------------------------------------- */
+/* AIC-21 slice 1 pin: a proposed action id is never a route, even beside a   */
+/* real read-only tool id in the same adapter's describe(). Kills: the risk  */
+/* registry's tool and action kinds merged, or isReadOnlyToolId widened to   */
+/* admit an action id.                                                        */
+/* -------------------------------------------------------------------------- */
+
+test('a binding whose adapter describes incident-comment and restart-service beside logs gets no route for either', async () => {
+  const createBoundInvestigationExecutor = createBoundInvestigationExecutorFactory();
+  const binding = makeBinding();
+  const items = [makeEvidenceItem()];
+  const { calls, source } = buildCountingWorkingSource({
+    adapterId: 'lab',
+    version: '1',
+    operations: ['logs', 'incident-comment', 'restart-service'],
+    items,
+  });
+
+  const constructed = await createBoundInvestigationExecutor({
+    bindings: [binding],
+    mode: 'live',
+    store: tools.createMemoryReplayStore(),
+    clock: fixedClock,
+    fetch: createRefusingFetch('this row uses buildSource, not fetch'),
+    resolveSecret: unreachableResolveSecret,
+    buildSource: buildSourceReturning(source),
+  });
+
+  assert.equal(constructed.ok, true, JSON.stringify(constructed));
+
+  for (const actionId of ['incident-comment', 'restart-service']) {
+    // eslint-disable-next-line no-await-in-loop
+    const outcome = await constructed.executor.execute(baseContext({ tool: actionId, input: {} }));
+    assert.deepEqual(
+      outcome,
+      { status: 'unavailable', reason: 'unavailable', refusal: { reason: 'unavailable', sourceBindingId: null } },
+      `tool ${actionId}`,
+    );
+  }
+  assert.equal(calls.execute, 0, 'neither action id may ever reach source.execute()');
+
+  const logsOutcome = await constructed.executor.execute(baseContext({ tool: 'logs' }));
+  assert.equal(logsOutcome.status, 'ok');
+  assert.deepEqual(logsOutcome.output, items);
+  assert.equal(calls.execute, 1, 'the read-only operation must still route to source.execute()');
+});
+
+/* -------------------------------------------------------------------------- */
 /* Item-level refusals                                                       */
 /* -------------------------------------------------------------------------- */
 
