@@ -213,6 +213,11 @@ property".
 
 ## Two checks on the resume path, and why they are not one
 
+Addendum (AIC-146, 2026-09-30): a `kind: 'continue'` also restores a control
+from the checkpointer, and `execute` passes it through the same
+`readAndValidateRestoredControl` the resume branch uses
+(`packages/graph/src/investigation.ts`).
+
 `assertOwnControlFields` asks only that a field which is **present** be own.
 That is the right question for a `kind: 'start'` state, where a field missing
 entirely must produce the schema's parse error rather than an ownership
