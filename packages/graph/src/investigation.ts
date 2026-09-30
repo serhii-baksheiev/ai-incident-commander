@@ -191,8 +191,8 @@ export type GraphOwnedControlField =
  * Frozen at BOTH levels. `as const` is type-level only and `Object.freeze` is
  * shallow, so freezing the outer array alone leaves each pair writable: an
  * in-process importer could rewrite one entry's field and silently stop that
- * counter being re-validated on the resume path while every refusal message
- * stayed correct. That sits outside this file's stated threat model — a caller
+ * counter being re-validated on a restored checkpoint while every refusal
+ * message stayed correct. That sits outside this file's stated threat model — a caller
  * running in this process can supply the control value directly — but the deep
  * form costs one call and `packages/tools/src/contracts.ts` already uses it.
  */

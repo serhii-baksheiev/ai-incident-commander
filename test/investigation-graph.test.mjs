@@ -1180,8 +1180,8 @@ const assertUncorruptedRunResolves = async (
  * input`, while the guard names the counter. A row here that starts reporting
  * a named counter is a row whose field has lost `LogicalCountSchema`.
  *
- * The guard's own path is the resume path, and it is covered there for all
- * five counters — see hitl-resume-contract.test.mjs › "refuses a
+ * The guard's own paths are the ones that restore a checkpoint (resume, and
+ * since AIC-146 continue), and the resume table covers all five counters — see hitl-resume-contract.test.mjs › "refuses a
  * current-version checkpoint carrying a ${corruption.label} ${counter.label},
  * and names the counter".
  */
