@@ -103,8 +103,10 @@ Addendum (AIC-146, 2026-09-30): "`execute` exposes no replay that carries no
 interrupt id" stopped being true when `{ kind: 'continue' }` was added — see
 `investigation-continue.test.mjs` › "continue advances a run whose node threw
 mid-superstep to completion without re-running already-checkpointed nodes". A
-resume on a thread waiting on no interrupt still advances the run, so the
-recovery path this section protects is kept, and `continue` is a second one.
+resume on a thread waiting on no interrupt still advances the run
+(`hitl-resume-contract.test.mjs` › "advances a run past a transient node
+failure when the caller retries the same id"), so the recovery path this
+section protects is kept, and `continue` is a second one.
 
 The narrower rule is about answering the **wrong** question rather than about
 ownership: a decision naming an interrupt while the run waits on a *different*

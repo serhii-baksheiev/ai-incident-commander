@@ -2098,11 +2098,11 @@ export function createInvestigationGraph({
           // investigation-continue.test.mjs › "continue advances a run whose
           // node threw mid-superstep to completion without re-running
           // already-checkpointed nodes" — and a resume still advances the run
-          // too, so both recovery paths stay. Refusing on `tasks.length > 0` instead, as
-          // the first version of this did, makes every id a caller can send an
-          // error and a crashed run UNRESUMABLE. That is a recovery path this
-          // change has no business removing, and it was removed by accident
-          // rather than chosen.
+          // too, so both recovery paths stay. Refusing on `tasks.length > 0`
+          // instead, as the first version of this did, makes every id a caller
+          // can send an error and a crashed run UNRESUMABLE. That is a
+          // recovery path this change has no business removing, and it was
+          // removed by accident rather than chosen.
           //
           // ⚠ What allowing it cost, and what it costs now. An earlier draft
           // said "nothing is given up"; that was measurably false while the
@@ -2170,15 +2170,16 @@ export function createInvestigationGraph({
         // "refuses a continue with no checkpointer configured"
         const snapshot = await graph.getState(continueConfig);
 
-        // The same three checks `resume` runs on its restored control —
-        // absent-control refusal, ownership, persisted version — through the
-        // one shared function. see investigation-continue.test.mjs › "refuses
-        // a continue under a thread that has no checkpointed control, naming
-        // the thread, and leaves no checkpoint behind", › "refuses a continue
-        // whose restored control field is supplied by an accessor on the
-        // prototype", and › "refuses a continue whose persisted control
-        // predates the current schema version, without retrying the crashed
-        // node"
+        // The same three checks `resume` runs on its restored control, through
+        // the one shared function. Only the absent-control refusal is pinned
+        // from this branch: see investigation-continue.test.mjs › "refuses a
+        // continue under a thread that has no checkpointed control, naming the
+        // thread, and leaves no checkpoint behind". The ownership and version
+        // steps are pinned from the resume side — hitl-resume-contract.test.mjs
+        // › "refuses pollution that is gone by the second checkpoint read" and
+        // state-cutover.test.mjs › "refuses a resume of a FINISHED v3
+        // checkpoint that predates primaryScope, rather than treating it as a
+        // no-op".
         readAndValidateRestoredControl(snapshot.values, executionConfig.threadId);
 
         // Unlike `resume`, which answers one named interrupt, `continue` has

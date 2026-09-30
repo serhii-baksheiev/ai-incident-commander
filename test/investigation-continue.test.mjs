@@ -29,19 +29,13 @@ import { scopedIncident } from './fixtures/scoped-incident.mjs';
  * `graph.invoke(null, config)`. This file reuses the harness style of
  * `hitl-resume-contract.test.mjs`.
  *
- * Two facts about `@langchain/langgraph@1.4.13`'s own `invoke(null, config)`
- * were measured with a two-node throwaway graph rather than assumed, because
- * this file pins a third party's behaviour rather than this repository's:
- * - on a thread with one committed node and a second that threw once, a
- *   second `invoke(null, config)` re-runs only the node that threw (and
- *   whatever follows it) — the committed node's call counter never moves;
- * - on a thread whose last invoke already reached `END`, `invoke(null,
- *   config)` returns that same final state and calls no node again.
- * A third case was measured and is why the interrupt row below is a guard
- * this file adds rather than one `@langchain/langgraph` already provides:
- * `invoke(null, config)` on a thread paused at a pending interrupt does not
- * throw — it resolves with the same interrupted value, silently re-asking
- * the paused question instead of refusing to.
+ * `graph.invoke(null, config)` is `@langchain/langgraph`'s behaviour, not
+ * this repository's; the rows below pin what the canonical graph does with
+ * it: › "continue advances a run whose node threw mid-superstep to completion
+ * without re-running already-checkpointed nodes", › "continue on a finished
+ * run returns its final state without invoking any node again", and › "refuses
+ * a continue while an interrupt is pending, naming the pending review rather
+ * than silently re-asking it".
  */
 
 const proposedConclusion = { kind: 'inconclusive', causes: [] };
@@ -367,11 +361,6 @@ test('refuses a continue with no checkpointer configured', async () => {
   assert.match(outcome.error.message, /No checkpointer set/);
 });
 
-/**
- * `graph.invoke(null, config)` on a finished thread was measured, not
- * inferred: see this file's header. This row holds the canonical graph to
- * that measured behaviour rather than to a guess.
- */
 test('continue on a finished run returns its final state without invoking any node again', async () => {
   const runId = 'run-continue-after-finish';
   const callCounts = {};
