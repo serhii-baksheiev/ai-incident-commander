@@ -215,3 +215,168 @@ test('every Terminology type the registry declares is exported by @aic/domain as
     );
   }
 });
+
+/**
+ * AIC-21 slice 4: the additive addendum the design's section C names. It is
+ * matched by its dated heading text rather than by a fixed section name,
+ * because the addendum may extend an existing section (Terminology, Trust
+ * boundary) rather than open a new top-level one; the slice of text runs from
+ * the addendum's own marker to the next `## ` heading (or end of file).
+ */
+const addendumText = (markdown) => {
+  const start = markdown.indexOf('Addendum (AIC-21,');
+  assert.notEqual(start, -1, 'the ADR must carry a dated "Addendum (AIC-21, <date>)" addendum for the risk registry and ProposedAction (slice 4)');
+  const rest = markdown.slice(start);
+  const end = rest.slice(1).search(/\n## /);
+  return end === -1 ? rest : rest.slice(0, end + 1);
+};
+
+/**
+ * Parses every `| … | … |` row of a GitHub-flavoured markdown table out of a
+ * text fragment, dropping the header row (first cell literally "id", any
+ * case) and the `---` separator row. Cells are trimmed; a blank cell or a
+ * lone `—`/`-` placeholder (used where a tool entry has no blast radius)
+ * normalizes to `undefined` so it compares equal to a domain entry that
+ * simply has no `minimumBlastRadius` field.
+ */
+function parseRegistryTable(text) {
+  const rows = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) continue;
+    const cells = trimmed
+      .slice(1, -1)
+      .split('|')
+      .map((cell) => cell.trim());
+    if (cells.every((cell) => /^:?-+:?$/.test(cell))) continue; // the header separator row
+    if (cells[0].toLowerCase() === 'id') continue; // the header row
+    const [id, kind, risk, blastRaw] = cells;
+    const minimumBlastRadius = blastRaw === '' || blastRaw === '—' || blastRaw === '-' ? undefined : blastRaw;
+    rows.push({ id, kind, risk, minimumBlastRadius });
+  }
+  return rows;
+}
+
+/**
+ * Row 1 (AIC-21 slice 4 design, section C): the addendum's registry table and
+ * `@aic/domain`'s `RISK_REGISTRY.entries` name the same rows, both ways. The
+ * table is read from the doc text; the entries come from the built domain
+ * package — two independently authored sources, neither derived from the
+ * other, compared against each other rather than one checking its own work.
+ */
+test("the addendum's registry table and @aic/domain's RISK_REGISTRY.entries name the same rows, both ways", () => {
+  const rows = parseRegistryTable(addendumText(readAdr()));
+  assert.ok(rows.length > 0, 'the addendum must carry a markdown table with at least one registry row');
+
+  const rowsById = new Map();
+  for (const row of rows) {
+    assert.ok(!rowsById.has(row.id), `the addendum's registry table names id "${row.id}" more than once`);
+    rowsById.set(row.id, row);
+  }
+
+  for (const entry of domain.RISK_REGISTRY.entries) {
+    const row = rowsById.get(entry.id);
+    assert.ok(row, `RISK_REGISTRY entry "${entry.id}" (kind ${entry.kind}) has no row in the addendum's registry table`);
+    assert.equal(row.kind, entry.kind, `the addendum's row for "${entry.id}" names kind "${row.kind}", RISK_REGISTRY says "${entry.kind}"`);
+    assert.equal(row.risk, entry.risk, `the addendum's row for "${entry.id}" names risk "${row.risk}", RISK_REGISTRY says "${entry.risk}"`);
+    assert.equal(
+      row.minimumBlastRadius,
+      entry.minimumBlastRadius,
+      `the addendum's row for "${entry.id}" names minimum blast radius "${row.minimumBlastRadius}", RISK_REGISTRY says "${entry.minimumBlastRadius}"`,
+    );
+  }
+
+  const entryIds = new Set(domain.RISK_REGISTRY.entries.map((entry) => entry.id));
+  for (const row of rows) {
+    assert.ok(entryIds.has(row.id), `the addendum's registry table names "${row.id}", which is not an id in RISK_REGISTRY.entries`);
+  }
+});
+
+/**
+ * Slice 4 design, section C: "risk is resolved from this registry, never
+ * from model or adapter output" must be stated, not just implied by the
+ * table's presence.
+ */
+test('the addendum states that risk is resolved from the registry, never from model or adapter output', () => {
+  const addendum = addendumText(readAdr());
+  assert.match(
+    addendum,
+    /risk[^.]*(?:resolved|comes)[^.]*registry[^.]*never[^.]*(?:model|adapter)/i,
+    'the addendum must say risk is resolved from the registry, never from model or adapter output',
+  );
+});
+
+/**
+ * Row 2: `docs/incident-commander-architecture-v1.md` §10's tool-layer
+ * interface spells the risk union as a TypeScript literal
+ * (`risk: "read" | "safe-write" | "dangerous"`). It must name exactly the
+ * same three values as `@aic/domain`'s `RiskClassSchema.options`, both ways
+ * — the doc's literal and the schema's frozen options array are independent
+ * sources, so neither is derived from the other here.
+ */
+test("the architecture doc's §10 risk union and @aic/domain's RiskClassSchema.options are the same set, both ways", () => {
+  const architecture = section(
+    readFileSync(join(projectRoot, 'docs', 'incident-commander-architecture-v1.md'), 'utf8'),
+    '10. Tool layer',
+  );
+  const unionMatch = architecture.match(/risk:\s*("(?:[a-z-]+)"(?:\s*\|\s*"[a-z-]+")*)\s*;/);
+  assert.ok(unionMatch, 'the architecture doc §10 must carry the literal `risk: "read" | "safe-write" | "dangerous";` union');
+  const docValues = [...unionMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+
+  const schemaValues = [...domain.RiskClassSchema.options];
+  for (const value of schemaValues) {
+    assert.ok(docValues.includes(value), `RiskClassSchema.options names "${value}", which §10's literal union does not name`);
+  }
+  for (const value of docValues) {
+    assert.ok(schemaValues.includes(value), `§10's literal union names "${value}", which RiskClassSchema.options does not name`);
+  }
+});
+
+/**
+ * Row 3: the addendum names `ProposedAction` and distinguishes the action
+ * `idempotencyKey` (AIC-21) from the intake `idempotencyKey` (AIC-96) the
+ * existing Terminology row already defines. That existing row is pinned
+ * literally so the addendum lands as an addition beside it, not a rewrite of
+ * it (AIC-21 slice 4 is additive-only).
+ */
+test('the existing intake idempotencyKey Terminology row is unchanged by the addendum', () => {
+  const terminology = section(readAdr(), 'Terminology');
+  assert.match(
+    terminology,
+    /\|\s*`idempotencyKey`\s*\|\s*the intake key that makes repeated intake of one incident a no-op\s*\|/,
+    'the existing Terminology row defining `idempotencyKey` as the intake key must remain exactly as written; the addendum only adds beside it',
+  );
+});
+
+test('the addendum names ProposedAction and distinguishes the action idempotencyKey from the intake key', () => {
+  const addendum = addendumText(readAdr());
+  assert.match(addendum, /ProposedAction/, 'the addendum must name ProposedAction');
+  assert.match(
+    addendum,
+    /action[^.]*`?idempotencyKey`?[^.]*distinct[^.]*intake/i,
+    'the addendum must say the action idempotencyKey is distinct from the intake idempotencyKey',
+  );
+});
+
+/**
+ * Row 4: the "every Terminology type … exported … as its Schema" test above
+ * (line 201) reads a hard-coded array literal, not the Terminology section's
+ * text — so it does not start requiring `ProposedActionSchema` merely
+ * because the addendum adds `ProposedAction` terminology, and it is
+ * unaffected by this slice either way. `@aic/domain` exports
+ * `ProposedActionDraftSchema` and `ProposedActionRecordSchema`, never a
+ * `ProposedActionSchema` (design section B2) — so the addendum's Terminology
+ * entries must name the draft and the record by those exact two names, not
+ * the unexported umbrella name.
+ */
+test('@aic/domain has no ProposedActionSchema export, only ProposedActionDraftSchema and ProposedActionRecordSchema', () => {
+  assert.equal(domain.ProposedActionSchema, undefined, '@aic/domain must not export ProposedActionSchema (design section B2: draft and record are two shapes, not one)');
+  assert.equal(typeof domain.ProposedActionDraftSchema?.safeParse, 'function', '@aic/domain must export ProposedActionDraftSchema');
+  assert.equal(typeof domain.ProposedActionRecordSchema?.safeParse, 'function', '@aic/domain must export ProposedActionRecordSchema');
+});
+
+test('the addendum names the two real ProposedAction exports, ProposedActionDraft and ProposedActionRecord, not an unexported umbrella name', () => {
+  const addendum = addendumText(readAdr());
+  assert.match(addendum, /ProposedActionDraft\b/, 'the addendum must name ProposedActionDraft (the model-facing shape, `ProposedActionDraftSchema` in @aic/domain)');
+  assert.match(addendum, /ProposedActionRecord\b/, 'the addendum must name ProposedActionRecord (the audited shape, `ProposedActionRecordSchema` in @aic/domain)');
+});

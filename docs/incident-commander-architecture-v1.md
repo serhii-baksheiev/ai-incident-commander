@@ -536,6 +536,10 @@ interface IncidentTool<I, O> {
 
 v0.1 implements **read-only** tools only.
 
+Addendum (AIC-21): the risk classification of every tool and action type is
+data in `packages/domain`'s `RISK_REGISTRY`, tabulated in
+`docs/decisions/integration-boundary.md` (Terminology, AIC-21 addendum).
+
 Initial narrow tool set:
 
 - recent deployments;
