@@ -263,7 +263,7 @@ test('the claim and sweep statements use FOR UPDATE SKIP LOCKED, and renewal and
     'createRunStore must expose the SQL statements it will run as store.SQL_STATEMENTS (see this file\'s header for why), mirroring createPostgresCheckpointer\'s saver.SQL_STATEMENTS',
   );
 
-  for (const name of ['claimNext', 'sweepExpired']) {
+  for (const name of ['claimNext', 'claimRun', 'sweepExpired']) {
     assert.equal(typeof store.SQL_STATEMENTS[name], 'string', `SQL_STATEMENTS.${name} must be present`);
     assert.match(
       store.SQL_STATEMENTS[name],
@@ -383,4 +383,93 @@ test('an idle-client error on the store pool does not escape as an uncaught exce
   } finally {
     await store.close();
   }
+});
+
+/* -------------------------------------------------------------------------- */
+/* AIC-146 c3 — claimRun: the same claim semantics as claimNext, targeted at   */
+/* one named run_id instead of the head of the queue                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * SQL-text assertions only, against the unreachable-address store from
+ * `buildRunStore` — no database is dialed. `claimRun` reuses claimNext's
+ * shape (candidate / exhausted / claimed) with one difference: its candidate
+ * is a single named run_id rather than the oldest queued row, so it must
+ * filter on `run_id = $n` in addition to `status = 'queued'`, and it must
+ * keep both branches `claimNext` has — the exhaustion branch that fails a
+ * run past `maxExecutionAttempts` with `recovery_exhausted`, and the branch
+ * that claims it. See infra/postgres/tests/run-store.live.mjs for the
+ * database-backed rows this statement's actual behaviour is measured
+ * against.
+ */
+test('claimRun targets a named run_id, requires status = \'queued\', compares against clock_timestamp() rather than now(), and keeps the recovery_exhausted branch', async (t) => {
+  const store = await buildRunStore(t);
+
+  assert.equal(
+    typeof store.SQL_STATEMENTS.claimRun,
+    'string',
+    'createRunStore must expose SQL_STATEMENTS.claimRun, the same convention claimNext, sweepExpired and renewLease already follow (see this file\'s header): without it this row, and the live lane, have nothing to read the actual SQL from rather than trusting a comment to describe it correctly',
+  );
+
+  const sql = store.SQL_STATEMENTS.claimRun;
+
+  assert.match(
+    sql,
+    /run_id\s*=\s*\$\d+/i,
+    'claimRun must filter its candidate on a run_id parameter — it claims the one named run, not the oldest queued row the way claimNext does',
+  );
+  assert.match(
+    sql,
+    /status\s*=\s*'queued'/i,
+    'claimRun must only claim a run whose status is \'queued\', the same guard claimNext\'s candidate CTE applies',
+  );
+  assert.match(
+    sql,
+    /clock_timestamp\s*\(\s*\)/i,
+    'claimRun must compare against clock_timestamp(): now() is fixed for the whole transaction, so a lease check inside one would compare against the transaction\'s start time rather than the actual current instant (the same reasoning claimNext and renewLease follow, this file\'s header)',
+  );
+  const withoutClockTimestamp = sql.replace(/clock_timestamp\s*\(\s*\)/gi, '');
+  assert.doesNotMatch(
+    withoutClockTimestamp,
+    /\bnow\s*\(\s*\)/i,
+    'claimRun must not fall back to now() anywhere in the statement',
+  );
+  assert.match(
+    sql,
+    /recovery_exhausted/i,
+    'claimRun must keep the maxExecutionAttempts exhaustion branch: a run past its bound must still be failed with terminal_reason recovery_exhausted rather than left queued or silently claimed anyway',
+  );
+  assert.match(
+    sql,
+    /status\s*=\s*'failed'/i,
+    'claimRun\'s exhaustion branch must move the targeted run to \'failed\', exactly like claimNext\'s exhausted branch',
+  );
+  assert.match(
+    sql,
+    /status\s*=\s*'running'/i,
+    'claimRun\'s claim branch must move the targeted run to \'running\', exactly like claimNext\'s claimed branch',
+  );
+});
+
+/**
+ * The independent oracle for this row is written by hand, not derived from
+ * `RUN_STORE_TRANSITIONS` itself (`.claude/rules/invariants.md`,
+ * "independent-oracle invariant"): a mutation that quietly added a fourth
+ * pair to the module's own list would still make a self-referential
+ * comparison pass. `claimRun` performs only `queued->running` and the
+ * bounded `queued->failed` — both already in the list `claimNext` populated
+ * — so adding it must not add a fourth pair to the list.
+ */
+test('RUN_STORE_TRANSITIONS names exactly the three transitions claimNext and sweepExpired already perform, unchanged by claimRun', () => {
+  const { RUN_STORE_TRANSITIONS } = persistence;
+
+  assert.deepEqual(
+    RUN_STORE_TRANSITIONS,
+    [
+      { from: 'queued', to: 'running' },
+      { from: 'queued', to: 'failed' },
+      { from: 'running', to: 'queued' },
+    ],
+    'claimRun must reuse transitions the store already performs (queued->running to claim, the bounded queued->failed to exhaust) rather than registering a new pair: RUN_STORE_TRANSITIONS must stay exactly these three',
+  );
 });

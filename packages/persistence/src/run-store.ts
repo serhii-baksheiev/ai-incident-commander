@@ -37,9 +37,10 @@ export interface RunRecord {
  */
 export interface RunStore {
   readonly pool: Pool;
-  readonly SQL_STATEMENTS: Readonly<Record<'claimNext' | 'sweepExpired' | 'renewLease', string>>;
+  readonly SQL_STATEMENTS: Readonly<Record<'claimNext' | 'claimRun' | 'sweepExpired' | 'renewLease', string>>;
   createRun(run: { runId: string; input: unknown }): Promise<void>;
   claimNext(workerId: string): Promise<RunClaim | null>;
+  claimRun(runId: string, workerId: string): Promise<RunClaim | null>;
   renewLease(claim: RunClaim): Promise<boolean>;
   sweepExpired(): Promise<string[]>;
   getRun(runId: string): Promise<RunRecord | null>;
@@ -48,8 +49,8 @@ export interface RunStore {
 
 /**
  * The { from, to } pairs the store's own SQL statements perform: `claimNext`
- * (`queued->running`, and bounded exhaustion's `queued->failed`) and
- * `sweepExpired` (`running->queued`). Checked against the domain's own
+ * and `claimRun` (`queued->running`, and bounded exhaustion's
+ * `queued->failed`) and `sweepExpired` (`running->queued`). Checked against the domain's own
  * `assertRunTransition` below, at module load — not only in a test — so a pair
  * added here that the domain refuses fails as soon as this module is imported.
  * See run-store.test.mjs › "every status transition the store's statements
@@ -70,7 +71,7 @@ for (const { from, to } of RUN_STORE_TRANSITIONS) {
 const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
 
 /**
- * The three SQL statements this store runs, built once per store against its
+ * The SQL statements this store runs, built once per store against its
  * own connection string's schema constant.
  *
  * Each pass of `claimNext` is ONE statement: a `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`
@@ -96,12 +97,19 @@ const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
  * each renewal set `heartbeat_at`: see run-store.live.mjs › "a claim records
  * a heartbeat, and each renewal moves it forward".
  *
- * All three compare against `clock_timestamp()`, never `now()`: `now()` is
+ * All of them compare against `clock_timestamp()`, never `now()`: `now()` is
  * fixed for the whole transaction, so a lease check inside one would compare
  * against the transaction's start time rather than the actual current
  * instant. See run-store.test.mjs › "the claim and sweep statements use FOR
  * UPDATE SKIP LOCKED, and renewal and claim compare against clock_timestamp()
  * rather than now()".
+ *
+ * `claimRun` is `claimNext`'s same candidate/exhausted/claimed shape, targeted
+ * at one named run instead of the head of the queue: its candidate filters on
+ * `run_id = $1 AND status = 'queued'` rather than ordering the whole table,
+ * and it keeps both of `claimNext`'s branches and its `FOR UPDATE SKIP
+ * LOCKED` clause. See run-store.live.mjs › "claimRun claims exactly the named run even when an
+ * older queued run exists that claimNext would pick".
  */
 function buildSqlStatements(): RunStore['SQL_STATEMENTS'] {
   return Object.freeze({
@@ -165,7 +173,49 @@ function buildSqlStatements(): RunStore['SQL_STATEMENTS'] {
         AND lease_expires_at > clock_timestamp()
       RETURNING run_id
     `,
+    claimRun: `
+      WITH candidate AS MATERIALIZED (
+        SELECT run_id
+        FROM "${APPLICATION_SCHEMA}".runs
+        WHERE run_id = $1
+          AND status = 'queued'
+        FOR UPDATE SKIP LOCKED
+      ),
+      exhausted AS (
+        UPDATE "${APPLICATION_SCHEMA}".runs AS r
+        SET status = 'failed',
+            terminal_reason = '${TERMINAL_REASON_RECOVERY_EXHAUSTED}'
+        FROM candidate
+        WHERE r.run_id = candidate.run_id
+          AND r.execution_attempt >= $3
+        RETURNING r.run_id
+      ),
+      claimed AS (
+        UPDATE "${APPLICATION_SCHEMA}".runs AS r
+        SET status = 'running',
+            owner_worker_id = $2,
+            execution_attempt = r.execution_attempt + 1,
+            lease_expires_at = clock_timestamp() + ($4 * interval '1 millisecond'),
+            heartbeat_at = clock_timestamp()
+        FROM candidate
+        WHERE r.run_id = candidate.run_id
+          AND r.execution_attempt < $3
+        RETURNING r.run_id AS run_id, r.owner_worker_id AS owner_worker_id, r.execution_attempt AS execution_attempt
+      )
+      SELECT run_id, owner_worker_id, execution_attempt, false AS exhausted FROM claimed
+      UNION ALL
+      SELECT run_id, NULL, NULL, true AS exhausted FROM exhausted
+    `,
   });
+}
+
+/** Shared by `claimNext` and `claimRun`: both read the same `claimed` row shape. */
+function mapClaimedRow(row: { run_id: string; owner_worker_id: string | null; execution_attempt: number | null }): RunClaim {
+  return {
+    runId: row.run_id,
+    ownerWorkerId: row.owner_worker_id as string,
+    executionAttempt: Number(row.execution_attempt),
+  };
 }
 
 function assertPositiveInteger(value: unknown, name: string): number {
@@ -228,12 +278,26 @@ export function createRunStore(connectionString: string, options: RunStoreOption
         const row = rows[0];
         if (!row) return null;
         if (row.exhausted) continue;
-        return {
-          runId: row.run_id,
-          ownerWorkerId: row.owner_worker_id as string,
-          executionAttempt: Number(row.execution_attempt),
-        };
+        return mapClaimedRow(row);
       }
+    },
+
+    // A named run has exactly one candidate row, so unlike claimNext there is
+    // nothing to loop past: exhausted or absent both mean null. See
+    // run-store.live.mjs › "claimRun on a running, completed or waiting_human
+    // run returns null and leaves the row untouched" and › "claimRun past
+    // maxExecutionAttempts fails the run with recovery_exhausted, and returns
+    // null".
+    async claimRun(runId, workerId) {
+      const { rows } = await pool.query<{
+        run_id: string;
+        owner_worker_id: string | null;
+        execution_attempt: number | null;
+        exhausted: boolean;
+      }>(SQL_STATEMENTS.claimRun, [runId, workerId, maxExecutionAttempts, leaseMs]);
+      const row = rows[0];
+      if (!row || row.exhausted) return null;
+      return mapClaimedRow(row);
     },
 
     async renewLease(claim) {
