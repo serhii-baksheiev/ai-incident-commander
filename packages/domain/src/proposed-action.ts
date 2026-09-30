@@ -7,8 +7,8 @@
  * The boundary function that builds a `ProposedAction` from untrusted input
  * (`buildProposedAction`), the refusal vocabulary
  * (`ProposalRefusalReasonSchema`), `parseProposedActionRecord` and the
- * branded `ProposedAction` type are a later, Tier-2, owner-gated slice — see
- * `.claude/runs/20260930-aic21/design.md`, section B4. Nothing here builds a
+ * branded `ProposedAction` type are a later, Tier-2, owner-gated slice
+ * (AIC-21, slice 3). Nothing here builds a
  * `ProposedAction`, resolves risk against the registry, applies an
  * `ActionPolicy`, or checks cited evidence against state.
  *
@@ -73,7 +73,7 @@ const ActionBlastRadiusSchema = z.strictObject({
  * rollback semantics is rejected by the schema itself, never by a later
  * check. See proposed-action-contract.test.mjs › "a draft with no
  * rollbackPlan is refused" and › "a draft whose rollbackPlan strategy is
- * 'none' is refused: there is no none variant".
+ * "none" is refused: there is no none variant".
  */
 const ActionRollbackPlanSchema = z.discriminatedUnion('strategy', [
   z.strictObject({ strategy: z.literal('compensating-action'), description: screenedText(1000) }),
@@ -99,7 +99,8 @@ const ActionPreconditionsSchema = z
  * The only shape accepted from a model or a HITL "modify". Strict, so an
  * extra key is refused rather than silently stripped — `risk`,
  * `idempotencyKey`, `primaryScope`, `incidentId`, `writeCredentialRefId`,
- * `contractVersion` and `proposedBy` are all server-derived facts about a
+ * `contractVersion`, `riskRegistryVersion` and `proposedBy` are all
+ * server-derived facts about a
  * proposal, never a model's to state, and a draft carrying any of them is
  * refused as `unrecognized_keys` rather than having the field quietly
  * discarded. `params` is parsed per action type only after the type is
@@ -124,9 +125,31 @@ export type ProposedActionDraft = z.infer<typeof ProposedActionDraftSchema>;
  * the registry's safe-write action ids, and vice versa"
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
  */
+/**
+ * `z.strictObject` drops an own `__proto__` key instead of reporting it, and
+ * `canonicalJson` keeps one as data, so a params object parsed from JSON with
+ * an own `__proto__` would read as the same payload here while deriving a
+ * different idempotency key. Refused before the strict parse, with a fixed
+ * message that echoes nothing — see proposed-action-contract.test.mjs ›
+ * "ACTION_PARAMS_SCHEMAS["incident-comment"] refuses params carrying an own
+ * __proto__ key parsed from JSON, and echoes nothing".
+ */
+function paramsWithoutOwnProto<T extends z.ZodType>(schema: T) {
+  return z
+    .unknown()
+    .superRefine((value, ctx) => {
+      if (typeof value === 'object' && value !== null && Object.hasOwn(value, '__proto__')) {
+        ctx.addIssue({ code: 'custom', message: 'action params must not carry an own __proto__ key', path: [] });
+      }
+    })
+    .pipe(schema);
+}
+
 export const ACTION_PARAMS_SCHEMAS = Object.freeze({
-  'incident-comment': z.strictObject({ body: screenedText(4000) }),
-  'create-follow-up-ticket': z.strictObject({ title: screenedText(200), body: screenedText(4000) }),
+  'incident-comment': paramsWithoutOwnProto(z.strictObject({ body: screenedText(4000) })),
+  'create-follow-up-ticket': paramsWithoutOwnProto(
+    z.strictObject({ title: screenedText(200), body: screenedText(4000) }),
+  ),
 });
 
 /**
@@ -155,16 +178,21 @@ const proposedActionRecordCommonFields = {
 };
 
 /**
- * One discriminated-union member per `ACTION_PARAMS_SCHEMAS` entry, so
- * `params` is typed by `actionType` and the two can never drift apart.
+ * One discriminated-union member per `ACTION_PARAMS_SCHEMAS` entry, built
+ * from each literal key so `actionType` stays a literal type and narrowing on
+ * it narrows `params` — see proposed-action-contract.test.mjs › "compiles the
+ * proposed-action type contract: a record narrows params by actionType, and
+ * an unregistered actionType does not type-check". The variant list and the
+ * params map are kept equal by › "the record schema's actionType variants are
+ * exactly ACTION_PARAMS_SCHEMAS' keys, and vice versa".
  */
-const proposedActionRecordVariants = Object.entries(ACTION_PARAMS_SCHEMAS).map(([actionType, paramsSchema]) =>
-  z.strictObject({
+function proposedActionRecordVariant<K extends keyof typeof ACTION_PARAMS_SCHEMAS>(actionType: K) {
+  return z.strictObject({
     ...proposedActionRecordCommonFields,
     actionType: z.literal(actionType),
-    params: paramsSchema,
-  }),
-);
+    params: ACTION_PARAMS_SCHEMAS[actionType],
+  });
+}
 
 /**
  * The audited record: what AIC-22's ledger will store and AIC-25's executor
@@ -176,13 +204,10 @@ const proposedActionRecordVariants = Object.entries(ACTION_PARAMS_SCHEMAS).map((
  * schema alone cannot express (the idempotency key matches the record,
  * `resolveRisk` agrees) belong to `parseProposedActionRecord`, a later slice.
  */
-export const ProposedActionRecordSchema = z.discriminatedUnion(
-  'actionType',
-  proposedActionRecordVariants as [
-    (typeof proposedActionRecordVariants)[number],
-    ...(typeof proposedActionRecordVariants)[number][],
-  ],
-);
+export const ProposedActionRecordSchema = z.discriminatedUnion('actionType', [
+  proposedActionRecordVariant('incident-comment'),
+  proposedActionRecordVariant('create-follow-up-ticket'),
+]);
 export type ProposedActionRecord = z.infer<typeof ProposedActionRecordSchema>;
 
 /**
@@ -196,8 +221,24 @@ const ActionIdempotencyPartsSchema = z.strictObject({
   incidentId: z.string().min(1).max(200),
   primaryScope: PrimaryScopeSchema,
   actionType: ActionTypeSchema,
-  params: z.unknown(),
+  params: z.custom<Record<string, unknown>>(
+    (value) => typeof value === 'object' && value !== null && !Array.isArray(value),
+    'action params must be a plain object',
+  ),
 });
+
+/**
+ * True when a canonical value (the output of `canonicalJson`, which keeps an
+ * own `__proto__` key as data) carries one at any depth. Walks only what
+ * `canonicalJson` has already walked, so it adds no depth `canonicalJson`
+ * did not already survive.
+ */
+function carriesOwnProtoKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(carriesOwnProtoKey);
+  if (typeof value !== 'object' || value === null) return false;
+  if (Object.hasOwn(value, '__proto__')) return true;
+  return Object.values(value).some(carriesOwnProtoKey);
+}
 
 const ACTION_IDEMPOTENCY_TUPLE_VERSION = 1 as const;
 
@@ -223,11 +264,19 @@ const ACTION_IDEMPOTENCY_TUPLE_VERSION = 1 as const;
  * codebase (`.claude/rules/invariants.md`, "one mechanism, one
  * implementation").
  *
- * @throws {Error} (a `ZodError`) when `parts` carries a missing or extra key,
- * or a field of the wrong shape.
+ * @throws {Error} a `ZodError` when `parts` carries a missing or extra key,
+ * or a field of the wrong shape (including `params` that is not a plain
+ * object); an `Error` when `params` carries an own `__proto__` key at any
+ * depth — see action-idempotency.test.mjs › "params carrying an own __proto__
+ * key, at the top or nested, are refused rather than given a second
+ * identity"; and whatever `canonicalJson` throws for a value it refuses.
  */
 export function deriveActionIdempotencyKey(parts: unknown): string {
   const { incidentId, primaryScope, actionType, params } = ActionIdempotencyPartsSchema.parse(parts);
+  const canonicalParams = canonicalJson(params);
+  if (carriesOwnProtoKey(canonicalParams)) {
+    throw new Error('action params must not carry an own __proto__ key');
+  }
   const tuple = [
     'aic.action',
     ACTION_IDEMPOTENCY_TUPLE_VERSION,
@@ -235,7 +284,7 @@ export function deriveActionIdempotencyKey(parts: unknown): string {
     primaryScope.environmentId,
     incidentId,
     actionType,
-    canonicalJson(params),
+    canonicalParams,
   ];
   const digest = createHash('sha256').update(JSON.stringify(tuple)).digest('hex');
   return `sha256:${digest}`;
