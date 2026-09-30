@@ -34,11 +34,11 @@ services:
     ports:
       - "127.0.0.1:${AIC_POSTGRES_HOST_PORT:?set AIC_POSTGRES_HOST_PORT}:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "--username", "aic", "--dbname", "aic"]
+      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "aic", "--dbname", "aic"]
       interval: 1s
       timeout: 2s
       retries: 20
-      start_period: 1s
+      start_period: 60s
     # No volume: the database lives in the container's writable layer and goes
     # away with `down`. The restart acceptance row is about the AIC PROCESS
     # restarting while the database keeps running, which is what the live lane
