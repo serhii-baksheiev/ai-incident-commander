@@ -5,10 +5,28 @@ import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 
 import { createDirectorySecretResolver } from '@aic/tools';
-import { createIncidentStore, createRegistryStore, setupApplicationSchema, type RegistryStore } from '@aic/persistence';
+import {
+  assertCheckpointerSchemaVersion,
+  createFencedCheckpointer,
+  createIncidentStore,
+  createPostgresCheckpointer,
+  createRegistryStore,
+  createRunStore,
+  openRunWriteContext,
+  setupApplicationSchema,
+  type CheckpointerVersionSource,
+  type RegistryStore,
+  type RunClaim,
+  type RunStore,
+} from '@aic/persistence';
 
 import { runRegistryCommand, type RegistryCommandDeps } from './commands/registry.js';
 import { runIncidentCommand, type IncidentCommandStore } from './commands/incident.js';
+import {
+  HEARTBEAT_INTERVAL_MS,
+  runIncidentInvestigateCommand,
+  type IncidentInvestigateWriteContext,
+} from './commands/incident-investigate.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runDevSpike } from './commands/dev-spike.js';
 import { runInvestigate } from './commands/investigate.js';
@@ -118,6 +136,60 @@ function createConnectedIncidentStore(env: NodeJS.ProcessEnv): IncidentCommandSt
   };
 }
 
+/**
+ * AIC-146 c4b: `aic incident investigate`'s own `RunStore` session — ONE
+ * store (one `pg.Pool`), built lazily on the first call any of its methods
+ * makes, so a parse refusal (bad argv, missing `--roles`, no model
+ * credential) still never reads `AIC_POSTGRES_URL` — the same lazy
+ * convention `createConnectedRegistryStore` follows above. Unlike that
+ * helper's per-call open/close pattern, this pool has to survive the WHOLE
+ * command — the heartbeat keeps renewing the same lease, and the write
+ * context keeps reusing the same pool for every commit — so the caller
+ * closes it once with `.close()` after the command settles.
+ */
+function createConnectedRunSession(env: NodeJS.ProcessEnv) {
+  let store: RunStore | undefined;
+  const ensure = (): RunStore => {
+    store ??= createRunStore(requirePostgresUrl(env), {
+      leaseMs: HEARTBEAT_INTERVAL_MS * 3,
+      maxExecutionAttempts: 5,
+    });
+    return store;
+  };
+  return {
+    runs: {
+      getRun: (runId: string) => ensure().getRun(runId),
+      createRun: (run: { runId: string; input: unknown }) => ensure().createRun(run),
+      claimRun: (runId: string, workerId: string) => ensure().claimRun(runId, workerId),
+      sweepExpired: () => ensure().sweepExpired(),
+      renewLease: (claim: RunClaim) => ensure().renewLease(claim),
+    },
+    openWriteContext: (claim: RunClaim) => openRunWriteContext(ensure(), claim),
+    close: async (): Promise<void> => {
+      if (store !== undefined) await store.close();
+    },
+  };
+}
+
+/**
+ * The checkpointer half of the same command: the PostgreSQL checkpointer,
+ * schema-version-checked before use (AIC-55), fenced by the run's own write
+ * context on every path but the read-only "already completed" one — no
+ * context at all, per `incident-investigate.ts`'s own `deps.createCheckpointer`
+ * contract. A schema-version failure (an unprovisioned checkpointer schema)
+ * is left to throw here; `runIncidentInvestigateCommand` maps any throw from
+ * this function to its own `checkpointer-not-provisioned` refusal.
+ */
+async function createConnectedCheckpointer(env: NodeJS.ProcessEnv, context?: IncidentInvestigateWriteContext) {
+  const saver = createPostgresCheckpointer(requirePostgresUrl(env));
+  // `saver.pool` is declared `private` in the library's own types (it is a
+  // public, queryable field at runtime — the same field the live persistence
+  // tests read directly), so the version check goes through a structural cast
+  // rather than a second checkpointer construction just to read it.
+  await assertCheckpointerSchemaVersion((saver as unknown as { pool: CheckpointerVersionSource }).pool);
+  return context === undefined ? saver : createFencedCheckpointer(saver, context);
+}
+
 const SECRETS_DIR_VARIABLE = 'AIC_SECRETS_DIR';
 const DEFAULT_SECRETS_DIR = '/run/secrets';
 
@@ -221,18 +293,41 @@ async function main(argv: readonly string[]): Promise<void> {
 
   if (command === 'incident') {
     const { command: sub, rest: incidentRest } = nextPositional(rest);
-    if (sub !== 'start') {
-      // Fixed text: "incident" itself is implemented in this slice, so this
-      // is a subcommand problem, never the "not implemented" stub wording.
-      throw new Error('aic incident requires a subcommand: start');
+    if (sub === 'start') {
+      await runIncidentCommand(incidentRest, {
+        store: createConnectedIncidentStore(process.env),
+        stdout: writeStdoutLine,
+        now: () => new Date().toISOString(),
+        generateId: randomUUID,
+      });
+      return;
     }
-    await runIncidentCommand(incidentRest, {
-      store: createConnectedIncidentStore(process.env),
-      stdout: writeStdoutLine,
-      now: () => new Date().toISOString(),
-      generateId: randomUUID,
-    });
-    return;
+    if (sub === 'investigate') {
+      const session = createConnectedRunSession(process.env);
+      try {
+        await runIncidentInvestigateCommand(incidentRest, {
+          env: process.env,
+          registry: createConnectedRegistryStore(process.env),
+          incidents: {
+            getIncident: (id) => createIncidentStore(requirePostgresUrl(process.env)).getIncident(id),
+          },
+          runs: session.runs,
+          openWriteContext: session.openWriteContext,
+          createCheckpointer: (context) => createConnectedCheckpointer(process.env, context),
+          fetch: globalThis.fetch,
+          resolveSecret: (secretName) => createSecretResolver(process.env).resolve(secretName),
+          workerId: `aic-cli-${randomUUID()}`,
+          stdout: writeStdoutLine,
+          now: () => new Date().toISOString(),
+        });
+      } finally {
+        await session.close();
+      }
+      return;
+    }
+    // Fixed text: "incident" itself is implemented in this slice, so this
+    // is a subcommand problem, never the "not implemented" stub wording.
+    throw new Error('aic incident requires a subcommand: one of start, investigate');
   }
 
   if (command === 'apply') {
