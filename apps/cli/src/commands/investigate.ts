@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import {
   boundedJsonViolation,
-  deriveHypothesisStatus,
   IncidentSchema,
   INCIDENT_STATE_SCHEMA_VERSION,
   LogicalCountSchema,
   routeRequestVocabulary,
   STATUS_RULES_VERSION,
   type BoundedJsonViolation,
+  type CommittedExecution,
   type Incident,
   type IncidentState,
 } from '@aic/domain';
@@ -36,6 +36,7 @@ import type { PlannedReplayScenarioFixture } from '@aic/tools/replay';
 import { createPlannedReplayExecutor } from '@aic/tools/replay';
 
 import { readBoundedRegularFile } from './bounded-file.js';
+import { summarizeInvestigation } from './investigation-summary.js';
 
 /**
  * AIC-126 slice b: `aic investigate`, a minimal real product entry that runs
@@ -361,19 +362,26 @@ export function buildInitialState(
  *
  * Takes the already-constructed port, so a test can wire a fake one directly
  * — the same seam `scripts/lane-arms.mjs`'s `modelNodes(record, port)` uses.
+ * `execution`, when given, is forwarded to all four role factories
+ * (`ModelRoleOptions.execution`, `@aic/roles`) unchanged, so a caller that
+ * wants committed, replay-safe model calls gets it on every role rather than
+ * some.
  * see cli-investigate.test.mjs › "createModelReasoning(fakePort) wires
  * generate_hypotheses, challenge_hypothesis and propose_conclusion as model
  * roles carrying the PREDICTION_TEMPLATES mechanism vocabulary, which equals
  * evals.ROOT_CAUSE_MECHANISMS as a set"
+ * see cli-shared-pieces.test.mjs › "createModelReasoning(port, execution)
+ * forwards execution to all four model roles: each of the four reasoning
+ * calls commits under a key starting with the model.role prefix"
  */
-export function createModelReasoning(port: ModelPort): InvestigationReasoning {
+export function createModelReasoning(port: ModelPort, execution?: CommittedExecution): InvestigationReasoning {
   const mechanisms = Object.keys(PREDICTION_TEMPLATES.byMechanism);
   const requestVocabulary = routeRequestVocabulary(INVESTIGATION_ROUTES);
   return {
-    generate_hypotheses: createModelGenerateHypotheses({ port, mechanisms }),
-    interpret_residual_evidence: createModelInterpretResidualEvidence({ port }),
-    challenge_hypothesis: createModelChallengeHypothesis({ port, mechanisms, requestVocabulary }),
-    propose_conclusion: createModelProposeConclusion({ port, mechanisms }),
+    generate_hypotheses: createModelGenerateHypotheses({ port, execution, mechanisms }),
+    interpret_residual_evidence: createModelInterpretResidualEvidence({ port, execution }),
+    challenge_hypothesis: createModelChallengeHypothesis({ port, execution, mechanisms, requestVocabulary }),
+    propose_conclusion: createModelProposeConclusion({ port, execution, mechanisms }),
   };
 }
 
@@ -510,25 +518,5 @@ export async function runInvestigate(
     state: buildInitialState(runId, content),
   });
 
-  const hypotheses = finalState.hypotheses.map((hypothesis) => ({
-    id: hypothesis.id,
-    status: deriveHypothesisStatus({
-      hypothesisId: hypothesis.id,
-      predictions: finalState.predictions,
-      assessments: finalState.assessments,
-      evidence: finalState.evidence,
-      rulesVersion: finalState.control.statusRulesVersion,
-    }),
-  }));
-
-  process.stdout.write(
-    `${JSON.stringify({
-      runId,
-      stopKind: finalState.control.stopKind ?? null,
-      trials: finalState.trials.length,
-      evidence: finalState.evidence.map((item) => item.id),
-      hypotheses,
-      conclusion: finalState.conclusion ?? null,
-    })}\n`,
-  );
+  process.stdout.write(`${JSON.stringify(summarizeInvestigation(runId, finalState))}\n`);
 }
