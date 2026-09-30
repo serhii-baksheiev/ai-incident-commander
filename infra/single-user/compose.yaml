@@ -57,7 +57,7 @@ services:
       interval: 1s
       timeout: 2s
       retries: 20
-      start_period: 1s
+      start_period: 60s
     # No published port: `cli` and `migrate` reach postgres over the compose
     # network by service name, so a published port would only make this
     # single-operator database reachable from outside the sandbox.
