@@ -269,8 +269,8 @@ const ACTION_IDEMPOTENCY_TUPLE_VERSION = 1 as const;
  * or a field of the wrong shape (including `params` that is not a plain
  * object); an `Error` when `params` carries an own `__proto__` key at any
  * depth — see action-idempotency.test.mjs › "params carrying an own __proto__
- * key, at the top or nested, are refused rather than given a second
- * identity"; and whatever `canonicalJson` throws for a value it refuses.
+ * key, at the top, nested or inside an array, are refused rather than given a
+ * second identity"; and whatever `canonicalJson` throws for a value it refuses.
  */
 export function deriveActionIdempotencyKey(parts: unknown): string {
   const { incidentId, primaryScope, actionType, params } = ActionIdempotencyPartsSchema.parse(parts);
