@@ -55,7 +55,8 @@
  *     | 'unknown-environment' | 'environment-of-another-service'
  *     | 'unknown-incident' | 'incident-scope-mismatch' | 'no-source-bindings'
  *     | 'source-bindings-refused' | 'run-input-mismatch' | 'run-failed'
- *     | 'run-waiting-human' | 'run-held' | 'checkpointer-not-provisioned';
+ *     | 'run-waiting-human' | 'run-held' | 'checkpointer-not-provisioned'
+ *     | 'scripted-roles-unavailable';
  *
  *   export class IncidentInvestigateRefusal extends Error {
  *     readonly reason: IncidentInvestigateRefusalReason;
@@ -80,6 +81,20 @@ import { createBoundInvestigationExecutor } from '@aic/tools';
 import { MemorySaver } from '@langchain/langgraph';
 
 import { createFakeCommittedExecution } from './fixtures/fake-committed-execution.mjs';
+
+/**
+ * `assert.rejects` resolves to undefined, so a row that reads the refusal's
+ * `reason` captures the rejection itself; a command that resolves instead
+ * fails the row here.
+ */
+async function captureRejection(promise) {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  assert.fail('the command must refuse, not resolve');
+}
 
 function loadIncidentInvestigateCommand() {
   return import('../apps/cli/dist/commands/incident-investigate.js');
@@ -334,7 +349,7 @@ test('a missing positional (incident-id) is refused invalid-arguments, and calls
   const command = await loadIncidentInvestigateCommand();
   const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
 
-  const error = await assert.rejects(command.runIncidentInvestigateCommand(['checkout', 'staging'], deps));
+  const error = await captureRejection(command.runIncidentInvestigateCommand(['checkout', 'staging'], deps));
   assert.ok(error instanceof command.IncidentInvestigateRefusal);
   assert.equal(error.reason, 'invalid-arguments');
   assert.deepEqual(calls.snapshot, []);
@@ -347,7 +362,7 @@ test('an unknown flag is refused invalid-arguments, and calls no deps method at 
   const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
   const incidentId = randomUUID();
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(
       ['checkout', 'staging', incidentId, '--roles', 'model', '--bogus-flag', 'y'],
       deps,
@@ -363,7 +378,7 @@ test('a missing --roles is refused invalid-roles, and calls no deps method at al
   const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
   const incidentId = randomUUID();
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(['checkout', 'staging', incidentId], deps),
   );
   assert.equal(error.reason, 'invalid-roles');
@@ -376,10 +391,30 @@ test('--roles bogus is refused invalid-roles, and calls no deps method at all', 
   const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
   const incidentId = randomUUID();
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(['checkout', 'staging', incidentId, '--roles', 'bogus'], deps),
   );
   assert.equal(error.reason, 'invalid-roles');
+  assert.deepEqual(calls.snapshot, []);
+  assert.deepEqual(calls.createRun, []);
+});
+
+/**
+ * Scripted roles replay a recorded fixture's requests (`createScriptedReasoning`
+ * in `@aic/roles`), and an incident investigated against live SourceBindings
+ * has no such fixture. Until a scripted probe for live sources is chosen
+ * (AIC-146 owner decision D1), `--roles scripted` is refused before any store
+ * is read.
+ */
+test('--roles scripted is refused scripted-roles-unavailable, and calls no deps method at all', async () => {
+  const command = await loadIncidentInvestigateCommand();
+  const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
+  const incidentId = randomUUID();
+
+  const error = await captureRejection(
+    command.runIncidentInvestigateCommand(['checkout', 'staging', incidentId, '--roles', 'scripted'], deps),
+  );
+  assert.equal(error.reason, 'scripted-roles-unavailable');
   assert.deepEqual(calls.snapshot, []);
   assert.deepEqual(calls.createRun, []);
 });
@@ -390,7 +425,7 @@ test('an unknown <service> is refused unknown-service, calls no createRun, and n
   const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
   const incidentId = randomUUID();
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ service: secret, incidentId }), deps),
   );
   assert.equal(error.reason, 'unknown-service');
@@ -403,7 +438,7 @@ test('an unknown <env> is refused unknown-environment, and calls no createRun', 
   const { deps, calls } = baseDeps({ createModelPort: createModelPortFactoryFor(throwingModelPort()) });
   const incidentId = randomUUID();
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ env: 'nowhere', incidentId }), deps),
   );
   assert.equal(error.reason, 'unknown-environment');
@@ -417,7 +452,7 @@ test('an <env> belonging to a DIFFERENT Service is refused environment-of-anothe
 
   // "staging" exists under both "checkout" and "billing"; "billing" has no
   // "prod" environment, so this must read as a scope MISMATCH, not unknown.
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ service: 'billing', env: 'prod', incidentId }), deps),
   );
   assert.equal(error.reason, 'environment-of-another-service');
@@ -430,7 +465,7 @@ test('an unknown <incident-id> is refused unknown-incident, and calls no createR
   const incidentId = randomUUID();
   // deps.incidents.getIncident already defaults to returning null.
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps),
   );
   assert.equal(error.reason, 'unknown-incident');
@@ -450,7 +485,7 @@ test('an Incident whose own primaryScope disagrees with the resolved <service>/<
     },
   });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps),
   );
   assert.equal(error.reason, 'incident-scope-mismatch');
@@ -469,7 +504,7 @@ test('a matching Incident with zero SourceBindings for its Environment is refuse
     // registry.snapshot defaults to zero sourceBindings.
   });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps),
   );
   assert.equal(error.reason, 'no-source-bindings');
@@ -490,7 +525,7 @@ test('a port construction refusal is mapped to source-bindings-refused, and call
     createExecutor: async () => ({ ok: false, reason: 'missing-credential', sourceBindingId: binding.id }),
   });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps),
   );
   assert.equal(error.reason, 'source-bindings-refused');
@@ -729,7 +764,7 @@ test('an existing run whose stored input disagrees on environmentId is refused r
     inputOverrides: { environmentId: environmentProdId },
   });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId, runId }), deps),
   );
   assert.equal(error.reason, 'run-input-mismatch');
@@ -742,7 +777,7 @@ test('an existing failed run is refused run-failed', async () => {
   const runId = 'aic146c4b-failed-run';
   const { deps, calls } = depsForExistingRun({ incidentId, runId, status: 'failed' });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId, runId }), deps),
   );
   assert.equal(error.reason, 'run-failed');
@@ -755,7 +790,7 @@ test('an existing waiting_human run is refused run-waiting-human', async () => {
   const runId = 'aic146c4b-waiting-human-run';
   const { deps, calls } = depsForExistingRun({ incidentId, runId, status: 'waiting_human' });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId, runId }), deps),
   );
   assert.equal(error.reason, 'run-waiting-human');
@@ -774,7 +809,7 @@ test('an existing running run whose lease sweepExpired reports as still live is 
     runsOverrides: { sweepExpired: async () => [] },
   });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId, runId }), deps),
   );
   assert.equal(error.reason, 'run-held');
@@ -820,7 +855,7 @@ test('a checkpointer construction failure is refused checkpointer-not-provisione
     },
   });
 
-  const error = await assert.rejects(
+  const error = await captureRejection(
     command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps),
   );
   assert.equal(error.reason, 'checkpointer-not-provisioned');

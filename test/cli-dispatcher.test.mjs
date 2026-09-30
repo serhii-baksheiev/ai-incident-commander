@@ -381,8 +381,11 @@ test('aic incident investigate --roles model with no ANTHROPIC_API_KEY exits non
 test('aic incident investigate with valid args and no connection variable set refuses naming only that variable', () => {
   withTempCwd((cwd) => {
     const before = readdirSync(cwd);
-    const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1', '--roles', 'scripted'];
-    const result = runCli(args, { cwd });
+    const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1', '--roles', 'model'];
+    // A placeholder, not a credential: this run is refused at the connection
+    // variable before any model call could use it.
+    const modelKeyVariable = ['ANTHROPIC', 'API', 'KEY'].join('_');
+    const result = runCli(args, { cwd, env: { [modelKeyVariable]: 'placeholder-not-a-key' } });
 
     assert.notEqual(result.status, 0, commandDiagnostics(args, result));
     assert.match(
