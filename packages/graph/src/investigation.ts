@@ -84,13 +84,21 @@ export interface ChallengeResult {
   readonly discriminatingTests: readonly InvestigationTest[];
 }
 
+/**
+ * What `execute` accepts: begin a run (`start`), answer a pending human
+ * review (`resume`), or re-enter a run that has no pending review from its
+ * last checkpoint (`continue`) — see investigation-continue.test.mjs ›
+ * "continue advances a run whose node threw mid-superstep to completion
+ * without re-running already-checkpointed nodes".
+ */
 export type InvestigationExecutionInput =
   | Readonly<{ kind: 'start'; state: IncidentState }>
   | Readonly<{
       kind: 'resume';
       interruptId: string;
       decision: ConclusionReviewDecision;
-    }>;
+    }>
+  | Readonly<{ kind: 'continue' }>;
 
 export type InvestigationExecutionConfig = Readonly<{
   threadId: string;
@@ -812,6 +820,11 @@ function parseInvestigationExecutionInput(
     }
   }
 
+  const proceed = readExactOwnDataProperties(input, ['kind']);
+  if (proceed?.kind === 'continue') {
+    return { kind: 'continue' };
+  }
+
   throw new Error('invalid investigation execution input');
 }
 
@@ -834,6 +847,13 @@ function parseInvestigationExecutionConfig(
   return { threadId: record.threadId };
 }
 
+function langGraphConfigOf(
+  config: InvestigationExecutionConfig,
+): LangGraphRunnableConfig;
+function langGraphConfigOf(config: undefined): undefined;
+function langGraphConfigOf(
+  config: InvestigationExecutionConfig | undefined,
+): LangGraphRunnableConfig | undefined;
 function langGraphConfigOf(
   config: InvestigationExecutionConfig | undefined,
 ): LangGraphRunnableConfig | undefined {
@@ -1385,6 +1405,29 @@ function assertPersistedStateVersion(control: IncidentStateControl): void {
         `this graph reads status-rules version ${String(STATUS_RULES_VERSION)}`,
     );
   }
+}
+
+/**
+ * The restored-control guard sequence `resume` and `continue` share:
+ * `readOwnControl`, then `assertOwnControlFields`, then
+ * `assertPersistedStateVersion`. Extracted so the two callers run the exact
+ * same checks rather than two copies that can drift apart — see `execute`'s
+ * `resume` branch, just below, for why each step exists in this order;
+ * `continue` calls this same function for the identical reason.
+ */
+function readAndValidateRestoredControl(
+  values: unknown,
+  threadId: string,
+): IncidentStateControl {
+  const restored = readOwnControl(values);
+  if (restored === undefined) {
+    throw new Error(
+      `no resumable run on thread ${threadId}: no investigation control was checkpointed for it`,
+    );
+  }
+  assertOwnControlFields(restored);
+  assertPersistedStateVersion(restored as IncidentStateControl);
+  return restored as IncidentStateControl;
 }
 
 /**
@@ -1978,13 +2021,6 @@ export function createInvestigationGraph({
           // this check a fabricated control, so the refusal below never fires
           // and `graph.invoke` runs on it. see hitl-resume-contract.test.mjs ›
           // "refuses a fabricated control supplied entirely by the prototype"
-          const restored = readOwnControl(snapshot.values);
-          if (restored === undefined) {
-            throw new Error(
-              `no resumable run on thread ${executionConfig.threadId}: no investigation control was checkpointed for it`,
-            );
-          }
-
           // The same ownership rule the start path applies, on the control the
           // CHECKPOINTER handed back. It has to run here — before the identity
           // check and before `graph.invoke` — because anything further on reads
@@ -2025,8 +2061,7 @@ export function createInvestigationGraph({
           // made it a guess rather than a guard.
           // see hitl-resume-contract.test.mjs › "refuses pollution that is gone
           // by the second checkpoint read"
-          assertOwnControlFields(restored);
-
+          //
           // Refuses a resume on a persisted version this graph cannot read,
           // BEFORE the interrupt-matching and FINISHED-run no-op paths below
           // can return it silently. Without this, a FINISHED run whose
@@ -2038,7 +2073,14 @@ export function createInvestigationGraph({
           // see state-cutover.test.mjs › "refuses a
           // resume of a FINISHED v3 checkpoint that predates primaryScope,
           // rather than treating it as a no-op"
-          assertPersistedStateVersion(restored as IncidentStateControl);
+          //
+          // All three checks above — the absent-control refusal, the ownership
+          // check and the version check — are one call, shared with `continue`
+          // rather than duplicated: `readAndValidateRestoredControl`.
+          const restored = readAndValidateRestoredControl(
+            snapshot.values,
+            executionConfig.threadId,
+          );
 
           // A resume names the interrupt it answers, and this refuses the one
           // case where that name is WRONG rather than merely stale: the thread
@@ -2111,6 +2153,57 @@ export function createInvestigationGraph({
             );
           }
         }
+      }
+      if (request.kind === 'continue') {
+        // `continue` has no interrupt id to name and nothing to decide, so it
+        // shares neither of `resume`'s two threadId-optional carve-outs: an
+        // interactive `start` may omit a threadId when `humanReview` is
+        // false, and `resume` refuses only when both a threadId AND a
+        // checkpointer would otherwise be needed. `continue` always needs
+        // both, because it has no other way to find the run it re-enters.
+        if (executionConfig === undefined) {
+          throw new Error('continue requires an execution threadId');
+        }
+        const continueConfig = langGraphConfigOf(executionConfig);
+
+        // No checkpointer configured on this graph makes `getState` throw
+        // `No checkpointer set` — the same reason `resume` already relies on
+        // above rather than restating, since `continue` needs the same
+        // checkpoint read for the same reason. see hitl-resume-contract.test.mjs
+        // › "still refuses a ${label} resume with no checkpointer for the
+        // reason it already gives"
+        const snapshot = await graph.getState(continueConfig);
+
+        // The same three checks `resume` runs on its restored control —
+        // absent-control refusal, ownership, persisted version — through the
+        // one shared function. see investigation-continue.test.mjs › "refuses
+        // a continue under a thread that has no checkpointed control, naming
+        // the thread, and leaves no checkpoint behind", › "refuses a continue
+        // whose restored control field is supplied by an accessor on the
+        // prototype", and › "refuses a continue whose persisted control
+        // predates the current schema version, without retrying the crashed
+        // node"
+        readAndValidateRestoredControl(snapshot.values, executionConfig.threadId);
+
+        // Unlike `resume`, which answers one named interrupt, `continue` has
+        // no interrupt to answer at all: a pending review needs a decision,
+        // not a silent skip past it. see investigation-continue.test.mjs ›
+        // "refuses a continue while an interrupt is pending, naming the
+        // pending review rather than silently re-asking it" — the file's own
+        // header records that `invoke(null, config)` would otherwise resolve
+        // the pending interrupt silently rather than refuse.
+        const pendingInterruptIds = new Set(
+          snapshot.tasks.flatMap(({ interrupts }) =>
+            interrupts.map(({ id }) => id),
+          ),
+        );
+        if (pendingInterruptIds.size > 0) {
+          throw new Error(
+            `continue cannot skip past the pending review on thread ${executionConfig.threadId}: resume it with a decision instead`,
+          );
+        }
+
+        return graph.invoke(null, continueConfig);
       }
       const graphInput =
         request.kind === 'start'
