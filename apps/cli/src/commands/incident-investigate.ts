@@ -108,7 +108,7 @@ export class CheckpointerNotProvisionedError extends Error {
  * The write context every commit and the checkpointer's fence go through —
  * structurally `@aic/persistence`'s own `RunWriteContext`. `assertOwner` is
  * declared here (never called by this module itself) only so the checkpointer
- * wiring (`apps/cli/src/index.ts`) can pass this same object on as a
+ * wiring (`./incident-investigate-deps.ts`) can pass this same object on as a
  * `CheckpointFence` without a second, narrower type.
  */
 export interface IncidentInvestigateWriteContext extends CommittedExecution {
@@ -161,7 +161,7 @@ const DEFAULT_BUDGET: IncidentInvestigateBudget = Object.freeze({
   reservedChallengeBudget: 2,
 });
 
-/** `renewLease` cadence: a third of the lease `apps/cli/src/index.ts` wires the run store with, so a single missed tick never lets the lease expire. */
+/** `renewLease` cadence: a third of the lease `./incident-investigate-deps.ts` wires the run store with, so a single missed tick never lets the lease expire. */
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 
 interface StoredRunInput {

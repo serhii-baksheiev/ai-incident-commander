@@ -160,7 +160,7 @@ test('aic db with an unknown subcommand, and no connection string configured, is
  * AIC-99 slice e: `source check` and `doctor` stop being the onboarding
  * "not implemented" stub. Neither row below asserts the full classifying
  * behaviour — that needs a registry store, and these two commands still
- * reach one through `apps/cli/src/index.ts`'s existing
+ * reach one through `apps/cli/src/commands/connected-env.ts`'s
  * `createConnectedRegistryStore`, which this file never wires past (the
  * connection variable it reads is not set here, by `childEnv`'s own
  * stripping — see test/fixtures/child-env.mjs) — only that whatever they now
@@ -204,7 +204,7 @@ test('aic doctor no longer reports itself as not implemented in this build', () 
  * AIC-99 slice f: `incident start` is real. Like `source check`/`doctor`
  * above, this file does not assert the full argv/store contract (that needs
  * a registry store, and this command still reaches one through
- * `apps/cli/src/index.ts`'s `createConnectedRegistryStore`/a connected
+ * `apps/cli/src/commands/connected-env.ts`'s `createConnectedRegistryStore`/a connected
  * incident store, which this file never wires past — the connection variable
  * it reads is not set here, by `childEnv`'s own stripping). It only asserts
  * that a missing `<service>`/`<env>`/`--title` is refused as such, BEFORE
@@ -232,7 +232,7 @@ test('aic incident start with no <service>/<env>/--title no longer reports itsel
  * AIC-99 slice g: `apply` is real. Like `incident start` above, this file
  * does not assert the full argv/store contract (that needs a registry store,
  * and this command still reaches one through
- * `apps/cli/src/index.ts`'s `createConnectedRegistryStore`, which this file
+ * `apps/cli/src/commands/connected-env.ts`'s `createConnectedRegistryStore`, which this file
  * never wires past — the connection variable it reads is not set here, by
  * `childEnv`'s own stripping). It only asserts that a missing `-f` is
  * refused as such, BEFORE any connection is ever attempted, rather than the
