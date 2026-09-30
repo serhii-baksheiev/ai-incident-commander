@@ -15,6 +15,9 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
  * to shut down — measured as "Connection terminated unexpectedly" in the live
  * lane. Probing 127.0.0.1 over TCP only succeeds once the real server listens.
  *
+ * Measured on PR #194: with the unix-socket probe, a compose container was
+ * healthy while only initdb's temporary server was up.
+ *
  * A text read, so `npm run check` needs no Docker. It fails closed: every file
  * listed here must carry at least one `pg_isready`, and every line naming it
  * must name the TCP host too.
@@ -31,9 +34,25 @@ for (const relativePath of HEALTHCHECK_FILES) {
     for (const line of lines) {
       assert.match(
         line,
-        /--host"?,?\s*"?127\.0\.0\.1/,
+        /(?:--host[\s=]|--host",\s*"|-h\s)127\.0\.0\.1(?=["\s]|$)/,
         `${relativePath}: this pg_isready probes the unix socket, which answers during initdb's temporary server: ${line.trim()}`,
       );
     }
+  });
+}
+
+/**
+ * The TCP probe stays red for the whole of initdb, which took up to 29 s on a
+ * cold container in the PR #194 review, so the compose healthchecks give the
+ * first start a grace period in which failed probes do not count; without it
+ * `docker compose up --wait` can report the container unhealthy before initdb
+ * finishes.
+ */
+for (const relativePath of ['infra/postgres/compose.yaml', 'infra/single-user/compose.yaml']) {
+  test(`the pg_isready healthcheck in ${relativePath} has a start period of at least 60 s`, () => {
+    const text = readFileSync(join(projectRoot, relativePath), 'utf8');
+    const match = /start_period:\s*(\d+)s/.exec(text);
+    assert.ok(match, `${relativePath} must declare a start_period in seconds for its healthcheck`);
+    assert.ok(Number(match[1]) >= 60, `${relativePath}: start_period ${match[1]}s is shorter than a cold initdb can take`);
   });
 }
