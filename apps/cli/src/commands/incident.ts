@@ -93,6 +93,13 @@ interface ResolvedScope {
   readonly environmentId: string;
 }
 
+export type IncidentScopeResolution =
+  | { readonly ok: true; readonly serviceId: string; readonly environmentId: string }
+  | {
+      readonly ok: false;
+      readonly reason: 'unknown-service' | 'unknown-environment' | 'environment-of-another-service';
+    };
+
 /**
  * An `<env>` that names no Environment scoped to `<service>`, but names one
  * belonging to a DIFFERENT Service, is refused naming that mismatch rather
@@ -100,11 +107,23 @@ interface ResolvedScope {
  * registry once the scoped lookup fails, so `checkPrimaryScope` itself
  * decides `unknown-environment` versus `environment-of-another-service`, one
  * mechanism rather than a second re-implementation of its branching.
+ *
+ * Never throws, and a refusal names no value (AIC-146 slice c4a) — so the
+ * upcoming `aic incident investigate` command (slice c4b) can read the same
+ * scope resolution `resolveScope` below wraps, without depending on a thrown
+ * message meant for `incident start`'s own error text
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ * see cli-shared-pieces.test.mjs › "resolveIncidentScope's refusal result
+ * carries no name: exactly the own keys {ok, reason}, nothing else"
  */
-function resolveScope(registry: RegistrySnapshot, serviceName: string, environmentName: string): ResolvedScope {
+export function resolveIncidentScope(
+  registry: RegistrySnapshot,
+  serviceName: string,
+  environmentName: string,
+): IncidentScopeResolution {
   const service = registry.services.find((candidate) => candidate.name === serviceName);
   if (!service) {
-    throw new Error(`unknown service "${serviceName}"`);
+    return { ok: false, reason: 'unknown-service' };
   }
 
   const scopedEnvironment = registry.environments.find(
@@ -122,14 +141,30 @@ function resolveScope(registry: RegistrySnapshot, serviceName: string, environme
     environmentId: environmentId ?? randomUUID(),
   });
   if (check.ok) {
-    return { serviceId: service.id, environmentId: check.environment.id };
+    return { ok: true, serviceId: service.id, environmentId: check.environment.id };
   }
   if (check.reason === 'unknown-environment') {
-    throw new Error(`unknown environment "${environmentName}"`);
+    return { ok: false, reason: 'unknown-environment' };
   }
   // 'environment-of-another-service' (checkPrimaryScope never reports
   // 'unknown-service' here, since `service` above was already found).
-  throw new Error(`environment "${environmentName}" belongs to a different service than "${serviceName}" names`);
+  return { ok: false, reason: 'environment-of-another-service' };
+}
+
+/** Maps `resolveIncidentScope`'s refusal to `incident start`'s existing, byte-identical error messages. */
+function resolveScope(registry: RegistrySnapshot, serviceName: string, environmentName: string): ResolvedScope {
+  const result = resolveIncidentScope(registry, serviceName, environmentName);
+  if (result.ok) {
+    return { serviceId: result.serviceId, environmentId: result.environmentId };
+  }
+  switch (result.reason) {
+    case 'unknown-service':
+      throw new Error(`unknown service "${serviceName}"`);
+    case 'unknown-environment':
+      throw new Error(`unknown environment "${environmentName}"`);
+    case 'environment-of-another-service':
+      throw new Error(`environment "${environmentName}" belongs to a different service than "${serviceName}" names`);
+  }
 }
 
 export async function runIncidentCommand(argv: readonly string[], deps: IncidentCommandDeps): Promise<void> {
