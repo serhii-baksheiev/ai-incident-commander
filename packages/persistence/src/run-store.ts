@@ -71,7 +71,7 @@ for (const { from, to } of RUN_STORE_TRANSITIONS) {
 const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
 
 /**
- * The three SQL statements this store runs, built once per store against its
+ * The SQL statements this store runs, built once per store against its
  * own connection string's schema constant.
  *
  * Each pass of `claimNext` is ONE statement: a `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`
@@ -97,7 +97,7 @@ const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
  * each renewal set `heartbeat_at`: see run-store.live.mjs › "a claim records
  * a heartbeat, and each renewal moves it forward".
  *
- * All three compare against `clock_timestamp()`, never `now()`: `now()` is
+ * All of them compare against `clock_timestamp()`, never `now()`: `now()` is
  * fixed for the whole transaction, so a lease check inside one would compare
  * against the transaction's start time rather than the actual current
  * instant. See run-store.test.mjs › "the claim and sweep statements use FOR
@@ -107,11 +107,8 @@ const TERMINAL_REASON_RECOVERY_EXHAUSTED = 'recovery_exhausted';
  * `claimRun` is `claimNext`'s same candidate/exhausted/claimed shape, targeted
  * at one named run instead of the head of the queue: its candidate filters on
  * `run_id = $1 AND status = 'queued'` rather than ordering the whole table,
- * and it keeps both of `claimNext`'s branches unchanged. Its candidate keeps
- * `FOR UPDATE SKIP LOCKED` rather than plain `FOR UPDATE`, so a concurrent
- * claim already holding this row returns null immediately instead of
- * blocking — the same choice `claimNext` makes for the head of the queue. See
- * run-store.live.mjs › "claimRun claims exactly the named run even when an
+ * and it keeps both of `claimNext`'s branches and its `FOR UPDATE SKIP
+ * LOCKED` clause. See run-store.live.mjs › "claimRun claims exactly the named run even when an
  * older queued run exists that claimNext would pick".
  */
 function buildSqlStatements(): RunStore['SQL_STATEMENTS'] {

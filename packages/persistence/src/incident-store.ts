@@ -161,9 +161,9 @@ async function startIncidentAgainst(
 /**
  * The read side of the same table `startIncident` writes: no schema
  * revalidates `body` on the way out, the same as `startIncident`'s own
- * `insertResult.rows[0].body as IntakeDerivedIncident` — there is no
- * `IntakeDerivedIncident` schema to parse it against (`incidentFromIntake`
- * only produces one; nothing in `@aic/domain` validates one back). See
+ * `insertResult.rows[0].body as IntakeDerivedIncident`
+ * (`IntakeDerivedIncident` is an interface in `@aic/domain`'s `intake.ts`,
+ * with no schema beside it). See
  * incident-store.live.mjs › "getIncident returns the body startIncident
  * stored, matching a raw SELECT independently of the store".
  */
