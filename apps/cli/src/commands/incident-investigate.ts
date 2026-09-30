@@ -14,6 +14,7 @@ import {
   type RegistrySnapshot,
 } from '@aic/domain';
 import { createInvestigationGraph, createInvestigationNodes } from '@aic/graph';
+import { resolveTracingConfig } from '@aic/observability';
 import {
   createModelUsageLedger,
   createReferenceModelPort,
@@ -68,7 +69,7 @@ const REFUSAL_MESSAGES: Readonly<Record<IncidentInvestigateRefusalReason, string
   'run-failed': 'this run has already failed',
   'run-waiting-human': 'this run is waiting on a human decision',
   'run-held': 'this run is currently claimed by another worker',
-  'checkpointer-not-provisioned': 'the checkpointer schema is not provisioned; run `aic db migrate` first',
+  'checkpointer-not-provisioned': 'the LangGraph checkpointer schema is not provisioned in this database',
   'scripted-roles-unavailable':
     '--roles scripted has no request vocabulary for a live incident investigation yet',
 };
@@ -85,6 +86,20 @@ export class IncidentInvestigateRefusal extends Error {
     super(message);
     this.name = 'IncidentInvestigateRefusal';
     this.reason = reason;
+  }
+}
+
+/**
+ * What `deps.createCheckpointer` throws when the database has no checkpointer
+ * schema at all. It is the only failure mapped to `checkpointer-not-provisioned`;
+ * any other failure (a version mismatch, a connection error) propagates as it
+ * is — see cli-incident-investigate.test.mjs › "any other createCheckpointer
+ * failure propagates unchanged rather than being reported as not provisioned".
+ */
+export class CheckpointerNotProvisionedError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super('the checkpointer schema is not provisioned', options);
+    this.name = 'CheckpointerNotProvisionedError';
   }
 }
 
@@ -165,16 +180,26 @@ function ownRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function isCount(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function asStoredRunInput(value: unknown): StoredRunInput | undefined {
   const record = ownRecord(value);
   if (record === undefined) return undefined;
+  const budget = ownRecord(record.budget);
   if (
+    record.kind !== 'incident-investigation' ||
+    record.v !== 1 ||
     typeof record.incidentId !== 'string' ||
     typeof record.serviceId !== 'string' ||
     typeof record.environmentId !== 'string' ||
     (record.roles !== 'model' && record.roles !== 'scripted') ||
     typeof record.asOf !== 'string' ||
-    ownRecord(record.budget) === undefined
+    budget === undefined ||
+    !isCount(budget.maxIterations) ||
+    !isCount(budget.llmCallBudget) ||
+    !isCount(budget.reservedChallengeBudget)
   ) {
     return undefined;
   }
@@ -261,8 +286,11 @@ async function buildCheckpointer(
 ): Promise<InvestigationCheckpointer> {
   try {
     return await deps.createCheckpointer(context);
-  } catch {
-    throw new IncidentInvestigateRefusal('checkpointer-not-provisioned');
+  } catch (error) {
+    if (error instanceof CheckpointerNotProvisionedError) {
+      throw new IncidentInvestigateRefusal('checkpointer-not-provisioned');
+    }
+    throw error;
   }
 }
 
@@ -299,6 +327,13 @@ export async function runIncidentInvestigateCommand(
   // Validated before any store read (design step 2) — never before argv
   // parsing above, which must refuse invalid-arguments/invalid-roles first.
   requireModelConfig(deps.env);
+
+  // The same tracing decision `aic investigate` makes (investigate.ts), from
+  // the real process.env that @langchain/core reads.
+  const tracing = resolveTracingConfig(process.env);
+  if (tracing.enabled) {
+    process.env.LANGCHAIN_CALLBACKS_BACKGROUND ??= 'false';
+  }
 
   const registry = await deps.registry.snapshot();
   const scope = resolveIncidentScope(registry, parsed.service, parsed.env);
@@ -409,7 +444,10 @@ export async function runIncidentInvestigateCommand(
 
   const claim = await deps.runs.claimRun(runId, deps.workerId);
   if (claim === null) {
-    throw new IncidentInvestigateRefusal('run-held');
+    // claimRun also returns null when this very call exhausted the run's
+    // attempts and moved it to failed; re-read to say which.
+    const after = await deps.runs.getRun(runId);
+    throw new IncidentInvestigateRefusal(after?.status === 'failed' ? 'run-failed' : 'run-held');
   }
 
   const context = deps.openWriteContext(claim);

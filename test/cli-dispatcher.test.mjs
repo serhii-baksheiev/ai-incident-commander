@@ -378,7 +378,7 @@ test('aic incident investigate --roles model with no ANTHROPIC_API_KEY exits non
   });
 });
 
-test('aic incident investigate with valid args and no connection variable set refuses naming only that variable', () => {
+test('aic incident investigate with valid args and no connection variable set refuses naming that variable', () => {
   withTempCwd((cwd) => {
     const before = readdirSync(cwd);
     const args = ['incident', 'investigate', 'checkout', 'staging', 'incident-1', '--roles', 'model'];

@@ -23,6 +23,7 @@ import {
 import { runRegistryCommand, type RegistryCommandDeps } from './commands/registry.js';
 import { runIncidentCommand, type IncidentCommandStore } from './commands/incident.js';
 import {
+  CheckpointerNotProvisionedError,
   HEARTBEAT_INTERVAL_MS,
   runIncidentInvestigateCommand,
   type IncidentInvestigateWriteContext,
@@ -58,7 +59,7 @@ Commands:
   source       Register and check evidence SourceBindings
   credential   Register a CredentialRef (a secret NAME, never its value)
   policy       Set the ActionPolicy for an Environment
-  incident     Record an Incident for a scope (runs nothing)
+  incident     Record an Incident for a scope, or investigate one
   investigate  Run one investigation over a replay file
   doctor       Check onboarding health
   apply        Apply a declarative onboarding manifest
@@ -181,11 +182,23 @@ function createConnectedRunSession(env: NodeJS.ProcessEnv) {
  * `checkpointer-not-provisioned` refusal. Every saver built is ended by
  * `closeAll`, so its pool does not outlive the command.
  */
+const UNDEFINED_TABLE = '42P01';
+
 function createConnectedCheckpointers(env: NodeJS.ProcessEnv, versionSource: () => CheckpointerVersionSource) {
   const savers: Array<ReturnType<typeof createPostgresCheckpointer>> = [];
   return {
     create: async (context?: IncidentInvestigateWriteContext) => {
-      await assertCheckpointerSchemaVersion(versionSource());
+      try {
+        await assertCheckpointerSchemaVersion(versionSource());
+      } catch (error) {
+        // PostgreSQL's undefined_table: no checkpointer schema in this
+        // database at all. Anything else (a version mismatch, a connection
+        // failure) is reported as itself.
+        if ((error as { code?: unknown } | null)?.code === UNDEFINED_TABLE) {
+          throw new CheckpointerNotProvisionedError({ cause: error });
+        }
+        throw error;
+      }
       const saver = createPostgresCheckpointer(requirePostgresUrl(env));
       savers.push(saver);
       return context === undefined ? saver : createFencedCheckpointer(saver, context);
@@ -328,8 +341,11 @@ async function main(argv: readonly string[]): Promise<void> {
           now: () => new Date().toISOString(),
         });
       } finally {
-        await checkpointers.closeAll();
-        await session.close();
+        try {
+          await checkpointers.closeAll();
+        } finally {
+          await session.close();
+        }
       }
       return;
     }

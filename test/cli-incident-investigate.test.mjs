@@ -12,7 +12,7 @@
  * `test/cli-dispatcher.test.mjs`, matching where every other onboarding
  * command's own spawned rows already live.
  *
- * ## The deps interface this file pins (Green implements to it)
+ * ## The deps interface this file pins
  *
  *   interface IncidentInvestigateDeps {
  *     env: NodeJS.ProcessEnv;
@@ -537,11 +537,25 @@ test('a port construction refusal is mapped to source-bindings-refused, and call
 /* to the port. Oracle: a spy WRAPPING the real createBoundInvestigationExecutor.*/
 /* -------------------------------------------------------------------------- */
 
-test('bindings from another Environment of the same Service are never passed to the executor factory', async () => {
+test('bindings and CredentialRefs from another Environment of the same Service are never passed to the executor factory', async () => {
   const command = await loadIncidentInvestigateCommand();
   const incidentId = randomUUID();
   const targetBinding = labBinding({ environmentId: environmentStagingId, name: 'lab-staging' });
   const otherEnvironmentBinding = labBinding({ environmentId: environmentProdId, name: 'lab-prod' });
+  const targetCredentialRef = domain.CredentialRefSchema.parse({
+    id: randomUUID(),
+    environmentId: environmentStagingId,
+    access: 'read',
+    name: 'staging-reader',
+    secretName: 'STAGING_READ_TOKEN',
+  });
+  const otherEnvironmentCredentialRef = domain.CredentialRefSchema.parse({
+    id: randomUUID(),
+    environmentId: environmentProdId,
+    access: 'read',
+    name: 'prod-reader',
+    secretName: 'PROD_READ_TOKEN',
+  });
 
   const capturedOptions = [];
   const createExecutor = async (options) => {
@@ -556,7 +570,11 @@ test('bindings from another Environment of the same Service are never passed to 
         intakeDerivedIncident({ id: incidentId, serviceId: serviceCheckoutId, environmentId: environmentStagingId }),
     },
     registry: {
-      snapshot: async () => registrySnapshot({ sourceBindings: [targetBinding, otherEnvironmentBinding] }),
+      snapshot: async () =>
+        registrySnapshot({
+          sourceBindings: [targetBinding, otherEnvironmentBinding],
+          credentialRefs: [targetCredentialRef, otherEnvironmentCredentialRef],
+        }),
     },
     createExecutor,
   });
@@ -571,6 +589,11 @@ test('bindings from another Environment of the same Service are never passed to 
     [targetBinding.id],
     'only the target Environment\'s own binding may reach the executor factory',
   );
+  assert.deepEqual(
+    capturedOptions[0].credentialRefs.map((ref) => ref.id),
+    [targetCredentialRef.id],
+    'only the target Environment\'s own CredentialRef may reach the executor factory',
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -582,7 +605,7 @@ test("the composition passes evidenceProvenance 'required': a fake executor's ok
   const incidentId = randomUUID();
   const binding = labBinding({ environmentId: environmentStagingId });
 
-  const { deps } = baseDeps({
+  const { deps, writeContexts } = baseDeps({
     createModelPort: createModelPortFactoryFor(oneHypothesisThenThrowingModelPort()),
     incidents: {
       getIncident: async () =>
@@ -600,6 +623,13 @@ test("the composition passes evidenceProvenance 'required': a fake executor's ok
   await assert.rejects(
     command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps),
     /evidence provenance is required/,
+  );
+  // The tool call went through the run's write context: the node asked it to
+  // commit under a tool.trial key (and refused the outcome inside compute).
+  assert.equal(writeContexts.length, 1);
+  assert.ok(
+    writeContexts[0].calls.some((execKey) => execKey.startsWith('tool.trial/')),
+    `the execute_investigation node must commit through the run's write context, saw: ${JSON.stringify(writeContexts[0].calls)}`,
   );
 });
 
@@ -838,7 +868,7 @@ test('an existing running run whose lease sweepExpired reports as expired procee
 /* checkpointer-not-provisioned — the one refusal that CAN follow a createRun */
 /* -------------------------------------------------------------------------- */
 
-test('a checkpointer construction failure is refused checkpointer-not-provisioned, after createRun/claimRun/openWriteContext already ran', async () => {
+test('a CheckpointerNotProvisionedError from createCheckpointer is refused checkpointer-not-provisioned, after createRun/claimRun/openWriteContext already ran', async () => {
   const command = await loadIncidentInvestigateCommand();
   const incidentId = randomUUID();
   const binding = labBinding({ environmentId: environmentStagingId });
@@ -851,7 +881,7 @@ test('a checkpointer construction failure is refused checkpointer-not-provisione
     },
     registry: { snapshot: async () => registrySnapshot({ sourceBindings: [binding] }) },
     createCheckpointer: async () => {
-      throw new Error('relation "langgraph.checkpoint_migrations" does not exist');
+      throw new command.CheckpointerNotProvisionedError();
     },
   });
 
@@ -862,6 +892,28 @@ test('a checkpointer construction failure is refused checkpointer-not-provisione
   assert.equal(calls.createRun.length, 1, 'a fresh run must already have been created before the checkpointer is built');
   assert.equal(calls.claimRun.length, 1);
   assert.equal(calls.openWriteContext.length, 1);
+});
+
+test('any other createCheckpointer failure propagates unchanged rather than being reported as not provisioned', async () => {
+  const command = await loadIncidentInvestigateCommand();
+  const incidentId = randomUUID();
+  const binding = labBinding({ environmentId: environmentStagingId });
+  const versionMismatch = new Error('checkpointer schema version 9 is not the version this build reads');
+
+  const { deps } = baseDeps({
+    createModelPort: createModelPortFactoryFor(throwingModelPort()),
+    incidents: {
+      getIncident: async () =>
+        intakeDerivedIncident({ id: incidentId, serviceId: serviceCheckoutId, environmentId: environmentStagingId }),
+    },
+    registry: { snapshot: async () => registrySnapshot({ sourceBindings: [binding] }) },
+    createCheckpointer: async () => {
+      throw versionMismatch;
+    },
+  });
+
+  const error = await captureRejection(command.runIncidentInvestigateCommand(argvFor({ incidentId }), deps));
+  assert.equal(error, versionMismatch);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1017,7 +1069,7 @@ test('an existing run whose checkpoint is already finished (a crash after comple
   // The RUN ROW is still "running": the process that finished the graph
   // crashed before it ever called context.complete().
   const port = throwingModelPort();
-  const { deps, calls, stdoutLines } = baseDeps({
+  const { deps, calls, stdoutLines, writeContexts } = baseDeps({
     createModelPort: createModelPortFactoryFor(port),
     incidents: { getIncident: async () => incident },
     registry: { snapshot: async () => registrySnapshot({ sourceBindings: [binding] }) },
@@ -1045,6 +1097,13 @@ test('an existing run whose checkpoint is already finished (a crash after comple
     port.calls.length,
     0,
     'continue on an already-finished thread is a no-op: it must invoke no node, so the model port fake (which throws unconditionally) is never called',
+  );
+
+  assert.equal(writeContexts.length, 1);
+  assert.deepEqual(
+    writeContexts[0].completeCalls,
+    [finalState.control.stopKind],
+    'the run must be completed through its write context with the final stopKind',
   );
 
   const summaryModule = await loadInvestigationSummary();
