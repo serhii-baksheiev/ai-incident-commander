@@ -33,8 +33,8 @@
  *     },
  *   ): { deps: IncidentInvestigateDeps; close(): Promise<void> }
  *
- * — the exact real wiring `apps/cli/src/index.ts`'s `incident investigate`
- * branch builds inline (`createConnectedRunSession`,
+ * — the real wiring `apps/cli/src/index.ts`'s `incident investigate` branch
+ * used to build inline (`createConnectedRunSession`,
  * `createConnectedCheckpointers`, the directory secret resolver,
  * `globalThis.fetch`, a random `workerId`, `new Date().toISOString`), pulled
  * out so `index.ts` can call it too and so this file can drive it without a
@@ -111,7 +111,7 @@ function runCli(args, connectionString) {
 }
 
 function commandDiagnostics(args, result) {
-  return `aic ${args.join(' ')} exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
+  return `aic ${args.join(' ')} exited ${result.status} (signal ${result.signal ?? 'none'}, error ${result.error?.code ?? result.error?.message ?? 'none'})\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`;
 }
 
 function runCliOk(args, connectionString) {
@@ -580,7 +580,7 @@ test('re-running a completed run prints the same summary and makes no stub reque
   assert.equal(
     await countCheckpointRows(pool, firstSummary.runId),
     checkpointRowsBefore,
-    're-running a completed run must write no checkpoint: the graph is read, never invoked',
+    're-running a completed run must write no checkpoint',
   );
 
   assert.equal(stdoutLines.length, 1, 're-running a completed run must print exactly one summary line');
