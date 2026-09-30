@@ -187,6 +187,39 @@ The existing `aic start` persistence spike, and `aic resume` beside it, are not
 among them; AIC-99's scope moves both behind an explicit development-only
 command.
 
+Addendum (AIC-21, 2026-09-30): two more terms, for the safe operations
+contract in `packages/domain`. A `ProposedAction` has two shapes. A
+`ProposedActionDraft` is the only shape accepted from a model or a human edit:
+it cannot carry a risk, a scope, a credential or a key — see
+proposed-action-contract.test.mjs › "a draft carrying risk, idempotencyKey,
+primaryScope, incidentId, writeCredentialRefId, contractVersion or proposedBy
+is refused with unrecognized_keys, one key at a time". A `ProposedActionRecord`
+is the audited, versioned record those facts are added to. The action
+`idempotencyKey` on a record is distinct from the intake key in the table
+above: it identifies the operation — which mutation, on which incident, in
+which `Environment` — and never a worker, an attempt, a lease or a retry (see
+action-idempotency.test.mjs › "deriveActionIdempotencyKey refuses extra parts:
+workerId, executionAttempt, leaseId, retry, pid").
+
+A tool's or an action type's risk is resolved from this registry, never from
+model or adapter output. `RISK_REGISTRY` in `packages/domain` holds it as
+data, and this table is kept equal to it by integration-boundary-adr.test.mjs
+› "the addendum's registry table and @aic/domain's RISK_REGISTRY.entries name
+the same rows, both ways":
+
+| id | kind | risk | minimum blast radius |
+| --- | --- | --- | --- |
+| deployments | tool | read | — |
+| logs | tool | read | — |
+| metrics | tool | read | — |
+| traces | tool | read | — |
+| git | tool | read | — |
+| dependencies | tool | read | — |
+| incident-comment | action | safe-write | incident-record |
+| create-follow-up-ticket | action | safe-write | incident-record |
+| restart-service | action | dangerous | service |
+| rollback-deployment | action | dangerous | service |
+
 ## Consequences
 
 - AIC-96 adds the scoped domain types and the explicit v0.2 → v0.3 state and
