@@ -189,8 +189,9 @@ command.
 
 Addendum (AIC-21, 2026-09-30): two more terms, for the safe operations
 contract in `packages/domain`. A `ProposedAction` has two shapes. A
-`ProposedActionDraft` is the only shape accepted from a model or a human edit:
-it cannot carry a risk, a scope, a credential or a key — see
+`ProposedActionDraft` is the shape a model or a human edit will be accepted
+in (the builder that accepts it is AIC-21's next slice): it cannot carry a
+risk, a scope, a credential or a key — see
 proposed-action-contract.test.mjs › "a draft carrying risk, idempotencyKey,
 primaryScope, incidentId, writeCredentialRefId, contractVersion or proposedBy
 is refused with unrecognized_keys, one key at a time". A `ProposedActionRecord`
@@ -202,7 +203,7 @@ action-idempotency.test.mjs › "deriveActionIdempotencyKey refuses extra parts:
 workerId, executionAttempt, leaseId, retry, pid").
 
 A tool's or an action type's risk is resolved from this registry, never from
-model or adapter output. `RISK_REGISTRY` in `packages/domain` holds it as
+model or adapter output (for action types, by the builder above once it lands). `RISK_REGISTRY` in `packages/domain` holds it as
 data, and this table is kept equal to it by integration-boundary-adr.test.mjs
 › "the addendum's registry table and @aic/domain's RISK_REGISTRY.entries name
 the same rows, both ways":

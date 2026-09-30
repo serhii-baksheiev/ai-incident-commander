@@ -315,7 +315,10 @@ test('the addendum states that risk is resolved from the registry, never from mo
  * sources, so neither is derived from the other here.
  */
 test("the architecture doc's §10 risk union and @aic/domain's RiskClassSchema.options are the same set, both ways", () => {
-  const architecture = readFileSync(join(projectRoot, 'docs', 'incident-commander-architecture-v1.md'), 'utf8');
+  const architecture = section(
+    readFileSync(join(projectRoot, 'docs', 'incident-commander-architecture-v1.md'), 'utf8'),
+    '10. Tool layer',
+  );
   const unionMatch = architecture.match(/risk:\s*("(?:[a-z-]+)"(?:\s*\|\s*"[a-z-]+")*)\s*;/);
   assert.ok(unionMatch, 'the architecture doc §10 must carry the literal `risk: "read" | "safe-write" | "dangerous";` union');
   const docValues = [...unionMatch[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
