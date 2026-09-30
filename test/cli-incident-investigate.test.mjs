@@ -783,6 +783,55 @@ function depsForExistingRun({ incidentId, runId, status, inputOverrides, runsOve
   });
 }
 
+for (const [label, inputOverrides] of [
+  ['a later envelope version', { v: 2 }],
+  ['a negative stored llmCallBudget', { budget: { maxIterations: 5, llmCallBudget: -1, reservedChallengeBudget: 1 } }],
+  ['a fractional stored maxIterations', { budget: { maxIterations: 1.5, llmCallBudget: 5, reservedChallengeBudget: 1 } }],
+]) {
+  test(`an existing run whose stored input carries ${label} is refused run-input-mismatch`, async () => {
+    const command = await loadIncidentInvestigateCommand();
+    const incidentId = randomUUID();
+    const runId = 'aic146c4b-stored-input-run';
+    const { deps, calls } = depsForExistingRun({ incidentId, runId, status: 'queued', inputOverrides });
+
+    const error = await captureRejection(command.runIncidentInvestigateCommand(argvFor({ incidentId, runId }), deps));
+    assert.equal(error.reason, 'run-input-mismatch');
+    assert.deepEqual(calls.claimRun, []);
+  });
+}
+
+test('a claim that returns null because this call exhausted the run is refused run-failed, not run-held', async () => {
+  const command = await loadIncidentInvestigateCommand();
+  const incidentId = randomUUID();
+  const runId = 'aic146c4b-exhausted-run';
+  let reads = 0;
+  const { deps } = depsForExistingRun({
+    incidentId,
+    runId,
+    status: 'queued',
+    runsOverrides: {
+      getRun: async () => {
+        reads += 1;
+        return {
+          runId,
+          status: reads === 1 ? 'queued' : 'failed',
+          input: matchingStoredInput({ incidentId }),
+          ownerWorkerId: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          executionAttempt: 5,
+          recoveryCount: 0,
+          terminalReason: reads === 1 ? null : 'recovery_exhausted',
+        };
+      },
+      claimRun: async () => null,
+    },
+  });
+
+  const error = await captureRejection(command.runIncidentInvestigateCommand(argvFor({ incidentId, runId }), deps));
+  assert.equal(error.reason, 'run-failed');
+});
+
 test('an existing run whose stored input disagrees on environmentId is refused run-input-mismatch', async () => {
   const command = await loadIncidentInvestigateCommand();
   const incidentId = randomUUID();
