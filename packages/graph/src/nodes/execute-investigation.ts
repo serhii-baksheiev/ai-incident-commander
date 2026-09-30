@@ -382,7 +382,21 @@ export function createExecuteInvestigation({
         ? await execution.committed(
             buildExecKey('tool.trial', { runId: state.control.runId, testId: test.id, trialAttempt: attempt }),
             compute,
-            { inputFingerprint: computeInputFingerprint(test.tool, test.input) },
+            {
+              inputFingerprint: computeInputFingerprint(test.tool, test.input),
+              // AIC-146 c1b: the records written with the commit are the ones
+              // this node records for the test below, built by the same
+              // function on a copy of `claimedEvidenceIds` — see
+              // investigation-execution-committed.test.mjs › "project writes
+              // exactly the trial and evidence the node records for that test".
+              project: (committed) => {
+                const { trial, evidenceItems } = buildRecordedOutcome(test, trialBase, committed, {
+                  evidenceProvenance,
+                  claimedEvidenceIds: new Set(claimedEvidenceIds),
+                });
+                return { trials: [trial], evidence: evidenceItems };
+              },
+            },
           )
         : await call();
 
