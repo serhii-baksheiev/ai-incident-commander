@@ -9,9 +9,9 @@
  * convention `incident-investigate.live.mjs`'s own "end to end" row uses for
  * its in-process run, applied here to a process the test can SIGKILL.
  *
- * Like `postgres-run-worker.mjs`, this file does nothing on import — the
- * whole body runs only under `main()`, gated on `process.send` existing — so
- * it is inert to any test runner that picks it up as a file.
+ * Like `postgres-run-worker.mjs`, this file has no side effect on import: it
+ * reads argv, and runs `main()` only when `process.send` exists, so it is
+ * inert to any test runner that picks it up as a file.
  *
  * argv: `<incidentId> <baseUrl> [holdModelAfterCalls]`
  *
@@ -82,10 +82,10 @@ async function main() {
 
   try {
     await runIncidentInvestigateCommand(['checkout', 'staging', incidentId, '--roles', 'model'], deps);
-    process.send({ type: 'completed' }, () => process.exit(0));
   } finally {
     await close().catch(() => {});
   }
+  process.send({ type: 'completed' }, () => process.exit(0));
 }
 
 if (typeof process.send === 'function') {

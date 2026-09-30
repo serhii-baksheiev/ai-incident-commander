@@ -29,10 +29,10 @@
  *   - the stub lab's own per-URL request counter, and the fresh in-process
  *     model port's own recorded `calls` (matched by the same role-identifying
  *     system-prompt substrings `createFullRunModelPort` uses), for the model
- *     role row — plus, for row 3, `@aic/domain`'s own `buildExecKey` and
- *     `@aic/roles`'s own `REFERENCE_PROMPT_VERSION`, independently
- *     re-deriving the exact key `generate_hypotheses`'s first call commits
- *     under, rather than trusting whatever the database happens to show.
+ *     role row — plus, for row 3, the key `generate_hypotheses`'s first call
+ *     commits under, built by `@aic/domain`'s `buildExecKey` from parts the
+ *     test chooses (with `@aic/roles`'s `REFERENCE_PROMPT_VERSION`), rather
+ *     than read back from the database.
  *
  * Every synchronisation point below is a bounded poll (60s deadline, a named
  * failure message on timeout) against one of these same oracles — never a
@@ -197,7 +197,11 @@ async function waitUntil(worker, check, { timeoutMs = 60_000, intervalMs = 100, 
     }
     if (await check()) return;
     if (Date.now() >= deadline) {
-      throw new Error(`timed out after ${timeoutMs}ms waiting for "${step}"\n${worker.diagnostics()}`);
+      const workerError = workerErrorMessage(worker);
+      throw new Error(
+        `timed out after ${timeoutMs}ms waiting for "${step}"\n${worker.diagnostics()}` +
+          (workerError !== undefined ? `\n${workerError}` : ''),
+      );
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
   }
@@ -322,6 +326,18 @@ test(
       assert.equal(heldUrlsAtKill.length, 1, `expected exactly one held request at kill time, got: ${JSON.stringify(heldUrlsAtKill)}`);
       const [heldUrl] = heldUrlsAtKill;
 
+      // The request the stub answered before the kill — the one whose result
+      // was committed — read from the stub's own counter, not the database.
+      const answeredUrlsAtKill = Object.entries(stub.urlCounts())
+        .filter(([url]) => url !== '/health' && url !== heldUrl)
+        .map(([url]) => url);
+      assert.equal(
+        answeredUrlsAtKill.length,
+        1,
+        `expected exactly one answered evidence request at kill time, got: ${JSON.stringify(stub.urlCounts())}`,
+      );
+      const [answeredUrl] = answeredUrlsAtKill;
+
       await forceExpireLease(pool, runId);
       stub.release();
 
@@ -357,9 +373,10 @@ test(
         2,
         `the held, never-committed request (${heldUrl}) must have been fetched again after the kill, got: ${JSON.stringify(urlCounts)}`,
       );
-      assert.ok(
-        Object.keys(urlCounts).some((url) => url !== heldUrl && url !== '/health' && urlCounts[url] === 1),
-        `expected at least one other observation url fetched exactly once (the one committed before the kill), got: ${JSON.stringify(urlCounts)}`,
+      assert.equal(
+        urlCounts[answeredUrl],
+        1,
+        `the request committed before the kill (${answeredUrl}) must not be fetched again by the resumed run, got: ${JSON.stringify(urlCounts)}`,
       );
 
       const { rows: keyRowAfterResume } = await pool.query(
