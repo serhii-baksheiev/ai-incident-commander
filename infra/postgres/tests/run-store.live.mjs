@@ -559,3 +559,98 @@ test('the database rejects a waiting_human row with an owner or lease, and a run
     'a running row with no owner and no lease must violate the runs table\'s CHECK constraint: running always holds a lease',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-146 c3 — claimRun: targets exactly one named run, never the head of    */
+/* the queue, and shares claimNext's exhaustion branch                        */
+/* -------------------------------------------------------------------------- */
+
+test('claimRun claims exactly the named run even when an older queued run exists that claimNext would pick', async (t) => {
+  const store = await freshStore(t);
+  const older = `run-claim-run-older-${randomUUID()}`;
+  const target = `run-claim-run-target-${randomUUID()}`;
+
+  await store.createRun({ runId: older, input: {} });
+  // Force `older` to the head of the queue: claimNext, ordering by
+  // created_at, would pick it before `target`.
+  await store.pool.query(`update aic_app.runs set created_at = created_at - interval '1 hour' where run_id = $1`, [
+    older,
+  ]);
+  await store.createRun({ runId: target, input: {} });
+
+  const claim = await store.claimRun(target, 'worker-claim-run');
+  assert.notEqual(claim, null, 'claimRun must claim the named run when it is queued');
+  assert.equal(claim.runId, target, 'claimRun must return the run it was asked to claim, not the oldest queued run');
+  assert.equal(claim.executionAttempt, 1);
+  assert.equal(claim.ownerWorkerId, 'worker-claim-run');
+
+  // Independent oracle: raw SQL against the table, not the store's own getRun.
+  const { rows } = await store.pool.query(
+    'select run_id, status, owner_worker_id from aic_app.runs where run_id = any($1::text[]) order by run_id',
+    [[older, target]],
+  );
+  const olderRow = rows.find((row) => row.run_id === older);
+  const targetRow = rows.find((row) => row.run_id === target);
+  assert.equal(olderRow.status, 'queued', 'the older, unrelated run must be left exactly as it was: claimRun must never touch a row it was not asked to claim');
+  assert.equal(olderRow.owner_worker_id, null);
+  assert.equal(targetRow.status, 'running', 'the named run must now be running in the database');
+  assert.equal(targetRow.owner_worker_id, 'worker-claim-run');
+});
+
+test('claimRun on a running, completed or waiting_human run returns null and leaves the row untouched', async (t) => {
+  const store = await freshStore(t);
+
+  const runningId = `run-claim-run-running-${randomUUID()}`;
+  await store.createRun({ runId: runningId, input: {} });
+  const originalClaim = await store.claimNext('worker-original-owner');
+  assert.equal(originalClaim.runId, runningId);
+
+  const completedId = `run-claim-run-completed-${randomUUID()}`;
+  await store.createRun({ runId: completedId, input: {} });
+  await store.pool.query(`update aic_app.runs set status = 'completed' where run_id = $1`, [completedId]);
+
+  const waitingId = `run-claim-run-waiting-${randomUUID()}`;
+  await store.createRun({ runId: waitingId, input: {} });
+  await store.pool.query(`update aic_app.runs set status = 'waiting_human' where run_id = $1`, [waitingId]);
+
+  for (const runId of [runningId, completedId, waitingId]) {
+    const claim = await store.claimRun(runId, 'worker-should-not-claim');
+    assert.equal(claim, null, `claimRun must return null for ${runId}, whose status is not 'queued'`);
+  }
+
+  // Independent oracle: none of the three rows moved, and the already-running
+  // run's owner is still the worker that originally claimed it.
+  const { rows } = await store.pool.query(
+    'select run_id, status, owner_worker_id from aic_app.runs where run_id = any($1::text[]) order by run_id',
+    [[runningId, completedId, waitingId]],
+  );
+  const byId = Object.fromEntries(rows.map((row) => [row.run_id, row]));
+  assert.equal(byId[runningId].status, 'running');
+  assert.equal(byId[runningId].owner_worker_id, 'worker-original-owner', 'claimRun must never reassign a run\'s ownership away from the worker that already holds it');
+  assert.equal(byId[completedId].status, 'completed');
+  assert.equal(byId[waitingId].status, 'waiting_human');
+});
+
+test('claimRun past maxExecutionAttempts fails the run with recovery_exhausted, and returns null', async (t) => {
+  const store = await freshStore(t, { leaseMs: 30_000, maxExecutionAttempts: 2 });
+  const runId = `run-claim-run-exhausted-${randomUUID()}`;
+  await store.createRun({ runId, input: {} });
+  await store.pool.query('update aic_app.runs set execution_attempt = 2 where run_id = $1', [runId]);
+
+  const claim = await store.claimRun(runId, 'worker-claim-run-exhausted');
+  assert.equal(
+    claim,
+    null,
+    'a claimRun whose next attempt would exceed maxExecutionAttempts must not hand the run out: it must fail the row instead and return null, exactly like claimNext\'s exhaustion branch',
+  );
+
+  // Independent oracle: raw SQL against the table, not the store's own getRun.
+  const { rows } = await store.pool.query('select status, terminal_reason from aic_app.runs where run_id = $1', [
+    runId,
+  ]);
+  assert.deepEqual(
+    { status: rows[0].status, terminalReason: rows[0].terminal_reason },
+    { status: 'failed', terminalReason: 'recovery_exhausted' },
+    'claimRun must fail an exhausted run with terminal_reason recovery_exhausted, the same bounded-recovery rule (decision 13) claimNext enforces',
+  );
+});

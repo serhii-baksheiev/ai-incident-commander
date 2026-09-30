@@ -327,3 +327,35 @@ test('startIncident itself refuses an intake the domain schema refuses, whatever
   }
   assert.equal(await incidentRowCount(pool), 0, 'a refused intake must store no row');
 });
+
+/* -------------------------------------------------------------------------- */
+/* AIC-146 c3 — getIncident: a read by id, for the CLI's "load the incident"  */
+/* step, over the same table startIncident writes                            */
+/* -------------------------------------------------------------------------- */
+
+test('getIncident returns the body startIncident stored, matching a raw SELECT independently of the store', async (t) => {
+  const { registryStore, incidentStore, pool } = await freshStores(t);
+  const scope = await seedScope(registryStore, 'checkout', 'staging');
+  const { incident } = await incidentStore.startIncident(buildIntake(scope, { idempotencyKey: 'get-incident-hit' }), {
+    id: 'incident-get-incident-hit',
+  });
+
+  const fetched = await incidentStore.getIncident(incident.id);
+  assert.deepEqual(fetched, incident, 'getIncident must return the exact incident body startIncident stored and returned');
+
+  // Independent oracle: raw SQL against the table, not the store's own
+  // startIncident return value.
+  const { rows } = await pool.query('select body from aic_app.incidents where id = $1', [incident.id]);
+  assert.deepEqual(
+    rows[0].body,
+    fetched,
+    'the raw stored body column must match what getIncident returned — an oracle independent of both startIncident and getIncident agreeing with themselves',
+  );
+});
+
+test('getIncident on an unknown id returns null', async (t) => {
+  const { incidentStore } = await freshStores(t);
+
+  const fetched = await incidentStore.getIncident(randomUUID());
+  assert.equal(fetched, null, 'an id with no stored incident must return null');
+});
