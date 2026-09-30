@@ -80,7 +80,10 @@ function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
  * `execute_investigation` only through this composition (every lane, and the
  * CLI) gets exactly the same `'required'`/`'optional'` refusal a direct
  * caller of `createExecuteInvestigation` would — see
- * investigation-nodes-composition.test.mjs, the "AIC-146 b5" section.
+ * investigation-nodes-composition.test.mjs › "createInvestigationNodes
+ * forwards evidenceProvenance to its execute_investigation node: "required"
+ * with an ok outcome lacking provenance throws through the composed node
+ * (AIC-146 b5)".
  * see investigation-nodes-composition.test.mjs for the behavioural proof of
  * every row.
  */

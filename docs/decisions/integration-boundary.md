@@ -100,7 +100,7 @@ consumer; AIC owns only its own records about them.
   › "on an ok result: an evidence item carrying its own provenance is
   refused, naming the evidence id, and nothing is recorded (AIC-146 b2)".
   "Every" binds evidence collected through a bound source. An investigation
-  over bound sources is composed with `evidenceProvenance: 'required'`
+  over bound sources must be composed with `evidenceProvenance: 'required'`
   (AIC-146 slice (c) wires `aic incident investigate` that way), which refuses
   an ok outcome that has evidence and no provenance — see
   investigation-execution.test.mjs › "createExecuteInvestigation({execute,
