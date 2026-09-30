@@ -850,7 +850,6 @@ function parseInvestigationExecutionConfig(
 function langGraphConfigOf(
   config: InvestigationExecutionConfig,
 ): LangGraphRunnableConfig;
-function langGraphConfigOf(config: undefined): undefined;
 function langGraphConfigOf(
   config: InvestigationExecutionConfig | undefined,
 ): LangGraphRunnableConfig | undefined;
@@ -2091,10 +2090,15 @@ export function createInvestigationGraph({
           // ⚠ It deliberately does NOT refuse when the thread is waiting on
           // NOTHING, and that half is the one worth reading twice. A run whose
           // lifecycle node threw — or whose process died mid-superstep — leaves
-          // a pending TASK with zero pending interrupts, and a resume is the
-          // only way to advance it: `execute` exposes no replay that carries no
-          // interrupt id, `getState` is read-only, and `kind: 'start'`
-          // overwrites the control. Refusing on `tasks.length > 0` instead, as
+          // a pending TASK with zero pending interrupts, and when this was
+          // written a resume was the only way to advance it: `execute` exposed
+          // no replay that carries no interrupt id, `getState` is read-only,
+          // and `kind: 'start'` overwrites the control. Since AIC-146 (c2)
+          // `{ kind: 'continue' }` is such a replay — see
+          // investigation-continue.test.mjs › "continue advances a run whose
+          // node threw mid-superstep to completion without re-running
+          // already-checkpointed nodes" — and a resume still advances the run
+          // too, so both recovery paths stay. Refusing on `tasks.length > 0` instead, as
           // the first version of this did, makes every id a caller can send an
           // error and a crashed run UNRESUMABLE. That is a recovery path this
           // change has no business removing, and it was removed by accident
@@ -2162,8 +2166,8 @@ export function createInvestigationGraph({
         const continueConfig = langGraphConfigOf(executionConfig);
 
         // With no checkpointer configured, `getState` throws LangGraph's own
-        // refusal, as it does for `resume`. see investigation-continue.test.mjs
-        // › "refuses a continue with no checkpointer configured"
+        // `No checkpointer set`. see investigation-continue.test.mjs ›
+        // "refuses a continue with no checkpointer configured"
         const snapshot = await graph.getState(continueConfig);
 
         // The same three checks `resume` runs on its restored control —

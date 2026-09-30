@@ -2425,9 +2425,12 @@ test('refuses the value a stale retry launders into a wrapped node', async () =>
  * have silently taken it away.
  *
  * A lifecycle node that throws — or a process that dies mid-superstep — leaves
- * a thread with a pending TASK and **zero** pending interrupts. A resume is the
- * only way to advance it: `execute` has no replay that carries no interrupt id,
- * `getState` is read-only, and `kind: 'start'` overwrites the control. An
+ * a thread with a pending TASK and **zero** pending interrupts. When this was
+ * written a resume was the only way to advance it: `execute` had no replay
+ * that carries no interrupt id, `getState` is read-only, and `kind: 'start'`
+ * overwrites the control. Since AIC-146 (c2) `{ kind: 'continue' }` also
+ * advances it (investigation-continue.test.mjs); this row keeps the resume
+ * route working. An
  * earlier version of this change refused on `tasks.length > 0`, which made
  * every id a caller could send an error and a crashed run unresumable. Nothing
  * asked for that, and nothing would have recorded it.

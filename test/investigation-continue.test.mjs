@@ -17,21 +17,17 @@ import { scopedIncident } from './fixtures/scoped-incident.mjs';
 /**
  * AIC-146 (c2) — `{ kind: 'continue' }` on the canonical investigation graph.
  *
- * `InvestigationExecutionInput` (`packages/graph/src/investigation.ts`) is a
- * union of `start` and `resume` only. Neither member fits a run whose node
- * threw mid-superstep, or whose process died there: it has no interrupt to
- * name, so `resume` has nothing to answer, and `start` overwrites the
- * control instead of re-entering it. Every row below exercises a third
- * member, `{ kind: 'continue' }`, that the union does not carry: the parser
- * refuses the shape before the graph is ever consulted, so every row is
- * refused for that one reason unless a row's own comment says otherwise.
+ * A run whose node threw mid-superstep, or whose process died there, has no
+ * interrupt to name, so `resume` has nothing to answer, and `start`
+ * overwrites the control instead of re-entering it. `{ kind: 'continue' }`
+ * re-enters it from its last checkpoint.
  *
- * The guard sequence a `continue` is expected to share with `resume` —
- * `readOwnControl`, `assertOwnControlFields`, `assertPersistedStateVersion`,
- * then a check that no interrupt is pending, then `graph.invoke(null,
- * config)` — is read directly out of `execute`'s `resume` branch
- * (`investigation.ts:1906-2127`) and out of `hitl-resume-contract.test.mjs`,
- * whose harness and fixtures this file reuses.
+ * The guards a `continue` shares with `resume` — `readOwnControl`,
+ * `assertOwnControlFields`, `assertPersistedStateVersion` — come from
+ * `execute`'s `resume` branch in `packages/graph/src/investigation.ts`; a
+ * `continue` also refuses while an interrupt is pending, then calls
+ * `graph.invoke(null, config)`. This file reuses the harness style of
+ * `hitl-resume-contract.test.mjs`.
  *
  * Two facts about `@langchain/langgraph@1.4.13`'s own `invoke(null, config)`
  * were measured with a two-node throwaway graph rather than assumed, because
@@ -345,6 +341,7 @@ test('refuses a continue that names no thread', async () => {
       true,
       'a continue naming no thread has nothing to re-enter',
     );
+    assert.match(outcome.error.message, /continue requires an execution threadId/);
   } finally {
     harness.cleanup();
   }
@@ -367,6 +364,7 @@ test('refuses a continue with no checkpointer configured', async () => {
     true,
     'a continue with no checkpointer configured has no checkpoint to read',
   );
+  assert.match(outcome.error.message, /No checkpointer set/);
 });
 
 /**
