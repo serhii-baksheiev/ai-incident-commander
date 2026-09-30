@@ -366,6 +366,113 @@ test('inputFingerprint sent to execution.committed equals sha256: plus the sha25
 });
 
 /* -------------------------------------------------------------------------- */
+/* 6b. project (AIC-146 c1b): the commit also writes the trial and evidence   */
+/*     a real RunWriteContext persists into aic_app.run_trials/run_evidence, */
+/*     built from the same buildRecordedOutcome the node itself uses to      */
+/*     shape its own return value — never a second copy of that mapping.     */
+/* -------------------------------------------------------------------------- */
+
+test('project writes exactly the trial and evidence the node records for that test', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const fake = createFakeCommittedExecution();
+  const execute = countingExecutor(async (context) =>
+    context.testId === 'test-a'
+      ? {
+          status: 'ok',
+          output: [evidenceItem('e-a-1'), evidenceItem('e-a-2')],
+          provenance: validProvenance(),
+        }
+      : { status: 'unavailable', reason: 'denied', refusal: validRefusal() },
+  );
+  const node = createExecuteInvestigation({ execute, execution: fake });
+  const testState = state({ tests: [plannedTest('test-a'), plannedTest('test-b')] });
+
+  const result = await node(testState);
+
+  assert.equal(fake.projectionCalls.length, 2, 'each of the two planned tests is a new commit and must be projected once');
+
+  for (const [index, plannedTestForIndex] of testState.tests.entries()) {
+    const nodeTrial = result.trials.find((trial) => trial.testId === plannedTestForIndex.id);
+    const nodeEvidenceForTrial = result.evidence.filter((item) => item.trialId === nodeTrial.id);
+    assert.deepEqual(
+      fake.projectionCalls[index].projection.trials,
+      [nodeTrial],
+      `projection.trials for ${plannedTestForIndex.id} must deepEqual the node's own returned trial for that test`,
+    );
+    assert.deepEqual(
+      fake.projectionCalls[index].projection.evidence,
+      nodeEvidenceForTrial,
+      `projection.evidence for ${plannedTestForIndex.id} must deepEqual the node's own returned evidence for that trial`,
+    );
+  }
+});
+
+test('an evidence id already recorded by an earlier test in the same node call is not projected again by the later test', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const fake = createFakeCommittedExecution();
+  const execute = countingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('shared-evidence')],
+    provenance: validProvenance(),
+  }));
+  const node = createExecuteInvestigation({ execute, execution: fake });
+  const testState = state({ tests: [plannedTest('test-a'), plannedTest('test-b')] });
+
+  const result = await node(testState);
+
+  assert.deepEqual(
+    result.evidence.map((item) => item.id),
+    ['shared-evidence'],
+    'only the first trial claims the shared evidence id (the node\'s own dedup)',
+  );
+  assert.equal(fake.projectionCalls.length, 2, 'both planned tests are new commits and must be projected');
+  assert.deepEqual(
+    fake.projectionCalls[0].projection.evidence.map((item) => item.id),
+    ['shared-evidence'],
+    'the first test\'s projection carries the shared evidence item',
+  );
+  assert.deepEqual(
+    fake.projectionCalls[1].projection.evidence,
+    [],
+    'the second test\'s projection must not re-project an evidence id the first test already claimed',
+  );
+});
+
+test('an outcome the node refuses is never projected', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const fake = createFakeCommittedExecution();
+  const execute = countingExecutor(async () => ({ status: 'ok', output: [evidenceItem('e-new')] }));
+  const node = createExecuteInvestigation({ execute, execution: fake, evidenceProvenance: 'required' });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await assert.rejects(() => node(testState), /provenance/i);
+
+  assert.equal(fake.projectionCalls.length, 0, 'a refused outcome must never be projected, matching it never being committed');
+});
+
+test('a replay of the same pre-checkpoint state projects nothing new', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const fake = createFakeCommittedExecution();
+  const execute = countingExecutor(async () => ({
+    status: 'ok',
+    output: [evidenceItem('e-new')],
+    provenance: validProvenance(),
+  }));
+  const node = createExecuteInvestigation({ execute, execution: fake });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await node(testState);
+  assert.equal(fake.projectionCalls.length, 1, 'the first call is a new commit and must be projected once');
+
+  await node(testState);
+  assert.equal(
+    fake.projectionCalls.length,
+    1,
+    'a replay of the same pre-checkpoint state must reuse the stored commit and project nothing new',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
 /* 6. without execution, behaviour is unchanged                               */
 /* -------------------------------------------------------------------------- */
 
