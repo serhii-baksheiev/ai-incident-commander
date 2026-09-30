@@ -40,12 +40,7 @@
  * out so `index.ts` can call it too and so this file can drive it without a
  * spawned process for the investigate step itself. Every row below imports
  * this module at the top of its own body, before any database or CLI call
- * happens: a missing module reports its own absence as the failure, never a
- * harness defect in this file's own onboarding, stub or fake-model-port
- * plumbing — each of those three was independently proven against a real
- * PostgreSQL and a real spawned CLI binary, using this file's own helpers,
- * wired through the equivalent of `apps/cli/src/index.ts`'s inline
- * construction.
+ * happens, so a missing module reports its own absence as the failure.
  *
  * Onboarding goes through the REAL spawned CLI binary (`aic db migrate`,
  * `aic service add`, `aic env add`, `aic source add`, `aic incident start`),
@@ -213,6 +208,12 @@ function createStubLab(scenario) {
     totalRequests() {
       let total = 0;
       for (const count of requestCounts.values()) total += count;
+      return total;
+    },
+    /** Requests for evidence only — `/health` is not a tool call. */
+    observationRequests() {
+      let total = 0;
+      for (const [url, count] of requestCounts) if (url !== '/health') total += count;
       return total;
     },
   };
@@ -429,10 +430,10 @@ test('end to end: a full run over a real onboarded lab@1 SourceBinding completes
   );
   assert.equal(
     nodeResultRows[0].n,
-    stub.totalRequests(),
-    'exactly one committed tool.trial node_results row per stub request the run actually made',
+    stub.observationRequests(),
+    'exactly one committed tool.trial node_results row per evidence request the run actually made',
   );
-  assert.ok(stub.totalRequests() > 0, 'the stub must have received at least one request');
+  assert.ok(stub.observationRequests() > 0, 'the stub must have received at least one evidence request');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -530,6 +531,11 @@ test('not provisioned: aic_app migrated but the langgraph checkpointer schema ab
 /* re-running a completed run                                                 */
 /* -------------------------------------------------------------------------- */
 
+async function countCheckpointRows(pool, threadId) {
+  const { rows } = await pool.query('select count(*)::int as n from langgraph.checkpoints where thread_id = $1', [threadId]);
+  return rows[0].n;
+}
+
 test('re-running a completed run prints the same summary and makes no stub request and no model call', async (t) => {
   const connectionString = requireConnectionString();
   const { createIncidentInvestigateDeps } = await import(depsModulePath);
@@ -566,8 +572,16 @@ test('re-running a completed run prints the same summary and makes no stub reque
   assert.ok(requestsAfterFirstRun > 0, 'the first run must actually have reached the stub');
   assert.ok(modelCallsAfterFirstRun > 0, 'the first run must actually have called the fake model port');
 
+  const checkpointRowsBefore = await countCheckpointRows(pool, firstSummary.runId);
+
   stdoutLines.length = 0;
   await runIncidentInvestigateCommand(argv, deps);
+
+  assert.equal(
+    await countCheckpointRows(pool, firstSummary.runId),
+    checkpointRowsBefore,
+    're-running a completed run must write no checkpoint: the graph is read, never invoked',
+  );
 
   assert.equal(stdoutLines.length, 1, 're-running a completed run must print exactly one summary line');
   const secondSummary = JSON.parse(stdoutLines[0]);
