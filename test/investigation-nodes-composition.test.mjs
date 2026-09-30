@@ -32,6 +32,7 @@ import test from 'node:test';
 import * as domain from '@aic/domain';
 import * as graph from '@aic/graph';
 
+import { createFakeCommittedExecution } from './fixtures/fake-committed-execution.mjs';
 import { scopedIncident } from './fixtures/scoped-incident.mjs';
 
 const RUN_ID = 'run-investigation-nodes-composition';
@@ -359,6 +360,37 @@ test('createInvestigationNodes forwards evidenceProvenance to its execute_invest
     () => nodes.execute_investigation(testState),
     /provenance/i,
     'the forwarded "required" option must reach the composed execute_investigation node, not be swallowed at the boundary',
+  );
+});
+
+/**
+ * AIC-146 slice c1: `createInvestigationNodes` forwards its own `execution`
+ * option straight to the `execute_investigation` node it builds
+ * (`createExecuteInvestigation`), the same option
+ * `investigation-execution-committed.test.mjs` pins directly against that
+ * node. Driven here through the COMPOSED node, so a caller that only ever
+ * reaches `execute_investigation` through `createInvestigationNodes` (every
+ * lane, and the CLI) gets the committed wrapping too.
+ */
+test('createInvestigationNodes forwards execution to its execute_investigation node: a commit is observed through the composed node', async () => {
+  const createInvestigationNodes = requireGraphExport('createInvestigationNodes');
+  const fake = createFakeCommittedExecution();
+  const execute = async () => ({ status: 'ok', output: [] });
+  const nodes = createInvestigationNodes({
+    reasoning: fakeReasoning(),
+    execute,
+    asOf: asOfConstant(ASOF),
+    execution: fake,
+  });
+  const testState = state({ tests: [plannedTest('test-a')] });
+
+  await nodes.execute_investigation(testState);
+
+  const expectedKey = domain.buildExecKey('tool.trial', { runId: RUN_ID, testId: 'test-a', trialAttempt: 1 });
+  assert.deepEqual(
+    fake.calls,
+    [expectedKey],
+    'the forwarded execution port must reach the composed execute_investigation node, not be dropped at the boundary',
   );
 });
 
