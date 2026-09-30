@@ -1,6 +1,11 @@
+import { createHash } from 'node:crypto';
+
 import {
+  buildExecKey,
+  canonicalJson,
   InvestigationTestSchema,
   TrialSchema,
+  type CommittedExecution,
   type Evidence,
   type EvidenceProvenance,
   type IncidentState,
@@ -194,12 +199,116 @@ function assertKnownEvidenceProvenance(value: EvidenceProvenanceRequirement): vo
   }
 }
 
+/**
+ * One planned test's trial identity, computed before `execute` ever runs so
+ * the same identity is available to build the exec key AND to build the
+ * eventual Trial.
+ */
+type TrialBase = Readonly<{
+  id: string;
+  runId: string;
+  testId: string;
+  attempt: number;
+  tool: InvestigationTest['tool'];
+  input: unknown;
+  durationMs: 0;
+}>;
+
+/**
+ * Turns one `ExecuteInvestigationOutcome` into the test/trial/evidence this
+ * node records for it, extracted so it can run twice for the same outcome (AIC-146 c1): once
+ * inside `execution.committed`'s `compute`, purely to let its own throws
+ * (required-provenance, an item smuggling its own provenance, a malformed
+ * refusal) refuse the outcome BEFORE it is committed, and once for real,
+ * after `compute`'s result — freshly computed or replayed — comes back, to
+ * build what this call actually returns. This mirrors the durable runner's
+ * own `recordsOf` (`../index.ts`), called the same way for the same reason.
+ *
+ * `claimedEvidenceIds` is mutated by the real call (an id claimed by an
+ * earlier test in this same node call is never re-claimed by a later one);
+ * the validation-only call inside `compute` is given a throwaway copy so a
+ * refusal can never poison the real dedup state before a commit succeeds.
+ */
+function buildRecordedOutcome(
+  test: InvestigationTest,
+  trialBase: TrialBase,
+  outcome: ExecuteInvestigationOutcome,
+  { evidenceProvenance, claimedEvidenceIds }: Readonly<{ evidenceProvenance: EvidenceProvenanceRequirement; claimedEvidenceIds: Set<string> }>,
+): { test: InvestigationTest; trial: Trial; evidenceItems: Evidence[] } {
+  if (outcome.status === 'ok') {
+    if (evidenceProvenance === 'required' && outcome.output.length > 0 && readOwnProvenance(outcome) === undefined) {
+      throw new Error('evidence provenance is required but this ok outcome carries none');
+    }
+    const evidenceIds: string[] = [];
+    const evidenceItems: Evidence[] = [];
+    for (const item of outcome.output) {
+      if (claimedEvidenceIds.has(item.id)) continue;
+      claimedEvidenceIds.add(item.id);
+      evidenceIds.push(item.id);
+      // Provenance travels alongside the outcome, never inside an item: an
+      // item carrying its own `provenance` is refused outright by
+      // `ingestEvidence`, and a well-formed `outcome.provenance` is stamped
+      // onto every newly recorded item exactly as given — see
+      // investigation-execution.test.mjs › "on an ok result: an evidence item
+      // carrying its own provenance is refused, naming the evidence id, and
+      // nothing is recorded (AIC-146 b2)" and › "on an ok result: a
+      // well-formed provenance block on the outcome is stamped onto every
+      // newly recorded evidence item, exactly as given (AIC-146 b2)".
+      evidenceItems.push(ingestEvidence({ item, trialId: trialBase.id, provenanceSource: outcome }));
+    }
+    return {
+      test: InvestigationTestSchema.parse({ ...test, status: 'executed' }),
+      trial: parseTrial({ ...trialBase, status: 'ok', evidenceIds }, undefined),
+      evidenceItems,
+    };
+  }
+
+  if (outcome.status === 'unavailable') {
+    // The refusal reason is read as an own data property only, and parsed
+    // with TrialRefusalSchema, before it is ever stamped on the Trial — see
+    // evidence-ingestion.ts's `readOwnTrialRefusal` (AIC-146 b4), which
+    // shares the exact own-property discipline `readOwnProvenance` already
+    // uses for the ok branch above.
+    const refusal = readOwnTrialRefusal(outcome);
+    return {
+      test: InvestigationTestSchema.parse({ ...test, status: 'unavailable' }),
+      trial: parseTrial(
+        { ...trialBase, status: 'unavailable', evidenceIds: [], ...(refusal === undefined ? {} : { refusal }) },
+        refusal,
+      ),
+      evidenceItems: [],
+    };
+  }
+
+  const refusal = readOwnTrialRefusal(outcome);
+  return {
+    test: InvestigationTestSchema.parse({ ...test, status: 'failed' }),
+    trial: parseTrial(
+      { ...trialBase, status: 'error', evidenceIds: [], ...(refusal === undefined ? {} : { refusal }) },
+      refusal,
+    ),
+    evidenceItems: [],
+  };
+}
+
+/**
+ * `sha256:` plus the hex sha256 of `JSON.stringify(canonicalJson({ tool,
+ * input }))` — pinned by investigation-execution-committed.test.mjs ›
+ * "inputFingerprint sent to execution.committed equals sha256: plus the sha256
+ * of a hand-sorted {tool, input} envelope".
+ */
+function computeInputFingerprint(tool: unknown, input: unknown): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonicalJson({ tool, input }))).digest('hex')}`;
+}
+
 export function createExecuteInvestigation({
   execute,
   evidenceProvenance = 'optional',
+  execution,
 }: Readonly<{
   execute(context: ExecuteInvestigationContext): Promise<ExecuteInvestigationOutcome>;
   evidenceProvenance?: EvidenceProvenanceRequirement;
+  execution?: CommittedExecution;
 }>): InvestigationNode {
   assertKnownEvidenceProvenance(evidenceProvenance);
 
@@ -230,7 +339,7 @@ export function createExecuteInvestigation({
     for (const test of plannedTests) {
       const attempt = (highestAttemptByTestId.get(test.id) ?? 0) + 1;
       const trialId = deriveTrialId({ runId: state.control.runId, testId: test.id, attempt });
-      const trialBase = {
+      const trialBase: TrialBase = {
         id: trialId,
         runId: state.control.runId,
         testId: test.id,
@@ -242,77 +351,45 @@ export function createExecuteInvestigation({
         durationMs: 0,
       };
 
-      const outcome = await execute({
-        runId: state.control.runId,
-        testId: test.id,
-        attempt,
-        tool: test.tool,
-        input: test.input,
-      });
+      // AIC-146 c1: with `execution`, this one test's outcome is committed
+      // under its own `tool.trial` exec key, so a replay of the same
+      // pre-checkpoint state reuses it instead of calling `execute` again.
+      // `compute` runs `execute` AND `buildRecordedOutcome`'s validation
+      // (required provenance, an item smuggling its own provenance, a
+      // malformed refusal) BEFORE returning, on a throwaway copy of
+      // `claimedEvidenceIds` — so a refused outcome throws inside `compute`
+      // and is never committed, matching the durable runner's own `call` /
+      // `recordsOf` pairing (`../index.ts`). Without `execution` the outcome
+      // is validated once, by the record build below, as before.
+      const call = () =>
+        execute({
+          runId: state.control.runId,
+          testId: test.id,
+          attempt,
+          tool: test.tool,
+          input: test.input,
+        });
+      const compute = async (): Promise<ExecuteInvestigationOutcome> => {
+        const computed = await call();
+        buildRecordedOutcome(test, trialBase, computed, {
+          evidenceProvenance,
+          claimedEvidenceIds: new Set(claimedEvidenceIds),
+        });
+        return computed;
+      };
 
-      if (outcome.status === 'ok') {
-        if (evidenceProvenance === 'required' && outcome.output.length > 0 && readOwnProvenance(outcome) === undefined) {
-          throw new Error('evidence provenance is required but this ok outcome carries none');
-        }
-        const evidenceIds: string[] = [];
-        for (const item of outcome.output) {
-          if (claimedEvidenceIds.has(item.id)) continue;
-          claimedEvidenceIds.add(item.id);
-          evidenceIds.push(item.id);
-          // Provenance travels alongside the outcome, never inside an item:
-          // an item carrying its own `provenance` is refused outright by
-          // `ingestEvidence`, and a well-formed `outcome.provenance` is
-          // stamped onto every newly recorded item exactly as given — see
-          // investigation-execution.test.mjs › "on an ok result: an evidence
-          // item carrying its own provenance is refused, naming the evidence
-          // id, and nothing is recorded (AIC-146 b2)" and › "on an ok result:
-          // a well-formed provenance block on the outcome is stamped onto
-          // every newly recorded evidence item, exactly as given (AIC-146
-          // b2)".
-          evidence.push(ingestEvidence({ item, trialId, provenanceSource: outcome }));
-        }
-        trials.push(parseTrial({ ...trialBase, status: 'ok', evidenceIds }, undefined));
-        tests.push(InvestigationTestSchema.parse({ ...test, status: 'executed' }));
-        continue;
-      }
+      const outcome = execution
+        ? await execution.committed(
+            buildExecKey('tool.trial', { runId: state.control.runId, testId: test.id, trialAttempt: attempt }),
+            compute,
+            { inputFingerprint: computeInputFingerprint(test.tool, test.input) },
+          )
+        : await call();
 
-      if (outcome.status === 'unavailable') {
-        // The refusal reason is read as an own data property only, and
-        // parsed with TrialRefusalSchema, before it is ever stamped on the
-        // Trial — see evidence-ingestion.ts's `readOwnTrialRefusal` (AIC-146
-        // b4), which shares the exact own-property discipline
-        // `readOwnProvenance` already uses for the ok branch above.
-        const refusal = readOwnTrialRefusal(outcome);
-        trials.push(
-          parseTrial(
-            {
-              ...trialBase,
-              status: 'unavailable',
-              evidenceIds: [],
-              ...(refusal === undefined ? {} : { refusal }),
-            },
-            refusal,
-          ),
-        );
-        tests.push(InvestigationTestSchema.parse({ ...test, status: 'unavailable' }));
-        continue;
-      }
-
-      {
-        const refusal = readOwnTrialRefusal(outcome);
-        trials.push(
-          parseTrial(
-            {
-              ...trialBase,
-              status: 'error',
-              evidenceIds: [],
-              ...(refusal === undefined ? {} : { refusal }),
-            },
-            refusal,
-          ),
-        );
-      }
-      tests.push(InvestigationTestSchema.parse({ ...test, status: 'failed' }));
+      const recorded = buildRecordedOutcome(test, trialBase, outcome, { evidenceProvenance, claimedEvidenceIds });
+      tests.push(recorded.test);
+      trials.push(recorded.trial);
+      evidence.push(...recorded.evidenceItems);
     }
 
     return { tests, trials, evidence };

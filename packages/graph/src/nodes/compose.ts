@@ -1,3 +1,5 @@
+import type { CommittedExecution } from '@aic/domain';
+
 import type { ExecuteInvestigationContext } from '../index.js';
 import type { InvestigationNodes } from '../investigation.js';
 import { createDeriveHypothesisState } from './derive-hypothesis-state.js';
@@ -72,8 +74,8 @@ function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
  * `createPlanInvestigation`, `createExecuteInvestigation`,
  * `createEvaluatePredictions`, `createDeriveHypothesisState`,
  * `createStateTerminationCheck`), called with their defaults except for
- * `execute`, `asOf` and `evidenceProvenance`, which only the caller can
- * supply.
+ * `execute`, `asOf`, `evidenceProvenance` and `execution`, which only the
+ * caller can supply.
  *
  * `evidenceProvenance` (AIC-146 b5) is forwarded to
  * `createExecuteInvestigation` unchanged, so a caller reaching
@@ -84,6 +86,13 @@ function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
  * forwards evidenceProvenance to its execute_investigation node: "required"
  * with an ok outcome lacking provenance throws through the composed node
  * (AIC-146 b5)".
+ *
+ * `execution` (`@aic/domain`'s `CommittedExecution`, AIC-146 c1) is forwarded
+ * the same way, so a caller reaching `execute_investigation` only through this
+ * composition also gets its outcomes committed under `tool.trial` — see
+ * investigation-nodes-composition.test.mjs › "createInvestigationNodes
+ * forwards execution to its execute_investigation node: a commit is observed
+ * through the composed node".
  * see investigation-nodes-composition.test.mjs for the behavioural proof of
  * every row.
  */
@@ -92,11 +101,13 @@ export function createInvestigationNodes({
   execute,
   asOf,
   evidenceProvenance,
+  execution,
 }: Readonly<{
   reasoning: InvestigationReasoning;
   execute(context: ExecuteInvestigationContext): Promise<ExecuteInvestigationOutcome>;
   asOf: () => string;
   evidenceProvenance?: EvidenceProvenanceRequirement;
+  execution?: CommittedExecution;
 }>): InvestigationNodes {
   validateReasoning(reasoning as unknown as Readonly<Record<string, unknown>>);
 
@@ -106,7 +117,7 @@ export function createInvestigationNodes({
     generate_hypotheses: reasoning.generate_hypotheses,
     derive_predictions: createDerivePredictions(),
     plan_investigation: createPlanInvestigation(),
-    execute_investigation: createExecuteInvestigation({ execute, evidenceProvenance }),
+    execute_investigation: createExecuteInvestigation({ execute, evidenceProvenance, execution }),
     evaluate_predictions: createEvaluatePredictions({ asOf }),
     interpret_residual_evidence: reasoning.interpret_residual_evidence,
     derive_hypothesis_state: createDeriveHypothesisState(),
