@@ -1410,10 +1410,8 @@ function assertPersistedStateVersion(control: IncidentStateControl): void {
 /**
  * The restored-control guard sequence `resume` and `continue` share:
  * `readOwnControl`, then `assertOwnControlFields`, then
- * `assertPersistedStateVersion`. Extracted so the two callers run the exact
- * same checks rather than two copies that can drift apart — see `execute`'s
- * `resume` branch, just below, for why each step exists in this order;
- * `continue` calls this same function for the identical reason.
+ * `assertPersistedStateVersion`. The comments in `execute`'s `resume` branch
+ * say why each step is there and why in this order.
  */
 function readAndValidateRestoredControl(
   values: unknown,
@@ -2155,23 +2153,17 @@ export function createInvestigationGraph({
         }
       }
       if (request.kind === 'continue') {
-        // `continue` has no interrupt id to name and nothing to decide, so it
-        // shares neither of `resume`'s two threadId-optional carve-outs: an
-        // interactive `start` may omit a threadId when `humanReview` is
-        // false, and `resume` refuses only when both a threadId AND a
-        // checkpointer would otherwise be needed. `continue` always needs
-        // both, because it has no other way to find the run it re-enters.
+        // `continue` has no other way to find the run it re-enters. see
+        // investigation-continue.test.mjs › "refuses a continue that names no
+        // thread"
         if (executionConfig === undefined) {
           throw new Error('continue requires an execution threadId');
         }
         const continueConfig = langGraphConfigOf(executionConfig);
 
-        // No checkpointer configured on this graph makes `getState` throw
-        // `No checkpointer set` — the same reason `resume` already relies on
-        // above rather than restating, since `continue` needs the same
-        // checkpoint read for the same reason. see hitl-resume-contract.test.mjs
-        // › "still refuses a ${label} resume with no checkpointer for the
-        // reason it already gives"
+        // With no checkpointer configured, `getState` throws LangGraph's own
+        // refusal, as it does for `resume`. see investigation-continue.test.mjs
+        // › "refuses a continue with no checkpointer configured"
         const snapshot = await graph.getState(continueConfig);
 
         // The same three checks `resume` runs on its restored control —
@@ -2189,9 +2181,7 @@ export function createInvestigationGraph({
         // no interrupt to answer at all: a pending review needs a decision,
         // not a silent skip past it. see investigation-continue.test.mjs ›
         // "refuses a continue while an interrupt is pending, naming the
-        // pending review rather than silently re-asking it" — the file's own
-        // header records that `invoke(null, config)` would otherwise resolve
-        // the pending interrupt silently rather than refuse.
+        // pending review rather than silently re-asking it".
         const pendingInterruptIds = new Set(
           snapshot.tasks.flatMap(({ interrupts }) =>
             interrupts.map(({ id }) => id),
