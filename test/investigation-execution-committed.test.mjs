@@ -246,6 +246,45 @@ test('an unavailable outcome with a refusal replays to the same Trial.refusal on
   );
 });
 
+/**
+ * A real `RunWriteContext.committed` hands back the canonical-JSON round trip
+ * of the committed value, never the object `compute` returned
+ * (`packages/persistence/src/run-write-context.ts`). This wrapper does the
+ * same over the shared fake, so a value that does not survive the round trip
+ * shows up here without a database.
+ */
+function roundTripping(fake) {
+  return {
+    async committed(execKey, compute, options) {
+      return JSON.parse(JSON.stringify(await fake.committed(execKey, compute, options)));
+    },
+  };
+}
+
+test('through a round-tripping execution, a replay under evidenceProvenance "required" records the same evidence and the same Trial.refusal as the first call', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const fake = createFakeCommittedExecution();
+  const execute = countingExecutor(async (context) =>
+    context.testId === 'test-a'
+      ? { status: 'ok', output: [evidenceItem('e-new')], provenance: validProvenance() }
+      : { status: 'unavailable', reason: 'denied', refusal: validRefusal() },
+  );
+  const node = createExecuteInvestigation({
+    execute,
+    evidenceProvenance: 'required',
+    execution: roundTripping(fake),
+  });
+  const testState = state({ tests: [plannedTest('test-a'), plannedTest('test-b')] });
+
+  const first = await node(testState);
+  const second = await node(testState);
+
+  assert.equal(execute.calls.length, 2, 'execute must run once per planned test in total across both node calls');
+  assert.deepEqual(second.evidence, first.evidence);
+  assert.deepEqual(second.trials, first.trials);
+  assert.equal(second.trials.find((trial) => trial.testId === 'test-b').refusal.reason, 'denied');
+});
+
 /* -------------------------------------------------------------------------- */
 /* 4. a refused outcome is never committed                                    */
 /* -------------------------------------------------------------------------- */

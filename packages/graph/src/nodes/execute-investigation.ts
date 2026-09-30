@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash } from 'node:crypto';
 
 import {
   buildExecKey,
@@ -12,20 +12,12 @@ import {
   type InvestigationTest,
   type Trial,
   type TrialRefusal,
-} from "@aic/domain";
+} from '@aic/domain';
 
-import {
-  ingestEvidence,
-  nullPrototypeInput,
-  readOwnProvenance,
-  readOwnTrialRefusal,
-} from "../evidence-ingestion.js";
-import { deriveTrialId } from "../identity.js";
-import type {
-  InvestigationNode,
-  InvestigationNodeResult,
-} from "../investigation.js";
-import type { ExecuteInvestigationContext } from "../index.js";
+import { ingestEvidence, nullPrototypeInput, readOwnProvenance, readOwnTrialRefusal } from '../evidence-ingestion.js';
+import { deriveTrialId } from '../identity.js';
+import type { InvestigationNode, InvestigationNodeResult } from '../investigation.js';
+import type { ExecuteInvestigationContext } from '../index.js';
 
 /**
  * The three outcomes one `execute` call can report — the same shape as
@@ -39,13 +31,9 @@ import type { ExecuteInvestigationContext } from "../index.js";
  * ToolResult: every tool result is accepted and both name the same statuses".
  */
 export type ExecuteInvestigationOutcome =
-  | {
-      status: "ok";
-      output: readonly Evidence[];
-      provenance?: EvidenceProvenance;
-    }
-  | { status: "unavailable"; reason: string; refusal?: TrialRefusal }
-  | { status: "error"; message: string; refusal?: TrialRefusal };
+  | { status: 'ok'; output: readonly Evidence[]; provenance?: EvidenceProvenance }
+  | { status: 'unavailable'; reason: string; refusal?: TrialRefusal }
+  | { status: 'error'; message: string; refusal?: TrialRefusal };
 
 /**
  * AIC-125 slice B: the canonical `execute_investigation` node.
@@ -155,15 +143,10 @@ export type ExecuteInvestigationOutcome =
  * becomes an own property of the trial the durable runner records or the
  * trial it persists through project" (AIC-146 b4).
  */
-export function parseTrial(
-  fields: Readonly<Record<string, unknown>>,
-  refusal: TrialRefusal | undefined,
-): Trial {
+export function parseTrial(fields: Readonly<Record<string, unknown>>, refusal: TrialRefusal | undefined): Trial {
   const trial = TrialSchema.parse(nullPrototypeInput(fields));
-  if (Object.hasOwn(trial, "refusal") !== (refusal !== undefined)) {
-    throw new Error(
-      "parsed trial refusal presence does not match what was supplied for this call",
-    );
+  if (Object.hasOwn(trial, 'refusal') !== (refusal !== undefined)) {
+    throw new Error('parsed trial refusal presence does not match what was supplied for this call');
   }
   return trial;
 }
@@ -208,12 +191,10 @@ export function parseTrial(
  * the whole call — nothing from the earlier, well-stamped test is returned
  * either (AIC-146 b5)".
  */
-export type EvidenceProvenanceRequirement = "optional" | "required";
+export type EvidenceProvenanceRequirement = 'optional' | 'required';
 
-function assertKnownEvidenceProvenance(
-  value: EvidenceProvenanceRequirement,
-): void {
-  if (value !== "optional" && value !== "required") {
+function assertKnownEvidenceProvenance(value: EvidenceProvenanceRequirement): void {
+  if (value !== 'optional' && value !== 'required') {
     throw new Error('evidenceProvenance must be "optional" or "required"');
   }
 }
@@ -228,7 +209,7 @@ type TrialBase = Readonly<{
   runId: string;
   testId: string;
   attempt: number;
-  tool: InvestigationTest["tool"];
+  tool: InvestigationTest['tool'];
   input: unknown;
   durationMs: 0;
 }>;
@@ -252,23 +233,11 @@ function buildRecordedOutcome(
   test: InvestigationTest,
   trialBase: TrialBase,
   outcome: ExecuteInvestigationOutcome,
-  {
-    evidenceProvenance,
-    claimedEvidenceIds,
-  }: Readonly<{
-    evidenceProvenance: EvidenceProvenanceRequirement;
-    claimedEvidenceIds: Set<string>;
-  }>,
+  { evidenceProvenance, claimedEvidenceIds }: Readonly<{ evidenceProvenance: EvidenceProvenanceRequirement; claimedEvidenceIds: Set<string> }>,
 ): { test: InvestigationTest; trial: Trial; evidenceItems: Evidence[] } {
-  if (outcome.status === "ok") {
-    if (
-      evidenceProvenance === "required" &&
-      outcome.output.length > 0 &&
-      readOwnProvenance(outcome) === undefined
-    ) {
-      throw new Error(
-        "evidence provenance is required but this ok outcome carries none",
-      );
+  if (outcome.status === 'ok') {
+    if (evidenceProvenance === 'required' && outcome.output.length > 0 && readOwnProvenance(outcome) === undefined) {
+      throw new Error('evidence provenance is required but this ok outcome carries none');
     }
     const evidenceIds: string[] = [];
     const evidenceItems: Evidence[] = [];
@@ -285,22 +254,16 @@ function buildRecordedOutcome(
       // nothing is recorded (AIC-146 b2)" and › "on an ok result: a
       // well-formed provenance block on the outcome is stamped onto every
       // newly recorded evidence item, exactly as given (AIC-146 b2)".
-      evidenceItems.push(
-        ingestEvidence({
-          item,
-          trialId: trialBase.id,
-          provenanceSource: outcome,
-        }),
-      );
+      evidenceItems.push(ingestEvidence({ item, trialId: trialBase.id, provenanceSource: outcome }));
     }
     return {
-      test: InvestigationTestSchema.parse({ ...test, status: "executed" }),
-      trial: parseTrial({ ...trialBase, status: "ok", evidenceIds }, undefined),
+      test: InvestigationTestSchema.parse({ ...test, status: 'executed' }),
+      trial: parseTrial({ ...trialBase, status: 'ok', evidenceIds }, undefined),
       evidenceItems,
     };
   }
 
-  if (outcome.status === "unavailable") {
+  if (outcome.status === 'unavailable') {
     // The refusal reason is read as an own data property only, and parsed
     // with TrialRefusalSchema, before it is ever stamped on the Trial — see
     // evidence-ingestion.ts's `readOwnTrialRefusal` (AIC-146 b4), which
@@ -308,14 +271,9 @@ function buildRecordedOutcome(
     // uses for the ok branch above.
     const refusal = readOwnTrialRefusal(outcome);
     return {
-      test: InvestigationTestSchema.parse({ ...test, status: "unavailable" }),
+      test: InvestigationTestSchema.parse({ ...test, status: 'unavailable' }),
       trial: parseTrial(
-        {
-          ...trialBase,
-          status: "unavailable",
-          evidenceIds: [],
-          ...(refusal === undefined ? {} : { refusal }),
-        },
+        { ...trialBase, status: 'unavailable', evidenceIds: [], ...(refusal === undefined ? {} : { refusal }) },
         refusal,
       ),
       evidenceItems: [],
@@ -324,14 +282,9 @@ function buildRecordedOutcome(
 
   const refusal = readOwnTrialRefusal(outcome);
   return {
-    test: InvestigationTestSchema.parse({ ...test, status: "failed" }),
+    test: InvestigationTestSchema.parse({ ...test, status: 'failed' }),
     trial: parseTrial(
-      {
-        ...trialBase,
-        status: "error",
-        evidenceIds: [],
-        ...(refusal === undefined ? {} : { refusal }),
-      },
+      { ...trialBase, status: 'error', evidenceIds: [], ...(refusal === undefined ? {} : { refusal }) },
       refusal,
     ),
     evidenceItems: [],
@@ -340,33 +293,27 @@ function buildRecordedOutcome(
 
 /**
  * `sha256:` plus the hex sha256 of `JSON.stringify(canonicalJson({ tool,
- * input }))` — the same format `completeOnce` in
- * `packages/roles/src/investigation-roles.ts` uses for its `model.role`
- * `inputFingerprint`.
+ * input }))` — pinned by investigation-execution-committed.test.mjs ›
+ * "inputFingerprint sent to execution.committed equals sha256: plus the sha256
+ * of a hand-sorted {tool, input} envelope".
  */
 function computeInputFingerprint(tool: unknown, input: unknown): string {
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify(canonicalJson({ tool, input })))
-    .digest("hex")}`;
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonicalJson({ tool, input }))).digest('hex')}`;
 }
 
 export function createExecuteInvestigation({
   execute,
-  evidenceProvenance = "optional",
+  evidenceProvenance = 'optional',
   execution,
 }: Readonly<{
-  execute(
-    context: ExecuteInvestigationContext,
-  ): Promise<ExecuteInvestigationOutcome>;
+  execute(context: ExecuteInvestigationContext): Promise<ExecuteInvestigationOutcome>;
   evidenceProvenance?: EvidenceProvenanceRequirement;
   execution?: CommittedExecution;
 }>): InvestigationNode {
   assertKnownEvidenceProvenance(evidenceProvenance);
 
   return async (state: IncidentState): Promise<InvestigationNodeResult> => {
-    const plannedTests = state.tests.filter(
-      (test) => test.status === "planned",
-    );
+    const plannedTests = state.tests.filter((test) => test.status === 'planned');
     if (plannedTests.length === 0) {
       return { tests: [], trials: [], evidence: [] };
     }
@@ -391,11 +338,7 @@ export function createExecuteInvestigation({
 
     for (const test of plannedTests) {
       const attempt = (highestAttemptByTestId.get(test.id) ?? 0) + 1;
-      const trialId = deriveTrialId({
-        runId: state.control.runId,
-        testId: test.id,
-        attempt,
-      });
+      const trialId = deriveTrialId({ runId: state.control.runId, testId: test.id, attempt });
       const trialBase: TrialBase = {
         id: trialId,
         runId: state.control.runId,
@@ -416,15 +359,18 @@ export function createExecuteInvestigation({
       // malformed refusal) BEFORE returning, on a throwaway copy of
       // `claimedEvidenceIds` — so a refused outcome throws inside `compute`
       // and is never committed, matching the durable runner's own `call` /
-      // `recordsOf` pairing (`../index.ts`).
-      const compute = async (): Promise<ExecuteInvestigationOutcome> => {
-        const computed = await execute({
+      // `recordsOf` pairing (`../index.ts`). Without `execution` the outcome
+      // is validated once, by the record build below, as before.
+      const call = () =>
+        execute({
           runId: state.control.runId,
           testId: test.id,
           attempt,
           tool: test.tool,
           input: test.input,
         });
+      const compute = async (): Promise<ExecuteInvestigationOutcome> => {
+        const computed = await call();
         buildRecordedOutcome(test, trialBase, computed, {
           evidenceProvenance,
           claimedEvidenceIds: new Set(claimedEvidenceIds),
@@ -434,22 +380,13 @@ export function createExecuteInvestigation({
 
       const outcome = execution
         ? await execution.committed(
-            buildExecKey("tool.trial", {
-              runId: state.control.runId,
-              testId: test.id,
-              trialAttempt: attempt,
-            }),
+            buildExecKey('tool.trial', { runId: state.control.runId, testId: test.id, trialAttempt: attempt }),
             compute,
-            {
-              inputFingerprint: computeInputFingerprint(test.tool, test.input),
-            },
+            { inputFingerprint: computeInputFingerprint(test.tool, test.input) },
           )
-        : await compute();
+        : await call();
 
-      const recorded = buildRecordedOutcome(test, trialBase, outcome, {
-        evidenceProvenance,
-        claimedEvidenceIds,
-      });
+      const recorded = buildRecordedOutcome(test, trialBase, outcome, { evidenceProvenance, claimedEvidenceIds });
       tests.push(recorded.test);
       trials.push(recorded.trial);
       evidence.push(...recorded.evidenceItems);
