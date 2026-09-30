@@ -113,8 +113,9 @@ export type IncidentScopeResolution =
  * scope resolution `resolveScope` below wraps, without depending on a thrown
  * message meant for `incident start`'s own error text
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
- * see cli-shared-pieces.test.mjs › "resolveIncidentScope's refusal result
- * carries no name: exactly the own keys {ok, reason}, nothing else"
+ * see cli-shared-pieces.test.mjs › "the refusal result of
+ * resolveIncidentScope carries no name: exactly the own keys {ok, reason},
+ * nothing else"
  */
 export function resolveIncidentScope(
   registry: RegistrySnapshot,

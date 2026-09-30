@@ -127,7 +127,7 @@ test('summarizeInvestigation derives each hypothesis\'s status the same way the 
   assert.equal(summary.conclusion, null);
 });
 
-test('investigate.ts stdout for a scripted-roles fixture run equals JSON.stringify(summarizeInvestigation(runId, finalState)) for the same composition, run independently', async () => {
+test('investigate.ts stdout for a scripted-roles fixture run equals JSON.stringify(summarizeInvestigation(runId, finalState)) over a scripted composition run independently', async () => {
   const scenario = evals.REPLAY_SCENARIOS.find(({ id }) => id === 'deployment-caused-incident-a');
   assert.ok(scenario, 'fixture sanity: REPLAY_SCENARIOS must carry deployment-caused-incident-a');
 
@@ -276,7 +276,7 @@ test('resolveIncidentScope returns { ok: false, reason: "environment-of-another-
   assert.deepEqual(result, { ok: false, reason: 'environment-of-another-service' });
 });
 
-test('resolveIncidentScope\'s refusal result carries no name: exactly the own keys {ok, reason}, nothing else', async () => {
+test('the refusal result of resolveIncidentScope carries no name: exactly the own keys {ok, reason}, nothing else', async () => {
   const incident = await loadIncidentCommand();
 
   const result = incident.resolveIncidentScope(registrySnapshotFixture(), 'ghost', 'nowhere');
@@ -340,22 +340,35 @@ test('createModelReasoning(port, execution) forwards execution to all four model
   }
 });
 
-test('createModelReasoning(port) with no execution never calls a committed port: existing cli-investigate rows over the bare port stay the current, uncommitted behaviour', async () => {
+test('createModelReasoning(port) with no execution calls the port on every role call, while the same two calls with an execution reach the port once', async () => {
   const investigateModule = await loadInvestigateModule();
-  const fakeExecution = createFakeCommittedExecution();
 
-  const fakePort = {
-    async complete() {
-      throw new Error('fake port refuses: this row reads whether execution was ever reached');
-    },
-  };
-
-  // Deliberately NOT passed to createModelReasoning, so nothing can forward
-  // to it — the seam is exercised only when a caller supplies it.
-  const reasoning = investigateModule.createModelReasoning(fakePort);
+  // The port answers (its answer is committed as-is by execution.committed and
+  // only parsed afterwards), so a committed wrapper replays the second call
+  // instead of reaching the port again. The role's own parse of this answer
+  // throws; this row reads the port's call count, not a parsed answer.
+  function countingPort() {
+    const port = {
+      calls: 0,
+      async complete() {
+        port.calls += 1;
+        return { text: '{}' };
+      },
+    };
+    return port;
+  }
   const state = fakeStateFor('aic146c4a-no-execution-run');
 
-  await reasoning.generate_hypotheses(state).catch(() => {});
+  const barePort = countingPort();
+  const bare = investigateModule.createModelReasoning(barePort);
+  await bare.generate_hypotheses(state).catch(() => {});
+  await bare.generate_hypotheses(state).catch(() => {});
 
-  assert.equal(fakeExecution.calls.length, 0, 'an execution port never passed in must never be called');
+  const committedPort = countingPort();
+  const committed = investigateModule.createModelReasoning(committedPort, createFakeCommittedExecution());
+  await committed.generate_hypotheses(state).catch(() => {});
+  await committed.generate_hypotheses(state).catch(() => {});
+
+  assert.equal(barePort.calls, 2, 'without execution, every role call must reach the port');
+  assert.equal(committedPort.calls, 1, 'with execution, the second call on the same state must replay the committed answer');
 });

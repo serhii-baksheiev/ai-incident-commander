@@ -15,7 +15,7 @@
  * real `RunWriteContext`, in
  * `infra/postgres/tests/durable-tool-replay.live.mjs`.
  *
- * Callers: test/durable-tool-replay.test.mjs and test/durable-model-replay.test.mjs.
+ * Callers: `grep -rl fake-committed-execution test`.
  */
 
 /**
