@@ -30,7 +30,7 @@ jobs:
         ports:
           - 127.0.0.1:5432:5432
         options: >-
-          --health-cmd "pg_isready --username aic --dbname aic"
+          --health-cmd "pg_isready --host 127.0.0.1 --username aic --dbname aic"
           --health-interval 1s
           --health-timeout 2s
           --health-retries 30

@@ -53,7 +53,7 @@ services:
     volumes:
       - aic-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "--username", "aic", "--dbname", "aic"]
+      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "aic", "--dbname", "aic"]
       interval: 1s
       timeout: 2s
       retries: 20

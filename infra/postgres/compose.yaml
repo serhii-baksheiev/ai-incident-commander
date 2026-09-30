@@ -34,7 +34,7 @@ services:
     ports:
       - "127.0.0.1:${AIC_POSTGRES_HOST_PORT:?set AIC_POSTGRES_HOST_PORT}:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "--username", "aic", "--dbname", "aic"]
+      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "aic", "--dbname", "aic"]
       interval: 1s
       timeout: 2s
       retries: 20
