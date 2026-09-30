@@ -73,6 +73,7 @@ import {
   provisionCheckpointerSchema,
   requireConnectionString as sharedRequireConnectionString,
   runCliOk,
+  CLI_TIMEOUT_MS,
   workerPath,
 } from './fixtures/incident-investigate-shared.mjs';
 
@@ -153,15 +154,19 @@ function workerErrorMessage(worker) {
   return `${found.message}\n${found.stack ?? ''}\n${worker.diagnostics()}`;
 }
 
-/**
- * Each kill row waits in two bounded polls (60 s each) and one bounded exit
- * wait (20 s) before its resume and onboarding. The row's own deadline sits
- * above that sum, so a slow run fails on the named poll message rather than
- * on the runner's generic timeout.
- */
-const ROW_TIMEOUT_MS = 240_000;
+const POLL_TIMEOUT_MS = 60_000;
+const EXIT_TIMEOUT_MS = 20_000;
+/** `db migrate` plus the four onboarding commands in `onboard`. */
+const ONBOARDING_CLI_SPAWNS = 5;
 
-function waitForExit(worker, timeoutMs = 20_000) {
+/**
+ * The bounded waits inside one kill row: its onboarding CLI spawns, two polls
+ * and one exit wait. The resumed run and the SQL reads are not bounded, so
+ * the deadline adds a minute on top rather than claiming to cover them.
+ */
+const ROW_TIMEOUT_MS = ONBOARDING_CLI_SPAWNS * CLI_TIMEOUT_MS + 2 * POLL_TIMEOUT_MS + EXIT_TIMEOUT_MS + 60_000;
+
+function waitForExit(worker, timeoutMs = EXIT_TIMEOUT_MS) {
   const { child, diagnostics } = worker;
   if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
@@ -193,7 +198,7 @@ function killIfAlive(worker) {
  * always something the STILL-RUNNING worker is supposed to reach. Never a
  * fixed sleep: the interval is only how often the oracle is re-read.
  */
-async function waitUntil(worker, check, { timeoutMs = 60_000, intervalMs = 100, step }) {
+async function waitUntil(worker, check, { timeoutMs = POLL_TIMEOUT_MS, intervalMs = 100, step }) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
