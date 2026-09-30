@@ -1038,6 +1038,31 @@ test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): an 
   );
 });
 
+test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): a polluted Object.prototype.provenance does not satisfy the requirement — an ok outcome with no OWN provenance still throws (AIC-146 b5)', async () => {
+  const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
+  const inherited = {
+    sourceBindingId: randomUUID(),
+    adapter: 'lab@1',
+    credentialRefId: null,
+    fetchedAt: '2026-09-30T00:00:00.000Z',
+    requestFingerprint: `sha256:${createHash('sha256').update('b5-inherited-provenance').digest('hex')}`,
+  };
+  const execute = recordingExecutor(async () => ({ status: 'ok', output: [evidenceItem('e-inherited-only')] }));
+  const node = createExecuteInvestigation({ execute, evidenceProvenance: 'required' });
+  Object.defineProperty(Object.prototype, 'provenance', { value: inherited, enumerable: false, configurable: true, writable: true });
+  try {
+    await assert.rejects(
+      () => node(state({ tests: [plannedTest('test-a')] })),
+      (error) => {
+        assert.ok(/provenance/i.test(error.message), `expected the message to name provenance, got: ${error.message}`);
+        return true;
+      },
+    );
+  } finally {
+    delete Object.prototype.provenance;
+  }
+});
+
 test('createExecuteInvestigation({execute, evidenceProvenance: "required"}): across two planned tests, a later ok outcome missing provenance rejects the whole call — nothing from the earlier, well-stamped test is returned either (AIC-146 b5)', async () => {
   const createExecuteInvestigation = requireGraphExport('createExecuteInvestigation');
   const calls = [];
