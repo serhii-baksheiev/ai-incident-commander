@@ -597,6 +597,41 @@ test('claimRun claims exactly the named run even when an older queued run exists
   assert.equal(targetRow.owner_worker_id, 'worker-claim-run');
 });
 
+test('claimRun returns null without waiting when a concurrent transaction holds the named run with FOR UPDATE, and leaves the row queued', async (t) => {
+  const store = await freshStore(t);
+  const runId = `run-claim-run-locked-${randomUUID()}`;
+  await store.createRun({ runId, input: {} });
+
+  // Released inside this test's own finally, for the reason the claimNext
+  // lock row above gives.
+  const lockClient = await store.pool.connect();
+  await lockClient.query('begin');
+  const { rows: lockedRows } = await lockClient.query('select run_id from aic_app.runs where run_id = $1 for update', [
+    runId,
+  ]);
+  assert.equal(lockedRows[0]?.run_id, runId, 'the test\'s own client must hold the lock on the named row before claimRun runs, or this row proves nothing');
+
+  const pending = store.claimRun(runId, 'worker-claim-run-locked');
+  let timer;
+  const blocked = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('blocked'), 2_000);
+  });
+  try {
+    const outcome = await Promise.race([pending, blocked]);
+    assert.notEqual(outcome, 'blocked', 'claimRun must not wait on a row a concurrent transaction holds');
+    assert.equal(outcome, null, 'claimRun must return null for a named run a concurrent transaction holds');
+  } finally {
+    clearTimeout(timer);
+    await lockClient.query('rollback');
+    lockClient.release();
+    await pending.catch(() => undefined);
+  }
+
+  const { rows } = await store.pool.query('select status, owner_worker_id from aic_app.runs where run_id = $1', [runId]);
+  assert.equal(rows[0].status, 'queued');
+  assert.equal(rows[0].owner_worker_id, null);
+});
+
 test('claimRun on a running, completed or waiting_human run returns null and leaves the row untouched', async (t) => {
   const store = await freshStore(t);
 

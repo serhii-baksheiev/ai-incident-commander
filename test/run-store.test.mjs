@@ -263,7 +263,7 @@ test('the claim and sweep statements use FOR UPDATE SKIP LOCKED, and renewal and
     'createRunStore must expose the SQL statements it will run as store.SQL_STATEMENTS (see this file\'s header for why), mirroring createPostgresCheckpointer\'s saver.SQL_STATEMENTS',
   );
 
-  for (const name of ['claimNext', 'sweepExpired']) {
+  for (const name of ['claimNext', 'claimRun', 'sweepExpired']) {
     assert.equal(typeof store.SQL_STATEMENTS[name], 'string', `SQL_STATEMENTS.${name} must be present`);
     assert.match(
       store.SQL_STATEMENTS[name],

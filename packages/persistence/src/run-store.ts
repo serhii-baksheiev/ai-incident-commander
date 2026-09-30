@@ -49,8 +49,8 @@ export interface RunStore {
 
 /**
  * The { from, to } pairs the store's own SQL statements perform: `claimNext`
- * (`queued->running`, and bounded exhaustion's `queued->failed`) and
- * `sweepExpired` (`running->queued`). Checked against the domain's own
+ * and `claimRun` (`queued->running`, and bounded exhaustion's
+ * `queued->failed`) and `sweepExpired` (`running->queued`). Checked against the domain's own
  * `assertRunTransition` below, at module load — not only in a test — so a pair
  * added here that the domain refuses fails as soon as this module is imported.
  * See run-store.test.mjs › "every status transition the store's statements

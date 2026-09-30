@@ -343,8 +343,8 @@ test('getIncident returns the body startIncident stored, matching a raw SELECT i
   const fetched = await incidentStore.getIncident(incident.id);
   assert.deepEqual(fetched, incident, 'getIncident must return the exact incident body startIncident stored and returned');
 
-  // Independent oracle: raw SQL against the table, not the store's own
-  // startIncident return value.
+  // The stored column itself, read with raw SQL; the assertion above already
+  // compares getIncident with startIncident's return value.
   const { rows } = await pool.query('select body from aic_app.incidents where id = $1', [incident.id]);
   assert.deepEqual(
     rows[0].body,
