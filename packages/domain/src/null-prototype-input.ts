@@ -4,12 +4,14 @@
  * chain like any other property read, `obj.key`) can never observe a value
  * inherited from a polluted `Object.prototype`.
  *
- * It is the null-prototype input for every Trial and Evidence parse, whether
- * the value being parsed is a candidate evidence item (`@aic/graph`'s `evidence-ingestion.ts`, `EvidenceSchema` and
- * `TrialSchema`), a plain object literal in `nodes/execute-investigation.ts`,
- * or a row body freshly `JSON.parse`d off the database
- * (`@aic/persistence`'s `retention.ts`, `parseRunProductRows` — AIC-146 b4).
- * Each of those imports this function rather than growing its own copy
+ * Three sites build their parse input with it: a candidate evidence item in
+ * `@aic/graph`'s `evidence-ingestion.ts`, a trial in
+ * `nodes/execute-investigation.ts`, and a row body read back off the database
+ * in `@aic/persistence`'s `retention.ts` (`parseRunProductRows`, AIC-146 b4).
+ * `@aic/tools`'s `bound-investigation-executor.ts` also parses evidence items,
+ * on a plain object, before they reach the graph; the graph's own ingestion
+ * then refuses any item that carries its own `provenance`.
+ * Each of the three imports this function rather than growing its own copy
  * (`.claude/rules/invariants.md`, "one mechanism, one implementation") —
  * `@aic/persistence` in particular cannot import `@aic/graph` (the dependency
  * runs the other way), which is why this lives in `@aic/domain`, the one
