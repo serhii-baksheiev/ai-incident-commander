@@ -2,7 +2,6 @@ import {
   buildExecKey,
   DOMAIN_LAYER,
   INCIDENT_STATE_SCHEMA_VERSION,
-  TrialSchema,
   upsertById,
   type CommittedExecution,
   type Evidence,
@@ -21,6 +20,7 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 
 import { ingestEvidence, refuseOwnProvenance } from './evidence-ingestion.js';
 import { deriveEvidenceId, deriveTrialId } from './identity.js';
+import { parseTrial } from './nodes/execute-investigation.js';
 
 export * from './identity.js';
 export * from './investigation.js';
@@ -229,17 +229,30 @@ export function createPersistentInvestigationRunner({
           trialId,
           provenanceSource: executed,
         });
-        const trial = TrialSchema.parse({
-          id: trialId,
-          runId: state.runId,
-          testId: state.test.id,
-          attempt: state.attempt,
-          tool: state.test.tool,
-          input: state.test.input,
-          status: executed.trial.status,
-          durationMs: executed.trial.durationMs,
-          evidenceIds: [evidenceId],
-        });
+        // Built through `parseTrial` (`./nodes/execute-investigation.js`), the
+        // same null-prototype-input-and-post-parse-assert discipline that
+        // node's own `TrialSchema.parse` calls use, rather than a second,
+        // unprotected `TrialSchema.parse` call here — this runner never
+        // supplies a refusal, so `undefined` is passed and the post-parse
+        // assertion catches a polluted `Object.prototype.refusal` the same
+        // way it would catch one supplied but lost — see
+        // durable-tool-replay.test.mjs › "a polluted Object.prototype.refusal
+        // never becomes an own property of the trial the durable runner
+        // records or the trial it persists through project" (AIC-146 b4).
+        const trial = parseTrial(
+          {
+            id: trialId,
+            runId: state.runId,
+            testId: state.test.id,
+            attempt: state.attempt,
+            tool: state.test.tool,
+            input: state.test.input,
+            status: executed.trial.status,
+            durationMs: executed.trial.durationMs,
+            evidenceIds: [evidenceId],
+          },
+          undefined,
+        );
         return { trial, evidence };
       };
       const call = async () => {

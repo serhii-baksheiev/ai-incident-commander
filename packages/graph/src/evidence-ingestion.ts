@@ -1,4 +1,12 @@
-import { EvidenceProvenanceSchema, EvidenceSchema, quoteModelText, type Evidence } from '@aic/domain';
+import {
+  EvidenceProvenanceSchema,
+  EvidenceSchema,
+  ownFieldsOnNullPrototype,
+  quoteModelText,
+  TrialRefusalSchema,
+  type Evidence,
+  type TrialRefusal,
+} from '@aic/domain';
 
 /**
  * The one place `@aic/graph`'s own source calls `EvidenceSchema.parse` — see
@@ -32,9 +40,10 @@ import { EvidenceProvenanceSchema, EvidenceSchema, quoteModelText, type Evidence
  * also what keeps a polluted `Object.prototype.provenance` from leaking onto
  * recorded evidence: `provenanceSource` itself is never touched through the
  * prototype chain, and the object handed to `EvidenceSchema.parse` is built
- * with `Object.create(null)` so zod's own optional-field read (which walks
- * the prototype chain like any other property read) can never observe an
- * inherited value either — see › "on an ok result: a polluted
+ * by `nullPrototypeInput` (below), whose null prototype means zod's own
+ * optional-field read (which walks the prototype chain like any other
+ * property read) can never observe an inherited value either — see › "on an
+ * ok result: a polluted
  * Object.prototype.provenance never leaks onto recorded evidence when the
  * outcome carries no own provenance (AIC-146 b2)".
  *
@@ -56,26 +65,24 @@ export function ingestEvidence({
 
   const provenance = readOwnProvenance(provenanceSource);
 
-  // Built with a null prototype so a polluted Object.prototype.provenance can
-  // never be read back through this object's own prototype chain — by zod's
-  // optional-field check or by anything else — when no provenance was
-  // supplied for this call.
-  const input: Record<string, unknown> = Object.create(null);
-  for (const key of Object.keys(item)) {
-    input[key] = item[key];
-  }
-  input.trialId = trialId;
-  if (provenance !== undefined) {
-    input.provenance = provenance;
-  }
+  // Built with a null prototype (`nullPrototypeInput`, below) so a polluted
+  // Object.prototype.provenance can never be read back through this object's
+  // own prototype chain — by zod's optional-field check or by anything
+  // else — when no provenance was supplied for this call.
+  const input = nullPrototypeInput({
+    ...item,
+    trialId,
+    ...(provenance === undefined ? {} : { provenance }),
+  });
 
   const parsed = EvidenceSchema.parse(input);
 
   // This post-parse check is what catches a `provenance` smuggled past the
   // FIRST guard above by a Proxy whose `getOwnPropertyDescriptor` trap lies
-  // to `Object.hasOwn` on the first ask and tells the truth to `Object.keys`
-  // (used by the `for (const key of Object.keys(item))` copy above) on every
-  // ask after — see investigation-execution.test.mjs › "on an ok result: a
+  // to `Object.hasOwn` on the first ask and tells the truth on every ask
+  // after — which is exactly the ask the `{...item, ...}` spread above makes
+  // while assembling `nullPrototypeInput`'s `fields` argument — see
+  // investigation-execution.test.mjs › "on an ok result: a
   // Proxy evidence item that hides its own provenance from Object.hasOwn but
   // reveals it to Object.keys is refused, and nothing is recorded (AIC-146 b2
   // security advisory 1)".
@@ -90,6 +97,40 @@ export function ingestEvidence({
 
   return parsed;
 }
+
+/**
+ * Copies every OWN key of `fields` onto a fresh object whose prototype is
+ * `null`, so a schema's own optional-field read (which walks the prototype
+ * chain like any other property read, `obj.key`) can never observe a value
+ * inherited from a polluted `Object.prototype` — the null-prototype
+ * discipline `ingestEvidence` (above) uses for the `EvidenceSchema.parse`
+ * input, shared here so `createExecuteInvestigation`
+ * (`./nodes/execute-investigation.ts`) can build its `TrialSchema.parse`
+ * input the same way for its own optional `refusal` field (AIC-146 b4) — one
+ * mechanism, not two copies of the same discipline (`.claude/rules/invariants.md`,
+ * "one mechanism, one implementation").
+ *
+ * Only OWN keys of `fields` are copied: `Object.keys` never sees an inherited
+ * property regardless of what `Object.prototype` carries, so a caller safely
+ * assembles `fields` with an ordinary object literal or spread first, and
+ * only a key it actually set ends up present on the result — see
+ * investigation-execution.test.mjs › "on an ok result carrying no own
+ * refusal: a polluted Object.prototype.refusal never becomes an own property
+ * of the recorded trial, even on a real ok trial (AIC-146 b4 security round
+ * 1)", › "on an unavailable result carrying no own refusal: a polluted
+ * Object.prototype.refusal never becomes an own property of the recorded
+ * trial (AIC-146 b4 security round 1)" and › "on an error result carrying no
+ * own refusal: a polluted Object.prototype.refusal never becomes an own
+ * property of the recorded trial (AIC-146 b4 security round 1)".
+ *
+ * A thin re-export of `@aic/domain`'s `ownFieldsOnNullPrototype` under this
+ * package's existing local name, so every call site here keeps reading
+ * `nullPrototypeInput` while the one implementation lives where
+ * `@aic/persistence`'s `parseRunProductRows` (`retention.ts`, AIC-146 b4) can
+ * also reach it — `@aic/persistence` cannot import `@aic/graph`
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+ */
+export const nullPrototypeInput = ownFieldsOnNullPrototype;
 
 /**
  * Refuses an item carrying its own `provenance` key — `Object.hasOwn` sees an
@@ -122,36 +163,76 @@ export function refuseOwnProvenance(item: object, evidenceId: string): void {
 }
 
 /**
- * Reads `source.provenance` only when it is an own DATA property (never an
+ * Reads `source[key]` only when it is an own DATA property (never an
  * accessor's getter, and never a value inherited through the prototype
- * chain), and parses it with `EvidenceProvenanceSchema` when present. The
- * parse failure message is deliberately content-free: it never echoes the
+ * chain), and parses it with the given schema when present. The parse
+ * failure message is deliberately content-free: it never echoes the
  * malformed value, which may carry a real (if invalid) binding id or
  * fingerprint.
  *
- * An own `provenance` key set explicitly to `undefined` is refused rather
- * than treated as absent: the key being PRESENT at all is itself a caller
- * mistake worth naming, distinct from the key never having been set — see
+ * An own key set explicitly to `undefined` is refused rather than treated as
+ * absent: the key being PRESENT at all is itself a caller mistake worth
+ * naming, distinct from the key never having been set — see
  * durable-tool-replay.test.mjs › "an ExecuteInvestigationResult with an
  * explicit own provenance: undefined is refused with a message naming
  * provenance, before anything is committed".
+ *
+ * Shared by `readOwnProvenance` (the `provenance` field `ingestEvidence`
+ * reads off an outcome/result) and `readOwnTrialRefusal` (the `refusal`
+ * field `createExecuteInvestigation` reads off an outcome, AIC-146 b4) — one
+ * mechanism, not two copies of the same own-property discipline
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation").
  */
-function readOwnProvenance(source: object) {
-  const descriptor = Object.getOwnPropertyDescriptor(source, 'provenance');
+function readOwnValidatedProperty<T>(
+  source: object,
+  key: string,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  fieldLabel: string,
+): T | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
   if (descriptor === undefined) {
     return undefined;
   }
   if (!Object.hasOwn(descriptor, 'value')) {
-    throw new Error('provenance must be an own data property, not an accessor');
+    throw new Error(`${fieldLabel} must be an own data property, not an accessor`);
   }
   if (descriptor.value === undefined) {
-    throw new Error('provenance must be omitted, not set to undefined');
+    throw new Error(`${fieldLabel} must be omitted, not set to undefined`);
   }
-  const result = EvidenceProvenanceSchema.safeParse(descriptor.value);
+  const result = schema.safeParse(descriptor.value);
   if (!result.success) {
-    throw new Error('evidence provenance failed validation');
+    throw new Error(`${fieldLabel} failed validation`);
   }
   return result.data;
+}
+
+function readOwnProvenance(source: object) {
+  return readOwnValidatedProperty(source, 'provenance', EvidenceProvenanceSchema, 'evidence provenance');
+}
+
+/**
+ * Reads `source.refusal` (AIC-146 b4) the same own-data-property way
+ * `readOwnProvenance` reads `source.provenance`: an accessor's getter is
+ * never invoked, an unknown key or a reason outside the closed six-reason
+ * vocabulary is refused before it ever reaches the Trial, and the failure
+ * message never echoes the malformed value. Exported so
+ * `createExecuteInvestigation` (`./nodes/execute-investigation.ts`) is the
+ * only caller, matching how `refuseOwnProvenance` is shared today — see
+ * investigation-execution.test.mjs › "on an unavailable result: an accessor
+ * "refusal" on the outcome makes the node throw and records nothing, and its
+ * getter is never called (AIC-146 b4)", › "on an unavailable result: a
+ * refusal carrying an unknown key makes the node throw with the content-free
+ * refusal message, echoing neither the key name nor its value, and records
+ * nothing (AIC-146 b4)", › "on an unavailable result: a refusal whose reason
+ * is outside the six frozen reasons makes the node throw with the
+ * content-free refusal message, never echoing the malformed reason, and
+ * records nothing (AIC-146 b4)" and › "on an unavailable result: a refusal
+ * whose sourceBindingId is neither a UUID nor null makes the node throw with
+ * the content-free refusal message, never echoing the malformed binding id,
+ * and records nothing (AIC-146 b4)".
+ */
+export function readOwnTrialRefusal(source: object): TrialRefusal | undefined {
+  return readOwnValidatedProperty(source, 'refusal', TrialRefusalSchema, 'trial refusal');
 }
 
 /** Own-key, own-value equality over a flat, primitive-valued object — exactly the shape EvidenceProvenanceSchema produces. */

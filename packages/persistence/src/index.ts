@@ -181,10 +181,12 @@ export {
  * `node_results` and checkpoint thread.
  */
 export {
+  parseRunProductRows,
   pruneTerminalRun,
   readRunProductSnapshot,
   RunNotTerminalError,
   type RetentionCheckpointer,
+  type RunProductRow,
   type RunProductSnapshot,
 } from './retention.js';
 

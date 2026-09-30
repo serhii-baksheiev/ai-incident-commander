@@ -1,4 +1,4 @@
-import type { Evidence, EvidenceProvenance } from '@aic/domain';
+import type { Evidence, EvidenceProvenance, TrialRefusal } from '@aic/domain';
 import type { ExecuteInvestigationOutcome, ExecuteInvestigationResult } from '@aic/graph';
 import type { ToolResult } from '@aic/tools';
 
@@ -21,6 +21,14 @@ const sameVariants: Same<ToolResult<readonly Evidence[]>, ExecuteInvestigationOu
 type OkOutcome = Extract<ExecuteInvestigationOutcome, { status: 'ok' }>;
 const okProvenanceIsExactlyOptional: Same<OkOutcome['provenance'], EvidenceProvenance | undefined> = true;
 
+// AIC-146 b4: the unavailable/error variants gain an optional `refusal`,
+// typed as exactly `@aic/domain`'s own `TrialRefusal`, never a second,
+// hand-typed copy of that shape — mirroring the provenance pin above.
+type UnavailableOutcome = Extract<ExecuteInvestigationOutcome, { status: 'unavailable' }>;
+type ErrorOutcome = Extract<ExecuteInvestigationOutcome, { status: 'error' }>;
+const unavailableRefusalIsExactlyOptional: Same<UnavailableOutcome['refusal'], TrialRefusal | undefined> = true;
+const errorRefusalIsExactlyOptional: Same<ErrorOutcome['refusal'], TrialRefusal | undefined> = true;
+
 // Provenance travels alongside the durable runner's evidence, on
 // ExecuteInvestigationResult.provenance, never inside evidence itself.
 const evidenceFieldsCarryNoProvenance: ExecuteInvestigationResult['evidence'] = {
@@ -37,4 +45,6 @@ void accepted;
 void sameStatuses;
 void sameVariants;
 void okProvenanceIsExactlyOptional;
+void unavailableRefusalIsExactlyOptional;
+void errorRefusalIsExactlyOptional;
 void evidenceFieldsCarryNoProvenance;

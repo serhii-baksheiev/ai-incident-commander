@@ -110,6 +110,13 @@ type Trial = {
   status: "ok" | "unavailable" | "error";
   durationMs: number;
   evidenceIds: string[];
+  refusal?: TrialRefusal; // present only when the source call behind this trial was refused
+};
+
+// Why a trial went unavailable/error, and which binding refused it (null when no binding served the tool)
+type TrialRefusal = {
+  reason: "unavailable" | "denied" | "rate_limited" | "timeout" | "adapter_error" | "budget_exceeded";
+  sourceBindingId: string | null;
 };
 ```
 
@@ -332,14 +339,15 @@ the test tree returns. The per-budget calibration statements are published by
 `summarizeBudgetPolicyEvidence`.
 see budget-policy.test.mjs › "states in the report that llmCallBudget is not empirically calibrated, and why"
 
-`schemaVersion` is `6`. It moves whenever state written under one version
+`schemaVersion` is `7`. It moves whenever state written under one version
 would be read wrongly by the other:
 - `2` for the logical budget counters;
 - `3` for `resumeCount`;
 - `4` for `incident.primaryScope` (AIC-96, the v0.2 → v0.3 cutover);
 - `5` for typed expected observations and the optional hypothesis `cause`
   (AIC-123);
-- `6` for the optional `Evidence.provenance` (AIC-146).
+- `6` for the optional `Evidence.provenance` (AIC-146 slice a);
+- `7` for the optional `Trial.refusal` (AIC-146 slice b4).
 
 State persisted under an older version is refused rather than coerced to an
 invented usage, scope or observation. On the `kind: 'start'` path the schema's
@@ -356,6 +364,10 @@ A v5 checkpoint lacks nothing, because `provenance` is optional. It is refused
 by the version policy alone, and the message says it predates evidence
 provenance rather than naming a missing field:
 see state-cutover.test.mjs › "refuses to resume a schema-version-5 checkpoint paused at the HITL interrupt, because it predates evidence provenance"
+A v6 checkpoint likewise lacks nothing, because `refusal` is optional too. It
+is refused the same way, and the message says it predates typed trial
+refusals:
+see state-cutover.test.mjs › "refuses to resume a schema-version-6 checkpoint paused at the HITL interrupt, because it predates typed trial refusals"
 The `aic start` / `aic resume` spike runner's checkpoints carry no incident and
 are read unchanged:
 see state-cutover.test.mjs › "resumes a spike-runner checkpoint stamped at schema version 3 and returns its trials/evidence unchanged (pin: this state carries no incident)"

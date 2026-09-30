@@ -292,6 +292,7 @@ const CURRENT_PERSISTENCE_EXPORTS = Object.freeze([
   'createRunStore',
   'createSqliteCheckpointer',
   'openRunWriteContext',
+  'parseRunProductRows',
   'pruneTerminalRun',
   'readRunProductSnapshot',
   'setupApplicationSchema',

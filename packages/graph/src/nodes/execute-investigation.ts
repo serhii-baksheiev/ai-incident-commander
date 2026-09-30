@@ -6,9 +6,10 @@ import {
   type IncidentState,
   type InvestigationTest,
   type Trial,
+  type TrialRefusal,
 } from '@aic/domain';
 
-import { ingestEvidence } from '../evidence-ingestion.js';
+import { ingestEvidence, nullPrototypeInput, readOwnTrialRefusal } from '../evidence-ingestion.js';
 import { deriveTrialId } from '../identity.js';
 import type { InvestigationNode, InvestigationNodeResult } from '../investigation.js';
 import type { ExecuteInvestigationContext } from '../index.js';
@@ -26,8 +27,8 @@ import type { ExecuteInvestigationContext } from '../index.js';
  */
 export type ExecuteInvestigationOutcome =
   | { status: 'ok'; output: readonly Evidence[]; provenance?: EvidenceProvenance }
-  | { status: 'unavailable'; reason: string }
-  | { status: 'error'; message: string };
+  | { status: 'unavailable'; reason: string; refusal?: TrialRefusal }
+  | { status: 'error'; message: string; refusal?: TrialRefusal };
 
 /**
  * AIC-125 slice B: the canonical `execute_investigation` node.
@@ -85,11 +86,66 @@ export type ExecuteInvestigationOutcome =
  * A thrown `execute` error propagates rather than being swallowed — see ›
  * "propagates a thrown error from execute instead of swallowing it".
  *
+ * AIC-146 b4: an `unavailable` or `error` outcome may also carry a typed
+ * `refusal` (`@aic/domain`'s `TrialRefusal`), read as an own data property
+ * only and parsed with `TrialRefusalSchema` before it is ever stamped on the
+ * Trial — see `../evidence-ingestion.js`'s own `readOwnTrialRefusal` for the
+ * shared own-property discipline, and investigation-execution.test.mjs ›
+ * "on an unavailable result: a well-formed refusal naming a binding UUID is
+ * recorded on the trial (AIC-146 b4)", › "on an unavailable result carrying
+ * no refusal: the recorded trial carries no refusal key at all (AIC-146 b4)"
+ * and › "on an error result: a well-formed refusal naming a binding UUID is
+ * recorded on the trial (AIC-146 b4)".
+ *
  * Lane wiring — which graph edge calls this node — is a later slice's
  * concern, not this one's, matching `createDerivePredictions` and
  * `createEvaluatePredictions` (`./derive-predictions.js`,
  * `./evaluate-predictions.js`).
  */
+/**
+ * Parses one Trial via `TrialSchema`, building the parse input with
+ * `nullPrototypeInput` (`../evidence-ingestion.js`) so a polluted
+ * `Object.prototype.refusal` can never surface as an own `refusal` on the
+ * recorded Trial — the same null-prototype discipline `ingestEvidence` uses
+ * for `EvidenceProvenance` (AIC-146 b2), reused here for `refusal` (AIC-146
+ * b4, security round 1) rather than re-implemented (`.claude/rules/invariants.md`,
+ * "one mechanism, one implementation"). A post-parse assertion then checks
+ * that the parsed Trial's own `refusal` presence matches whether a refusal
+ * was actually supplied for this call — content-free, so it never echoes the
+ * refusal's value. It is pinned directly — see investigation-execution.test.mjs
+ * › "parseTrial throws, content-free, when the parsed trial's own refusal
+ * does not match the refusal supplied for the call" — because inside the
+ * node the null-prototype input already rules out a mismatch; it guards a
+ * caller that passes fields and refusal that disagree. Every
+ * `TrialSchema.parse` call in this file goes through here — see
+ * evidence-ingestion-sites.test.mjs › "across every package and app source
+ * tree, TrialSchema.parse and TrialSchema.safeParse appear only in the node
+ * that builds trials and in the read-back of stored trials". The null-prototype
+ * input is pinned by investigation-execution.test.mjs › "on an ok result carrying no own
+ * refusal: a polluted Object.prototype.refusal never becomes an own property
+ * of the recorded trial, even on a real ok trial (AIC-146 b4 security round
+ * 1)", › "on an unavailable result carrying no own refusal: a polluted
+ * Object.prototype.refusal never becomes an own property of the recorded
+ * trial (AIC-146 b4 security round 1)" and › "on an error result carrying no
+ * own refusal: a polluted Object.prototype.refusal never becomes an own
+ * property of the recorded trial (AIC-146 b4 security round 1)".
+ *
+ * Exported so `../index.js`'s `recordsOf` (the durable runner's own
+ * `TrialSchema.parse` site) reuses this exact function rather than growing a
+ * second copy of the same null-prototype-input-and-post-parse-assert
+ * discipline for a caller that always passes `refusal: undefined` — see
+ * durable-tool-replay.test.mjs › "a polluted Object.prototype.refusal never
+ * becomes an own property of the trial the durable runner records or the
+ * trial it persists through project" (AIC-146 b4).
+ */
+export function parseTrial(fields: Readonly<Record<string, unknown>>, refusal: TrialRefusal | undefined): Trial {
+  const trial = TrialSchema.parse(nullPrototypeInput(fields));
+  if (Object.hasOwn(trial, 'refusal') !== (refusal !== undefined)) {
+    throw new Error('parsed trial refusal presence does not match what was supplied for this call');
+  }
+  return trial;
+}
+
 export function createExecuteInvestigation({
   execute,
 }: Readonly<{
@@ -160,18 +216,47 @@ export function createExecuteInvestigation({
           // b2)".
           evidence.push(ingestEvidence({ item, trialId, provenanceSource: outcome }));
         }
-        trials.push(TrialSchema.parse({ ...trialBase, status: 'ok', evidenceIds }));
+        trials.push(parseTrial({ ...trialBase, status: 'ok', evidenceIds }, undefined));
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'executed' }));
         continue;
       }
 
       if (outcome.status === 'unavailable') {
-        trials.push(TrialSchema.parse({ ...trialBase, status: 'unavailable', evidenceIds: [] }));
+        // The refusal reason is read as an own data property only, and
+        // parsed with TrialRefusalSchema, before it is ever stamped on the
+        // Trial — see evidence-ingestion.ts's `readOwnTrialRefusal` (AIC-146
+        // b4), which shares the exact own-property discipline
+        // `readOwnProvenance` already uses for the ok branch above.
+        const refusal = readOwnTrialRefusal(outcome);
+        trials.push(
+          parseTrial(
+            {
+              ...trialBase,
+              status: 'unavailable',
+              evidenceIds: [],
+              ...(refusal === undefined ? {} : { refusal }),
+            },
+            refusal,
+          ),
+        );
         tests.push(InvestigationTestSchema.parse({ ...test, status: 'unavailable' }));
         continue;
       }
 
-      trials.push(TrialSchema.parse({ ...trialBase, status: 'error', evidenceIds: [] }));
+      {
+        const refusal = readOwnTrialRefusal(outcome);
+        trials.push(
+          parseTrial(
+            {
+              ...trialBase,
+              status: 'error',
+              evidenceIds: [],
+              ...(refusal === undefined ? {} : { refusal }),
+            },
+            refusal,
+          ),
+        );
+      }
       tests.push(InvestigationTestSchema.parse({ ...test, status: 'failed' }));
     }
 
