@@ -226,3 +226,27 @@ test("the key has IdempotencyKeySchema's shape and is not an ExecKeySchema strin
     'the key must never also satisfy ExecKeySchema\'s <op>/sha256:<64 hex> shape',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* Review round 1 (PR #196)                                                   */
+/* -------------------------------------------------------------------------- */
+
+test('params carrying an own __proto__ key, at the top or nested, are refused rather than given a second identity', () => {
+  // Kills: canonicalJson keeping an own __proto__ key as ordinary data, so one
+  // payload that a strict params schema reads identically derives many keys.
+  const top = JSON.parse('{"__proto__":{"a":1},"body":"post this"}');
+  const nested = JSON.parse('{"body":"post this","meta":{"__proto__":{"a":1}}}');
+  for (const params of [top, nested]) {
+    assert.throws(() => domain.deriveActionIdempotencyKey({ ...fixtureParts(), params }));
+  }
+});
+
+test('params that are not a plain object are refused with a ZodError', () => {
+  for (const params of [undefined, null, ['body'], 'post this', 7]) {
+    assert.throws(
+      () => domain.deriveActionIdempotencyKey({ ...fixtureParts(), params }),
+      (error) => error?.name === 'ZodError',
+      `params ${JSON.stringify(params)} must be refused by the parts schema`,
+    );
+  }
+});

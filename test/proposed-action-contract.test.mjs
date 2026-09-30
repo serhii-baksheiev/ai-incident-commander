@@ -40,12 +40,20 @@
  * "Never").
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import * as domain from '@aic/domain';
 
 import { findSecretValues } from '../.claude/scripts/lib/secrets.mjs';
+import { childEnv } from './fixtures/child-env.mjs';
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const compilerPath = resolve(projectRoot, 'node_modules/typescript/bin/tsc');
+const typeContractFixture = resolve(projectRoot, 'test/fixtures/proposed-action-type-contract.ts');
 
 /** A github-pat shape (`ghp_` + 20+ alphanumerics), assembled at runtime. */
 const pastedSecret = () => ['ghp', 'A'.repeat(28)].join('_');
@@ -258,4 +266,66 @@ test('a well-formed safe-write record parses; a record whose risk is dangerous i
 
   const dangerousResult = domain.ProposedActionRecordSchema.safeParse(validRecord({ risk: 'dangerous' }));
   assert.equal(dangerousResult.success, false, 'this slice only ever admits risk: safe-write on a record');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Review round 1 (PR #196)                                                   */
+/* -------------------------------------------------------------------------- */
+
+for (const actionType of ['incident-comment', 'create-follow-up-ticket']) {
+  test(`ACTION_PARAMS_SCHEMAS["${actionType}"] refuses params carrying an own __proto__ key parsed from JSON, and echoes nothing`, () => {
+    // Kills: a strict object that silently drops an own __proto__ key, which
+    // lets one payload carry any number of distinct idempotency identities.
+    const valid = actionType === 'incident-comment' ? { body: 'post this' } : { title: 'follow up', body: 'post this' };
+    const marked = JSON.parse(`{"__proto__":{"marker":"proto-sentinel"},${JSON.stringify(valid).slice(1)}`);
+    assert.ok(Object.hasOwn(marked, '__proto__'), 'fixture premise: JSON.parse keeps __proto__ as an own key');
+
+    const result = domain.ACTION_PARAMS_SCHEMAS[actionType].safeParse(marked);
+    assert.equal(result.success, false);
+    assert.ok(!JSON.stringify(result.error.issues).includes('proto-sentinel'), 'the refusal must not echo the payload');
+    assert.equal(domain.ACTION_PARAMS_SCHEMAS[actionType].safeParse(valid).success, true, 'the same params without __proto__ still parse');
+  });
+}
+
+test('a record carrying an extra key is refused', () => {
+  const result = domain.ProposedActionRecordSchema.safeParse({ ...validRecord(), unaudited: 'extra' });
+  assert.equal(result.success, false);
+});
+
+test('a draft actionType longer than 64 characters is refused', () => {
+  const result = domain.ProposedActionDraftSchema.safeParse(baseDraft({ actionType: 'a'.repeat(65) }));
+  assert.equal(result.success, false);
+  assert.equal(domain.ProposedActionDraftSchema.safeParse(baseDraft({ actionType: 'a'.repeat(64) })).success, true);
+});
+
+test("the record schema's actionType variants are exactly ACTION_PARAMS_SCHEMAS' keys, and vice versa", () => {
+  const variantTypes = domain.ProposedActionRecordSchema.options.map((option) => option.shape.actionType.value).sort();
+  assert.deepEqual(variantTypes, ['create-follow-up-ticket', 'incident-comment']);
+  assert.deepEqual(Object.keys(domain.ACTION_PARAMS_SCHEMAS).sort(), ['create-follow-up-ticket', 'incident-comment']);
+});
+
+test('compiles the proposed-action type contract: a record narrows params by actionType, and an unregistered actionType does not type-check', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      compilerPath,
+      '--noEmit',
+      '--ignoreConfig',
+      '--strict',
+      '--skipLibCheck',
+      '--target',
+      'ES2023',
+      '--module',
+      'NodeNext',
+      '--moduleResolution',
+      'NodeNext',
+      typeContractFixture,
+    ],
+    { cwd: projectRoot, encoding: 'utf8', env: childEnv() },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `type-contract compile exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}\n\nsee test/fixtures/proposed-action-type-contract.ts`,
+  );
 });
