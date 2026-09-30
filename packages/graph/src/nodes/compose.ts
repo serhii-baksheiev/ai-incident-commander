@@ -3,7 +3,11 @@ import type { InvestigationNodes } from '../investigation.js';
 import { createDeriveHypothesisState } from './derive-hypothesis-state.js';
 import { createDerivePredictions } from './derive-predictions.js';
 import { createEvaluatePredictions } from './evaluate-predictions.js';
-import { createExecuteInvestigation, type ExecuteInvestigationOutcome } from './execute-investigation.js';
+import {
+  createExecuteInvestigation,
+  type EvidenceProvenanceRequirement,
+  type ExecuteInvestigationOutcome,
+} from './execute-investigation.js';
 import { createPlanInvestigation } from './plan-investigation.js';
 import { createStateTerminationCheck } from './termination.js';
 
@@ -68,7 +72,15 @@ function validateReasoning(reasoning: Readonly<Record<string, unknown>>): void {
  * `createPlanInvestigation`, `createExecuteInvestigation`,
  * `createEvaluatePredictions`, `createDeriveHypothesisState`,
  * `createStateTerminationCheck`), called with their defaults except for
- * `execute` and `asOf`, which only the caller can supply.
+ * `execute`, `asOf` and `evidenceProvenance`, which only the caller can
+ * supply.
+ *
+ * `evidenceProvenance` (AIC-146 b5) is forwarded to
+ * `createExecuteInvestigation` unchanged, so a caller reaching
+ * `execute_investigation` only through this composition (every lane, and the
+ * CLI) gets exactly the same `'required'`/`'optional'` refusal a direct
+ * caller of `createExecuteInvestigation` would — see
+ * investigation-nodes-composition.test.mjs, the "AIC-146 b5" section.
  * see investigation-nodes-composition.test.mjs for the behavioural proof of
  * every row.
  */
@@ -76,10 +88,12 @@ export function createInvestigationNodes({
   reasoning,
   execute,
   asOf,
+  evidenceProvenance,
 }: Readonly<{
   reasoning: InvestigationReasoning;
   execute(context: ExecuteInvestigationContext): Promise<ExecuteInvestigationOutcome>;
   asOf: () => string;
+  evidenceProvenance?: EvidenceProvenanceRequirement;
 }>): InvestigationNodes {
   validateReasoning(reasoning as unknown as Readonly<Record<string, unknown>>);
 
@@ -89,7 +103,7 @@ export function createInvestigationNodes({
     generate_hypotheses: reasoning.generate_hypotheses,
     derive_predictions: createDerivePredictions(),
     plan_investigation: createPlanInvestigation(),
-    execute_investigation: createExecuteInvestigation({ execute }),
+    execute_investigation: createExecuteInvestigation({ execute, evidenceProvenance }),
     evaluate_predictions: createEvaluatePredictions({ asOf }),
     interpret_residual_evidence: reasoning.interpret_residual_evidence,
     derive_hypothesis_state: createDeriveHypothesisState(),

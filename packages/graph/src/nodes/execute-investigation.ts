@@ -9,7 +9,7 @@ import {
   type TrialRefusal,
 } from '@aic/domain';
 
-import { ingestEvidence, nullPrototypeInput, readOwnTrialRefusal } from '../evidence-ingestion.js';
+import { ingestEvidence, nullPrototypeInput, readOwnProvenance, readOwnTrialRefusal } from '../evidence-ingestion.js';
 import { deriveTrialId } from '../identity.js';
 import type { InvestigationNode, InvestigationNodeResult } from '../investigation.js';
 import type { ExecuteInvestigationContext } from '../index.js';
@@ -146,11 +146,63 @@ export function parseTrial(fields: Readonly<Record<string, unknown>>, refusal: T
   return trial;
 }
 
+/**
+ * AIC-146 b5: `evidenceProvenance` — `'optional'` (the default, and the
+ * behaviour when the option is omitted entirely) or `'required'`.
+ *
+ * The default stays `'optional'` because two arms this node already serves
+ * carry no provenance at all: a replay of a recorded run, and a scripted
+ * evaluation lane — neither has a live adapter to stamp one, and requiring it
+ * there would make every existing replay and scripted-lane test throw. A
+ * caller on the bound-source path (a real tool adapter) opts into
+ * `'required'` instead, so an adapter's own missing stamp is refused at this
+ * node rather than silently landing as evidence carrying no `provenance`
+ * field — see investigation-execution.test.mjs › "createExecuteInvestigation({execute,
+ * evidenceProvenance: \"required\"}): an ok outcome whose output is non-empty
+ * but carries no own provenance throws a content-free message naming
+ * provenance, and records nothing (AIC-146 b5)".
+ *
+ * Any value other than `'optional'` or `'required'` is refused synchronously
+ * at construction, before `execute` is ever called — see › "createExecuteInvestigation
+ * refuses an unknown evidenceProvenance option value at construction, before
+ * execute is ever called (AIC-146 b5)".
+ *
+ * `'required'` constrains only `ok` outcomes whose `output` is non-empty:
+ * an `ok` outcome with empty output has nothing to stamp, and an
+ * `unavailable` or `error` outcome carries no evidence at all — both are
+ * exempt — see › "an ok outcome with EMPTY output and no provenance does not
+ * throw — there is nothing to stamp (AIC-146 b5)", › "an unavailable outcome
+ * with no provenance does not throw — the required option constrains only ok
+ * outcomes (AIC-146 b5)" and › "an error outcome with no provenance does not
+ * throw — the required option constrains only ok outcomes (AIC-146 b5)".
+ * The check reuses `readOwnProvenance` (`../evidence-ingestion.js`) — the
+ * same own-data-property reader `ingestEvidence` already uses to read
+ * `outcome.provenance` — rather than a second, parallel check
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation"), and
+ * runs before anything from the failing test's outcome is recorded: across
+ * two planned tests, a later outcome missing provenance rejects the whole
+ * call, discarding the earlier, well-stamped test's result too — see ›
+ * "across two planned tests, a later ok outcome missing provenance rejects
+ * the whole call — nothing from the earlier, well-stamped test is returned
+ * either (AIC-146 b5)".
+ */
+export type EvidenceProvenanceRequirement = 'optional' | 'required';
+
+function assertKnownEvidenceProvenance(value: EvidenceProvenanceRequirement): void {
+  if (value !== 'optional' && value !== 'required') {
+    throw new Error('evidenceProvenance must be "optional" or "required"');
+  }
+}
+
 export function createExecuteInvestigation({
   execute,
+  evidenceProvenance = 'optional',
 }: Readonly<{
   execute(context: ExecuteInvestigationContext): Promise<ExecuteInvestigationOutcome>;
+  evidenceProvenance?: EvidenceProvenanceRequirement;
 }>): InvestigationNode {
+  assertKnownEvidenceProvenance(evidenceProvenance);
+
   return async (state: IncidentState): Promise<InvestigationNodeResult> => {
     const plannedTests = state.tests.filter((test) => test.status === 'planned');
     if (plannedTests.length === 0) {
@@ -199,6 +251,9 @@ export function createExecuteInvestigation({
       });
 
       if (outcome.status === 'ok') {
+        if (evidenceProvenance === 'required' && outcome.output.length > 0 && readOwnProvenance(outcome) === undefined) {
+          throw new Error('evidence provenance is required but this ok outcome carries none');
+        }
         const evidenceIds: string[] = [];
         for (const item of outcome.output) {
           if (claimedEvidenceIds.has(item.id)) continue;
