@@ -9,6 +9,7 @@ export * from './investigation-planning.js';
 export * from './null-prototype-input.js';
 export * from './prediction-derivation.js';
 export * from './prediction-evaluation.js';
+export * from './proposed-action.js';
 export * from './reducers.js';
 export * from './risk-registry.js';
 export * from './run-event-stream.js';
