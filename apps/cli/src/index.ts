@@ -5,10 +5,29 @@ import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 
 import { createDirectorySecretResolver } from '@aic/tools';
-import { createIncidentStore, createRegistryStore, setupApplicationSchema, type RegistryStore } from '@aic/persistence';
+import {
+  assertCheckpointerSchemaVersion,
+  createFencedCheckpointer,
+  createIncidentStore,
+  createPostgresCheckpointer,
+  createRegistryStore,
+  createRunStore,
+  openRunWriteContext,
+  setupApplicationSchema,
+  type CheckpointerVersionSource,
+  type RegistryStore,
+  type RunClaim,
+  type RunStore,
+} from '@aic/persistence';
 
 import { runRegistryCommand, type RegistryCommandDeps } from './commands/registry.js';
 import { runIncidentCommand, type IncidentCommandStore } from './commands/incident.js';
+import {
+  CheckpointerNotProvisionedError,
+  HEARTBEAT_INTERVAL_MS,
+  runIncidentInvestigateCommand,
+  type IncidentInvestigateWriteContext,
+} from './commands/incident-investigate.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runDevSpike } from './commands/dev-spike.js';
 import { runInvestigate } from './commands/investigate.js';
@@ -40,7 +59,7 @@ Commands:
   source       Register and check evidence SourceBindings
   credential   Register a CredentialRef (a secret NAME, never its value)
   policy       Set the ActionPolicy for an Environment
-  incident     Record an Incident for a scope (runs nothing)
+  incident     Record an Incident for a scope, or investigate one
   investigate  Run one investigation over a replay file
   doctor       Check onboarding health
   apply        Apply a declarative onboarding manifest
@@ -115,6 +134,81 @@ function createConnectedIncidentStore(env: NodeJS.ProcessEnv): IncidentCommandSt
   return {
     snapshot: () => createConnectedRegistryStore(env).snapshot(),
     startIncident: (intake, opts) => createIncidentStore(requirePostgresUrl(env)).startIncident(intake, opts),
+  };
+}
+
+/**
+ * AIC-146 c4b: `aic incident investigate`'s own `RunStore` session — ONE
+ * store (one `pg.Pool`), built lazily on the first call any of its methods
+ * makes, so a parse refusal (bad argv, missing `--roles`, no model
+ * credential) still never reads `AIC_POSTGRES_URL` — the same lazy
+ * convention `createConnectedRegistryStore` follows above. Unlike that
+ * helper's per-call open/close pattern, this pool has to survive the WHOLE
+ * command — the heartbeat keeps renewing the same lease, and the write
+ * context keeps reusing the same pool for every commit — so the caller
+ * closes it once with `.close()` after the command settles.
+ */
+function createConnectedRunSession(env: NodeJS.ProcessEnv) {
+  let store: RunStore | undefined;
+  const ensure = (): RunStore => {
+    store ??= createRunStore(requirePostgresUrl(env), {
+      leaseMs: HEARTBEAT_INTERVAL_MS * 3,
+      maxExecutionAttempts: 5,
+    });
+    return store;
+  };
+  return {
+    runs: {
+      getRun: (runId: string) => ensure().getRun(runId),
+      createRun: (run: { runId: string; input: unknown }) => ensure().createRun(run),
+      claimRun: (runId: string, workerId: string) => ensure().claimRun(runId, workerId),
+      sweepExpired: () => ensure().sweepExpired(),
+      renewLease: (claim: RunClaim) => ensure().renewLease(claim),
+    },
+    openWriteContext: (claim: RunClaim) => openRunWriteContext(ensure(), claim),
+    versionSource: (): CheckpointerVersionSource => ensure().pool,
+    close: async (): Promise<void> => {
+      if (store !== undefined) await store.close();
+    },
+  };
+}
+
+/** PostgreSQL's undefined_table SQLSTATE. */
+const UNDEFINED_TABLE = '42P01';
+
+/**
+ * The checkpointer half of the same command: the PostgreSQL checkpointer,
+ * schema-version-checked first (AIC-55) through the run session's own pool,
+ * fenced by the run's write context on every path but the read-only "already
+ * completed" one, which passes no context. Only a missing checkpointer table
+ * becomes `CheckpointerNotProvisionedError` (which the command refuses as
+ * `checkpointer-not-provisioned`); a version mismatch or a connection failure
+ * propagates as itself. Every saver built is ended by `closeAll`, so its pool
+ * does not outlive the command.
+ */
+
+function createConnectedCheckpointers(env: NodeJS.ProcessEnv, versionSource: () => CheckpointerVersionSource) {
+  const savers: Array<ReturnType<typeof createPostgresCheckpointer>> = [];
+  return {
+    create: async (context?: IncidentInvestigateWriteContext) => {
+      try {
+        await assertCheckpointerSchemaVersion(versionSource());
+      } catch (error) {
+        // PostgreSQL's undefined_table: no checkpointer schema in this
+        // database at all. Anything else (a version mismatch, a connection
+        // failure) is reported as itself.
+        if ((error as { code?: unknown } | null)?.code === UNDEFINED_TABLE) {
+          throw new CheckpointerNotProvisionedError({ cause: error });
+        }
+        throw error;
+      }
+      const saver = createPostgresCheckpointer(requirePostgresUrl(env));
+      savers.push(saver);
+      return context === undefined ? saver : createFencedCheckpointer(saver, context);
+    },
+    closeAll: async (): Promise<void> => {
+      await Promise.all(savers.map((saver) => saver.end()));
+    },
   };
 }
 
@@ -221,18 +315,46 @@ async function main(argv: readonly string[]): Promise<void> {
 
   if (command === 'incident') {
     const { command: sub, rest: incidentRest } = nextPositional(rest);
-    if (sub !== 'start') {
-      // Fixed text: "incident" itself is implemented in this slice, so this
-      // is a subcommand problem, never the "not implemented" stub wording.
-      throw new Error('aic incident requires a subcommand: start');
+    if (sub === 'start') {
+      await runIncidentCommand(incidentRest, {
+        store: createConnectedIncidentStore(process.env),
+        stdout: writeStdoutLine,
+        now: () => new Date().toISOString(),
+        generateId: randomUUID,
+      });
+      return;
     }
-    await runIncidentCommand(incidentRest, {
-      store: createConnectedIncidentStore(process.env),
-      stdout: writeStdoutLine,
-      now: () => new Date().toISOString(),
-      generateId: randomUUID,
-    });
-    return;
+    if (sub === 'investigate') {
+      const session = createConnectedRunSession(process.env);
+      const checkpointers = createConnectedCheckpointers(process.env, session.versionSource);
+      try {
+        await runIncidentInvestigateCommand(incidentRest, {
+          env: process.env,
+          registry: createConnectedRegistryStore(process.env),
+          incidents: {
+            getIncident: (id) => createIncidentStore(requirePostgresUrl(process.env)).getIncident(id),
+          },
+          runs: session.runs,
+          openWriteContext: session.openWriteContext,
+          createCheckpointer: (context) => checkpointers.create(context),
+          fetch: globalThis.fetch,
+          resolveSecret: (secretName) => createSecretResolver(process.env).resolve(secretName),
+          workerId: `aic-cli-${randomUUID()}`,
+          stdout: writeStdoutLine,
+          now: () => new Date().toISOString(),
+        });
+      } finally {
+        try {
+          await checkpointers.closeAll();
+        } finally {
+          await session.close();
+        }
+      }
+      return;
+    }
+    // Fixed text: "incident" itself is implemented in this slice, so this
+    // is a subcommand problem, never the "not implemented" stub wording.
+    throw new Error('aic incident requires a subcommand: one of start, investigate');
   }
 
   if (command === 'apply') {
